@@ -25,7 +25,9 @@ import { fail } from './http-error.ts';
  * - GET  /api/sessions/:id/messages        进出这条会话的消息 + 它发起、等人批的派生请求
  * - POST /api/sessions/:id/messages        人替这条会话发一条（链头，代的是这个人）
  * - GET/PUT /api/projects/:id/messaging    项目的角色表和限额（最多默认值 2 倍）
- * - POST /api/messages/:id/decision        批 / 拒派生新会话（要 agent.spawn）
+ * - POST /api/messages/:id/decision        批 / 拒派生新会话（要 agent.spawn）；或放行 / 拒绝被拦下的消息
+ * - GET  /api/sessions/:id/peers           同伴（短名、机器、仓库、分支、状态）
+ * - PUT  /api/sessions/:id/handle          设任务内短名（peer:<handle>）
  * - GET  /api/messages/:id/trace           一条协作链的消息和审计
  * 路径里带 sessions / projects 的读写权限由 installAccess 先查过。
  */
@@ -33,8 +35,12 @@ const sendBody = z.object({
   kind: z.enum(['send', 'ask']),
   to: z.string().min(3).max(200),
   body: z.string().min(1).max(32768),
-  idempotencyKey: z.string().max(100).optional()
+  idempotencyKey: z.string().max(100).optional(),
+  parts: z.array(z.record(z.string(), z.unknown())).max(8).optional(),
+  wake: z.boolean().optional(),
+  timeoutSec: z.number().int().optional()
 });
+const handleBody = z.object({ handle: z.string().min(2).max(32) });
 // 与 domain 的 configProblem 用同一套规则；前端逐条提示也照这份，别在三处各写一遍。
 const optionsBody = z
   .record(
@@ -82,7 +88,7 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
     if (!project) return fail(c, { code: 'not_found', message: '会话不存在' });
     const visible = await authorizeProject(deps.access, subjectOf(c), project, 'project.read');
     if (!visible.ok) return fail(c, visible.error);
-    const list = await bus.inbox(sessionId, 50);
+    const list = await bus.inbox(sessionId, 50, { unreadOnly: c.req.query('unread') === '1' });
     const pending = (await messages.awaitingApproval(asProjectId(project.id as string))).filter((m) => m.fromSessionId === sessionId);
     return c.json({ messages: list.map(messageView), awaitingApproval: pending.map(messageView) });
   });
@@ -93,6 +99,20 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
     const actor = principalOfSubject(subjectOf(c));
     const accepted = await bus.accept({ fromSessionId: asSessionId(c.req.param('id')), ...parsed.data, ...(actor ? { onBehalfOf: actor.user.id } : {}) });
     return accepted.ok ? c.json(accepted.value, 201) : fail(c, accepted.error);
+  });
+
+  app.get('/api/sessions/:id/peers', async (c) => {
+    // 可见性由 installAccess（session.read）把关
+    const peers = await bus.peers(asSessionId(c.req.param('id')));
+    return peers.ok ? c.json({ peers: peers.value }) : fail(c, peers.error);
+  });
+
+  app.put('/api/sessions/:id/handle', async (c) => {
+    const parsed = handleBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return fail(c, { code: 'invalid', message: '要给 handle' });
+    const actor = principalOfSubject(subjectOf(c));
+    const saved = await bus.setHandle(asSessionId(c.req.param('id')), parsed.data.handle, actor ? `user:${actor.user.id}` : 'hub');
+    return saved.ok ? c.json(saved.value) : fail(c, saved.error);
   });
 
   // 项目配置：先确认项目存在且看得到（读）/ 能改（写），不然任何人都能给不存在或别人的项目写角色表
@@ -122,7 +142,10 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
     if (!actor) return fail(c, { code: 'forbidden', message: '要以账号身份批准' });
     const parsed = decisionBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return fail(c, { code: 'invalid', message: '要给 approve: true / false' });
-    const decided = await bus.decideSpawn(c.req.param('id'), actor, parsed.data.approve);
+    const target = await messages.byId(c.req.param('id'));
+    const decided = target?.status === 'held'
+      ? await bus.decideHeld(c.req.param('id'), actor, parsed.data.approve)
+      : await bus.decideSpawn(c.req.param('id'), actor, parsed.data.approve);
     return decided.ok ? c.json(messageView(decided.value)) : fail(c, decided.error);
   });
 

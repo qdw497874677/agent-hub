@@ -410,6 +410,7 @@ export function openSqliteStore(file: string): SqliteStore {
     { sql: 'DELETE FROM agent_group_sessions WHERE session_id = ?', bindings: 1 },
     { sql: 'DELETE FROM agent_messages WHERE from_session_id = ? OR target_session_id = ?', bindings: 2 },
     { sql: 'DELETE FROM agent_spawns WHERE session_id = ? OR spawner_session_id = ?', bindings: 2 },
+    { sql: 'DELETE FROM agent_session_handles WHERE session_id = ?', bindings: 1 },
     { sql: 'DELETE FROM agent_task_request WHERE session_id = ?', bindings: 1 },
     { sql: 'DELETE FROM session_provenance WHERE session_id = ?', bindings: 1 },
     // 显式授权按资源键关联（审核人共用这张表），也要跟着会话清掉

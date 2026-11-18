@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { asProjectId, asSessionId, type AgentMessage } from '@agent-hub/domain';
+import { DatabaseSync } from 'node:sqlite';
 import { openSqliteStore } from './store.ts';
 
 const base = (over: Partial<AgentMessage>): AgentMessage => ({
@@ -38,6 +39,48 @@ test('消息存储往返：排队 / 投递 / trace / 幂等 / 超时 / 配置 / 
     assert.equal((await reopened.messages.spawnOf(asSessionId('c')))?.spawnerSessionId, 'a');
     assert.equal((await reopened.messages.spawnsForRole(asProjectId('p'), 'qa')).length, 1);
     assert.equal((await reopened.messages.auditByTrace('t1'))[0]?.action, 'accepted');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('会话通信 P1a：parts / wake / reply status / 已读 / 拦下原因往返；短名任务内唯一；老库补列', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-msg-'));
+  try {
+    const path = join(dir, 'hub.db');
+    const store = openSqliteStore(path);
+    await store.messages.save(base({ id: 'old', idempotencyKey: null }));
+    // 模拟升级前的老库：把新列删掉，重开时要自动补回
+    const raw = new DatabaseSync(path);
+    for (const column of ['parts', 'wake', 'reply_status', 'reply_parts', 'read_at', 'hold_reason']) raw.exec(`ALTER TABLE agent_messages DROP COLUMN ${column}`);
+    raw.close();
+    const reopened = openSqliteStore(path);
+    const old = await reopened.messages.byId('old');
+    assert.equal(old?.wake, true);
+    assert.deepEqual(old?.parts, []);
+    await reopened.messages.save(base({
+      id: 'n1', idempotencyKey: null, kind: 'send', status: 'held', holdReason: 'pingpong', wake: false,
+      parts: [{ type: 'ref', repo: 'web', branch: 'feat/x' }]
+    }));
+    await reopened.messages.save(base({ id: 'r1', idempotencyKey: null, kind: 'reply', replyStatus: 'refused', replyParts: [{ type: 'link', url: 'https://x.test' }], readAt: 5 }));
+    const n1 = await reopened.messages.byId('n1');
+    assert.equal(n1?.status, 'held');
+    assert.equal(n1?.holdReason, 'pingpong');
+    assert.equal(n1?.wake, false);
+    assert.deepEqual(n1?.parts, [{ type: 'ref', repo: 'web', branch: 'feat/x' }]);
+    const r1 = await reopened.messages.byId('r1');
+    assert.equal(r1?.replyStatus, 'refused');
+    assert.equal(r1?.readAt, 5);
+    assert.equal(r1?.replyParts?.[0]?.type, 'link');
+    assert.deepEqual(await reopened.messages.pendingTargets(), [asSessionId('b')]);
+
+    assert.equal(await reopened.messages.setHandle({ sessionId: asSessionId('a'), taskId: 't', handle: 'builder', updatedAt: 1 }), true);
+    assert.equal(await reopened.messages.setHandle({ sessionId: asSessionId('b'), taskId: 't', handle: 'builder', updatedAt: 1 }), false);
+    assert.equal(await reopened.messages.setHandle({ sessionId: asSessionId('b'), taskId: 'other', handle: 'builder', updatedAt: 1 }), true);
+    assert.equal(await reopened.messages.setHandle({ sessionId: asSessionId('a'), taskId: 't', handle: 'maker', updatedAt: 2 }), true);
+    assert.equal(await reopened.messages.handleOf(asSessionId('a')), 'maker');
+    assert.equal(await reopened.messages.sessionByHandle('t', 'maker'), 'a');
+    assert.equal(await reopened.messages.sessionByHandle('t', 'builder'), null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

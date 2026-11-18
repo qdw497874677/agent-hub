@@ -148,7 +148,7 @@ export async function promptSessionUseCase(
   deps: Pick<
     Deps,
     'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots'
-  > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links'>>,
+  > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links' | 'peerBriefing'>>,
   command: PromptCommand
 ): Promise<Result<PromptAck, DomainError>> {
   const sessionId = asSessionId(command.sessionId);
@@ -174,7 +174,7 @@ export async function promptSessionUseCase(
   // bot 的职责说明（系统提示）：同样只在新会话第一句垫一次，放在最前面
   const instructions = session.lastSeq === 0 && deps.sessionInstructions ? await deps.sessionInstructions(sessionId).catch(() => null) : null;
   // 每次发话都告诉它“现在连着谁”，连接变化下一轮就生效；没有连线时完全不加。
-  const peers = await peerBriefingFor(deps, session);
+  const peers = deps.peerBriefing ? await deps.peerBriefing(session).catch(() => null) : await peerBriefingFor(deps, session);
   const membersNote = await comboMembersNoteFor(deps, session, briefing !== null);
 
   // 反过来的话，agent 起不来时用户那句问话就凭空消失了——

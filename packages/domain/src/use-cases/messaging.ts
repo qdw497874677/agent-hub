@@ -7,7 +7,14 @@ import { newId, type ProjectId, type SessionId } from '../ids.ts';
 import { createSessionLane, type SessionLane } from '../session-lane.ts';
 import {
   DEFAULT_ASK_TIMEOUT_MS,
+  MAX_ASK_TIMEOUT_SEC,
   MAX_BODY_CHARS,
+  STORM_LIMITS,
+  defaultHandle,
+  isHandle,
+  validateParts,
+  type MessagePart,
+  type ReplyStatus,
   configProblem,
   effectiveLimits,
   isActive,
@@ -65,6 +72,17 @@ export interface SendCommand {
   readonly idempotencyKey?: string;
   /** 人在界面里替这条会话发起（链头）：代的就是这个人，不是会话主人。agent 经工具发的不填。 */
   readonly onBehalfOf?: string;
+  /** 结构化附件（data / ref / file / link），domain 里校验。 */
+  readonly parts?: unknown;
+  /** 只有 send 可以设 false：进对方收件箱，不唤醒。 */
+  readonly wake?: boolean;
+  /** 只用于 ask：多久没回算超时（秒），默认 1800，最多 14400。 */
+  readonly timeoutSec?: number;
+}
+
+export interface ReplyExtra {
+  readonly status?: ReplyStatus;
+  readonly parts?: unknown;
 }
 
 export interface Accepted {
@@ -72,6 +90,7 @@ export interface Accepted {
   readonly traceId: string;
   readonly status: AgentMessage['status'];
   readonly targetSessionId: SessionId | null;
+  readonly holdReason?: AgentMessage['holdReason'];
 }
 
 export interface AgentDirectoryEntry {
@@ -81,12 +100,20 @@ export interface AgentDirectoryEntry {
   readonly description?: string;
   /** 是否通过画布/对话页显式连接（派生关系不算）。 */
   readonly connected?: boolean;
+  /** 会话通信 P1a：同伴的短名、落点和仓库。 */
+  readonly handle?: string;
+  readonly workerId?: string | null;
+  readonly repo?: string | null;
+  readonly branch?: string | null;
+  readonly title?: string | null;
+  /** 发给我、还没读的通知（wake=false）。 */
+  readonly unread?: number;
 }
 
 export interface MessageBus {
   accept(command: SendCommand): Promise<Result<Accepted, DomainError>>;
   /** agent_reply：回答投给自己的 ask。messageId 不给 = 当前唯一在处理的那条 ask。 */
-  reply(fromSessionId: SessionId, body: string, messageId?: string): Promise<Result<{ messageId: string; replyTo: string }, DomainError>>;
+  reply(fromSessionId: SessionId, body: string, messageId?: string, extra?: ReplyExtra): Promise<Result<{ messageId: string; replyTo: string }, DomainError>>;
   /** 会话一轮结束（journal 里出现 ended）。 */
   turnEnded(sessionId: SessionId, outcome: 'done' | 'stopped' | 'interrupted' | 'failed'): Promise<void>;
   /** 人批 / 拒一条派生请求。 */
@@ -95,7 +122,15 @@ export interface MessageBus {
   /** 只列显式连接的会话（不包含角色，也不含仅派生关系）。 */
   peers(fromSessionId: SessionId): Promise<Result<AgentDirectoryEntry[], DomainError>>;
   status(fromSessionId: SessionId, messageId: string): Promise<Result<AgentMessage, DomainError>>;
-  inbox(sessionId: SessionId, limit: number): Promise<AgentMessage[]>;
+  inbox(sessionId: SessionId, limit: number, options?: { unreadOnly?: boolean; markRead?: boolean }): Promise<AgentMessage[]>;
+  /** 人放行 / 拒绝一条被拦下（held）的消息。 */
+  decideHeld(messageId: string, actor: Principal, approve: boolean): Promise<Result<AgentMessage, DomainError>>;
+  /** 设置任务内短名（peer:<handle>）。 */
+  setHandle(sessionId: SessionId, handle: string, actor: string): Promise<Result<{ handle: string }, DomainError>>;
+  /** 有效短名：设过的，或默认 <agentId>-<id 尾 4 位>。 */
+  handleOf(session: Session): Promise<string>;
+  /** 同伴简报：同伴集合或状态变了才返回文字，否则 null（省 token）。 */
+  briefing(sessionId: SessionId): Promise<string | null>;
   /** 超时扫一遍（组合根定时调）。 */
   sweep(): Promise<number>;
   config(projectId: ProjectId): Promise<MessagingConfig>;
@@ -174,6 +209,10 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     serial(targetId, () => lane.run(targetId, async () => {
       const target = await deps.sessions.byId(targetId);
       if (!target) return;
+      if (target.settledAt) {
+        await drainArchived(target);
+        return;
+      }
       if (isBusy(target)) return;
       if ((await deps.messages.deliveredTo(targetId)).length > 0) return;
       if (await deps.occupied?.(targetId)) return;
@@ -192,7 +231,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         via: 'agent'
       };
       const now = deps.now();
-      const delivering: AgentMessage = { ...next, status: 'delivered', deliveredAt: now, updatedAt: now };
+      const delivering: AgentMessage = { ...next, status: 'delivered', deliveredAt: now, readAt: now, updatedAt: now };
       await deps.messages.save(delivering);
       const sent = await deps.deliver(targetId, text, author);
       if (!sent.ok) {
@@ -213,7 +252,13 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
   };
 
   /** 把回复（或失败通知）排进提问方的队列。 */
-  const enqueueReply = async (ask: AgentMessage, body: string | null, fromSessionId: SessionId | null, failure?: { code: FailureCode; detail: string }): Promise<AgentMessage> => {
+  const enqueueReply = async (
+    ask: AgentMessage,
+    body: string | null,
+    fromSessionId: SessionId | null,
+    failure?: { code: FailureCode; detail: string },
+    extra?: { status?: ReplyStatus; parts?: readonly MessagePart[] }
+  ): Promise<AgentMessage> => {
     const now = deps.now();
     const reply: AgentMessage = {
       id: newMessageId(),
@@ -237,7 +282,13 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       createdAt: now,
       updatedAt: now,
       deliveredAt: null,
-      deadlineAt: null
+      deadlineAt: null,
+      parts: extra?.parts ?? [],
+      wake: true,
+      replyStatus: failure ? 'failed' : (extra?.status ?? 'ok'),
+      replyParts: [],
+      readAt: null,
+      holdReason: null
     };
     await deps.messages.save(reply);
     await audit(reply, reply, 'queued', reply.fromSessionId, `reply → ${ask.fromSessionId}`);
@@ -278,16 +329,111 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
   const linkProblem = async (from: Session, target: Session): Promise<string | null> =>
     (await canReach(from, target)) ? null : '只有明确连接的会话才能互相发消息';
 
+  const handleOf = async (session: Session): Promise<string> => (await deps.messages.handleOf(session.id)) ?? defaultHandle(session);
+
+  /** 能直接说话的同伴：显式连线 + 派生父会话（派生子会话通过 spawn 记录反查不到全部，靠连线或子会话自己联系）。 */
+  const peerSessions = async (from: Session): Promise<Session[]> => {
+    const ids = new Set<string>();
+    if (deps.links) for (const link of await deps.links.forSession(from.id)) {
+      const other = otherEnd(link, from.id);
+      if (other) ids.add(other);
+    }
+    const spawn = await deps.messages.spawnOf(from.id);
+    if (spawn) ids.add(spawn.spawnerSessionId);
+    const out: Session[] = [];
+    for (const id of ids) {
+      const session = await deps.sessions.byId(id as SessionId);
+      if (session && session.status !== 'failed') out.push(session);
+    }
+    return out;
+  };
+
+  /** peer:<handle> → 会话：先找任务内设过的短名，再在同伴里按（设过的或默认）短名匹配。 */
+  const resolveHandle = async (from: Session, handle: string): Promise<Session | null> => {
+    if (from.taskId) {
+      const id = await deps.messages.sessionByHandle(from.taskId, handle);
+      if (id) {
+        const found = await deps.sessions.byId(id);
+        if (found) return found;
+      }
+    }
+    for (const peer of await peerSessions(from)) if ((await handleOf(peer)) === handle) return peer;
+    return null;
+  };
+
+  const peerFacts = async (session: Session, project: Project) => {
+    const workspace = session.workspaceId ? await deps.workspaces.byId(session.workspaceId) : null;
+    const repoUrl = workspace?.repoUrl ?? null;
+    const repo = session.groupId
+      ? '组合'
+      : repoUrl
+        ? (project.repos.find((r) => r.url === repoUrl)?.name ?? repoUrl.replace(/\.git$/, '').split('/').pop() ?? null)
+        : null;
+    return { workerId: session.workerId ?? workspace?.workerId ?? null, repo, branch: workspace?.branch ?? null };
+  };
+
+  const unreadFor = async (sessionId: SessionId): Promise<AgentMessage[]> =>
+    (await deps.messages.forSession(sessionId, 200)).filter((m) => m.targetSessionId === sessionId && m.wake === false && !m.readAt);
+
+  const statusLabel = (session: Session): string => (session.settledAt ? 'archived' : isBusy(session) ? 'busy' : session.status === 'running' ? 'idle' : session.status);
+  const STATUS_TEXT: Record<string, string> = { archived: '已收起', busy: '工作中', idle: '空闲', done: '空闲', stopped: '已停止', interrupted: '被打断' };
+
+  const briefingMemo = new Map<string, string>();
+
+  /** 防风暴（§8）：按对限速、相同内容、收件队列、每链唤醒；来回打转返回 'hold'。 */
+  const stormCheck = async (
+    from: Session,
+    target: Session,
+    body: string,
+    parts: readonly MessagePart[],
+    trace: readonly AgentMessage[]
+  ): Promise<{ code: FailureCode; message: string } | 'hold' | null> => {
+    const now = deps.now();
+    const sent = (await deps.messages.forSession(from.id, 200)).filter((m) => m.fromSessionId === from.id && m.targetSessionId === target.id && m.kind !== 'reply');
+    if (sent.filter((m) => m.createdAt > now - 60_000).length >= STORM_LIMITS.pairPerMinute) {
+      return { code: 'rate_limited', message: `1 分钟内已给这个会话发了 ${STORM_LIMITS.pairPerMinute} 条：合并成一条，或稍后再发` };
+    }
+    const sameParts = JSON.stringify(parts);
+    if (sent.some((m) => m.createdAt > now - STORM_LIMITS.duplicateWindowMs && m.status !== 'failed' && m.status !== 'denied' && m.body === body && JSON.stringify(m.parts ?? []) === sameParts)) {
+      return { code: 'duplicate', message: '10 分钟内已经发过完全一样的内容' };
+    }
+    const inbound = (await deps.messages.forSession(target.id, 200)).filter((m) => m.targetSessionId === target.id && (m.status === 'queued' || m.status === 'held'));
+    if (inbound.length >= STORM_LIMITS.inboxMax) return { code: 'busy', message: `对方收件队列已满（${STORM_LIMITS.inboxMax} 条）` };
+    if (trace.filter((m) => m.deliveredAt !== null).length >= STORM_LIMITS.traceWakeMax) {
+      return { code: 'rate_limited', message: `这条协作链由消息唤醒的轮次已到上限 ${STORM_LIMITS.traceWakeMax}；请人接手` };
+    }
+    const pair = (m: AgentMessage) =>
+      m.kind !== 'reply' &&
+      ((m.fromSessionId === from.id && m.targetSessionId === target.id) || (m.fromSessionId === target.id && m.targetSessionId === from.id));
+    const released = trace.filter((m) => pair(m) && m.holdReason === 'pingpong' && m.status !== 'held').map((m) => m.createdAt);
+    const since = released.length > 0 ? Math.max(...released) : -Infinity;
+    if (trace.filter((m) => pair(m) && m.createdAt > since && m.status !== 'denied').length >= STORM_LIMITS.pingpongMax) return 'hold';
+    return null;
+  };
+
+  /** 已收起的会话：排队 / 拦下的消息一律失败（ask 会告诉提问方）。 */
+  const drainArchived = async (target: Session): Promise<void> => {
+    const pending = (await deps.messages.forSession(target.id, 500)).filter((m) => m.targetSessionId === target.id && (m.status === 'queued' || m.status === 'held'));
+    for (const message of pending) await fail(message, 'archived', '对方会话已收起；要先重开才能收消息');
+  };
+
   const bus: MessageBus = {
     async accept(command) {
       const body = command.body;
       if (typeof body !== 'string' || body.trim() === '') return err(invalid('消息不能为空'));
       if (body.length > MAX_BODY_CHARS) return err(invalid(`消息太长（最多 ${MAX_BODY_CHARS} 字符）`));
       const address = parseAddress(command.to);
-      if (!address) return err(invalid('地址要写成 session:<id> 或 bot:<name>（旧写法 role:<name> 仍然认）'));
+      if (!address) return err(invalid('地址要写成 session:<id>、peer:<短名> 或 bot:<name>（旧写法 role:<name> 仍然认）'));
+      if (command.wake === false && command.kind !== 'send') return err(invalid('只有 send 可以 wake=false'));
+      if (command.timeoutSec !== undefined && (command.kind !== 'ask' || !Number.isInteger(command.timeoutSec) || command.timeoutSec < 30 || command.timeoutSec > MAX_ASK_TIMEOUT_SEC)) {
+        return err(invalid(`timeoutSec 只用于 ask，范围 30–${MAX_ASK_TIMEOUT_SEC} 秒`));
+      }
       const here = await sessionAndProject(command.fromSessionId);
       if (!here) return err(notFound('发送方会话不存在'));
       const { session: from, project } = here;
+      const checkedParts = validateParts(command.parts, project.repos.map((r) => r.name));
+      if (!checkedParts.ok) return err(invalid(checkedParts.problem));
+      const parts = checkedParts.parts;
 
       if (command.idempotencyKey) {
         const seen = await deps.messages.byIdempotencyKey(from.id, command.idempotencyKey);
@@ -324,9 +470,18 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
 
       let target: Session | null = null;
       let bot: PersistentAgent | null = null;
-      if (address.kind === 'session') {
-        const there = await sessionAndProject(address.sessionId);
-        target = there?.session ?? null;
+      if (address.kind === 'session' || address.kind === 'peer') {
+        if (address.kind === 'peer') {
+          const found = await resolveHandle(from, address.handle);
+          if (!found) {
+            const known = await Promise.all((await peerSessions(from)).map(async (peer) => `peer:${await handleOf(peer)}`));
+            return deny('unresolvable', `没有叫 ${address.handle} 的同伴${known.length > 0 ? `；可用：${known.join('、')}` : '；还没有连线的同伴'}`);
+          }
+          target = found;
+        } else {
+          target = (await sessionAndProject(address.sessionId))?.session ?? null;
+        }
+        const there = target ? await sessionAndProject(target.id) : null;
         if (!target || there?.project.id !== project.id) return deny('unresolvable', '同一个项目里没有这条会话');
         if (target.id === from.id) return err(invalid('不能给自己发消息'));
       } else {
@@ -337,7 +492,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
           const spawns = (await deps.messages.spawnsForRole(project.id, bot.name)).filter((s) => bot!.reuse === 'sticky' || s.traceId === traceId);
           for (const spawn of spawns.sort((a, b) => b.createdAt - a.createdAt)) {
             const candidate = await deps.sessions.byId(spawn.sessionId);
-            if (candidate && candidate.status !== 'failed' && (await isolationProblem(from, candidate)) === null && (await canReach(from, candidate))) {
+            if (candidate && candidate.status !== 'failed' && !candidate.settledAt && (await isolationProblem(from, candidate)) === null && (await canReach(from, candidate))) {
               target = candidate;
               break;
             }
@@ -351,10 +506,18 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         if (isolated) return deny('denied', isolated);
         const unlinked = await linkProblem(from, target);
         if (unlinked) return deny('denied', unlinked);
+        if (target.settledAt) return deny('archived', '对方会话已收起；要先重开才能收消息');
       } else if (!(await allowed(onBehalfOf, 'agent.spawn', project)) || !(await allowed(caller, 'agent.spawn', project))) {
         return deny('denied', `没有现成的 ${addressName(address)} 会话，派生新会话要 agent.spawn 权限`);
       }
 
+      let holdReason: AgentMessage['holdReason'] = null;
+      if (target) {
+        const storm = await stormCheck(from, target, body, parts, trace);
+        if (storm === 'hold') holdReason = 'pingpong';
+        else if (storm) return deny(storm.code, storm.message);
+      }
+      const wake = command.wake !== false;
       const now = deps.now();
       const message: AgentMessage = {
         id: newMessageId(),
@@ -369,7 +532,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         role: bot?.name ?? null,
         replyTo: null,
         body,
-        status: target ? 'queued' : 'awaiting_approval',
+        status: !target ? 'awaiting_approval' : holdReason ? 'held' : wake ? 'queued' : 'done',
         failure: null,
         failureDetail: null,
         replyBody: null,
@@ -378,20 +541,28 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         createdAt: now,
         updatedAt: now,
         deliveredAt: null,
-        deadlineAt: command.kind === 'ask' ? now + askTimeout : null
+        deadlineAt: command.kind === 'ask' ? now + (command.timeoutSec !== undefined ? command.timeoutSec * 1000 : askTimeout) : null,
+        parts,
+        wake,
+        replyStatus: null,
+        replyParts: [],
+        readAt: null,
+        holdReason
       };
       await deps.messages.save(message);
-      await audit(message, message, 'accepted', from.id, `${command.kind} ${message.to} depth=${depth} ${summary(body)}`);
-      if (target) {
-        await pump(target.id);
+      await audit(message, message, 'accepted', from.id, `${command.kind} ${message.to} depth=${depth}${parts.length > 0 ? ` parts=${parts.length}` : ''}${wake ? '' : ' wake=false'} ${summary(body)}`);
+      if (holdReason) {
+        await audit(message, message, 'held', 'hub', `同一条链里和对方来回已到 ${STORM_LIMITS.pingpongMax} 次，等人放行`);
+      } else if (target) {
+        if (wake) await pump(target.id);
       } else {
         await audit(message, message, 'spawn_requested', from.id, `${bot ? botAddress(bot.name) : 'bot'}（${bot?.ref.runtime}）等人批准`);
       }
       const saved = (await deps.messages.byId(message.id)) ?? message;
-      return ok({ messageId: saved.id, traceId, status: saved.status, targetSessionId: saved.targetSessionId });
+      return ok({ messageId: saved.id, traceId, status: saved.status, targetSessionId: saved.targetSessionId, ...(saved.holdReason ? { holdReason: saved.holdReason } : {}) });
     },
 
-    async reply(fromSessionId, body, messageId) {
+    async reply(fromSessionId, body, messageId, extra) {
       if (typeof body !== 'string' || body.trim() === '') return err(invalid('回复不能为空'));
       if (body.length > MAX_BODY_CHARS) return err(invalid(`回复太长（最多 ${MAX_BODY_CHARS} 字符）`));
       const delivered = (await deps.messages.deliveredTo(fromSessionId)).filter((m) => m.kind === 'ask');
@@ -399,10 +570,15 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       if (!ask) {
         return err(messageId ? notFound('没有投给你、还在等回复的这条提问') : delivered.length === 0 ? conflict('现在没有等你回复的提问') : invalid('有多条提问在等回复，请带上 messageId'));
       }
+      if (extra?.status !== undefined && !['ok', 'failed', 'refused'].includes(extra.status)) return err(invalid('status 只能是 ok / failed / refused'));
+      const project = await deps.projects.byId(ask.projectId);
+      const checked = validateParts(extra?.parts, project?.repos.map((r) => r.name) ?? []);
+      if (!checked.ok) return err(invalid(checked.problem));
+      const status: ReplyStatus = extra?.status ?? 'ok';
       const now = deps.now();
-      await deps.messages.save({ ...ask, status: 'answered', replyBody: body, replySource: 'tool', updatedAt: now });
-      await audit(ask, ask, 'replied', fromSessionId, `agent_reply ${summary(body)}`);
-      const reply = await enqueueReply(ask, body, fromSessionId);
+      await deps.messages.save({ ...ask, status: 'answered', replyBody: body, replySource: 'tool', replyStatus: status, replyParts: checked.parts, updatedAt: now });
+      await audit(ask, ask, 'replied', fromSessionId, `agent_reply ${status}${checked.parts.length > 0 ? ` parts=${checked.parts.length}` : ''} ${summary(body)}`);
+      const reply = await enqueueReply(ask, body, fromSessionId, undefined, { status, parts: checked.parts });
       return ok({ messageId: reply.id, replyTo: ask.id });
     },
 
@@ -413,7 +589,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
           const text = outcome === 'done' ? await lastTurnText(sessionId) : '';
           if (text) {
             const now = deps.now();
-            await deps.messages.save({ ...message, status: 'answered', replyBody: text, replySource: 'last_turn', updatedAt: now });
+            await deps.messages.save({ ...message, status: 'answered', replyBody: text, replySource: 'last_turn', replyStatus: 'ok', updatedAt: now });
             await audit(message, message, 'replied', sessionId, `最后一轮文字兜底 ${summary(text)}`);
             await enqueueReply(message, text, sessionId);
           } else {
@@ -493,24 +669,97 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     async peers(fromSessionId) {
       const here = await sessionAndProject(fromSessionId);
       if (!here) return err(notFound('会话不存在'));
-      const { session: from } = here;
-      if (!deps.links) return ok([]);
-      const links = await deps.links.forSession(from.id);
+      const { session: from, project } = here;
       const peers: AgentDirectoryEntry[] = [];
-      for (const link of links) {
-        const peerId = otherEnd(link, from.id);
-        if (!peerId) continue;
-        const session = await deps.sessions.byId(peerId);
-        if (!session || session.status === 'failed') continue;
+      for (const session of await peerSessions(from)) {
         const spawn = await deps.messages.spawnOf(session.id);
+        const facts = await peerFacts(session, project);
+        const explicit = deps.links ? await deps.links.areLinked(from.id, session.id) : false;
         peers.push({
           address: `session:${session.id}`,
+          handle: await handleOf(session),
           label: labelOf(session, spawn?.role ?? null),
-          status: isBusy(session) ? 'busy' : session.status === 'running' ? 'idle' : session.status,
-          connected: true
+          status: statusLabel(session),
+          ...(explicit ? { connected: true } : {}),
+          title: session.title ?? null,
+          ...facts
         });
       }
       return ok(peers);
+    },
+
+    async briefing(sessionId) {
+      const here = await sessionAndProject(sessionId);
+      if (!here) return null;
+      const { session, project } = here;
+      const peers = (await peerSessions(session)).slice(0, 20);
+      const unread = (await unreadFor(session.id)).length;
+      if (peers.length === 0 && unread === 0) {
+        briefingMemo.delete(session.id);
+        return null;
+      }
+      const lines: string[] = [];
+      for (const peer of peers) {
+        const facts = await peerFacts(peer, project);
+        const bits = [
+          `peer:${await handleOf(peer)}`,
+          `session:${peer.id}`,
+          peer.agentId + (peer.title ? `「${peer.title.slice(0, 40)}」` : ''),
+          facts.workerId ? `机器 ${facts.workerId}` : null,
+          facts.repo ? `仓库 ${facts.repo}` : null,
+          facts.branch ? `分支 ${facts.branch}` : null,
+          STATUS_TEXT[statusLabel(peer)] ?? statusLabel(peer)
+        ].filter((bit): bit is string => Boolean(bit));
+        lines.push(`- ${bits.join(' · ')}`);
+      }
+      const text = [
+        peers.length > 0 ? `同伴（${peers.length}）：\n${lines.join('\n')}` : null,
+        peers.length > 0
+          ? '只有这些会话能和你互发消息：agent.ask / agent.send（to 可写 peer:<短名>）。ask 的答复会作为新一轮消息送到；没有别的事就结束这一轮，不要轮询。'
+          : null,
+        unread > 0 ? `未读通知 ${unread} 条：用 agent.inbox（unreadOnly: true）查看。` : null
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join('\n');
+      if (briefingMemo.get(session.id) === text) return null;
+      briefingMemo.set(session.id, text);
+      return text;
+    },
+
+    handleOf,
+
+    async setHandle(sessionId, handle, actor) {
+      const value = handle.trim();
+      if (!isHandle(value)) return err(invalid('短名只能用小写字母开头，含 a-z 0-9 -，2–32 个字符'));
+      const here = await sessionAndProject(sessionId);
+      if (!here) return err(notFound('会话不存在'));
+      if (!here.session.taskId) return err(invalid('没有任务的会话不能设短名，用 session:<id> 联系'));
+      const saved = await deps.messages.setHandle({ sessionId, taskId: here.session.taskId, handle: value, updatedAt: deps.now() });
+      if (!saved) return err(conflict(`任务里已经有会话叫 ${value}`));
+      await audit(null, { traceId: `handle:${sessionId}`, projectId: here.project.id, onBehalfOf: actor }, 'handle_set', actor, `${sessionId} → peer:${value}`);
+      return ok({ handle: value });
+    },
+
+    async decideHeld(messageId, actor, approve) {
+      const message = await deps.messages.byId(messageId);
+      if (!message || message.status !== 'held') return err(notFound('没有被拦下的这条消息'));
+      const project = await deps.projects.byId(message.projectId);
+      if (!project || project.deletedAt !== null) return err(notFound('项目不存在'));
+      if (!(await allowed(actor.user.id, message.kind === 'ask' ? 'agent.ask' : 'agent.message.send', project))) return err(forbidden('你没有放行这条消息的权限'));
+      const now = deps.now();
+      const who = `user:${actor.user.id}`;
+      if (!approve) {
+        const denied = { ...message, status: 'denied' as const, failure: 'denied' as const, failureDetail: `${actor.user.displayName || actor.user.email} 没有放行`, updatedAt: now };
+        await deps.messages.save(denied);
+        await audit(message, message, 'rejected', who, denied.failureDetail);
+        if (message.kind === 'ask') await enqueueReply(message, null, null, { code: 'denied', detail: denied.failureDetail });
+        return ok(denied);
+      }
+      const released = { ...message, status: message.wake === false ? ('done' as const) : ('queued' as const), updatedAt: now };
+      await deps.messages.save(released);
+      await audit(message, message, 'released', who, message.holdReason ?? '');
+      if (message.targetSessionId && released.status === 'queued') await pump(message.targetSessionId);
+      return ok((await deps.messages.byId(message.id)) ?? released);
     },
 
     async status(fromSessionId, messageId) {
@@ -519,7 +768,16 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       return ok(message);
     },
 
-    inbox: (sessionId, limit) => deps.messages.forSession(sessionId, limit),
+    async inbox(sessionId, limit, options) {
+      const list = options?.unreadOnly ? (await unreadFor(sessionId)).slice(0, limit) : await deps.messages.forSession(sessionId, limit);
+      if (options?.markRead) {
+        const now = deps.now();
+        for (const message of list) {
+          if (message.targetSessionId === sessionId && message.wake === false && !message.readAt) await deps.messages.save({ ...message, readAt: now, updatedAt: now });
+        }
+      }
+      return list;
+    },
 
     async sweep() {
       const overdue = await deps.messages.overdue(deps.now());
@@ -527,7 +785,15 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         await fail(message, 'timeout', '对方在截止时间前没有回复');
         if (message.targetSessionId) void pump(message.targetSessionId);
       }
-      return overdue.length;
+      let archived = 0;
+      for (const targetId of await deps.messages.pendingTargets()) {
+        const target = await deps.sessions.byId(targetId);
+        if (target?.settledAt) {
+          await drainArchived(target);
+          archived++;
+        }
+      }
+      return overdue.length + archived;
     },
 
     config: loadConfig,
