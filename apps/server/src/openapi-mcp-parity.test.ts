@@ -4,6 +4,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { resolveMcp, routes, type McpRouteExposure } from './openapi/routes.ts';
 import { mcpTools, mcpToolsFor } from './openapi/mcp.ts';
 
@@ -88,6 +90,13 @@ test('MCP 工具：数量、唯一性、名字全表', () => {
   assert.equal(tools.filter((t) => !t.readOnly).length, EXPECTED.writes);
   // 只读闸门关掉时只剩只读工具
   assert.equal(mcpTools({ readOnly: true }).length, EXPECTED.readOnly);
+});
+
+test('skill 文档：references/tools.md 覆盖全部工具（改了工具要跑 npm run skill:tools）', () => {
+  const doc = readFileSync(fileURLToPath(new URL('../../../skills/agent-hub-workbench/references/tools.md', import.meta.url)), 'utf8');
+  const tools = mcpToolsFor(undefined, { writes: true });
+  const missing = tools.filter((tool) => !doc.includes(`\`${tool.name}\``)).map((tool) => tool.name);
+  assert.deepEqual(missing, [], '这些工具没写进 skill 文档，跑 npm run skill:tools 重新生成');
 });
 
 test('MCP 元数据：每个暴露的模块都能按模块筛出来', () => {

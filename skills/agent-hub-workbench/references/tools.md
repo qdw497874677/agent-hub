@@ -1,0 +1,45 @@
+# 工具清单（自动生成）
+
+由 `npm run skill:tools` 从 `apps/server/src/openapi/routes.ts` 的 MCP 元数据生成，等于 `tools/list` 的结果。
+当前 31 个：只读 12，写 19。
+
+「参数」只列名字，`?` 表示可选；具体类型和必填组合见 `SKILL.md` 与 `<hub>/openapi/v1/openapi.json`。
+
+| 工具 | 读/写 | 需要 scope | REST 路由 | 参数 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `list_workers` | 读 | `worker.read` | `/workers` | — | 能用的机器 |
+| `list_projects` | 读 | `project.read` | `/projects` | — | 我可见的项目 |
+| `project_create` | 写 | `project.create` | `/projects` | name, rootPath?, workerId?, repoUrl?, defaultBranch?, description? | 新建项目（写工具，要 `clientRequestId`） |
+| `get_project` | 读 | `project.read` | `/projects/{projectId}` | projectId | 看一个项目 |
+| `project_update` | 写 | `project.update` | `/projects/{projectId}` | projectId, description?, checks? | 改项目说明或检查命令（写工具，要 `clientRequestId`） |
+| `project_repos` | 写 | `project.update` | `/projects/{projectId}/repos` | projectId, repos | 设置项目仓库清单（可带私有仓库令牌）（写工具，要 `clientRequestId`） |
+| `project_archive` | 写 | `project.delete` | `/projects/{projectId}` | projectId, confirmName | 把项目放进回收站 |
+| `workspace_changes` | 读 | `project.read` | `/workspaces/{workspaceId}/changes` | workspaceId | 工作空间里未提交的改动 |
+| `list_assets` | 读 | `asset.read` | `/assets` | kind? | 我能用的资产 |
+| `get_asset` | 读 | `asset.read` | `/assets/{assetId}` | assetId | 看一个资产与它的版本 |
+| `asset_create` | 写 | `asset.submit` | `/assets` | kind, name?, scope?, projectId?, publish?, files | 新建资产（默认进审核）（写工具，要 `clientRequestId`） |
+| `asset_import` | 写 | `asset.submit` | `/assets/import` | kind, url, ref?, path?, name?, scope?, projectId?, publish?, policy?, credential? | 从 Git 仓库导入资产（可选直接发布）（写工具，要 `clientRequestId`） |
+| `asset_publish` | 写 | `asset.review` | `/assets/{assetId}/publish` | assetId | 发布资产的最新版本（写工具，要 `clientRequestId`） |
+| `asset_assign` | 写 | `asset.assign` | `/assets/{assetId}/workers` | assetId, workerId, installed? | 把资产装到机器上（或卸下）（写工具，要 `clientRequestId`） |
+| `list_tasks` | 读 | `task.read` | `/tasks` | projectId | 项目下的任务 |
+| `task_create` | 写 | `task.create` | `/tasks` | projectId, title, goal? | 新建任务（写工具，要 `clientRequestId`） |
+| `get_task` | 读 | `task.read` | `/tasks/{taskId}` | taskId | 任务详情（带会话列表） |
+| `set_task_status` | 写 | `task.create` | `/tasks/{taskId}/status` | taskId, status, note? | 改任务状态（写工具，要 `clientRequestId`） |
+| `set_task_summary` | 写 | `task.create` | `/tasks/{taskId}/summary` | taskId, summary | 改任务摘要（写工具，要 `clientRequestId`） |
+| `list_task_log` | 读 | `task.read` | `/tasks/{taskId}/log` | taskId, limit?, beforeSeq? | 工作日志（倒序分页） |
+| `append_task_log` | 写 | `task.create` | `/tasks/{taskId}/log` | taskId, body, links?, sessionId? | 写一条工作日志（写工具，要 `clientRequestId`） |
+| `edit_task_log` | 写 | `task.create` | `/tasks/{taskId}/log/{entryId}` | taskId, entryId, body | 改自己写的日志（写工具，要 `clientRequestId`） |
+| `session_start` | 写 | `session.create` | `/sessions` | taskId, agentId, model, workerId?, workspaceId?, workspaceMode?, groupId?, requires?, profileId?, options?, kind?, parentSessionId?, assetIds?, assetSetIds? | 在任务下开一条会话（写工具，要 `clientRequestId`） |
+| `fork_session` | 写 | `session.create` | `/sessions/fork` | sessionId, atSeq?, agentId, model | 从某条消息分叉（写工具，要 `clientRequestId`） |
+| `get_session` | 读 | `session.read` | `/sessions/{sessionId}` | sessionId | 会话详情 |
+| `session_model` | 写 | `session.prompt` | `/sessions/{sessionId}/model` | sessionId, model | 换这条会话的模型（可换提供商）（写工具，要 `clientRequestId`） |
+| `session_reply` | 写 | `session.prompt` | `/sessions/{sessionId}/prompt` | sessionId, text, attachments?, clientMessageId? | 对会话说话（写工具，要 `clientRequestId`） |
+| `session_cancel` | 写 | `session.interrupt` | `/sessions/{sessionId}/interrupt` | sessionId | 打断正在跑的会话 |
+| `change_option` | 写 | `session.prompt` | `/sessions/{sessionId}/options` | sessionId, optionId, value | 改可调项（模型、思考强度…）（写工具，要 `clientRequestId`） |
+| `events` | 读 | `session.read` | `/sessions/{sessionId}/events` | sessionId, after?, sinceTurn? | 会话事件（after 之后的） |
+| `activity` | 读 | `session.read` | `/sessions/{sessionId}/activity` | sessionId | 谁对这条会话做了什么 |
+
+## 写工具的重试约定
+
+带 `（要 clientRequestId）` 的工具，每次**逻辑上的**调用都必须带一个稳定的 `clientRequestId`；
+超时重试要复用同一个值，24 小时内返回第一次的结果。不要每次重试生成新的 id —— 那等于重复下单。

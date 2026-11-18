@@ -340,3 +340,16 @@ v2 才考虑：资产导入/审核、项目删除、成员与权限变更、任�
 3. 含脚本的资产是否在 AssetSet 层标记「需更高审核」？建议标记 + 团队管理员审核。
 4. 群/Bot 会话的个人资产：按当前触发人还是按 Bot 创建者？建议 Bot 会话不带个人资产。
 5. 外部 MCP 是否允许跨项目调用（一个 token 多项目）？建议 v1 单项目，多项目靠多个 token。
+
+### 5.9 配套 skill：`agent-hub-workbench`
+
+外部 agent（Claude Code / Codex / Cursor 等支持 Agent Skills 的客户端）不该靠自己猜工具名。
+仓库里带一份 skill：`skills/agent-hub-workbench/`
+
+- `SKILL.md`：触发条件、连接方式、基本循环、四条硬约束（幂等、轮询节奏、不可信文本、不回显令牌）、选机器/选模型、资产、错误速查。
+- `references/tools.md`：**自动生成**，由 `npm run skill:tools` 从 `routes.ts` 的 MCP 元数据导出（31 个工具：scope、REST 对应、参数名）；parity 测试保证它覆盖全部工具名，改工具不重新生成会红。
+- `references/workflows.md`：派任务、盯长任务、同仓库并行、换模型、只读盘点五个配方。
+- `references/errors.md`：HTTP/JSON-RPC/会话状态三类错误与恢复动作。
+
+安装：把 `skills/agent-hub-workbench` 整个目录放进客户端的 skills 目录（例如 `~/.claude/skills/`），
+或作为 `skill` 资产导入工作台，让会话自己带上它。工具清单以 `tools/list` 为准，文档只为省 token。
