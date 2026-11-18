@@ -63,6 +63,23 @@ export function shortPath(path: string, max = 32): string {
   return `${prefix}${tail.join('/')}`;
 }
 
+/** 文件列表宽度：拖动时夹在区间里，存 localStorage（每浏览器一份，跟账号无关）。 */
+export const FILES_LIST_WIDTH_KEY = 'agent-hub:files-list-width';
+export const FILES_LIST_MIN_WIDTH = 220;
+export const FILES_LIST_MAX_WIDTH = 720;
+export const FILES_LIST_DEFAULT_WIDTH = 320;
+
+export function clampListWidth(width: number): number {
+  if (!Number.isFinite(width)) return FILES_LIST_DEFAULT_WIDTH;
+  return Math.min(FILES_LIST_MAX_WIDTH, Math.max(FILES_LIST_MIN_WIDTH, Math.round(width)));
+}
+
+/** 存的是脏值（手改过 localStorage、旧版本）也要能用：解析不出来就用默认宽度。 */
+export function readListWidth(raw: string | null): number {
+  const parsed = Number(raw);
+  return raw === null || raw === '' || !Number.isFinite(parsed) || parsed <= 0 ? FILES_LIST_DEFAULT_WIDTH : clampListWidth(parsed);
+}
+
 const LANG: Record<string, string> = {
   ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx', mjs: 'javascript', cjs: 'javascript', json: 'json', md: 'markdown',
   py: 'python', go: 'go', rs: 'rust', java: 'java', kt: 'kotlin', rb: 'ruby', php: 'php', c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp',

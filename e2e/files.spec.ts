@@ -104,3 +104,53 @@ test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新
   await page.getByTestId('session-tab-chat').click();
   await expect(page.getByTestId('files-panel-changes')).toBeHidden();
 });
+
+/** 桌面端：根目录整行显示（不再被截断成一行省略号），文件列表宽度可拖、刷新后记得。 */
+test('文件浏览（桌面）：根目录完整、列表宽度可拖动并记住', async ({ page, baseURL }) => {
+  await loginByApi(page);
+  const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
+  const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
+  let agentId: string | undefined;
+  for (let i = 0; i < 40 && !agentId; i++) {
+    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
+    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
+    if (!agentId) await page.waitForTimeout(500);
+  }
+  test.skip(!agentId, '这台机器上没有可用的 agent');
+
+  const root = mkdtempSync(join(tmpdir(), 'e2e-files-desktop-'));
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  writeFileSync(join(root, 'a.ts'), 'export const a = 1;\n');
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 桌面 ${Date.now().toString(36)}`, rootPath: root }, headers })).json()) as { id: string };
+  const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '文件' }, headers })).json()) as { id: string };
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
+  expect(derived.status(), await derived.text()).toBe(201);
+  const sid = ((await derived.json()) as { id: string }).id;
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`/#/p/${project.id}/focus/${sid}`);
+  await page.getByTestId('session-tab-files').click();
+  const browser = page.getByTestId('files-panel-files');
+  const rootLine = browser.getByTestId('files-root');
+  await expect(rootLine).toHaveText(root);
+  await expect(rootLine).not.toContainText('…');
+
+  const aside = browser.locator('aside');
+  const before = (await aside.boundingBox())!.width;
+  const handle = browser.getByTestId('files-resizer');
+  await expect(handle).toHaveAttribute('aria-orientation', 'vertical');
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 120, box.y + box.height / 2, { steps: 6 });
+  await page.mouse.up();
+  const after = (await aside.boundingBox())!.width;
+  expect(after).toBeGreaterThan(before + 80);
+  expect(await page.evaluate(() => localStorage.getItem('agent-hub:files-list-width'))).toBe(String(Math.round(after)));
+
+  await page.reload();
+  await page.getByTestId('session-tab-files').click();
+  const reloaded = (await page.getByTestId('files-panel-files').locator('aside').boundingBox())!.width;
+  expect(Math.abs(reloaded - after)).toBeLessThan(2);
+  await page.screenshot({ path: `${SHOTS}/file-1280.png` });
+});

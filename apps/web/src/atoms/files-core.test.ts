@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { crumbs, decodeText, filesErrorText, filesRefetch, humanSize, languageOf, parentOf, shortPath, touches, watchPaths } from './files-core.ts';
+import { clampListWidth, crumbs, decodeText, filesErrorText, filesRefetch, humanSize, languageOf, parentOf, readListWidth, shortPath, touches, watchPaths } from './files-core.ts';
 
 test('只有写明不在线的 503 才收成机器离线', () => {
   assert.equal(filesErrorText(503, 'Worker「e2e」不在线'), '机器离线');
@@ -59,4 +59,17 @@ test('缓存只在没出错时给出（离线不冒充当前）', async () => {
   assert.equal(shown({ data: undefined, error: null }), undefined);
   assert.equal(FILES_QUERY.staleTime, 0);
   assert.ok(FILES_QUERY.gcTime > 0);
+});
+
+test('文件列表宽度：夹在 220–720，脏值回落默认 320', () => {
+  assert.equal(clampListWidth(100), 220);
+  assert.equal(clampListWidth(5000), 720);
+  assert.equal(clampListWidth(361.4), 361);
+  assert.equal(clampListWidth(Number.NaN), 320);
+  assert.equal(readListWidth(null), 320);
+  assert.equal(readListWidth(''), 320);
+  assert.equal(readListWidth('abc'), 320);
+  assert.equal(readListWidth('0'), 320);
+  assert.equal(readListWidth('480'), 480);
+  assert.equal(readListWidth('900'), 720);
 });

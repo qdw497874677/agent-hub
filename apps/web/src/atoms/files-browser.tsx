@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { currentTheme } from '../shell/theme.ts';
 import { Notice } from './notice.tsx';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto } from '../shell/api.ts';
-import { crumbs, FILES_QUERY, filesErrorText, filesRefetch, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths } from './files-core.ts';
+import { clampListWidth, crumbs, FILES_LIST_WIDTH_KEY, FILES_QUERY, filesErrorText, filesRefetch, readListWidth, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths } from './files-core.ts';
 import { filesInvalidationKeys, filesKeys, type FilesKeys } from '../shell/query-keys.ts';
 import { inSelection, isWholeFileAddition, diffWindowRange, parsePatchLines, selectionRange, selectionRef, toggleLine, type DiffRow, type DiffSide, type LineSelection } from './diff-selection.ts';
 
@@ -170,6 +170,31 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
   const changed = shown(changes);
   const showList = wide || opened === null;
   const root = context.data?.root;
+  const listRef = useRef<HTMLElement | null>(null);
+  const [listWidth, setListWidth] = useState(() =>
+    readListWidth(typeof window === 'undefined' ? null : window.localStorage.getItem(FILES_LIST_WIDTH_KEY))
+  );
+  const rememberWidth = (width: number) => {
+    const next = clampListWidth(width);
+    setListWidth(next);
+    if (typeof window !== 'undefined') window.localStorage.setItem(FILES_LIST_WIDTH_KEY, String(next));
+  };
+  /** 拖左边框改列表宽度；松手才落盘（拖动中不写 localStorage，避免每次移动都同步写）。 */
+  const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = listRef.current?.getBoundingClientRect().width ?? listWidth;
+    const move = (moveEvent: PointerEvent) => setListWidth(clampListWidth(startWidth + moveEvent.clientX - startX));
+    const stop = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+      if (listRef.current !== null) rememberWidth(listRef.current.getBoundingClientRect().width);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+  };
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-canvas" role="tabpanel" aria-label="工作目录文件" data-testid={`files-panel-${tab}`}>
       {others > 0 ? (
@@ -179,7 +204,7 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
       ) : null}
       <div className="flex min-h-0 flex-1">
         {showList ? (
-          <aside className={`flex min-h-0 flex-col ${wide ? 'w-80 shrink-0 border-r border-hair' : 'flex-1'}`}>
+          <aside ref={listRef} style={wide ? { width: listWidth } : undefined} className={`flex min-h-0 flex-col ${wide ? 'shrink-0' : 'flex-1'}`}>
             {tab === 'files' ? (
               <>
                 <div className="flex items-center gap-2 px-3 py-2">
@@ -251,6 +276,26 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
             )}
           </aside>
         ) : null}
+        {wide ? (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整文件列表宽度"
+            aria-live="off"
+            tabIndex={0}
+            data-testid="files-resizer"
+            onPointerDown={startResize}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowLeft') rememberWidth(listWidth - 16);
+              else if (event.key === 'ArrowRight') rememberWidth(listWidth + 16);
+              else return;
+              event.preventDefault();
+            }}
+            className="group relative w-1 shrink-0 cursor-col-resize bg-hair/60 transition-colors hover:bg-accent/60 focus:bg-accent/60 focus:outline-none"
+          >
+            <span aria-hidden className="absolute inset-y-0 -left-1 -right-1" />
+          </div>
+        ) : null}
         {wide || opened ? (
           <main className="min-w-0 flex-1 overflow-auto">
             {opened ? (
@@ -301,8 +346,8 @@ function Directory(props: { sessionId: string; keys: FilesKeys; path: string; de
 function RootPath({ root, wide }: { root: string | undefined; wide: boolean }) {
   if (!root) return null;
   return (
-    <p data-testid="files-root" title={root} className="min-w-0 truncate border-b border-hair px-3 py-1 font-mono text-meta text-tertiary">
-      {shortPath(root, wide ? 120 : 30)}
+    <p data-testid="files-root" title={root} className="min-w-0 border-b border-hair px-3 py-1 font-mono text-meta leading-snug text-tertiary">
+      <span className="select-text [overflow-wrap:anywhere]">{wide ? root : shortPath(root, 30)}</span>
     </p>
   );
 }
