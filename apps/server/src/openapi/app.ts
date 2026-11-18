@@ -534,7 +534,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       workspace: workspaceSchema.parse(result.value.workspace),
       added: result.value.added,
       present: result.value.present,
-      skipped: result.value.skipped
+      skipped: result.value.skipped,
+      failed: result.value.failed
     });
   });
   on(routes.createWorkspace, async (c) => {

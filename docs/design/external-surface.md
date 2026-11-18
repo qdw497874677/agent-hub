@@ -140,7 +140,8 @@ route('projects:write', { ... }, { skip: '会改项目描述，留给界面' })
 
 `workspaces` 这组是给「外部 agent 自己管目录」用的（#236）：`create_workspace` / `remove_workspace` / `retry_workspace_setup`
 对应界面里的新建、移除与重试；`sync_workspace` 把 `project_repos` 后来加的仓库补克隆到已有工作空间的**同级目录**，
-组合工作空间（`groupId` 非空）不在这里处理。`session_start` 的 `workspaceMode` 现在会真正生效：
+「已经在了」按**远端地址**认（目录名可能和仓库名不同，例如工作空间目录叫项目名），单个仓库失败不打断其它仓库
+（返回 `failed`，可只重试失败的）。组合工作空间（`groupId` 非空）不在这里处理。`session_start` 的 `workspaceMode` 现在会真正生效：
 `isolated` 一定新开 worktree，不再被长期目录静默顶替。
 
 `workspace_changes` 与 `activity` 以前没暴露、现在由 `'auto'` 带出来，它们的 handler 都补了项目/会话权限判定

@@ -552,6 +552,8 @@ export interface FakeGit {
   readonly repos: Set<string>;
   /** 这些路径 inspect 出来不存在（默认所有路径都存在）；给「补克隆」这类用例用。 */
   readonly absent: Set<string>;
+  /** 路径 → git 远端地址（没登记的 git 目录用示例地址）；clone 会自动登记。 */
+  readonly remotes: Map<string, string>;
   /** 下一次 clone / addWorktree 失败的原因。 */
   failNext: string | null;
   /** 路径 → 提交预览（ADR 0027 §2）；没登记的 = 干净、无 origin。commit 会清空 files、ahead+1。 */
@@ -574,6 +576,7 @@ export function fakeGit(): FakeGit {
   const previews = new Map<string, CommitPreview>();
   const setups = new Map<string, { exitCode: number; output: string; timedOut: boolean }>();
   const absent = new Set<string>();
+  const remotes = new Map<string, string>();
   const repoChecks = new Map<string, RepoProbe>();
   const authCalls: string[] = [];
   const state: FakeGit = {
@@ -582,6 +585,7 @@ export function fakeGit(): FakeGit {
     statuses,
     repos,
     absent,
+    remotes,
     failNext: null,
     previews,
     gh: null,
@@ -603,7 +607,12 @@ export function fakeGit(): FakeGit {
           calls.push(`${machine}:inspect:${path}`);
           const isGit = repos.has(path);
           const exists = isGit || !absent.has(path);
-          return ok({ exists, isGit, remoteUrl: isGit ? 'https://example.com/demo.git' : null, branch: isGit ? 'main' : null });
+          return ok({
+            exists,
+            isGit,
+            remoteUrl: isGit ? (remotes.get(path) ?? 'https://example.com/demo.git') : null,
+            branch: isGit ? 'main' : null
+          });
         },
         checkRepo: async (repoUrl, branch, auth) => {
           calls.push(`${machine}:check_repo:${repoUrl}${branch ? `@${branch}` : ''}`);
@@ -618,6 +627,7 @@ export function fakeGit(): FakeGit {
           const reason = fail();
           if (reason) return err(unavailable(reason));
           repos.add(`${input.parent}/${input.name}`);
+          remotes.set(`${input.parent}/${input.name}`, input.repoUrl);
           return ok({ path: `${input.parent}/${input.name}`, branch: input.branch ?? 'main' });
         },
         addWorktree: async (input) => {

@@ -83,7 +83,8 @@ list_projects → get_project → list_tasks → get_task → get_session → ev
 sync_workspace { workspaceId }     # 缺的仓库克隆到工作空间的同级目录；already-in 的不重复
 ```
 
-返回 `added` / `present` / `skipped`（例如同名目录不是 git 仓库）。组合工作空间（`groupId` 非空）
+返回 `added` / `present` / `skipped`（例如同名目录不是 git 仓库）/ `failed`（地址错、没权限；不影响其它仓库）。
+「已存在」按远端地址判断，所以目录名和仓库名不一致也不会重复克隆。组合工作空间（`groupId` 非空）
 不走这里——成员由建组与 `retry_workspace_setup` 管理。命令验证用 `workspace_changes`。
 
 ## 反模式

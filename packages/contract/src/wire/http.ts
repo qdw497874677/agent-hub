@@ -248,7 +248,8 @@ export const syncWorkspaceResultSchema = z.object({
   workspace: workspaceSchema,
   added: z.array(z.object({ name: z.string(), path: z.string() })),
   present: z.array(z.object({ name: z.string(), path: z.string() })),
-  skipped: z.array(z.object({ name: z.string(), reason: z.string() }))
+  skipped: z.array(z.object({ name: z.string(), reason: z.string() })),
+  failed: z.array(z.object({ name: z.string(), message: z.string() }))
 });
 
 export const workspaceChangesSchema = z.object({

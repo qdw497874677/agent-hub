@@ -11027,13 +11027,32 @@
                           "reason"
                         ]
                       }
+                    },
+                    "failed": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "message"
+                        ]
+                      }
                     }
                   },
                   "required": [
                     "workspace",
                     "added",
                     "present",
-                    "skipped"
+                    "skipped",
+                    "failed"
                   ]
                 }
               }

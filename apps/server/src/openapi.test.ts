@@ -9,6 +9,7 @@ import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { buildSpecApp, openApiInfo } from './openapi/app.ts';
 import { mcpTools, mcpToolsFor, projectEvents } from './openapi/mcp.ts';
+import { createRepoAuth } from './repo-auth.ts';
 
 const PASSWORD = 'long enough pw';
 const fake: AgentDescriptor = {
@@ -32,7 +33,11 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     enrollment: { credentialFor: async (workerId) => (enrolledBy.has(workerId) ? ({ enrolledBy: enrolledBy.get(workerId)! } as never) : null) },
     gateway: world.deps.gateway
   });
-  const deps = { ...world.deps, access };
+  const deps = {
+    ...world.deps,
+    access,
+    repoAuth: createRepoAuth({ projects: world.deps.projects, workspaces: world.deps.workspaces, secrets: world.deps.secrets })
+  };
   const apiTokens = inMemoryApiTokens();
   const tokenDeps = { apiTokens, users: accounts.users, projects: world.deps.projects, tokens: accounts.tokens, audit: accounts.audit, now: () => Date.now() };
   const hub = createStreamHub();
@@ -295,6 +300,8 @@ test('同步仓库：project_repos 加的仓库能在已有工作空间里补克
   const workspace = newWorkspace({ projectId: project.id, workerId: 'w1', path: '/srv/work/agent-hub-workspaces/demo', kind: 'long_lived', source: 'cloned', repoUrl: 'https://example.com/core.git', isGit: true, now: 1 });
   assert.ok(workspace.ok);
   await world.deps.workspaces.save(workspace.value);
+  world.git.repos.add(workspace.value.path);
+  world.git.remotes.set(workspace.value.path, 'https://example.com/core.git');
   world.git.absent.add('/srv/work/agent-hub-workspaces/docs');
 
   const updated = await call(`/projects/${project.id}/repos`, {
@@ -318,6 +325,23 @@ test('同步仓库：project_repos 加的仓库能在已有工作空间里补克
   const again = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
   assert.equal(again.status, 200, JSON.stringify(again.body));
   assert.deepEqual(again.body.added, []);
+
+  // 私有仓库：清单里的 credential 要在克隆时真正变成 Authorization 头（只在密钥箱里，不回给调用方）
+  const privateRepo = await call(`/projects/${project.id}/repos`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ repos: [{ name: 'secret-repo', url: 'https://code.example.com/team/secret.git', credential: 'tok-123' }] })
+  });
+  assert.equal(privateRepo.status, 200, JSON.stringify(privateRepo.body));
+  assert.ok(!JSON.stringify(privateRepo.body).includes('tok-123'));
+  world.git.absent.add('/srv/work/agent-hub-workspaces/secret-repo');
+  const withToken = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
+  assert.equal(withToken.status, 200, JSON.stringify(withToken.body));
+  const header = Buffer.from('x-access-token:tok-123').toString('base64');
+  assert.ok(
+    world.git.authCalls.some((line) => line.includes(':clone:https://code.example.com/team/secret.git') && line.includes(header)),
+    `克隆该私有仓库时要带令牌头：${world.git.authCalls.join('\n')}`
+  );
 });
 
 test('限流：超了 429 + Retry-After', async () => {
