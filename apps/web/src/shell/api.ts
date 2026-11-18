@@ -232,6 +232,26 @@ export interface SessionActivityDto {
 }
 
 /** agent 间通信（ADR 0018）里的一条消息。 */
+export type AgentMessagePartDto =
+  | { readonly type: 'data'; readonly schema?: string; readonly data: unknown }
+  | { readonly type: 'ref'; readonly repo: string; readonly branch?: string; readonly sha?: string }
+  | { readonly type: 'file'; readonly session: string; readonly member?: string; readonly path: string }
+  | { readonly type: 'link'; readonly url: string; readonly label?: string };
+
+/** 会话通信 P1a：同伴（连了线或派生关系的会话）。 */
+export interface SessionPeerDto {
+  readonly address: string;
+  readonly handle?: string;
+  readonly label: string;
+  readonly status: string;
+  readonly connected?: boolean;
+  readonly workerId?: string | null;
+  readonly repo?: string | null;
+  readonly branch?: string | null;
+  readonly title?: string | null;
+  readonly unread?: number;
+}
+
 export interface AgentMessageDto {
   readonly messageId: string;
   readonly traceId: string;
@@ -239,8 +259,16 @@ export interface AgentMessageDto {
   readonly from: string;
   readonly to: string;
   readonly targetSessionId: string | null;
-  readonly status: 'queued' | 'awaiting_approval' | 'delivered' | 'answered' | 'done' | 'failed' | 'denied';
+  readonly status: 'queued' | 'awaiting_approval' | 'held' | 'delivered' | 'answered' | 'done' | 'failed' | 'denied';
   readonly depth: number;
+  /** 会话通信 P1a/P1d：外部发送者的署名、结构化附件、是否唤醒、回复状态、已读、被拦下的原因。 */
+  readonly fromLabel?: string | null;
+  readonly parts?: readonly AgentMessagePartDto[];
+  readonly wake?: boolean;
+  readonly replyStatus?: 'ok' | 'failed' | 'refused' | null;
+  readonly replyParts?: readonly AgentMessagePartDto[];
+  readonly readAt?: number | null;
+  readonly holdReason?: 'pingpong' | 'privilege' | null;
   readonly replyTo: string | null;
   readonly body: string;
   readonly reply: string | null;
@@ -393,8 +421,15 @@ export const servicesApi = {
 export const api = {
   sessionMessages: (sessionId: string) =>
     call<{ messages: AgentMessageDto[]; awaitingApproval: AgentMessageDto[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`),
-  sendAgentMessage: (sessionId: string, body: { kind: 'send' | 'ask'; to: string; body: string }) =>
+  sendAgentMessage: (sessionId: string, body: { kind: 'send' | 'ask'; to: string; body: string; wake?: boolean }) =>
     post<{ messageId: string; traceId: string; status: string }>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, body),
+  sessionPeers: (sessionId: string) => call<{ peers: SessionPeerDto[]; handle: string | null }>(`/api/sessions/${encodeURIComponent(sessionId)}/peers`),
+  setSessionHandle: (sessionId: string, handle: string) =>
+    call<{ handle: string }>(`/api/sessions/${encodeURIComponent(sessionId)}/handle`, { method: 'PUT', body: JSON.stringify({ handle }) }),
+  /** 项目的 agent 通信配置；这里只读 / 改「信任同伴」（P1f），角色表不动。 */
+  messagingTrust: (projectId: string) => call<{ trustPeers?: boolean }>(`/api/projects/${encodeURIComponent(projectId)}/messaging`),
+  setMessagingTrust: (projectId: string, trustPeers: boolean) =>
+    call<{ trustPeers?: boolean }>(`/api/projects/${encodeURIComponent(projectId)}/messaging`, { method: 'PUT', body: JSON.stringify({ trustPeers }) }),
   decideAgentSpawn: (messageId: string, approve: boolean) => post<AgentMessageDto>(`/api/messages/${encodeURIComponent(messageId)}/decision`, { approve }),
   workers: () => call<WorkerInfoDto[]>('/api/workers'),
   probeWorker: (workerId: string) => post<{ ok: true }>(`/api/workers/${encodeURIComponent(workerId)}/probe`, {}),

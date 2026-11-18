@@ -8,6 +8,7 @@ import type { SessionId } from '../ids.ts';
 import { asSessionId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { invalid, notFound } from '../errors.ts';
+import { promptOpening } from '../messaging.ts';
 import type { AttachmentInput, PromptPart, StoredAttachment } from '../attachment.ts';
 import { attachmentPath, base64Bytes, validateAttachments } from '../attachment.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -135,7 +136,7 @@ async function peerBriefingFor(
     const peer = await deps.sessions.byId(peerId);
     if (!peer || peer.status === 'failed') continue;
     const first = await deps.sessions.firstPrompt(peer.id);
-    const opening = first?.event.kind === 'prompt' ? first.event.text.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+    const opening = first?.event.kind === 'prompt' ? promptOpening(first.event.text).slice(0, 120) : '';
     const title = peer.title ? `「${peer.title}」` : '';
     lines.push(`- session:${peer.id} · ${peer.agentId}${title}${opening ? ` · 首句：${opening}` : ''} · ${peer.status}`);
   }
