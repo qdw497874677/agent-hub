@@ -243,6 +243,27 @@ test('worker.use_local 永远授不出去：hub 管理员的令牌也不能在�
   assert.ok(workers.every((w) => w.origin !== 'local'));
 });
 
+test('工作区改动与活动：都按项目/会话权限判定，不是拿到 id 就能读', async () => {
+  const { david, mint, api, world } = await setup();
+  const owner = api((await mint(david, ['projects:read', 'projects:write', 'sessions:read'])).token);
+  const project = (await owner('/projects', post({ name: 'p' }))).body;
+  const workspace = newWorkspace({ projectId: project.id, workerId: null, path: '/tmp/x', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(workspace.ok);
+  await world.deps.workspaces.save(workspace.value);
+
+  // 项目成员 + 项目读权限能看；只有会话读权限的令牌不行。
+  const allowed = await owner(`/workspaces/${workspace.value.id}/changes`);
+  assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
+
+  // 权限不够时按策略返回 404（不泄露目录存在），不能是 200。
+  const narrow = api((await mint(david, ['sessions:read'])).token);
+  const denied = await narrow(`/workspaces/${workspace.value.id}/changes`);
+  assert.equal(denied.status, 404, JSON.stringify(denied.body));
+
+  const missing = await owner('/sessions/ses_00000000-0000-4000-8000-000000000000/activity');
+  assert.equal(missing.status, 404, JSON.stringify(missing.body));
+});
+
 test('限流：超了 429 + Retry-After', async () => {
   const { david, mint, api } = await setup({ general: 3 });
   const call = api((await mint(david, ['projects:read'])).token);
@@ -278,7 +299,7 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   const list = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = list.body.result.tools.map((t: { name: string }) => t.name);
   // 只列这个令牌用得了的：projects:read 只有项目 / 任务，看不到会话、资产（#E4）
-  assert.deepEqual(names.sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks']);
+  assert.deepEqual(names.sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'workspace_changes']);
   // 写工具不进清单；注解标成只读。
   assert.ok(!names.includes('prompt') && !names.includes('create_task') && !names.includes('delete_project'));
   const project = list.body.result.tools.find((t: { name: string }) => t.name === 'list_projects');
@@ -309,7 +330,7 @@ test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口
   assert.deepEqual(live, snapshot, '规范变了：跑 npm run openapi:snapshot 并在 PR 里说明');
   assert.ok(Object.values(live.paths).flatMap((p: any) => Object.keys(p)).length >= 26);
   assert.equal((await app.fetch(new Request('http://hub/openapi/v1/docs'))).status, 200);
-  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 9);
+  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 11);
 });
 
 test('过期的令牌、被停用的人的令牌：401', async () => {
@@ -328,8 +349,8 @@ test('过期的令牌、被停用的人的令牌：401', async () => {
 
 test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输出', () => {
   assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['get_task', 'list_task_log', 'list_tasks']);
-  assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name), ['list_projects', 'get_project']);
-  assert.equal(mcpTools({ readOnly: true }).length, 9);
+  assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name), ['list_projects', 'get_project', 'workspace_changes']);
+  assert.equal(mcpTools({ readOnly: true }).length, 12);
   // 资产自动化：三个新写工具只在开了写开关时出现，且都可重放
   const assetWrites = mcpTools({ modules: new Set(['assets']), writes: true });
   assert.deepEqual(assetWrites.map((t) => t.name).sort(), ['asset_assign', 'asset_create', 'asset_import', 'asset_publish', 'get_asset', 'list_assets']);
@@ -631,7 +652,7 @@ test('外部接入：限定项目的令牌经 MCP 只看得到选中的项目；
   assert.ok(calls.some((row) => row.detail.startsWith('get_project · 失败')));
   // 能用的工具数：projects:read → 项目 + 任务的只读工具
   const tools = await david(`/api/tokens/${info.id}/tools`);
-  assert.deepEqual((tools.body as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks']);
+  assert.deepEqual((tools.body as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'workspace_changes']);
 });
 
 test('外部接入：轮换后旧令牌 401、新令牌可用，旧记录留在列表里', async () => {

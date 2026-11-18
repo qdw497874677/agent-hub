@@ -113,23 +113,32 @@ Worker 只按 digest 加载，缺什么就按哈希取；取不到就报 `missin
 - 令牌 scope 沿用现有 `api-token.ts` 的 `projects:read|write` 等，不新造 `task:read`。
 - 不接内部 agent 的 38 个 `ToolGrant` 工具——那是会话内身份，和外部令牌不是一条链。
 
-### 5.1 模块 = 白名单分组
+### 5.1 暴露规则：元数据写在路由上，不再有平行白名单
 
-| 分组 | 放行的 v1 路由 | 说明 |
-| --- | --- | --- |
-| `tasks` | `listTasks`、`getTask`、`listTaskLog` | 只读；进度走工作日志 |
-| `projects` | `listProjects` | 只读；写项目（create/update/repos）v2 再开 |
-| `sessions` | `getSession`、`events` | 只读；`events` 必须投影（见 §5.4） |
+工具的来源是 `apps/server/src/openapi/routes.ts` 的第三参：
 
-`getProject`、`listAssets`、`getAsset` 目前在 v1 路由表里还没有，等补路由后再进白名单——
-白名单只认「已存在且显式登记」的路由。
+```ts
+route('projects:read', { method: 'get', path: `${V1}/projects`, ... })
+route('sessions:write', { ... }, { module: 'sessions', need: 'session.prompt', idempotent: true, expose: 'session_reply' })
+route('projects:write', { ... }, { skip: '会改项目描述，留给界面' })
+```
 
-明确排除（无论 scope）：`deleteProject`、`startSession`、`forkSession`、`stream`、
-`submitAssetRevision`、任何密钥/成员/集群路由。白名单是**代码里的一张表**，新增 v1 路由
-默认不进 MCP，避免「加个路由就悄悄对外」。
+- **默认 `'auto'`**：`GET` 路由按 `tags[0]` 推 module 与权限，自动只读暴露；写路由必须显式声明，避免「加个路由就悄悄对外」。
+- `{ skip: '<原因>' }` 必须写原因；`apps/server/src/openapi-mcp-parity.test.ts` 会校验每条路由都有归属、工具名唯一、数量与 skip 清单符合预期。
+- 口径：37 条路由 → 31 个工具（只读 12 / 写 19），6 条不暴露：`health`、`me`、`stream`、`setProjectRepo`、`setProjectDescription`、`submitAssetRevision`。
 
-`MCP_MODULES` 用上表的分组名做灰度；`MCP_READ_ONLY=1` 在 `tools/list` 与 `tools/call`
-两边同时生效（list 不返回写工具，call 直接「没有这个工具」）。
+| 分组 | 工具 |
+| --- | --- |
+| `projects` | `list_projects`、`get_project`、`project_create`、`project_update`、`project_repos`、`project_archive`、`workspace_changes` |
+| `tasks` | `list_tasks`、`get_task`、`list_task_log`、`task_create`、`append_task_log`、`edit_task_log`、`set_task_status`、`set_task_summary` |
+| `sessions` | `get_session`、`events`、`activity`、`session_start`、`session_reply`、`session_cancel`、`session_model`、`fork_session`、`change_option` |
+| `assets` | `list_assets`、`get_asset`、`asset_create`、`asset_import`、`asset_publish`、`asset_assign` |
+| `workers` | `list_workers` |
+
+`MCP_MODULES` 用这些分组名做灰度；`MCP_READ_ONLY=1` 在 `tools/list` 与 `tools/call` 两边同时生效。
+
+`workspace_changes` 与 `activity` 以前没暴露、现在由 `'auto'` 带出来，它们的 handler 都补了项目/会话权限判定
+（`authorizeWorkspace(...,'project.read')` / `authorizeSession(...,'session.read')`），权限不够按策略返回 404。
 
 ### 5.2 描述与注解：给调用方 agent 看的
 
@@ -214,8 +223,8 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 - 写工具默认**不出现**；`MCP_WRITE=1` 才暴露，`MCP_READ_ONLY=1` 仍可把整套压回只读。
 - `clientRequestId` 由 MCP 层取走、不转发给内部 HTTP；回放键是
   `<令牌哈希>|<工具名>|<clientRequestId>`，存第一次成功的结果（`mcp_replays` 表，保留 24h）。
-- `session_start` 必须点名的机器不能是 hub 本机（开放 API 的既有约束）；调用方应先
-  `list_workers`（暂未开放）或由项目页告诉它用哪台。机器离线/没装 runtime 返回 409。
+- `session_start` 必须点名的机器不能是 hub 本机（开放 API 的既有约束）；调用方用
+  `list_workers` 挑机器。机器离线/没装 runtime 返回 409。
 - `session_model` 与界面「模型」下拉走同一条路：同提供商只改选项（下一轮生效）；换到 hub 提供商
   或反向回原生模型会停掉会话进程、按新模型重新托管，靠 `resume{agentSessionRef, cursor}` 接回历史，
   正在跑的回合会中断。权限是 `session.prompt`，模型本身还要过调用方可见的提供商/运行时名单。
@@ -244,6 +253,25 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 - 真正的「会话内提问工具」`task.ask` 不存在，也不在 v1：`needs_answer` 目前来自启发式
   （`attention.ts` 的工具名正则 / 问号结尾）。v2 再设计「提问 → 结束本轮 → 外部回答」的
   显式协议。
+
+### 5.8 一套能力面，两种调法
+
+外部只有一份路由定义、一套令牌与权限；REST 与 MCP 是同一份能力面的两个视图：
+
+| 场景 | 建议 |
+| --- | --- |
+| agent 规划与调用（多步、要工具描述） | MCP `POST /openapi/v1/mcp` |
+| 长任务实时进度 | REST `GET /openapi/v1/sessions/{id}/stream`（SSE，MCP 不适合），或 MCP `events?sinceTurn=` 轮询 |
+| 文件上传 / 附件 | REST `POST /openapi/v1/assets` 等（MCP 只走 JSON 工具参数） |
+| 起步脚本、curl、CI | REST，直接照 `openapi.json` |
+
+两个视图的差别只在「暴露多少」与「怎么读」：
+
+- 写工具默认不出现（`MCP_WRITE=1` 或页面开关），只读工具还要过令牌权限过滤；
+- `events` 在 MCP 侧过投影（见 §5.4），REST 给原文；
+- 幂等：写请求带 `Idempotency-Key: <自己生成的值>`（MCP 用 `clientRequestId`，内部转成同一个头），
+  同一令牌 + 方法 + 路径 + key 在 24h 内返回第一次的结果（`openapi/idempotency.ts`，表是 `mcp_replays`）。
+  `5xx` 不留档，非 JSON 响应（SSE、附件）不缓存。
 
 ## 6. 分期
 

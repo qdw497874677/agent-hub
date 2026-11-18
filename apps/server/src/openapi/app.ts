@@ -10,8 +10,11 @@ import {
   asProjectId,
   asSessionId,
   asTaskId,
+  asWorkspaceId,
   authenticateApiToken,
   authorizeProject,
+  authorizeSession,
+  authorizeWorkspace,
   can,
   changeSessionOption,
   switchSessionModel,
@@ -57,6 +60,7 @@ import {
 import type { AssetReviewDeps, DeleteProjectDeps } from '@agent-hub/domain';
 import type { z } from 'zod';
 import { assetSchema } from '@agent-hub/contract';
+import { createIdempotency } from './idempotency.ts';
 import type { createProjectRequest, createTaskRequest, deriveSessionRequest, forkSessionRequest, setProjectDescriptionRequest, setProjectRepoRequest, setProjectReposRequest } from '@agent-hub/contract';
 import { installAccess } from '../access.ts';
 import { fail } from '../http-error.ts';
@@ -146,6 +150,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     return next();
   });
   installAccess(v1 as unknown as Hono, deps, (c) => (c.get('principal') as Principal | undefined) ?? null, V1);
+  // 写请求的幂等重试：MCP 的 clientRequestId 与 REST 的 Idempotency-Key 走同一张表（24h）。
+  v1.use(`${V1}/*`, createIdempotency({ store: options.replays }).handle);
   v1.use(
     `${V1}/sessions/:sessionId/prompt`,
     bodyLimit({ maxSize: Math.ceil((ATTACHMENT_LIMITS.totalBytes * 4) / 3) + 256 * 1024, onError: (c) => fail(c, invalid('附件合计太大')) as never })
@@ -412,7 +418,14 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     return result.ok ? c.json({ id: result.value.id, deleted: true }) : fail(c, result.error);
   });
   on(routes.workspaceChanges, async (c) => {
-    const result = await workspaceChangesUseCase(deps, c.req.param('workspaceId') ?? '');
+    const actor = principal(c);
+    const workspaceId = c.req.param('workspaceId') ?? '';
+    if (deps.access) {
+      const workspace = await deps.workspaces.byId(asWorkspaceId(workspaceId));
+      const allowed = await authorizeWorkspace(deps, actor, workspace, 'project.read');
+      if (!allowed.ok) return fail(c, allowed.error);
+    }
+    const result = await workspaceChangesUseCase(deps, workspaceId);
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
@@ -599,7 +612,17 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       : entries.filter((entry) => entry.turn !== undefined && entry.turn >= query.sinceTurn!);
     return c.json(await refreshAuthors(ctx.activity, kept));
   });
-  on(routes.activity, async (c) => c.json(ctx.activity ? await sessionActivity(ctx.activity, c.req.param('sessionId') ?? '') : []));
+  on(routes.activity, async (c) => {
+    const actor = principal(c);
+    const sessionId = asSessionId(c.req.param('sessionId') ?? '');
+    const session = await deps.sessions.byId(sessionId);
+    if (!session) return fail(c, notFound('会话不存在'));
+    if (deps.access) {
+      const allowed = await authorizeSession(deps.access, actor, await projectOfSession(deps, session), session, 'session.read');
+      if (!allowed.ok) return fail(c, allowed.error);
+    }
+    return c.json(ctx.activity ? await sessionActivity(ctx.activity, sessionId) : []);
+  });
 
   on(routes.stream, async (c) => {
     const actor = principal(c);
