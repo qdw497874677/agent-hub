@@ -1018,6 +1018,7 @@ export const marketApi = {
   revision: (id: string, files: AssetUploadFile[]) => post<{ latest: string; submissionId: string | null }>(`/api/assets/items/${enc(id)}/revisions`, { files }),
   check: (id: string) => post<{ latest: string; submissionId: string | null }>(`/api/assets/items/${enc(id)}/check`, {}),
   promote: (id: string) => post<{ submissionId: string }>(`/api/assets/items/${enc(id)}/promote`, {}),
+  toTeam: (id: string) => post<{ submissionId: string; published: boolean }>(`/api/assets/items/${enc(id)}/to-team`, {}),
   revoke: (id: string, reason: string) => post<{ ok: true }>(`/api/assets/items/${enc(id)}/revoke`, { reason }),
   install: (id: string, workerId: string, installed: boolean) =>
     call<{ kind: 'installed' | 'uninstalled' | 'requested' }>(`/api/assets/items/${enc(id)}/workers/${enc(workerId)}`, { method: 'PUT', body: JSON.stringify({ installed }) }),

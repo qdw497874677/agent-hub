@@ -10,7 +10,7 @@ import { formatRoute, type MarketTab } from '../route.ts';
 import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty } from '../admin/shared.tsx';
 import { encodeFiles, readPicked, type PickedFile } from '../admin/asset-files.ts';
 import { ReviewPage } from './review.tsx';
-import { SCOPE_TEXT, STATUS_TEXT, KIND_TEXT } from './labels.ts';
+import { SCOPE_TEXT, STATUS_TEXT, KIND_TEXT, targetText } from './labels.ts';
 
 /**
  * 资产市场（#/assets/<分页>）：人人可用。目录 = 已上架、我看得见的；我的 = 我上架的（含待审 / 被驳回）；
@@ -101,7 +101,7 @@ function AssetCard({ item, showStatus }: { item: MarketAssetDto; showStatus: boo
         <p className="mt-1 text-meta">
           <a className="text-link" href={formatRoute({ page: 'assets', tab: 'pending', reviewId: sub.id })}>
             最近提交：{STATUS_TEXT[sub.status]}
-            {sub.targetScope ? `（申请提升为${SCOPE_TEXT[sub.targetScope]}）` : ''}
+            {sub.targetScope ? `（${targetText(sub.targetScope)}）` : ''}
           </a>
           {sub.reason ? <span className="ml-1 text-secondary">— {sub.reason}</span> : null}
         </p>
@@ -140,7 +140,12 @@ function MaintainButtons({ item }: { item: MarketAssetDto }) {
     await marketApi.promote(item.asset.id);
     setMessage('已申请提升为全局，等 hub 管理员审核');
   });
-  const error = revise.error ?? check.error ?? promote.error;
+  const toTeam = useMarketAction(async () => {
+    const result = await marketApi.toTeam(item.asset.id);
+    setMessage(result.published ? '已上架到团队' : '已提交团队审核');
+  });
+  const error = revise.error ?? check.error ?? promote.error ?? toTeam.error;
+  const teamPending = item.latestSubmission?.status === 'pending' && item.latestSubmission.targetScope === 'team';
   return (
     <>
       {item.asset.source.type === 'git' ? (
@@ -168,6 +173,15 @@ function MaintainButtons({ item }: { item: MarketAssetDto }) {
         <button className={SMALL} disabled={promote.isPending} onClick={() => promote.mutate(undefined)}>
           申请提升为全局
         </button>
+      ) : null}
+      {item.published && item.asset.scope === 'personal' ? (
+        teamPending ? (
+          <span className="self-center text-meta text-tertiary">上架到团队：待审核</span>
+        ) : (
+          <button className={SMALL} disabled={toTeam.isPending} onClick={() => toTeam.mutate(undefined)}>
+            上架到团队
+          </button>
+        )
       ) : null}
       {message || error ? (
         <span role="status" className={`basis-full text-meta ${error ? 'text-rust' : 'text-sage'}`}>

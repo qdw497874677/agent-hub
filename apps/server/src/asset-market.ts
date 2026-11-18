@@ -37,6 +37,7 @@ import {
   markNotificationsRead,
   myAssets,
   promoteAsset,
+  promoteAssetToTeam,
   rejectSubmission,
   reviewQueue,
   reviewSettingsFor,
@@ -226,6 +227,10 @@ export function installAssetMarket(app: Hono, deps: AssetReviewDeps, principalOf
   app.post('/api/assets/items/:assetId/promote', async (c) => {
     const result = await promoteAsset(deps, me(c), c.req.param('assetId'));
     return result.ok ? c.json({ submissionId: result.value.id }) : fail(c, result.error);
+  });
+  app.post('/api/assets/items/:assetId/to-team', async (c) => {
+    const result = await promoteAssetToTeam(deps, me(c), c.req.param('assetId'));
+    return result.ok ? c.json({ submissionId: result.value.id, published: result.value.status === 'approved' }) : fail(c, result.error);
   });
   app.post('/api/assets/items/:assetId/revoke', async (c) => {
     const input = await body(c, reasonRequest);

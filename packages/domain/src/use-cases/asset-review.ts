@@ -317,11 +317,11 @@ async function openSubmission(
     decidedAt: null
   };
   await deps.review.addSubmission(submission);
-  const what = targetScope ? `申请提升到全局` : `版本 ${digest.slice(0, 12)}`;
+  const what = targetScope === 'team' ? '申请上架到团队' : targetScope ? `申请提升到全局` : `版本 ${digest.slice(0, 12)}`;
   await audit(deps, actor, 'asset.submit', asset.name, `${label(asset)} 提交审核：${what}（${origin}）`, asset.teamId);
   // 1A：个人资产免审，提交即发布
   if (submission.required === 0) {
-    const published = await publish(deps, actor, asset, submission, '个人资产免审（1A）');
+    const published = await publish(deps, actor, asset, submission, targetScope === 'team' ? '团队免审' : '个人资产免审（1A）');
     return ok({ asset: published, submission: (await deps.review.submission(submission.id)) ?? submission });
   }
   const ctx = await reviewerContext(deps, asset);
@@ -357,7 +357,8 @@ async function publish(
   };
   await deps.assets.update(next);
   await deps.review.updateSubmission({ ...submission, status: 'approved', decidedAt: deps.now(), decidedBy: actor?.user.id ?? SYSTEM });
-  await audit(deps, actor, 'asset.publish', asset.name, `${label(asset)} 发布 ${submission.digest.slice(0, 12)}（${why}）`, asset.teamId);
+  const moved = submission.targetScope !== null && submission.targetScope !== asset.scope ? `，${asset.scope === 'personal' && scope === 'team' ? '个人资产已上架到团队' : `已提升到${scope === 'global' ? '全局' : scope}`}` : '';
+  await audit(deps, actor, 'asset.publish', asset.name, `${label(asset)} 发布 ${submission.digest.slice(0, 12)}（${why}）${moved}`, asset.teamId);
   const holders = (await deps.assets.installations()).filter((row) => row.assetId === asset.id);
   for (const { workerId } of holders) void syncWorkerAssets(deps, workerId);
   return next;
@@ -488,11 +489,39 @@ export async function promoteAsset(deps: AssetReviewDeps, actor: Principal, asse
   const asset = await deps.assets.get(assetId);
   if (!asset || !canSeeAsset(actor, asset)) return err(notFound('没有这个资产'));
   if (asset.scope === 'global') return err(invalid('已经是全局资产'));
-  if (asset.scope === 'personal') return err(invalid('个人资产先上架到团队，再申请提升到全局'));
+  if (asset.scope === 'personal') return err(invalid('个人资产要先点「上架到团队」，通过后再申请提升到全局'));
   if (!isPublished(asset)) return err(invalid('先让当前版本通过团队审核'));
   if (!canMaintain(actor, asset, 'asset.submit')) return err(forbidden('只有作者（或团队负责人）能申请提升'));
   if (await deps.assets.findInScope(asset.kind, asset.name, 'global', '')) return err(conflict(`全局已经有叫「${asset.name}」的${ASSET_KIND_LABEL[asset.kind]}了`));
   const opened = await openSubmission(deps, actor, asset, asset.pinned, actor.via ? 'token' : 'user', 'global');
+  return opened.ok ? ok(opened.value.submission) : opened;
+}
+
+/**
+ * 个人资产上架到团队：作者本人（得有团队）把它交给团队审，走和「提升到全局」同一套 targetScope 提交，
+ * 审核人与票数按团队的审核设置。通过后同一个资产改成团队资产（id、版本历史、安装关系都不变，
+ * 项目 / Bot 按 id 引用的照常可用）。团队里已有同类同名的资产 → 409。
+ * 限定项目的令牌看不到个人资产，这里自然 404。
+ */
+export async function promoteAssetToTeam(deps: AssetReviewDeps, actor: Principal, assetId: string): Promise<Result<AssetSubmission, DomainError>> {
+  const asset = await deps.assets.get(assetId);
+  // 个人资产只有作者看得见：别人（含令牌限定了项目的作者本人）一律当不存在
+  if (!asset || !canSeeAsset(actor, asset)) return err(notFound('没有这个资产'));
+  if (asset.ownerId !== actor.user.id) return err(forbidden('只有作者能上架到团队'));
+  if (asset.scope !== 'personal') return err(invalid('只有个人资产能上架到团队'));
+  const teamId = actor.user.teamId;
+  if (!teamId) return err(invalid('你还没有团队'));
+  if (!canMaintain(actor, asset, 'asset.submit')) return err(forbidden('你没有上架资产的权限'));
+  if (!isPublished(asset)) return err(invalid('先让当前版本可用，再上架到团队'));
+  const clash = await deps.assets.findInScope(asset.kind, asset.name, 'team', teamId);
+  if (clash && clash.id !== asset.id) return err(conflict(`团队里已经有叫「${asset.name}」的${ASSET_KIND_LABEL[asset.kind]}了：改个名字再上架，或到那个资产传新版本`));
+  // 审核人、票数、密钥层都按作者现在的团队算（老数据的个人资产可能没记团队）
+  let target = asset;
+  if (asset.teamId !== teamId) {
+    target = { ...asset, teamId, updatedAt: deps.now() };
+    await deps.assets.update(target);
+  }
+  const opened = await openSubmission(deps, actor, target, target.pinned, actor.via ? 'token' : 'user', 'team');
   return opened.ok ? ok(opened.value.submission) : opened;
 }
 
@@ -595,6 +624,10 @@ export async function approveSubmission(
     await notify(deps, others, [actor.user.id], 'review.requested', `还差一票：${label(asset)}`, `${actor.user.email} 已通过，需要第二位审核人`, reviewLink(submission.id));
     return ok({ submission: voted, published: false, selfApproved });
   }
+  if (submission.targetScope === 'team' && asset.teamId !== null) {
+    const clash = await deps.assets.findInScope(asset.kind, asset.name, 'team', asset.teamId);
+    if (clash && clash.id !== asset.id) return err(conflict(`团队里已经有叫「${asset.name}」的${ASSET_KIND_LABEL[asset.kind]}了`));
+  }
   if (submission.targetScope === 'global') {
     const clash = await deps.assets.findInScope(asset.kind, asset.name, 'global', '');
     if (clash && clash.id !== asset.id) return err(conflict(`全局已经有叫「${asset.name}」的${ASSET_KIND_LABEL[asset.kind]}了`));
@@ -606,7 +639,7 @@ export async function approveSubmission(
     [actor.user.id],
     'review.approved',
     `已发布：${label(asset)}`,
-    `${actor.user.email} 通过了 ${submission.digest.slice(0, 12)}${submission.targetScope ? '，已提升到全局' : ''}`,
+    `${actor.user.email} 通过了 ${submission.digest.slice(0, 12)}${submission.targetScope === 'team' ? '，已上架到团队' : submission.targetScope ? '，已提升到全局' : ''}`,
     assetLink(asset.id)
   );
   return ok({ submission: (await deps.review.submission(submission.id)) ?? voted, published: true, selfApproved });

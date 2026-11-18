@@ -12,6 +12,7 @@ import {
   migrateAssetOwnership,
   myAssets,
   promoteAsset,
+  promoteAssetToTeam,
   rejectSubmission,
   reviewQueue,
   setAssetOnWorker,
@@ -332,4 +333,100 @@ test('项目进回收站：不能发新资产，但审核人仍能驳回、能�
   assert.equal(comment.ok, true, comment.ok ? '' : comment.error.message);
   const rejected = await rejectSubmission(w.deps, w.p('O'), made.submission.id, { reason: '项目归档了' });
   assert.equal(rejected.ok, true, rejected.ok ? '' : rejected.error.message);
+});
+
+test('个人资产上架到团队：走团队审核，通过后变团队资产，id / 版本 / 安装 / 项目开关都不变；审计有记录', async () => {
+  const w = await world();
+  const mine = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'personal', files: skill('tool') }));
+  assert.equal(mine.asset.scope, 'personal');
+  ok(await setAssetOnWorker(w.deps, w.p('M1'), { assetId: mine.asset.id, workerId: 'w3', installed: true }));
+  ok(await submitAssetRevision(w.deps, w.p('M1'), mine.asset.id, skill('tool', 'v2')));
+  const before = (await w.deps.assets.get(mine.asset.id))!;
+  const viewer = { userId: 'u-M1', teamId: 't1' };
+  const settings = { [mine.asset.id]: true };
+  assert.deepEqual(resolveProjectAssets(await w.deps.assets.list(), 'p1', settings, viewer).effective.map((a) => a.id), [mine.asset.id]);
+
+  const sub = ok(await promoteAssetToTeam(w.deps, w.p('M1'), mine.asset.id));
+  assert.equal(sub.status, 'pending');
+  assert.equal(sub.targetScope, 'team');
+  assert.equal(sub.required, 1, '按团队的审核设置');
+  assert.equal((await w.deps.assets.get(mine.asset.id))!.scope, 'personal', '审核期间还是个人资产，照常用');
+  assert.equal((await myAssets(w.deps, w.p('M1')))[0]!.latestSubmission?.targetScope, 'team', '「我的」里能看到待审');
+  assert.deepEqual((await reviewQueue(w.deps, w.p('O'))).map((i) => i.submission.id), [sub.id], '团队负责人能审');
+  assert.equal((await approveSubmission(w.deps, w.p('M1'), sub.id)).ok, false, '作者不能自批');
+  assert.ok(ok(await submissionDetail(w.deps, w.p('O'), sub.id)).canApprove);
+
+  assert.equal(ok(await approveSubmission(w.deps, w.p('O'), sub.id)).published, true);
+  const after = (await w.deps.assets.get(mine.asset.id))!;
+  assert.equal(after.scope, 'team');
+  assert.equal(after.teamId, 't1');
+  assert.equal(after.pinned, before.pinned);
+  assert.equal(after.id, before.id);
+  assert.equal((await w.deps.assets.revisions(after.id)).length, 2, '版本历史保留');
+  assert.ok((await w.deps.assets.installations()).some((row) => row.assetId === after.id && row.workerId === 'w3'), '安装关系保留');
+  assert.deepEqual(resolveProjectAssets(await w.deps.assets.list(), 'p1', settings, viewer).effective.map((a) => a.id), [after.id], '项目开关按 id 照常生效');
+  assert.equal((await assetCatalog(w.deps, w.p('M2'))).length, 1, '队友现在看得到');
+  assert.equal((await assetCatalog(w.deps, w.p('S'))).length, 0, '别的团队看不到');
+  assert.ok(w.admin.entries.some((e) => e.action === 'asset.submit' && e.detail.includes('申请上架到团队')));
+  assert.ok(w.admin.entries.some((e) => e.action === 'asset.publish' && e.detail.includes('个人资产已上架到团队')));
+  assert.ok(w.notifications.rows.some((n) => n.userId === 'u-M1' && n.body.includes('已上架到团队')));
+});
+
+test('个人资产上架到团队：团队审核设置决定票数（MCP stdio 双人）；负责人自己的转 hub 管理员；单人团队同理', async () => {
+  const w = await world();
+  // 现有团队审核设置里没有「免审」项：团队范围至少 1 票，免审直通（required = 0）在当前设置下不会出现
+  const own = ok(await submitNewAsset(w.deps, w.p('O'), { from: 'upload', kind: 'skill', scope: 'personal', files: skill('own') }));
+  const sub = ok(await promoteAssetToTeam(w.deps, w.p('O'), own.asset.id));
+  assert.equal(sub.required, 1);
+  assert.equal((await approveSubmission(w.deps, w.p('O'), sub.id)).ok, false, '负责人不能批自己的');
+  assert.ok(w.notifications.rows.some((n) => n.userId === 'u-A' && n.body.includes('申请上架到团队')));
+  assert.equal(ok(await approveSubmission(w.deps, w.p('A'), sub.id)).published, true);
+  assert.equal((await w.deps.assets.get(own.asset.id))!.scope, 'team');
+  // 单人团队
+  const solo = ok(await submitNewAsset(w.deps, w.p('S'), { from: 'upload', kind: 'skill', scope: 'personal', files: skill('solo') }));
+  const soloSub = ok(await promoteAssetToTeam(w.deps, w.p('S'), solo.asset.id));
+  assert.deepEqual((await reviewQueue(w.deps, w.p('A'))).map((i) => i.submission.id), [soloSub.id]);
+  // 再点一次不会重复开提交
+  assert.equal(ok(await promoteAssetToTeam(w.deps, w.p('S'), solo.asset.id)).id, soloSub.id);
+});
+
+test('个人资产上架到团队：团队重名 409（提交时、批准时都查）；非作者、没团队、限定项目的令牌都不行', async () => {
+  const w = await world();
+  const mine = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'personal', files: skill('dup') }));
+  // 非作者：个人资产别人看不见 → 404（不暴露存在）；作者用限定项目的令牌同样看不见
+  const stranger = await promoteAssetToTeam(w.deps, w.p('O'), mine.asset.id);
+  assert.equal(!stranger.ok && stranger.error.code, 'not_found');
+  const scoped = await promoteAssetToTeam(w.deps, { ...w.token('M1'), via: { ...w.token('M1').via!, projectIds: ['p1'] } } as Principal, mine.asset.id);
+  assert.equal(!scoped.ok && scoped.error.code, 'not_found');
+  // 已经是团队资产 / 不是自己的：拒绝
+  const team = ok(await submitNewAsset(w.deps, w.p('M2'), { from: 'upload', kind: 'skill', scope: 'team', files: skill('other') }));
+  ok(await approveSubmission(w.deps, w.p('O'), team.submission.id));
+  const notPersonal = await promoteAssetToTeam(w.deps, w.p('M2'), team.asset.id);
+  assert.equal(!notPersonal.ok && notPersonal.error.code, 'invalid');
+  const notMine = await promoteAssetToTeam(w.deps, w.p('M1'), team.asset.id);
+  assert.equal(!notMine.ok && notMine.error.code, 'forbidden');
+
+  // 提交后、批准前团队里冒出同名：批准时 409
+  const sub = ok(await promoteAssetToTeam(w.deps, w.p('M1'), mine.asset.id));
+  const clash = ok(await submitNewAsset(w.deps, w.p('M2'), { from: 'upload', kind: 'skill', scope: 'team', files: skill('dup') }));
+  ok(await approveSubmission(w.deps, w.p('O'), clash.submission.id));
+  const late = await approveSubmission(w.deps, w.p('O'), sub.id);
+  assert.equal(!late.ok && late.error.code, 'conflict');
+  assert.equal((await w.deps.assets.get(mine.asset.id))!.scope, 'personal');
+  // 再提交：提交时就 409，文案说清楚
+  const early = await promoteAssetToTeam(w.deps, w.p('M1'), mine.asset.id);
+  assert.equal(!early.ok && early.error.code, 'conflict');
+  assert.match(!early.ok ? early.error.message : '', /团队里已经有叫「dup」/);
+
+  // 没团队
+  const loner: Principal = { ...w.p('M1'), user: { ...w.p('M1').user, teamId: null } };
+  const noTeam = await promoteAssetToTeam(w.deps, loner, mine.asset.id);
+  assert.equal(!noTeam.ok && noTeam.error.message, '你还没有团队');
+});
+
+test('promoteAsset：个人资产的提示指向「上架到团队」', async () => {
+  const w = await world();
+  const mine = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'personal', files: skill('p2') }));
+  const r = await promoteAsset(w.deps, w.p('M1'), mine.asset.id);
+  assert.match(!r.ok ? r.error.message : '', /上架到团队/);
 });
