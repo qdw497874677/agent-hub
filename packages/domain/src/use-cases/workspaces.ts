@@ -1,7 +1,8 @@
 import { principalOfSubject, type Subject } from '../access.ts';
 import type { Location, Project } from '../project.ts';
+import { recurseSubmodules } from '../project.ts';
 import type { WorkspaceGroup } from '../workspace-group.ts';
-import { groupMemberRoot, primaryMember } from '../workspace-group.ts';
+import { groupMemberRoot, groupSessionRoot } from '../workspace-group.ts';
 import { isContainerSession, type Session } from '../session.ts';
 import { concurrencyOf, isUsable, newWorkspace, normalizePath, type Workspace } from '../workspace.ts';
 import { folderNameProblem, insideRoots, MANAGED_DIR, projectSlug } from '../directories.ts';
@@ -68,11 +69,10 @@ export async function locationOf(
   session: Pick<Session, 'workerId' | 'workspaceId'> & { readonly groupId?: WorkspaceGroupId | null } | null
 ): Promise<Location> {
   if (session?.groupId && deps.workspaceGroups) {
-    // 组合工作空间：容器不是仓库，指到 primary 成员的目录，git / 文件 / 终端都还在真实仓库里干活。
+    // 组合工作空间：amp 布局的 cwd 是主仓库目录；老组（flat）仍用容器根。
+    // git / 提交仍按成员仓库走（locationsOf + member），不能在容器根上跑。
     const group = await deps.workspaceGroups.byId(session.groupId);
-    const primary = group === null ? null : primaryMember(group);
-    const primaryRoot = group === null || primary === null ? null : groupMemberRoot(group, primary.workspaceId);
-    if (group !== null && primaryRoot !== null) return { workerId: group.workerId, root: primaryRoot };
+    if (group !== null && group.root !== '') return { workerId: group.workerId, root: groupSessionRoot(group) };
   }
   if (session?.workspaceId) {
     const workspace = await deps.workspaces.byId(session.workspaceId);
@@ -100,13 +100,15 @@ export async function defaultWorkspaceFor(
 export interface SessionLocationMember {
   readonly workspaceId: WorkspaceId;
   readonly name: string;
-  /** 成员仓库的绝对路径（`<group.root>/<name>`）。 */
+  /** 对应 Project.repos[].id；单仓会话可省略。 */
+  readonly repoId?: string;
+  /** 成员仓库的绝对路径（主仓库 `<root>/<name>`，附加仓 `<root>/repos/<name>`；老组都在 `<root>/<name>`）。 */
   readonly root: string;
   readonly state: 'ready' | 'preparing' | 'failed';
 }
 
 export interface SessionLocation {
-  /** 容器目录：多仓库时是组合根，单仓库时就是那个工作空间的路径。空串 = 没有可用位置，调用方必须拒绝。 */
+  /** 会话 cwd：多仓库时是主仓库目录（老组是容器根），单仓库时就是那个工作空间的路径。空串 = 没有可用位置，调用方必须拒绝。 */
   readonly root: string;
   readonly workerId: string | null;
   /** 多仓库才有；单仓库为 null。 */
@@ -127,12 +129,12 @@ export async function locationsOf(
     const group = await deps.workspaceGroups.byId(session.groupId);
     if (group !== null) {
       return {
-        root: group.root,
+        root: groupSessionRoot(group),
         workerId: group.workerId,
         group,
         members: group.members.flatMap((member) => {
           const root = groupMemberRoot(group, member.workspaceId);
-          return root === null ? [] : [{ workspaceId: member.workspaceId, name: member.name, root, state: member.state }];
+          return root === null ? [] : [{ workspaceId: member.workspaceId, name: member.name, repoId: member.repoId, root, state: member.state }];
         })
       };
     }
@@ -314,8 +316,16 @@ export async function prepareTeamWorkspace(
     if (!place.ok) return place;
     if (command.repo) {
       // 有仓库：把它下载到选的目录 / 托管目录（默认用那台机器自己的 git 凭据；空目录也能直接 clone 进去）
-      const auth = (await deps.repoAuth?.forUrl(machine.workerId, command.repo.url)) ?? undefined;
-      const cloned = await git.clone({ repoUrl: command.repo.url, parent: place.value.parent, name: place.value.name, branch: command.repo.branch, ...(auth ? { auth } : {}) });
+      const origin = command.originProjectId ? await deps.projects.byId(command.originProjectId) : null;
+      const auth = (await deps.repoAuth?.forUrl(machine.workerId, command.repo.url, command.originProjectId)) ?? undefined;
+      const cloned = await git.clone({
+        repoUrl: command.repo.url,
+        parent: place.value.parent,
+        name: place.value.name,
+        branch: command.repo.branch,
+        ...(auth ? { auth } : {}),
+        ...(origin && recurseSubmodules(origin) ? { recurseSubmodules: true } : {})
+      });
       if (!cloned.ok) return cloned;
       path = cloned.value.path;
       branch = cloned.value.branch;

@@ -15,11 +15,11 @@ const entries = Object.entries(routes) as unknown as [string, Entry][];
 
 /** 期望暴露面：改接口 / 改登记时这组数字必须一起改（提醒别顺手扩大对外面积）。 */
 const EXPECTED = {
-  routes: 41,
-  tools: 35,
-  readOnly: 12,
-  writes: 23,
-  skips: ['health', 'me', 'setProjectDescription', 'setProjectRepo', 'stream', 'submitAssetRevision']
+  routes: 52,
+  tools: 45,
+  readOnly: 16,
+  writes: 29,
+  skips: ['health', 'me', 'setProjectDescription', 'setProjectRepo', 'stream', 'submitAssetRevision', 'workbenchSkill']
 };
 
 const TOOL_NAMES = [
@@ -50,14 +50,24 @@ const TOOL_NAMES = [
   'remove_workspace',
   'retry_workspace_setup',
   'session_cancel',
+  'session_git_run',
+  'session_git_state',
   'session_model',
   'session_reply',
+  'session_settle',
   'session_start',
   'set_task_status',
   'set_task_summary',
   'sync_workspace',
   'task_create',
-  'workspace_changes'
+  'task_pull_requests',
+  'workspace_changes',
+  'workspace_group_add_member',
+  'workspace_group_create',
+  'workspace_group_get',
+  'workspace_group_retry',
+  'workspace_sweep',
+  'workspace_sweep_records'
 ];
 
 test('MCP 元数据：每条路由都有归属（meta / auto / 非空 skip），auto 只给 GET', () => {

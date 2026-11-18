@@ -49,7 +49,11 @@ export const projectRepoInput = z.object({
 });
 
 /** 只改仓库清单（不动 worktree / 预览端口 / 检查命令）：空数组 = 解除全部绑定。 */
-export const setProjectReposRequest = z.object({ repos: z.array(projectRepoInput).max(8) });
+export const setProjectReposRequest = z.object({
+  repos: z.array(projectRepoInput).max(8),
+  /** 组合会话的主仓库；null = 不指定。省略 = 保持原值（若该仓已不在清单里会在服务端清掉）。 */
+  primaryRepoId: z.string().nullable().optional()
+});
 
 /** 改项目级 worktree 配置（docs/design/worktree.md §3）：null = 没配，按 shared 处理。 */
 export const setProjectWorktreeRequest = z.object({
@@ -75,10 +79,14 @@ export const setProjectWorktreeRequest = z.object({
    * 与 worktree 至少给一个；name / id 可省略（服务端派生）。
    */
   repos: z.array(projectRepoInput).max(8).optional(),
+  /** 组合会话的主仓库；null = 不指定。省略且本次没改 repos 时保持原值。 */
+  primaryRepoId: z.string().nullable().optional(),
   /** 项目声明的检查命令（issue #216 P1）：空数组 = 清掉，最多 5 条，一条一行（不能有换行）。 */
   checks: z.array(z.string()).max(5).optional(),
   /** 项目默认引用的资产组合（按顺序叠加）：空数组 = 清掉。 */
-  assetSetIds: z.array(z.string().min(1)).max(8).optional()
+  assetSetIds: z.array(z.string().min(1)).max(8).optional(),
+  /** 克隆 / 建 worktree 时的子模块策略；off = 不拉（默认），recursive = 递归初始化。 */
+  submodules: z.enum(['off', 'recursive']).optional()
 });
 
 /** 绑定 / 改 / 解除项目仓库：repoUrl 为 null 或空串 = 解除。 */
@@ -235,7 +243,13 @@ export const createTeamWorkspaceRequest = z.object({
 export const cleanupPolicyRequest = z.object({
   prMerged: z.boolean().optional(),
   taskEndedClean: z.boolean().optional(),
-  idleDays: z.number().int().nullable().optional()
+  idleDays: z.number().int().nullable().optional(),
+  deleteWorktreeOnSessionDelete: z.boolean().optional()
+});
+
+export const deleteSessionRequest = z.object({
+  /** 同时拆掉这条会话独占的临时 worktree；不传则跟项目清理规则走。 */
+  removeWorktree: z.boolean().optional()
 });
 
 export const removeWorkspaceRequest = z.object({

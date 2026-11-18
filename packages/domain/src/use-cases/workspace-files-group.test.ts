@@ -220,7 +220,7 @@ test('组合会话：commit / state 必须选仓库；选了就在成员仓库�
   const w = await world();
   const refused = await w.gitSvc.run(null, w.session.id, { action: 'commit', message: 'x' });
   assert.equal(refused.ok, false);
-  if (!refused.ok) assert.equal(refused.error.message, '请选择要提交的仓库');
+  if (!refused.ok) assert.match(refused.error.message, /请选择要提交的仓库/);
   const stateRefused = await w.gitSvc.run(null, w.session.id, { action: 'commit', message: 'x' }, undefined);
   assert.equal(stateRefused.ok, false);
 

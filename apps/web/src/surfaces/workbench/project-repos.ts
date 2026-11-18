@@ -76,6 +76,12 @@ export function repoRowsFrom(project: unknown): readonly ProjectRepoRow[] {
 }
 
 /** 「加一个仓库」的那一行：空着，等用户填。 */
+/** 项目指定的主仓库 id；没指定或形状不对是 null。 */
+export function primaryRepoIdFrom(project: unknown): string | null {
+  const raw = typeof project === 'object' && project !== null ? (project as { primaryRepoId?: unknown }).primaryRepoId : null;
+  return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : null;
+}
+
 export function emptyRepoRow(): ProjectRepoRow {
   return { id: '', name: '', url: '', defaultBranch: '', credential: '', hasToken: false, clearToken: false };
 }
@@ -136,6 +142,7 @@ export function repoRowProblem(row: ProjectRepoRow, rows: readonly ProjectRepoRo
   if (rows.length > PROJECT_REPOS_MAX) return `一个项目最多 ${PROJECT_REPOS_MAX} 个仓库`;
   const name = row.name.trim();
   if (name === '') return '写上仓库名（会用作组合工作目录里的子目录名）';
+  if (name === 'repos') return '仓库名不能是 repos（留给附加仓库目录）';
   if (!REPO_NAME_PATTERN.test(name)) return '仓库名只能用小写字母、数字和 -，并且以字母开头';
   if (rows.filter((item) => item.name.trim() === name).length > 1) return `仓库名重复：${name}`;
   const url = row.url.trim();

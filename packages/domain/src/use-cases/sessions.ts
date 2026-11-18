@@ -38,8 +38,10 @@ export interface DeriveCommand {
   readonly workerId?: string | null;
   /** 运行面板里选定的工作空间：会话就落在它所在的机器、在它的目录里干活。 */
   readonly workspaceId?: string | null;
-  /** 组合工作空间（多仓库）：给了就跟着它的 primary 成员走，忽略 workspaceId。 */
+  /** 组合工作空间（多仓库）：给了就整组跟随；workspaceId 记 primary 成员（兼容），cwd 是主仓库目录（老组仍是容器根）。 */
   readonly groupId?: string | null;
+  /** 预分配的会话 id（组合建组时写进分支名的那个）；已存在则忽略。 */
+  readonly sessionId?: string | null;
   /** 谁发起的：开跑前要过 authorizeWorker（本机 Worker 单独授权）。 */
   readonly actor?: Subject | null;
   /** 要求的能力：只落到这些能力可信的机器上（ADR 0021 §8）。 */
@@ -147,6 +149,7 @@ export async function deriveSessionUseCase(
     if (!primary) return err(conflict('这组工作空间还没有成员仓库'));
     groupId = group.id;
     command = { ...command, workspaceId: primary.workspaceId };
+    if (!command.sessionId && group.sessionId) command = { ...command, sessionId: group.sessionId };
   }
   const chosen = command.workspaceId ? await deps.workspaces.byId(asWorkspaceId(command.workspaceId)) : null;
   const waitForSetup = project.worktree?.setup?.waitForSetup ?? true;
@@ -181,6 +184,8 @@ export async function deriveSessionUseCase(
   if (!allowed.ok) return allowed;
   const model = checkModelOn(workers, placed.value, agentId, ref.model, command.hubProtocol);
   if (!model.ok) return model;
+  const reservedId = command.sessionId?.trim() || null;
+  const reserved = reservedId ? await deps.sessions.byId(asSessionId(reservedId)) : null;
   const created = deriveSession({
     task,
     agentId,
@@ -191,6 +196,7 @@ export async function deriveSessionUseCase(
     workerId: placed.value,
     workspaceId: workspace.id,
     groupId,
+    ...(reserved || !reservedId ? {} : { id: asSessionId(reservedId) }),
     createdBy: command.createdBy !== undefined ? command.createdBy : principalOfSubject(command.actor)?.user.id ?? null,
     botId: command.botId ?? null,
     ...(command.assetIds == null ? {} : { assetIds: command.assetIds }),
@@ -201,7 +207,9 @@ export async function deriveSessionUseCase(
 
   const session = { ...created.value, workerId: placed.value };
   await deps.sessions.save(session);
-  const started = await startSessionUseCase(deps, { session, workspaceRoot: workspace.path, resume: null });
+  // 组合会话的 cwd 是主仓库目录（locationOf；老组是容器根）；单仓仍是 workspace.path。
+  const { root } = await locationOf(deps, project, session);
+  const started = await startSessionUseCase(deps, { session, workspaceRoot: root, resume: null });
   if (!started.ok) return started;
   await noteSessionStarted(deps, session, `开了 ${session.agentId} 会话${session.model ? `（${session.model}）` : ''}`);
   return ok(session);

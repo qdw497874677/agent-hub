@@ -16,6 +16,7 @@ import {
   repoCheckSummary,
   repoRowsProblem,
   repoRowsValue,
+  primaryRepoIdFrom,
   repoRowsFrom,
   repoRowProblem,
   reposDirty,
@@ -28,23 +29,25 @@ import {
 /**
  * 项目设置 · 代码与工作目录 · 「仓库」（docs/design/multi-repo.md §7）。
  *
- * 一个项目最多 8 个仓库；第一行是主仓库（组合工作目录的入口 / 老 `repo` 字段的来源），
- * 能改不能删。仓库名就是组合工作目录里的子目录名，所以这里同时给出名字规则。
- * 和「隔离与准备」放在一起：两件事合起来才决定「这个项目开出来的目录长什么样」。
+ * 一个项目最多 8 个仓库。可指定其中一个为主仓库：组合会话的 cwd 就在它的 worktree 里。
+ * 不指定主仓库则只有单仓会话。仓库名就是子目录名（不能叫 repos）。
  */
 export function ProjectRepos({ project }: { project: ProjectDto }) {
   const account = useAccount();
   const editable = canAdminister(account);
   const queryClient = useQueryClient();
   const stored = JSON.stringify(repoRowsFrom(project));
+  const storedPrimary = primaryRepoIdFrom(project);
   const [rows, setRows] = useState<readonly ProjectRepoRow[]>(() => repoRowsFrom(project));
+  const [primaryRepoId, setPrimaryRepoId] = useState<string | null>(storedPrimary);
   // 画布轮询 / 别人改了仓库清单时把草稿拉回已保存的样子，但自己不丢正在编辑的内容
   useEffect(() => {
     setRows(repoRowsFrom(project));
-  }, [stored]);
+    setPrimaryRepoId(storedPrimary);
+  }, [stored, storedPrimary]);
 
   const problem = editable ? repoRowsProblem(rows) : null;
-  const dirty = editable && reposDirty(rows, repoRowsFrom(project));
+  const dirty = editable && (reposDirty(rows, repoRowsFrom(project)) || primaryRepoId !== storedPrimary);
   // 上一次「检查仓库」的结论；unavailable 时另一条提示说明这次没查成
   const [check, setCheck] = useState<ReposCheck | null>(null);
   const [checking, setChecking] = useState(false);
@@ -54,7 +57,8 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
   rowsRef.current = rows;
 
   const save = useMutation({
-    mutationFn: (repos: readonly ProjectRepoValue[]) => api.saveProjectRepos(project.id, repos),
+    mutationFn: (input: { repos: readonly ProjectRepoValue[]; primaryRepoId: string | null }) =>
+      api.saveProjectRepos(project.id, input.repos, input.primaryRepoId),
     onSuccess: async () => {
       // 结论已经被用掉了：别让过期的检查结果继续挂在界面上
       setCheck(null);
@@ -76,7 +80,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
   // 点「仍然保存」= 跳过检查，直接走原来的保存
   const forceSave = () => {
     resetCheck();
-    save.mutate(repoRowsValue(rows));
+    save.mutate({ repos: repoRowsValue(rows), primaryRepoId });
   };
   /**
    * 「保存仓库」= 先检查再保存（仓库能不能 clone、分支存不存在，别等派生任务才报错）。
@@ -103,7 +107,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
       return;
     }
     if (result !== null) setSkipped(result.unavailable);
-    save.mutate(snapshot);
+    save.mutate({ repos: snapshot, primaryRepoId });
   };
 
   const update = (index: number, patch: Partial<ProjectRepoRow>) => {
@@ -131,7 +135,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
         仓库
       </h3>
       <p className="mb-2 text-meta text-tertiary" title="仓库名会用作组合工作目录里的子目录名">
-        最多 {PROJECT_REPOS_MAX} 个，第一个是主仓库。
+        最多 {PROJECT_REPOS_MAX} 个。指定主仓库后才能开组合会话。
       </p>
 
       {editable ? (
@@ -155,21 +159,37 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
                 >
                   <div className="mb-1.5 flex items-center justify-between gap-2">
                     <span className="flex items-center gap-2 text-meta text-tertiary">
-                      {index === 0 ? (
+                      {row.id !== '' && primaryRepoId === row.id ? (
                         <span className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-secondary" data-testid="repo-primary">
                           主仓库
                         </span>
                       ) : (
                         <span>仓库 {index + 1}</span>
                       )}
+                      {editable && row.id !== '' ? (
+                        <button
+                          type="button"
+                          className="text-meta text-secondary hover:text-primary"
+                          data-testid="repo-set-primary"
+                          onClick={() => {
+                            if (save.isError || save.isSuccess) save.reset();
+                            resetCheck();
+                            setPrimaryRepoId((current) => (current === row.id ? null : row.id));
+                          }}
+                        >
+                          {primaryRepoId === row.id ? '取消主仓库' : '设为主仓库'}
+                        </button>
+                      ) : null}
                     </span>
                     <button
                       type="button"
                       className="text-meta text-tertiary hover:text-rust disabled:opacity-40"
                       data-testid="repo-remove"
-                      disabled={index === 0}
-                      title={index === 0 ? '主仓库不能删；换一个主仓库请直接改这一行' : '从清单里删掉这个仓库'}
-                      onClick={() => remove(index)}
+                      title="从清单里删掉这个仓库"
+                      onClick={() => {
+                        if (primaryRepoId !== null && primaryRepoId === row.id) setPrimaryRepoId(null);
+                        remove(index);
+                      }}
                     >
                       删除
                     </button>

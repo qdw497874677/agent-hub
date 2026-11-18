@@ -12,7 +12,7 @@ export interface RepoAuthPort {
    * 按仓库地址找（clone / 保存前检查）。
    * `workerId` null = hub 本机；找不到匹配的仓库或没配令牌 = null。
    */
-  forUrl(workerId: string | null, url: string): Promise<GitAuth | null>;
+  forUrl(workerId: string | null, url: string, projectId?: string | null): Promise<GitAuth | null>;
   /**
    * 按工作空间路径找（push / save_wip / add_worktree）：用 `Workspace.repoUrl` 反查仓库。
    */

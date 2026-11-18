@@ -126,6 +126,128 @@
         }
       }
     },
+    "/openapi/v1/skills/agent-hub-workbench": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "下载 agent-hub-workbench skill",
+        "description": "给外部 agent 用的工作台操作说明（Agent Skills 格式：一份 SKILL.md 加 references/）。\n参数：format=zip（默认，附件 agent-hub-workbench.zip）或 format=json（{ name, description, files[] }）。\n本路径无需令牌。已连接 MCP 的客户端也可以 resources/list、resources/read（uri 形如 skill://agent-hub-workbench/SKILL.md）。",
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "zip",
+                "json"
+              ]
+            },
+            "required": false,
+            "name": "format",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "zip 附件或 JSON 清单",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "content": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "content"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "description",
+                    "files"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/openapi/v1/me": {
       "get": {
         "tags": [
@@ -1206,6 +1328,12 @@
                         },
                         "default": []
                       },
+                      "primaryRepoId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "description": {
                         "type": [
                           "string",
@@ -1278,6 +1406,13 @@
                         },
                         "maxItems": 8,
                         "default": []
+                      },
+                      "submodules": {
+                        "type": "string",
+                        "enum": [
+                          "off",
+                          "recursive"
+                        ]
                       },
                       "createdAt": {
                         "type": "integer",
@@ -1480,6 +1615,12 @@
                       },
                       "default": []
                     },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "description": {
                       "type": [
                         "string",
@@ -1552,6 +1693,13 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -1714,6 +1862,12 @@
                       },
                       "default": []
                     },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "description": {
                       "type": [
                         "string",
@@ -1786,6 +1940,13 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -1973,6 +2134,12 @@
                       },
                       "default": []
                     },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "description": {
                       "type": [
                         "string",
@@ -2045,6 +2212,13 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -2240,7 +2414,7 @@
           "projects"
         ],
         "summary": "设置项目仓库清单（可带私有仓库令牌）",
-        "description": "整体替换项目的仓库清单（最多 8 个，第 0 个是主仓库）：空数组 = 解除全部绑定。\n参数：projectId（路径）；repos[].url、name（可选，小写字母数字与连字符）、defaultBranch（可选，null=远端默认）。\ncredential：私有 HTTPS 仓库的令牌，只写不读——非空存进密钥箱、空串清掉、省略不动；响应里只有 hasToken，永远不回显。\n返回：更新后的项目对象（repos[].hasToken 表明有没有令牌）。\n下一步：用 get_project 复核；之后新建的会话/工作空间克隆与推送都会自动用这个令牌。\n错误：400 仓库超过 8 个或字段不合法；403 无 projects:write 或不是项目管理员；404 项目不存在。\n\n权限范围：`projects:write`\n\nMCP 工具：`project_repos`",
+        "description": "整体替换项目的仓库清单（最多 8 个）：空数组 = 解除全部绑定。\n参数：projectId（路径）；repos[].url、name（可选，小写字母数字与连字符）、defaultBranch（可选，null=远端默认）；primaryRepoId（可选，指定组合会话的主仓库；不指定则不能开组合会话）。\ncredential：私有 HTTPS 仓库的令牌，只写不读——非空存进密钥箱、空串清掉、省略不动；响应里只有 hasToken，永远不回显。\n返回：更新后的项目对象（repos[].hasToken 表明有没有令牌）。\n下一步：用 get_project 复核；之后新建的会话/工作空间克隆与推送都会自动用这个令牌。\n错误：400 仓库超过 8 个或字段不合法；403 无 projects:write 或不是项目管理员；404 项目不存在。\n\n权限范围：`projects:write`\n\nMCP 工具：`project_repos`",
         "security": [
           {
             "bearer": [
@@ -2300,6 +2474,12 @@
                       ]
                     },
                     "maxItems": 8
+                  },
+                  "primaryRepoId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -2379,6 +2559,12 @@
                       },
                       "default": []
                     },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "description": {
                       "type": [
                         "string",
@@ -2451,6 +2637,13 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -2642,6 +2835,12 @@
                       },
                       "default": []
                     },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "description": {
                       "type": [
                         "string",
@@ -2714,6 +2913,13 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -2898,6 +3104,12 @@
                       },
                       "default": []
                     },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "description": {
                       "type": [
                         "string",
@@ -2970,6 +3182,13 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -6948,7 +7167,7 @@
           "sessions"
         ],
         "summary": "在任务下开一条会话",
-        "description": "在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了。\n参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）、assetIds（可选：只带这些资产）。\n资产：不传 assetIds = 用项目生效的全部资产；要排除某个技能/指令时，传完整清单减掉它（清单里的 id 必须对该项目可见，看不见的会被丢掉）。\n返回：会话对象（id、status、model、workspaceId）。\n下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n错误：400 参数不合法；403 无 sessions:write；409 机器不可用或没装该 runtime。\n重试：MCP 调用要给 clientRequestId，同一值重试不会开第二条会话。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_start`",
+        "description": "在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了，必须给一台已登记的远程 Worker。\n参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）、groupId（可选：已有的组合工作空间；多仓项目要先在 Hub 建组，本工具不会自动建组合组）、assetIds（可选：只带这些资产）。\n资产：不传 assetIds = 用项目生效的全部资产；要排除某个技能/指令时，传完整清单减掉它（清单里的 id 必须对该项目可见，看不见的会被丢掉）。\n返回：会话对象（id、status、model、workspaceId）。\n下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n错误：400 参数不合法；403 无 sessions:write；409 机器不可用或没装该 runtime。\n重试：MCP 调用要给 clientRequestId，同一值重试不会开第二条会话。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_start`",
         "security": [
           {
             "bearer": [
@@ -11973,6 +12192,2246 @@
                     "keptReason",
                     "createdAt",
                     "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/projects/{projectId}/workspace-groups": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "新建组合工作空间",
+        "description": "为多仓项目建一个组合组：必须先指定主仓库。cwd 是主仓库 `<groupRoot>/<primary>/`，附加仓在 `../repos/<name>/`。可只选子集（主仓库一定在内）。\n参数：projectId；body.taskId、workerId（MCP 必须给已登记的远程机器，本机不可用）、repoIds?（子集）、fromGroupId? / branches?（在目标机器上按已有分支再建一组，用于验证交接）、sessionId?。\n返回：组（id、root、members[].workspaceId/name/state、primaryRepoId）。准备命令只在主仓库跑。\n下一步：session_start 时把 groupId 传回去；用 workspace_group_add_member 追加仓库。\n错误：400 没指定主仓库或参数不合法 / 403 无 projects:write 或本机不可用 / 404 / 409 机器不支持组合工作空间。\n\n权限范围：`projects:write`\n\nMCP 工具：`workspace_group_create`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "taskId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "workerId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "repoIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "maxItems": 8
+                  },
+                  "fromGroupId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "branches": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "repoId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 80
+                        },
+                        "branch": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200
+                        }
+                      },
+                      "required": [
+                        "repoId",
+                        "branch"
+                      ]
+                    },
+                    "maxItems": 8
+                  },
+                  "sessionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  }
+                },
+                "required": [
+                  "taskId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "已创建",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "projectId": {
+                      "type": "string"
+                    },
+                    "workerId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "root": {
+                      "type": "string"
+                    },
+                    "members": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "repoId": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "ready",
+                              "preparing",
+                              "failed"
+                            ]
+                          },
+                          "error": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "workspaceId",
+                          "repoId",
+                          "name",
+                          "state",
+                          "error"
+                        ]
+                      }
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "layout": {
+                      "type": "string"
+                    },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "ownerTaskId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "sessionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "number"
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "projectId",
+                    "workerId",
+                    "root",
+                    "members",
+                    "state",
+                    "createdAt",
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/workspace-groups/{groupId}": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "看一个组合工作空间",
+        "description": "返回组的成员、路径、状态和错误。参数：groupId。错误：404 / 403。\n\n权限范围：`projects:read`\n\nMCP 工具：`workspace_group_get`",
+        "security": [
+          {
+            "bearer": [
+              "projects:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "groupId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "projectId": {
+                      "type": "string"
+                    },
+                    "workerId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "root": {
+                      "type": "string"
+                    },
+                    "members": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "repoId": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "ready",
+                              "preparing",
+                              "failed"
+                            ]
+                          },
+                          "error": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "workspaceId",
+                          "repoId",
+                          "name",
+                          "state",
+                          "error"
+                        ]
+                      }
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "layout": {
+                      "type": "string"
+                    },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "ownerTaskId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "sessionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "number"
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "projectId",
+                    "workerId",
+                    "root",
+                    "members",
+                    "state",
+                    "createdAt",
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/workspace-groups/{groupId}/members": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "往组合组追加一个仓库",
+        "description": "在已有组合组里添加一个项目仓库（附加仓路径 `../repos/<name>`）。下一轮 session_reply 会注入更新后的成员清单，不必重启会话。\n参数：groupId；body.repoId。\n错误：400 仓库已在组里或不属于该项目 / 403 / 404 / 409。\n\n权限范围：`projects:write`\n\nMCP 工具：`workspace_group_add_member`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "groupId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "repoId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  }
+                },
+                "required": [
+                  "repoId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "projectId": {
+                      "type": "string"
+                    },
+                    "workerId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "root": {
+                      "type": "string"
+                    },
+                    "members": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "repoId": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "ready",
+                              "preparing",
+                              "failed"
+                            ]
+                          },
+                          "error": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "workspaceId",
+                          "repoId",
+                          "name",
+                          "state",
+                          "error"
+                        ]
+                      }
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "layout": {
+                      "type": "string"
+                    },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "ownerTaskId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "sessionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "number"
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "projectId",
+                    "workerId",
+                    "root",
+                    "members",
+                    "state",
+                    "createdAt",
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/workspace-groups/{groupId}/retry": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "重试失败的组合组成员",
+        "description": "只重试 state=failed 的成员，已就绪的不动。参数：groupId。返回更新后的组。错误：403 / 404 / 409 组已经准备好了。\n\n权限范围：`projects:write`\n\nMCP 工具：`workspace_group_retry`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "groupId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "projectId": {
+                      "type": "string"
+                    },
+                    "workerId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "root": {
+                      "type": "string"
+                    },
+                    "members": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "repoId": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "ready",
+                              "preparing",
+                              "failed"
+                            ]
+                          },
+                          "error": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "workspaceId",
+                          "repoId",
+                          "name",
+                          "state",
+                          "error"
+                        ]
+                      }
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "layout": {
+                      "type": "string"
+                    },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "ownerTaskId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "sessionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "number"
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "projectId",
+                    "workerId",
+                    "root",
+                    "members",
+                    "state",
+                    "createdAt",
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/sessions/{sessionId}/git/state": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "按仓看 git 状态和未提交改动",
+        "description": "返回当前分支、未提交文件、ahead、能不能推送/开 PR，以及任务上已关联的 PR。\n参数：sessionId；组合会话必须给 member（仓库名、repoId 或 workspaceId）。\n错误：400 没选仓库（会列出可选成员）/ 403 无 sessions:read 或 files:read / 404。\n\n权限范围：`sessions:read`\n\nMCP 工具：`session_git_state`",
+        "security": [
+          {
+            "bearer": [
+              "sessions:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "sessionId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "required": false,
+            "name": "member",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "isGit": {
+                      "type": "boolean"
+                    },
+                    "branch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "defaultBranch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "hasOrigin": {
+                      "type": "boolean"
+                    },
+                    "repo": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {}
+                    },
+                    "ahead": {
+                      "type": "number"
+                    },
+                    "upstream": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "canPush": {
+                      "type": "boolean"
+                    },
+                    "prBlocked": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "prVia": {
+                      "type": "string"
+                    },
+                    "pullRequests": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "number": {
+                            "type": "number"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string"
+                          },
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "repo": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "url",
+                          "state"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    }
+                  },
+                  "required": [
+                    "isGit",
+                    "branch",
+                    "defaultBranch",
+                    "hasOrigin",
+                    "repo",
+                    "files",
+                    "ahead",
+                    "upstream",
+                    "canPush",
+                    "prBlocked",
+                    "prVia",
+                    "pullRequests"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/sessions/{sessionId}/git/run": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "按仓提交、推送或开 PR",
+        "description": "在指定成员仓库上执行 git：commit 只提交，push 有改动时先提交再推送，pr 再开 PR 并关联到任务。\n参数：sessionId；body.action、message（commit/push 有改动时必填）、title?、body?、member?（组合会话必填，仓库名或 workspaceId）。\n返回：sha、committed、pushed、branch、pullRequest（已关联任务）、compareUrl、notes。\n权限：提交要 session.prompt；推送/PR 要 git.push（已包含在 sessions:write）。本机 Worker 不可用。\n错误：400 没选仓库或默认分支上不能开 PR / 403 / 404 / 409。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_git_run`",
+        "security": [
+          {
+            "bearer": [
+              "sessions:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "sessionId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "commit",
+                      "push",
+                      "pr"
+                    ]
+                  },
+                  "message": {
+                    "type": "string",
+                    "maxLength": 8000
+                  },
+                  "title": {
+                    "type": "string",
+                    "maxLength": 300
+                  },
+                  "body": {
+                    "type": "string",
+                    "maxLength": 65536
+                  },
+                  "member": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  }
+                },
+                "required": [
+                  "action"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sha": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "committed": {
+                      "type": "boolean"
+                    },
+                    "pushed": {
+                      "type": "boolean"
+                    },
+                    "branch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "pullRequest": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "number": {
+                          "type": "number"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "repo": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "url",
+                        "state"
+                      ],
+                      "additionalProperties": {}
+                    },
+                    "compareUrl": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "notes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "sha",
+                    "committed",
+                    "pushed",
+                    "branch",
+                    "pullRequest",
+                    "compareUrl",
+                    "notes"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/tasks/{taskId}/pull-requests": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "同步并列出任务上的 PR",
+        "description": "列出该任务关联的各仓 PR。默认对开着的 PR 有 1 分钟节流；refresh=1 立刻再拉（合并后可据此收起会话）。\n参数：taskId；query.refresh。\n返回：{ pullRequests }。错误：403 / 404。\n\n权限范围：`sessions:read`\n\nMCP 工具：`task_pull_requests`",
+        "security": [
+          {
+            "bearer": [
+              "sessions:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "taskId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true"
+              ]
+            },
+            "required": false,
+            "name": "refresh",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pullRequests": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "number": {
+                            "type": "number"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string"
+                          },
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "repo": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "url",
+                          "state"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    }
+                  },
+                  "required": [
+                    "pullRequests"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/sessions/{sessionId}/settle": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "收起或恢复会话",
+        "description": "settled=true 把会话移出活跃列表（对话保留）；工作区干净时拆 worktree，有未提交/未跟踪/未推送改动则留下并记原因。settled=false 按原分支恢复 worktree。\n还在跑的会话要先 session_cancel。PR 合并后也可先调 task_pull_requests?refresh=1，平台会尝试自动收起。\n参数：sessionId；body.{ settled: boolean }。返回：会话对象。错误：403 无 session.settle（sessions:write 已包含）/ 409 还在跑 / 404。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_settle`",
+        "security": [
+          {
+            "bearer": [
+              "sessions:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "sessionId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "settled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "settled"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "taskId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "minLength": 1
+                    },
+                    "agentId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "origin": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "derive"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "fork"
+                              ]
+                            },
+                            "fromSessionId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "atSeq": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "fromSessionId",
+                            "atSeq"
+                          ]
+                        }
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "running",
+                        "stopped",
+                        "done",
+                        "interrupted",
+                        "failed"
+                      ]
+                    },
+                    "lastSeq": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "turn": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 0
+                    },
+                    "agentSessionRef": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "options": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "boolean"
+                          }
+                        ]
+                      }
+                    },
+                    "optionSpec": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "category": {
+                            "type": "string",
+                            "enum": [
+                              "model",
+                              "agent",
+                              "mode",
+                              "model_config",
+                              "thought_level",
+                              "custom"
+                            ]
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "select",
+                              "boolean"
+                            ]
+                          },
+                          "current": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "choices": {
+                            "type": "array",
+                            "items": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "value"
+                                      ]
+                                    },
+                                    "value": {
+                                      "type": "object",
+                                      "properties": {
+                                        "value": {
+                                          "type": "string"
+                                        },
+                                        "label": {
+                                          "type": "string"
+                                        },
+                                        "description": {
+                                          "type": "string"
+                                        },
+                                        "metadata": {
+                                          "type": "object",
+                                          "properties": {
+                                            "contextWindow": {
+                                              "type": "integer",
+                                              "exclusiveMinimum": 0
+                                            },
+                                            "maxTokens": {
+                                              "type": "integer",
+                                              "exclusiveMinimum": 0
+                                            },
+                                            "defaultThinking": {
+                                              "type": "string"
+                                            },
+                                            "aliases": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "selectable": {
+                                              "type": "boolean"
+                                            },
+                                            "tags": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "required": [
+                                        "value",
+                                        "label"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "value"
+                                  ]
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "group"
+                                      ]
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    },
+                                    "values": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "value": {
+                                            "type": "string"
+                                          },
+                                          "label": {
+                                            "type": "string"
+                                          },
+                                          "description": {
+                                            "type": "string"
+                                          },
+                                          "metadata": {
+                                            "type": "object",
+                                            "properties": {
+                                              "contextWindow": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0
+                                              },
+                                              "maxTokens": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0
+                                              },
+                                              "defaultThinking": {
+                                                "type": "string"
+                                              },
+                                              "aliases": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "selectable": {
+                                                "type": "boolean"
+                                              },
+                                              "tags": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string"
+                                                }
+                                              }
+                                            }
+                                          }
+                                        },
+                                        "required": [
+                                          "value",
+                                          "label"
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "label",
+                                    "values"
+                                  ]
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "category",
+                          "kind",
+                          "current",
+                          "choices"
+                        ]
+                      }
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "chat",
+                        "side"
+                      ]
+                    },
+                    "parentSessionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "workerId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "workspaceId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "groupId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "title": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "settledAt": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "pinned": {
+                      "type": "boolean"
+                    },
+                    "assetIds": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "assetSetIds": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "mcpDisabled": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
+                    },
+                    "createdAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "updatedAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "taskId",
+                    "agentId",
+                    "model",
+                    "origin",
+                    "status",
+                    "lastSeq",
+                    "agentSessionRef",
+                    "options",
+                    "optionSpec",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/projects/{projectId}/cleanup/sweep": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "按项目规则清理临时工作空间",
+        "description": "跑一轮两段清理：先收起已满足条件的会话，下一轮才拆干净的 worktree。组合组原子处理。脏工作区整组留下，items[].reason / action=kept 写明原因。\n参数：projectId。返回：removed/kept/skipped/failed、runId、items（含 reason）。\n下一步：用 workspace_sweep_records 核对记录和孤儿目录。错误：403 无 projects:write / 404。\n\n权限范围：`projects:write`\n\nMCP 工具：`workspace_sweep`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "removed": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "kept": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "skipped": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "failed": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "runId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "runId": {
+                            "type": "string"
+                          },
+                          "projectId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "branch": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "removed",
+                              "kept",
+                              "failed"
+                            ]
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "sizeBytes": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "at": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "runId",
+                          "projectId",
+                          "workspaceId",
+                          "path",
+                          "branch",
+                          "action",
+                          "reason",
+                          "sizeBytes",
+                          "at"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "removed",
+                    "kept",
+                    "skipped"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/projects/{projectId}/cleanup/records": {
+      "get": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "查看项目的清理记录",
+        "description": "返回最近的清理记录（含 kept 原因）以及登记对不上的孤儿目录。参数：projectId。错误：403 / 404。\n\n权限范围：`projects:read`\n\nMCP 工具：`workspace_sweep_records`",
+        "security": [
+          {
+            "bearer": [
+              "projects:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "runId": {
+                            "type": "string"
+                          },
+                          "projectId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "branch": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "removed",
+                              "kept",
+                              "failed"
+                            ]
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "sizeBytes": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "at": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "runId",
+                          "projectId",
+                          "workspaceId",
+                          "path",
+                          "branch",
+                          "action",
+                          "reason",
+                          "sizeBytes",
+                          "at"
+                        ]
+                      }
+                    },
+                    "orphans": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "workerId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "workerId"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "orphans"
                   ]
                 }
               }
