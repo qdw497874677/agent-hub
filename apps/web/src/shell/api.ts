@@ -446,6 +446,12 @@ export const api = {
   /** 项目仓库清单（docs/design/multi-repo.md §7）：同一个 PATCH，只带 repos。 */
   saveProjectRepos: (projectId: string, repos: ProjectReposPatch['repos']) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ repos }) }),
+  /**
+   * 项目默认 Agent：新会话没点名 Agent 时用它。
+   * 同一个 PATCH，只带 defaultAgent；`null` = 清掉（继续跟团队默认 / 运行时默认回落）。
+   */
+  saveProjectDefaultAgent: (projectId: string, defaultAgent: NonNullable<ProjectDto['defaultAgent']> | null) =>
+    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ defaultAgent }) }),
   /** 保存前检查仓库能不能访问：返回每条的结论，`unavailable` 说明这次没查成。 */
   checkProjectRepos: (projectId: string, repos: ProjectReposPatch['repos'], workerId: string | null = null) =>
     post<ProjectReposCheckDto>(`/api/projects/${encodeURIComponent(projectId)}/repos/check`, {
@@ -499,6 +505,12 @@ export const api = {
     call<TaskDto>(`/api/tasks/${taskId}/status`, { method: 'PATCH', body: JSON.stringify({ status, note }) }),
   setTaskSummary: (taskId: string, summary: string) =>
     call<TaskDto>(`/api/tasks/${taskId}/summary`, { method: 'PATCH', body: JSON.stringify({ summary }) }),
+  /** 任务级默认 Agent：盖过项目，`null` = 回到「跟随项目」。 */
+  setTaskDefaultAgent: (taskId: string, defaultAgent: NonNullable<TaskDto['defaultAgent']> | null) =>
+    call<TaskDto>(`/api/tasks/${encodeURIComponent(taskId)}/default-agent`, {
+      method: 'PATCH',
+      body: JSON.stringify({ defaultAgent })
+    }),
   taskLog: (taskId: string, beforeSeq?: number) =>
     call<{ entries: WorkLogEntryDto[]; nextBeforeSeq: number | null }>(
       `/api/tasks/${taskId}/log?limit=50${beforeSeq ? `&beforeSeq=${beforeSeq}` : ''}`

@@ -1,11 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ProjectDto, WorkspaceDto, WorkspaceViewDto } from '../../shell/api.ts';
+import type { CanvasDto, ProjectDto, WorkspaceDto, WorkspaceViewDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
 import { DialogShell, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
 import { useAccount } from '../../shell/auth.tsx';
+import { canAdminister } from '../../shell/account-context.ts';
+import type { DefaultAgentRef } from '../../shell/default-agent.ts';
+import { DefaultAgentEditor } from './default-agent-editor.tsx';
 import { ProjectAssets } from './project-assets.tsx';
 import { BuiltinAssets } from './builtin-assets.tsx';
 import { ProjectContext } from './project-context.tsx';
@@ -118,6 +121,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
           <ProjectRepos project={project} />
           <WorktreeSettings project={project} />
           <ProjectChecksSettings project={project} />
+          <ProjectDefaultAgentSettings project={project} />
           <ProjectAssetSets project={project} />
           <section data-testid="project-spaces" className="mt-5 border-t border-hair pt-4">
             <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-sub text-primary">
@@ -235,6 +239,62 @@ function ConfirmRemove({ pending, projectId, onDone }: { pending: Pending; proje
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * 项目设置 · 代码与工作目录 · 「默认 Agent」。
+ *
+ * 只影响新会话：会话里显式选的 > 任务 > 项目 > 团队默认模型 > 运行时自己的默认。
+ * 运行时的可调项（思考强度）只有画布的 agent 目录里有，和画布共用缓存；
+ * 保存后把画布里的 project 就地换掉，别让别处还看着旧值。
+ */
+function ProjectDefaultAgentSettings({ project }: { project: ProjectDto }) {
+  const account = useAccount();
+  const editable = canAdminister(account);
+  const queryClient = useQueryClient();
+  const [current, setCurrent] = useState<DefaultAgentRef | null>(project.defaultAgent ?? null);
+  const stored = JSON.stringify(project.defaultAgent ?? null);
+  useEffect(() => {
+    setCurrent(project.defaultAgent ?? null);
+  }, [stored]);
+  const canvas = useQuery({
+    queryKey: ['canvas', project.id],
+    queryFn: () => api.canvas(project.id),
+    staleTime: 30_000
+  });
+  const save = useMutation({
+    mutationFn: (agent: DefaultAgentRef | null) => api.saveProjectDefaultAgent(project.id, agent),
+    onSuccess: (next) => {
+      setCurrent(next.defaultAgent ?? null);
+      queryClient.setQueryData<CanvasDto>(['canvas', next.id], (old) =>
+        old === undefined ? old : { ...old, project: next }
+      );
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+    }
+  });
+  return (
+    <section data-testid="project-default-agent" className="mt-5 border-t border-hair pt-4">
+      <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-sub text-primary">
+        默认 Agent
+        <span className="text-meta text-tertiary">新会话没选就用它</span>
+      </h3>
+      <p className="mb-2 text-meta text-tertiary">
+        新会话没选 Agent 时用它。回落顺序：会话里选的 &gt; 任务上的设置（任务详情里改） &gt; 项目这里的设置 &gt; 团队默认模型 &gt;
+        运行时自己的默认；任务上的设置会覆盖项目。模型留空 = 用运行时默认模型。
+      </p>
+      <DefaultAgentEditor
+        prefix="pda"
+        projectId={project.id}
+        value={current}
+        agents={canvas.data?.agents ?? []}
+        editable={editable}
+        saving={save.isPending}
+        saved={save.isSuccess && !save.isPending}
+        error={save.error}
+        onSave={(agent) => save.mutate(agent)}
+      />
+    </section>
   );
 }
 

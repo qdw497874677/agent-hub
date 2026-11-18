@@ -6,6 +6,10 @@ import { SessionServices } from '../../atoms/services-section.tsx';
 import { localTime } from '../../shell/local-time.ts';
 import { NEXT_STATUS, TASK_STATUS_LABEL, TASK_STATUS_TONE } from './task-status.ts';
 import { projectKeys } from '../../shell/query-keys.ts';
+import { useAccount } from '../../shell/auth.tsx';
+import { canAdminister } from '../../shell/account-context.ts';
+import { defaultAgentSummary, type DefaultAgentRef } from '../../shell/default-agent.ts';
+import { DefaultAgentEditor } from './default-agent-editor.tsx';
 
 /** 可选的交接模板（只是一段可插入的文字，不是日志类型）：与 domain 的 HANDOFF_TEMPLATE 同文（web 不依赖 domain，抄一份）。 */
 const HANDOFF_TEMPLATE = '## 已完成\n- \n\n## 进行中\n- \n\n## 下一步\n- \n\n## 风险/待决\n- \n\n## 关键文件\n- ';
@@ -26,6 +30,67 @@ const AUTHOR_TONE: Record<Author['kind'], string> = {
 };
 
 const when = localTime;
+
+/**
+ * 任务详情里的「默认 Agent」一行：没配就是「跟随项目」，配了显示运行时 · 模型 · 思考强度。
+ * 编辑沿用项目设置那一套三件套（前缀 `tda-`）；没有权限时只显示，连「改」都不给。
+ */
+function TaskDefaultAgentRow({ canvas, task, editable }: { canvas: CanvasDto; task: TaskDto; editable: boolean }) {
+  const client = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState<DefaultAgentRef | null>(task.defaultAgent ?? null);
+  const stored = JSON.stringify(task.defaultAgent ?? null);
+  useEffect(() => {
+    setCurrent(task.defaultAgent ?? null);
+  }, [stored]);
+  const save = useMutation({
+    mutationFn: (agent: DefaultAgentRef | null) => api.setTaskDefaultAgent(task.id, agent),
+    onSuccess: (next) => {
+      setCurrent(next.defaultAgent ?? null);
+      void client.invalidateQueries({ queryKey: projectKeys.canvas(canvas.project.id) });
+    }
+  });
+  const options = canvas.agents.find((agent) => agent.id === current?.runtime)?.options ?? [];
+  return (
+    <div data-testid="task-default-agent" className="mt-2 border-t border-hair pt-2">
+      <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-meta">
+        <span className="shrink-0 text-tertiary">默认 Agent</span>
+        <span data-testid="task-default-agent-value" className="min-w-0 break-all text-secondary">
+          {defaultAgentSummary(current, options)}
+        </span>
+        {editable ? (
+          <button
+            type="button"
+            className="shrink-0 text-tertiary hover:text-primary"
+            aria-expanded={open}
+            aria-controls="task-default-agent-form"
+            onClick={() => setOpen(!open)}
+          >
+            {open ? '收起' : current === null ? '设置' : '改'}
+          </button>
+        ) : null}
+      </div>
+      {open && editable ? (
+        <div id="task-default-agent-form" className="mt-2">
+          <p className="mb-2 text-meta text-tertiary">
+            新会话没选 Agent 时用它；任务上的设置会覆盖项目。清掉就跟随项目（没有项目设置再退到团队默认模型）。
+          </p>
+          <DefaultAgentEditor
+            prefix="tda"
+            projectId={canvas.project.id}
+            value={current}
+            agents={canvas.agents}
+            editable
+            saving={save.isPending}
+            saved={save.isSuccess && !save.isPending}
+            error={save.error}
+            onSave={(agent) => save.mutate(agent)}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export function TaskBadge({ status }: { status: TaskDto['status'] }) {
   return (
@@ -51,6 +116,7 @@ export function TaskDetail({
   onOpenSession: (sessionId: string) => void;
 }) {
   const client = useQueryClient();
+  const account = useAccount();
   const task = canvas.tasks.find((t) => t.id === taskId);
   const sessions = canvas.sessions.filter((s) => s.taskId === taskId);
   const [body, setBody] = useState('');
@@ -181,6 +247,7 @@ export function TaskDetail({
               ))}
             </div>
           ) : null}
+          <TaskDefaultAgentRow canvas={canvas} task={task} editable={canAdminister(account)} />
         </header>
 
         {/* 本地服务：没有服务、也起不了服务时整块渲染为空，靠 :empty 收起这条分隔线 */}
