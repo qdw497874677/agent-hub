@@ -7,7 +7,7 @@ import { fail } from './http-error.ts';
 import { effectiveWrites, mcpToolsFor, policyFromEnv } from './openapi/mcp.ts';
 
 export interface ApiTokenRouteOptions {
-  /** hub 设置：外部 MCP 写工具开关（mcpWrites）。不给就只能读环境变量、不能在页面上改。 */
+  /** hub 设置：外部 MCP 只读模式（mcpReadOnly）。不给就只能读环境变量、不能在页面上改。 */
   readonly settings?: { get(): Promise<HubSettings>; save(next: HubSettings): Promise<void> };
 }
 
@@ -19,13 +19,15 @@ export interface ApiTokenRouteOptions {
  * - POST   /api/tokens/:id/rotate     轮换：同权限新令牌 + 旧的吊销（记录保留）
  * - GET    /api/tokens/:id/activity   最近活动（创建 / 轮换 / 吊销 / MCP 调用）
  * - GET    /api/tokens/:id/tools      这个令牌接上 MCP 能看到哪些工具
- * - GET    /api/mcp/access            外部 MCP 的写工具开关（谁都能看；集群管理员能改）
- * - PUT    /api/mcp/access            改开关；writes=null 恢复成沿用环境变量
+ * - GET    /api/mcp/access            外部 MCP 的只读模式（谁都能看；集群管理员能改）
+ * - PUT    /api/mcp/access            改只读模式；readOnly=null 恢复成沿用环境变量
  */
 export function installApiTokens(app: Hono, deps: ApiTokenDeps, principalOf: PrincipalOf, options: ApiTokenRouteOptions = {}): void {
   const need = (c: Parameters<PrincipalOf>[0]) => principalOf(c);
   const unauthorized = { error: { code: 'unauthorized', message: '请先登录' } } as const;
-  const writesSetting = async () => effectiveWrites((await options.settings?.get().catch(() => null))?.mcpWrites ?? null);
+  const accessSetting = async () => effectiveWrites(await options.settings?.get().catch(() => null));
+  /** 对外的形状：页面只关心「是不是只读」，写不写由令牌 scope 决定。 */
+  const accessBody = (access: { writes: boolean; source: 'setting' | 'env' }) => ({ readOnly: !access.writes, source: access.source });
   const canManageMcp = (actor: Principal) => actor.user.clusterAdmin === true && !actor.via;
 
   app.get('/api/tokens', async (c) => {
@@ -66,24 +68,24 @@ export function installApiTokens(app: Hono, deps: ApiTokenDeps, principalOf: Pri
     if (!actor) return c.json(unauthorized, 401);
     const via = await authenticateApiTokenById(deps, actor, c.req.param('id'));
     if (!via.ok) return fail(c, via.error);
-    const { writes } = await writesSetting();
+    const { writes } = await accessSetting();
     const tools = mcpToolsFor(via.value.permissions, { ...policyFromEnv(), writes });
     return c.json({ tools: tools.map((tool) => ({ name: tool.name, readOnly: tool.readOnly })), writes });
   });
   app.get('/api/mcp/access', async (c) => {
     const actor = need(c);
     if (!actor) return c.json(unauthorized, 401);
-    return c.json({ ...(await writesSetting()), canManage: canManageMcp(actor) && options.settings !== undefined });
+    return c.json({ ...accessBody(await accessSetting()), canManage: canManageMcp(actor) && options.settings !== undefined });
   });
   app.put('/api/mcp/access', async (c) => {
     const actor = need(c);
     if (!actor) return c.json(unauthorized, 401);
-    if (!canManageMcp(actor) || !options.settings) return fail(c, { code: 'forbidden', message: '只有集群管理员能改外部接入的写工具开关' });
+    if (!canManageMcp(actor) || !options.settings) return fail(c, { code: 'forbidden', message: '只有集群管理员能改外部接入的只读模式' });
     const parsed = mcpAccessPatchRequest.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return fail(c, { code: 'invalid', message: '请求体不合法：需要 { writes: true | false | null }' });
+    if (!parsed.success) return fail(c, { code: 'invalid', message: '请求体不合法：需要 { readOnly: true | false | null }' });
     const current = await options.settings.get();
-    if ((current.mcpWrites ?? null) !== parsed.data.writes) {
-      await options.settings.save({ ...current, mcpWrites: parsed.data.writes });
+    if ((current.mcpReadOnly ?? null) !== parsed.data.readOnly) {
+      await options.settings.save({ ...current, mcpReadOnly: parsed.data.readOnly });
       await deps.audit
         ?.append({
           id: crypto.randomUUID(),
@@ -91,13 +93,13 @@ export function installApiTokens(app: Hono, deps: ApiTokenDeps, principalOf: Pri
           actorEmail: actor.user.email,
           action: 'settings.update',
           target: 'settings',
-          detail: `mcpWrites=${JSON.stringify(parsed.data.writes)}`,
+          detail: `mcpReadOnly=${JSON.stringify(parsed.data.readOnly)}`,
           at: deps.now(),
           ip: null,
           teamId: actor.user.teamId ?? null
         })
         .catch(() => undefined);
     }
-    return c.json({ ...(await writesSetting()), canManage: true });
+    return c.json({ ...accessBody(await accessSetting()), canManage: true });
   });
 }

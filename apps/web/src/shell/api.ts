@@ -972,11 +972,11 @@ export const tokensApi = {
   tools: (id: string) => call<import('@agent-hub/contract').ApiTokenTools>(`/api/tokens/${encodeURIComponent(id)}/tools`)
 };
 
-/** 外部接入（MCP）：写工具开关。 */
+/** 外部接入（MCP）：只读模式。 */
 export const mcpAccessApi = {
   get: () => call<import('@agent-hub/contract').McpAccessSettings>('/api/mcp/access'),
-  set: (writes: boolean | null) =>
-    call<import('@agent-hub/contract').McpAccessSettings>('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ writes }) })
+  set: (readOnly: boolean | null) =>
+    call<import('@agent-hub/contract').McpAccessSettings>('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ readOnly }) })
 };
 
 // ---------- 资产市场 / 审核 / 通知（ADR 0016） ----------
@@ -1004,9 +1004,9 @@ export const marketApi = {
   installRequests: () =>
     call<{ toDecide: (InstallRequestDto & { asset: string; requester: string })[]; mine: (InstallRequestDto & { asset: string })[] }>('/api/assets/install-requests'),
   decideInstall: (id: string, approve: boolean, reason?: string) => post<unknown>(`/api/assets/install-requests/${enc(id)}`, { approve, reason }),
-  settings: () => call<{ team: (ReviewSettingsView & { teamId: string }) | null; hub: ReviewSettingsView | null }>('/api/assets/settings'),
-  saveSettings: (target: 'team' | 'hub', reviewers: string[], twoReviewers: { global: boolean; mcpStdio: boolean }) =>
-    call<AssetReviewSettingsDto>('/api/assets/settings', { method: 'PUT', body: JSON.stringify({ target, reviewers, twoReviewers }) }),
+  settings: () => call<{ team: (ReviewSettingsView & { teamId: string; noReviewEditable: boolean }) | null; hub: ReviewSettingsView | null }>('/api/assets/settings'),
+  saveSettings: (target: 'team' | 'hub', reviewers: string[], twoReviewers: { global: boolean; mcpStdio: boolean }, teamNoReview?: boolean) =>
+    call<AssetReviewSettingsDto>('/api/assets/settings', { method: 'PUT', body: JSON.stringify({ target, reviewers, twoReviewers, teamNoReview }) }),
   secrets: () => call<{ personal: { name: string; updatedAt: number }[]; team: { name: string; updatedAt: number }[]; teamEditable: boolean }>('/api/assets/secrets'),
   setSecret: (layer: 'personal' | 'team', name: string, value: string) =>
     call<{ ok: true }>(`/api/assets/secrets/${layer}/${enc(name)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
@@ -1018,6 +1018,7 @@ export const marketApi = {
   revision: (id: string, files: AssetUploadFile[]) => post<{ latest: string; submissionId: string | null }>(`/api/assets/items/${enc(id)}/revisions`, { files }),
   check: (id: string) => post<{ latest: string; submissionId: string | null }>(`/api/assets/items/${enc(id)}/check`, {}),
   promote: (id: string) => post<{ submissionId: string }>(`/api/assets/items/${enc(id)}/promote`, {}),
+  toTeam: (id: string) => post<{ submissionId: string; published: boolean }>(`/api/assets/items/${enc(id)}/to-team`, {}),
   revoke: (id: string, reason: string) => post<{ ok: true }>(`/api/assets/items/${enc(id)}/revoke`, { reason }),
   install: (id: string, workerId: string, installed: boolean) =>
     call<{ kind: 'installed' | 'uninstalled' | 'requested' }>(`/api/assets/items/${enc(id)}/workers/${enc(workerId)}`, { method: 'PUT', body: JSON.stringify({ installed }) }),

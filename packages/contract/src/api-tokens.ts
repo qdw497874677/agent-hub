@@ -67,12 +67,12 @@ export const apiTokenToolsSchema = z.object({
 
 /** 外部接入（MCP）的 hub 级设置：写工具开关。null = 没在页面上设过，沿用环境变量 MCP_WRITE。 */
 export const mcpAccessSettingsSchema = z.object({
-  writes: z.boolean(),
+  readOnly: z.boolean(),
   /** 当前值从哪来：页面设置 / 环境变量默认。 */
   source: z.enum(['setting', 'env']),
   canManage: z.boolean()
 });
-export const mcpAccessPatchRequest = z.object({ writes: z.boolean().nullable() });
+export const mcpAccessPatchRequest = z.object({ readOnly: z.boolean().nullable() });
 
 export type ApiTokenInfo = z.infer<typeof apiTokenInfoSchema>;
 export type CreateApiTokenRequest = z.input<typeof createApiTokenRequest>;

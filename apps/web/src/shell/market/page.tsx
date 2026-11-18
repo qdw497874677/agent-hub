@@ -10,7 +10,7 @@ import { formatRoute, type MarketTab } from '../route.ts';
 import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty } from '../admin/shared.tsx';
 import { encodeFiles, readPicked, type PickedFile } from '../admin/asset-files.ts';
 import { ReviewPage } from './review.tsx';
-import { SCOPE_TEXT, STATUS_TEXT, KIND_TEXT } from './labels.ts';
+import { SCOPE_TEXT, STATUS_TEXT, KIND_TEXT, targetText } from './labels.ts';
 
 /**
  * 资产市场（#/assets/<分页>）：人人可用。目录 = 已上架、我看得见的；我的 = 我上架的（含待审 / 被驳回）；
@@ -101,7 +101,7 @@ function AssetCard({ item, showStatus }: { item: MarketAssetDto; showStatus: boo
         <p className="mt-1 text-meta">
           <a className="text-link" href={formatRoute({ page: 'assets', tab: 'pending', reviewId: sub.id })}>
             最近提交：{STATUS_TEXT[sub.status]}
-            {sub.targetScope ? `（申请提升为${SCOPE_TEXT[sub.targetScope]}）` : ''}
+            {sub.targetScope ? `（${targetText(sub.targetScope)}）` : ''}
           </a>
           {sub.reason ? <span className="ml-1 text-secondary">— {sub.reason}</span> : null}
         </p>
@@ -140,7 +140,12 @@ function MaintainButtons({ item }: { item: MarketAssetDto }) {
     await marketApi.promote(item.asset.id);
     setMessage('已申请提升为全局，等 hub 管理员审核');
   });
-  const error = revise.error ?? check.error ?? promote.error;
+  const toTeam = useMarketAction(async () => {
+    const result = await marketApi.toTeam(item.asset.id);
+    setMessage(result.published ? '已上架到团队' : '已提交团队审核');
+  });
+  const error = revise.error ?? check.error ?? promote.error ?? toTeam.error;
+  const teamPending = item.latestSubmission?.status === 'pending' && item.latestSubmission.targetScope === 'team';
   return (
     <>
       {item.asset.source.type === 'git' ? (
@@ -167,6 +172,12 @@ function MaintainButtons({ item }: { item: MarketAssetDto }) {
       {item.published && item.asset.scope !== 'global' && item.asset.scope !== 'personal' ? (
         <button className={SMALL} disabled={promote.isPending} onClick={() => promote.mutate(undefined)}>
           申请提升为全局
+        </button>
+      ) : null}
+      {/* 待审期间按钮收起，状态看上面那行「最近提交：待审核（申请上架到团队）」 */}
+      {item.published && item.asset.scope === 'personal' && !teamPending ? (
+        <button className={SMALL} disabled={toTeam.isPending} onClick={() => toTeam.mutate(undefined)}>
+          上架到团队
         </button>
       ) : null}
       {message || error ? (
@@ -493,6 +504,7 @@ function MarketSettings() {
           target="team"
           value={settings.data.team}
           editable={settings.data.team.editable}
+          noReviewEditable={settings.data.team.noReviewEditable}
           candidates={(team.data?.members ?? []).filter((m) => !m.teamOwner && !m.disabled)}
           showGlobal={false}
         />
@@ -517,20 +529,23 @@ function ReviewSettingsForm({
   target,
   value,
   editable,
+  noReviewEditable = false,
   candidates,
   showGlobal
 }: {
   title: string;
   target: 'team' | 'hub';
-  value: { reviewers: readonly string[]; twoReviewers: { global: boolean; mcpStdio: boolean } };
+  value: { reviewers: readonly string[]; twoReviewers: { global: boolean; mcpStdio: boolean }; teamNoReview?: boolean };
   editable: boolean;
+  noReviewEditable?: boolean;
   candidates: { id: string; displayName: string; email: string }[];
   showGlobal: boolean;
 }) {
   const account = useAccount();
   const [reviewers, setReviewers] = useState<string[]>([...value.reviewers]);
   const [two, setTwo] = useState(value.twoReviewers);
-  const save = useMarketAction(() => marketApi.saveSettings(target, reviewers, two));
+  const [noReview, setNoReview] = useState(value.teamNoReview === true);
+  const save = useMarketAction(() => marketApi.saveSettings(target, reviewers, two, target === 'team' ? noReview : undefined));
   const shown = candidates.filter((c) => c.id !== account?.id);
   return (
     <Section title={title}>
@@ -566,8 +581,17 @@ function ReviewSettingsForm({
             stdio MCP 要两人通过
           </label>
           <p className="text-meta text-tertiary" title="审核人不够两位时自动降到一位">审核人不够两位时降为一位。</p>
+          {target === 'team' ? (
+            <>
+              <label className="flex items-center gap-2 text-meta text-secondary">
+                <input type="checkbox" data-testid="team-no-review" disabled={!noReviewEditable} checked={noReview} onChange={() => setNoReview(!noReview)} />
+                团队资产免审（直接发布）
+              </label>
+              <p className="text-meta text-tertiary">stdio MCP 和提升到全局仍要审核。</p>
+            </>
+          ) : null}
           {save.error ? <p className="text-meta text-rust">{errorText(save.error)}</p> : null}
-          {editable ? (
+          {editable || noReviewEditable ? (
             <div className="flex items-center justify-end gap-2">
               <SaveStatus dirty={false} saved={save.isSuccess} />
               <button className={SMALL} disabled={save.isPending} onClick={() => save.mutate(undefined)}>

@@ -15,7 +15,7 @@ const day = (ms: number) => new Date(ms).toLocaleDateString('zh-CN', { year: 'nu
 
 /**
  * 外部接入（MCP）页（#/access）：给 Claude Code / Cursor / Codex 这类外部 agent 接 hub。
- * 一页说清：端点、写工具开关、接入片段、令牌（预设权限、限定项目、默认 30 天、明文只给一次）、
+ * 一页说清：端点、只读模式、接入片段、令牌（预设权限、限定项目、默认 30 天、明文只给一次）、
  * 测试连接、令牌列表（最近使用、能用几个工具、调用记录、轮换、吊销后记录保留）。
  */
 const KEY = ['api-tokens'] as const;
@@ -35,22 +35,24 @@ function WritesSwitch() {
   return (
     <div className="flex flex-wrap items-center gap-2 px-3 py-2.5" data-testid="access-writes">
       <span className="min-w-0 flex-1">
-        <span className="block text-body text-primary">允许外部 agent 写</span>
+        <span className="block text-body text-primary">只读模式</span>
         <span className="block text-meta text-tertiary">
-          建任务、发起会话、补话、打断。{data.writes ? '已开启' : '已关闭'}
+          {data.readOnly
+            ? '外部 agent 只能读：建任务、发起会话、补话、打断都调不通。'
+            : '写工具按令牌权限生效：令牌有对应 scope 才能写。'}
           {data.source === 'env' ? '（沿用服务器默认）' : ''}
         </span>
       </span>
       {data.canManage ? (
         <button
           role="switch"
-          aria-checked={data.writes}
+          aria-checked={data.readOnly}
           data-testid="access-writes-toggle"
           disabled={set.isPending}
-          className={`rounded-full border px-3 py-1 text-meta ${data.writes ? 'border-strong bg-card text-primary' : 'border-hair text-secondary'}`}
-          onClick={() => set.mutate(!data.writes)}
+          className={`rounded-full border px-3 py-1 text-meta ${data.readOnly ? 'border-strong bg-card text-primary' : 'border-hair text-secondary'}`}
+          onClick={() => set.mutate(!data.readOnly)}
         >
-          {data.writes ? '开' : '关'}
+          {data.readOnly ? '开' : '关'}
         </button>
       ) : (
         <span className="text-meta text-tertiary">管理员可改</span>

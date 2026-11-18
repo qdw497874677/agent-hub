@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS asset_install_requests (
 CREATE TABLE IF NOT EXISTS asset_review_settings (
   key            TEXT PRIMARY KEY,
   two_global     INTEGER NOT NULL DEFAULT 0,
-  two_mcp_stdio  INTEGER NOT NULL DEFAULT 0
+  two_mcp_stdio  INTEGER NOT NULL DEFAULT 0,
+  team_no_review INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS access_grants (
   subject_id    TEXT NOT NULL,
@@ -124,6 +125,9 @@ import { inTransaction } from './tx.ts';
 
 export function createAssetReviewRepository(db: DatabaseSync): AssetReviewRepository {
   db.exec(ASSET_REVIEW_SCHEMA);
+  // 老库补「团队免审」列（默认关）
+  const settingCols = (db.prepare('PRAGMA table_info(asset_review_settings)').all() as Row[]).map((c) => String(c['name']));
+  if (!settingCols.includes('team_no_review')) db.exec('ALTER TABLE asset_review_settings ADD COLUMN team_no_review INTEGER NOT NULL DEFAULT 0');
   const putSub = db.prepare(upsertSql('asset_submissions', [
     'id', 'asset_id', 'digest', 'previous', 'submitted_by', 'origin', 'token_id', 'target_scope', 'status', 'required', 'approvals', 'decided_by', 'reason', 'report', 'created_at', 'decided_at'
   ]));
@@ -138,7 +142,7 @@ export function createAssetReviewRepository(db: DatabaseSync): AssetReviewReposi
   const allRequests = db.prepare('SELECT * FROM asset_install_requests ORDER BY created_at DESC, rowid DESC');
   const getSettings = db.prepare('SELECT * FROM asset_review_settings WHERE key = ?');
   const putSettings = db.prepare(
-    'INSERT INTO asset_review_settings (key, two_global, two_mcp_stdio) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET two_global = excluded.two_global, two_mcp_stdio = excluded.two_mcp_stdio'
+    'INSERT INTO asset_review_settings (key, two_global, two_mcp_stdio, team_no_review) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET two_global = excluded.two_global, two_mcp_stdio = excluded.two_mcp_stdio, team_no_review = excluded.team_no_review'
   );
   const grantsOf = db.prepare('SELECT subject_id FROM access_grants WHERE permission = ? AND resource_type = ? AND resource_id = ? ORDER BY created_at, subject_id');
   const clearGrants = db.prepare('DELETE FROM access_grants WHERE permission = ? AND resource_type = ? AND resource_id = ?');
@@ -183,12 +187,16 @@ export function createAssetReviewRepository(db: DatabaseSync): AssetReviewReposi
       const [type, id] = resourceOf(key);
       const reviewers = (grantsOf.all(REVIEW, type, id) as Row[]).map((r) => String(r['subject_id']));
       if (!row && reviewers.length === 0) return null;
-      return { reviewers, twoReviewers: { global: Number(row?.['two_global'] ?? 0) === 1, mcpStdio: Number(row?.['two_mcp_stdio'] ?? 0) === 1 } };
+      return {
+        reviewers,
+        twoReviewers: { global: Number(row?.['two_global'] ?? 0) === 1, mcpStdio: Number(row?.['two_mcp_stdio'] ?? 0) === 1 },
+        teamNoReview: Number(row?.['team_no_review'] ?? 0) === 1
+      };
     },
     setSettings: async (key, settings: AssetReviewSettings) => {
       const [type, id] = resourceOf(key);
       inTransaction(db, () => {
-        putSettings.run(key, settings.twoReviewers.global ? 1 : 0, settings.twoReviewers.mcpStdio ? 1 : 0);
+        putSettings.run(key, settings.twoReviewers.global ? 1 : 0, settings.twoReviewers.mcpStdio ? 1 : 0, settings.teamNoReview === true ? 1 : 0);
         clearGrants.run(REVIEW, type, id);
         for (const subject of settings.reviewers) addGrant.run(subject, REVIEW, type, id, Date.now());
       });

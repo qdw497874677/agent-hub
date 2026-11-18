@@ -37,6 +37,7 @@ import {
   markNotificationsRead,
   myAssets,
   promoteAsset,
+  promoteAssetToTeam,
   rejectSubmission,
   reviewQueue,
   reviewSettingsFor,
@@ -100,7 +101,10 @@ export function installAssetMarket(app: Hono, deps: AssetReviewDeps, principalOf
   app.put('/api/assets/settings', async (c) => {
     const input = await body(c, reviewSettingsRequest);
     if (!input) return bad(c);
-    return reply(c, await setReviewSettings(deps, me(c), input.target, { reviewers: input.reviewers, twoReviewers: input.twoReviewers }));
+    return reply(
+      c,
+      await setReviewSettings(deps, me(c), input.target, { reviewers: input.reviewers, twoReviewers: input.twoReviewers, teamNoReview: input.teamNoReview }, input.teamId ?? null)
+    );
   });
   app.get('/api/assets/secrets', async (c) => c.json(await scopedSecrets(deps, me(c))));
   app.put('/api/assets/secrets/:layer/:name', async (c) => {
@@ -226,6 +230,10 @@ export function installAssetMarket(app: Hono, deps: AssetReviewDeps, principalOf
   app.post('/api/assets/items/:assetId/promote', async (c) => {
     const result = await promoteAsset(deps, me(c), c.req.param('assetId'));
     return result.ok ? c.json({ submissionId: result.value.id }) : fail(c, result.error);
+  });
+  app.post('/api/assets/items/:assetId/to-team', async (c) => {
+    const result = await promoteAssetToTeam(deps, me(c), c.req.param('assetId'));
+    return result.ok ? c.json({ submissionId: result.value.id, published: result.value.status === 'approved' }) : fail(c, result.error);
   });
   app.post('/api/assets/items/:assetId/revoke', async (c) => {
     const input = await body(c, reasonRequest);

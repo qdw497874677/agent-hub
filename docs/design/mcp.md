@@ -68,4 +68,4 @@ http 服务器（hub 代连的那条）转发 `resources/list`、`resources/temp
 
 - **通知与 sampling**：worker 的 MCP 端点目前每条 HTTP 请求一个无状态 transport，hub relay 也是每条消息新建 Server。要做 `notifications/*` 与 `sampling/createMessage`，需要把 worker 端点改成按会话有状态、hub relay 持久化 `(token, server)` 的 Server，并新增 hub→worker 推送帧（协议 v8）。单独一期，先设计再动协议。
 - 旧式 SSE 传输不支持（`streamable-http` 与 `sse` 都在导入时拒绝）。
-- `MCP_*` 环境变量（`MCP_WRITE` / `MCP_READ_ONLY` / `MCP_MODULES`）只管 hub 自己那套工具，不管用户资产。
+- `MCP_*` 环境变量（`MCP_READ_ONLY` / `MCP_MODULES`；`MCP_WRITE=0` 等于只读，`MCP_WRITE=1` 已是默认行为）只管 hub 自己那套工具，不管用户资产。

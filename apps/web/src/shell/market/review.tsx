@@ -6,7 +6,7 @@ import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../dialog-shell.tsx';
 import { formatRoute } from '../route.ts';
 import { INPUT, SMALL, DANGER, at, errorText, Section, Panel } from '../admin/shared.tsx';
 import { CHANGE_TEXT } from '../admin/assets.tsx';
-import { SCOPE_TEXT, STATUS_TEXT, KIND_TEXT } from './labels.ts';
+import { SCOPE_TEXT, STATUS_TEXT, KIND_TEXT, targetText } from './labels.ts';
 
 /**
  * 审核页（#/assets/review/<提交>）：diff（逐行可评论）、静态扫描、MCP 风险摘要、密钥来源、投票与决定。
@@ -36,7 +36,7 @@ export function ReviewPage({ submissionId }: { submissionId: string }) {
         <span className="text-meta text-tertiary">{KIND_TEXT[d.asset.kind as keyof typeof KIND_TEXT]}</span>
         <span className="text-meta text-tertiary">
           {SCOPE_TEXT[d.asset.scope]}
-          {s.targetScope ? ` → 申请提升为${SCOPE_TEXT[s.targetScope]}` : ''}
+          {s.targetScope ? ` → ${targetText(s.targetScope)}` : ''}
         </span>
         <span data-testid="review-status" className="rounded-sm border border-hair px-1.5 text-meta text-primary">
           {STATUS_TEXT[s.status] ?? s.status}
