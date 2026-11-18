@@ -100,3 +100,13 @@ export const workspaceKeys = {
 export const projectKeys = {
   canvas: (projectId: string) => ['canvas', projectId] as const
 };
+
+/**
+ * 团队设置的读模型。`all` 是 `['team']`，沿用对话框里已有的失效前缀
+ * （改成员 / 改角色后 `invalidateQueries({ queryKey: ['team'] })` 会连默认模型一起刷）。
+ */
+export const teamKeys = {
+  all: ['team'] as const,
+  /** 团队级运行时默认模型：`{ 运行时 id: 模型名 }`。 */
+  agentDefaults: ['team', 'agent-defaults'] as const
+};

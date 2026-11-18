@@ -7,6 +7,7 @@ import { DialogShell } from './dialog-shell.tsx';
 import { AuditView } from './admin/audit.tsx';
 import { TokensDialog } from './tokens-dialog.tsx';
 import { TeamGrants, TeamRoles, roleName } from './team-roles.tsx';
+import { AgentDefaultsSection } from './agent-defaults.tsx';
 import { GitHostTokenPanel } from '../surfaces/workbench/git-dialog.tsx';
 
 /**
@@ -658,6 +659,8 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
               </li>
             ))}
           </ul>
+          {/* 人人能看（成员的输入框只读）；保存按 canManage 收在区块里 */}
+          <AgentDefaultsSection canManage={data!.canManage} />
           {data!.canManage && (
             <>
               {data!.invites.length > 0 && (

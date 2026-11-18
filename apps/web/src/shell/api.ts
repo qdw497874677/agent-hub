@@ -686,6 +686,21 @@ export const teamApi = {
     call<{ transferredProjects: number }>(`/api/team/members/${encodeURIComponent(id)}`, { method: 'DELETE' })
 };
 
+/**
+ * 团队级运行时默认模型：新会话没点名模型时，按运行时用这里的默认。
+ * 所有成员都能读；只有 owner / admin（`team.manage`）能写，其他人 403。
+ * 空串表示「这个运行时没有默认」，整份 `{}` 就是清空。
+ */
+export interface AgentDefaultsDto {
+  readonly defaults: Record<string, string>;
+}
+
+export const agentDefaultsApi = {
+  get: () => call<AgentDefaultsDto>('/api/team/agent-defaults'),
+  set: (defaults: Record<string, string>) =>
+    call<AgentDefaultsDto>('/api/team/agent-defaults', { method: 'PUT', body: JSON.stringify({ defaults }) })
+};
+
 export const adminApi = {
   overview: () => call<AdminOverviewDto>('/api/admin/overview'),
   users: (q: string) => call<AdminUserDto[]>(`/api/admin/users?q=${encodeURIComponent(q)}`),
