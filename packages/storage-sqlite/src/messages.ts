@@ -308,10 +308,16 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
     spawnsForRole: async (projectId, role) => (spawnsForRole.all(projectId, role) as Row[]).map(toSpawn),
     pendingTargets: async () => (pendingTargets.all() as Row[]).map((row) => asSessionId(row.target_session_id as string)),
     async setHandle(record) {
-      const taken = byHandle.get(record.taskId, record.handle) as Row | undefined;
-      if (taken && taken.session_id !== record.sessionId) return false;
-      putHandle.run(record.sessionId, record.taskId, record.handle, record.updatedAt);
-      return true;
+      // 不靠事务外的先查再写（LOW7）：两步之间有并发窗口，两个会话同时抢同一个短名会双双过检，
+      // 撞 (task_id, handle) 唯一索引时整条语句 500。单条 INSERT 自带事务（SQLite 自动提交），
+      // 撞短名唯一索引（该表另一个唯一约束只有 PK session_id，已走 ON CONFLICT）直接返回 false。
+      try {
+        putHandle.run(record.sessionId, record.taskId, record.handle, record.updatedAt);
+        return true;
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('UNIQUE constraint failed: agent_session_handles.task_id')) return false;
+        throw error;
+      }
     },
     toAddress: async (address, after, limit) => (toAddress.all(address, after, limit) as Row[]).map(toMessage),
     async handleOf(sessionId) {
