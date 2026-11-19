@@ -3,7 +3,20 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { addTeamMember, fakeAssetSets, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps } from '@agent-hub/domain/testing';
-import { asAgentId, createAccessPolicy, newWorkspace, permissionsOf, uploadAsset, type AgentDescriptor, type AssetReviewDeps } from '@agent-hub/domain';
+import {
+  asAgentId,
+  createAccessPolicy,
+  createMessageBus,
+  createTask,
+  deriveSession,
+  newWorkspace,
+  permissionsOf,
+  uploadAsset,
+  type AgentDescriptor,
+  type AgentMessage,
+  type AssetReviewDeps,
+  type MessageStore
+} from '@agent-hub/domain';
 import { projectSchema, sessionSchema, taskSchema } from '@agent-hub/contract';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
@@ -37,7 +50,37 @@ function memoryAgentDefaults() {
   };
 }
 
-function harness(rate?: { general?: number; prompt?: number; streams?: number }, enrolledBy: Map<string, string> = new Map()) {
+/** 消息总线的内存 MessageStore（和 domain messaging.test.ts 里的同一份实现）。 */
+function memoryMessages(): MessageStore & { all: Map<string, AgentMessage> } {
+  const all = new Map<string, AgentMessage>();
+  const list = () => [...all.values()].sort((a, b) => a.createdAt - b.createdAt);
+  return {
+    all,
+    save: async (m) => void all.set(m.id, m),
+    byId: async (id) => all.get(id) ?? null,
+    byIdempotencyKey: async (from, key) => list().find((m) => m.fromSessionId === from && m.idempotencyKey === key) ?? null,
+    queuedFor: async (s) => list().filter((m) => m.targetSessionId === s && m.status === 'queued'),
+    deliveredTo: async (s) => list().filter((m) => m.targetSessionId === s && m.status === 'delivered'),
+    byTrace: async (t) => list().filter((m) => m.traceId === t),
+    forSession: async (s, limit) => list().filter((m) => m.fromSessionId === s || m.targetSessionId === s).reverse().slice(0, limit),
+    awaitingApproval: async (p) => list().filter((m) => m.projectId === p && m.status === 'awaiting_approval'),
+    overdue: async (now) => list().filter((m) => m.kind === 'ask' && (m.status === 'queued' || m.status === 'delivered') && m.deadlineAt !== null && m.deadlineAt <= now),
+    config: async () => null,
+    saveConfig: async () => undefined,
+    saveSpawn: async () => undefined,
+    spawnOf: async () => null,
+    spawnsForRole: async () => [],
+    pendingTargets: async () => [],
+    setHandle: async () => true,
+    handleOf: async () => null,
+    toAddress: async (address, after, limit) => list().filter((m) => m.to === address && m.createdAt > after).slice(0, limit),
+    sessionByHandle: async () => null,
+    audit: async () => undefined,
+    auditByTrace: async () => []
+  };
+}
+
+function harness(rate?: { general?: number; prompt?: number; streams?: number }, enrolledBy: Map<string, string> = new Map(), withMessaging = false) {
   const accounts = inMemoryAccounts(() => Date.now());
   const world = inMemoryDeps();
   world.agents.push(fake);
@@ -54,6 +97,37 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     agentDefaults,
     repoAuth: createRepoAuth({ projects: world.deps.projects, workspaces: world.deps.workspaces, secrets: world.deps.secrets })
   };
+  // peers / messages 这几条开放路由要消息总线在场（#243）：轻量内存实现，不真的拉 agent。
+  let messaging: { bus: ReturnType<typeof createMessageBus>; messages: ReturnType<typeof memoryMessages> } | undefined;
+  if (withMessaging) {
+    const messages = memoryMessages();
+    const bus = createMessageBus({
+      now: () => Date.now(),
+      sessions: world.deps.sessions,
+      projects: world.deps.projects,
+      workspaces: world.deps.workspaces,
+      workspaceGroups: world.deps.workspaceGroups,
+      tasks: world.deps.tasks,
+      messages,
+      bots: world.deps.bots,
+      policy: access,
+      principalOf: async (id) => {
+        const user = await accounts.users.byId(id as never);
+        return user ? ({ user, loginId: 'l' } as never) : null;
+      },
+      deliver: async () => ({ ok: true, value: null } as never),
+      spawn: async ({ project, role }) => {
+        const task = createTask({ projectId: project.id, title: 'spawned', goal: '', now: Date.now() });
+        assert.ok(task.ok);
+        await world.deps.tasks.save(task.value);
+        const spawned = deriveSession({ task: task.value, agentId: asAgentId('fake'), model: role.ref.model ?? '', now: Date.now() });
+        assert.ok(spawned.ok);
+        await world.deps.sessions.save(spawned.value);
+        return spawned.value as never;
+      }
+    });
+    messaging = { bus, messages };
+  }
   const apiTokens = inMemoryApiTokens();
   const tokenDeps = { apiTokens, users: accounts.users, projects: world.deps.projects, tokens: accounts.tokens, audit: accounts.audit, now: () => Date.now() };
   const hub = createStreamHub();
@@ -76,6 +150,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     auth: { accounts },
     activity: { audit: accounts.audit!, users: accounts.users },
     assets: { deps: assetReview, audit: accounts.audit!, assetSets: fakeAssetSets() },
+    ...(messaging ? { messaging } : {}),
     openApi: { tokens: tokenDeps, manage: tokenDeps, rate, settings: accounts.settings, audit: accounts.audit!, teams: accounts.teams }
   });
   const browser = () => {
@@ -99,12 +174,12 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     );
     return { status: response.status, headers: response.headers, body: (await response.json().catch(() => null)) as any };
   };
-  return { accounts, world, app, hub, apiTokens, assetsStore, browser, api, enrolledBy };
+  return { accounts, world, app, hub, apiTokens, assetsStore, browser, api, enrolledBy, messaging };
 }
 const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
 
-async function setup(rate?: Parameters<typeof harness>[0], enrolledBy?: Map<string, string>) {
-  const h = harness(rate, enrolledBy);
+async function setup(rate?: Parameters<typeof harness>[0], enrolledBy?: Map<string, string>, withMessaging = false) {
+  const h = harness(rate, enrolledBy, withMessaging);
   const david = h.browser();
   assert.equal((await david('/api/auth/register', post({ email: 'david@b.co', password: PASSWORD }))).status, 200);
   const mint = async (who: ReturnType<typeof h.browser>, scopes: string[], extra: Record<string, unknown> = {}) => {
@@ -1373,3 +1448,109 @@ test('默认 Agent：读/设/清项目与任务、团队默认、解析生效值
   assert.deepEqual(still.body, { defaults: { fake: 'team-model' } });
 });
 
+/** 公共前置：项目 + 任务 + 远端机器 + 工作目录 + 任务会话（events 既有测试的同一套）。 */
+async function waitFixture(setupResult: Awaited<ReturnType<typeof setup>>, name: string) {
+  const { david, mint, api, world } = setupResult;
+  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token;
+  const call = api(token);
+  const project = (await call('/projects', post({ name }))).body as { id: string };
+  const task = (await call('/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body as { id: string };
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online' } as never);
+  const workspace = newWorkspace({ projectId: project.id as never, workerId: 'w1', path: `/srv/${name}`, kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(workspace.ok);
+  await world.deps.workspaces.save(workspace.value);
+  const session = await call('/sessions', post({ taskId: task.id, agentId: 'fake', model: 'm1', workspaceId: workspace.value.id }));
+  assert.equal(session.status, 201, JSON.stringify(session.body));
+  return { token, call, project, session: session.body as { id: string } };
+}
+
+test('events：长轮询按令牌限并发（#261 LOW5）：第 6 条挂起的轮询立刻 429', async () => {
+  const s = await setup();
+  const { call, session, world } = { ...s, ...(await waitFixture(s, 'poll-cap')) };
+  const held = Array.from({ length: 5 }, () => call(`/sessions/${session.id}/events?waitSec=50`));
+  await new Promise((r) => setTimeout(r, 300)); // 让 5 条都进入挂起状态
+  const sixth = await call(`/sessions/${session.id}/events?waitSec=50`);
+  assert.equal(sixth.status, 429, JSON.stringify(sixth.body));
+  assert.equal(sixth.body.error.code, 'rate_limited');
+  assert.ok(sixth.headers.get('retry-after'), '要带 Retry-After');
+
+  // 放一条可投影事件，5 条挂起的轮询全部正常返回；计数随之释放。
+  const current = world.deps.sessions.journal.get(session.id) ?? [];
+  world.deps.sessions.journal.set(session.id, [
+    ...current,
+    { seq: 2, at: Date.now(), turn: 1, event: { kind: 'text', delta: '放行' } }
+  ]);
+  for (const one of held) assert.equal((await one).status, 200);
+  assert.equal((await call(`/sessions/${session.id}/events?waitSec=1`)).status, 200, '释放后不再 429');
+  // 换一个令牌互不影响（上限按令牌计）。
+  const other = (await s.mint(s.david, ['projects:read', 'sessions:read'])).token;
+  assert.equal((await s.api(other)(`/sessions/${session.id}/events`)).status, 200);
+});
+
+test('events：客户端断开后长轮询立刻停（#261 LOW5）：abort 后不再打库', async () => {
+  const s = await setup();
+  const { token, session, world, app } = { ...s, ...(await waitFixture(s, 'poll-abort')) };
+  let polls = 0;
+  const original = world.deps.sessions.eventsAfter.bind(world.deps.sessions);
+  (world.deps.sessions as { eventsAfter: typeof original }).eventsAfter = async (...args: Parameters<typeof original>) => {
+    polls += 1;
+    return original(...args);
+  };
+
+  const ac = new AbortController();
+  const pending = app.fetch(
+    new Request(`http://hub/openapi/v1/sessions/${session.id}/events?waitSec=50`, {
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+      signal: ac.signal
+    })
+  );
+  await new Promise((r) => setTimeout(r, 1200)); // 至少两轮 500ms 的轮询
+  assert.ok(polls >= 2, `等待期间应该已经在打库（${polls} 次）`);
+  const whileWaiting = polls;
+  ac.abort();
+  const started = Date.now();
+  const response = await pending;
+  assert.ok(Date.now() - started < 2000, `abort 后应该立刻返回，实际等了 ${Date.now() - started}ms`);
+  assert.equal(response.status, 200);
+  await response.text(); // 排干响应体，避免悬挂句柄
+  const afterAbort = polls;
+  await new Promise((r) => setTimeout(r, 1100));
+  assert.equal(polls, afterAbort, 'abort 后不应该再出现新的 eventsAfter 调用');
+  assert.ok(afterAbort >= whileWaiting, `abort 应该立刻停轮询（等待中 ${whileWaiting} 次，之后 ${afterAbort} 次）`);
+});
+
+test('#243：容器会话在开放 API 上也按项目限定（events / messages / peers）', async () => {
+  const s = await setup(undefined, undefined, true);
+  const { david, mint, api, world, messaging } = s;
+  assert.ok(messaging, '测试要装消息总线');
+  const full = (await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token;
+  const call = api(full);
+  const me = (await call('/me')).body.user.id as string;
+  const projectA = (await call('/projects', post({ name: 'container-a' }))).body as { id: string };
+  const projectB = (await call('/projects', post({ name: 'container-b' }))).body as { id: string };
+
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online' } as never);
+  const wsB = newWorkspace({ projectId: projectB.id as never, workerId: 'w1', path: '/srv/container-b', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(wsB.ok);
+  await world.deps.workspaces.save(wsB.value);
+  // 容器会话（没有任务）：落在项目 B 的机器和工作目录上，归属按 workspaceId 反推。
+  const container = deriveSession({ agentId: asAgentId('fake'), model: 'm1', now: 1, createdBy: me, workerId: 'w1', workspaceId: wsB.value.id });
+  assert.ok(container.ok);
+  await world.deps.sessions.save(container.value);
+
+  const scopedA = api((await mint(david, ['projects:read', 'sessions:read', 'sessions:write', 'workers:read'], { projectIds: [projectA.id] })).token);
+  const scopedB = api((await mint(david, ['projects:read', 'sessions:read', 'sessions:write', 'workers:read'], { projectIds: [projectB.id] })).token);
+  const path = `/sessions/${container.value.id}`;
+  const denied = async (label: string, got: { status: number; text?: string; body?: unknown }) =>
+    assert.ok([403, 404].includes(got.status), `${label} 应被项目限定拦下：${got.status} ${JSON.stringify(got.body ?? got.text ?? '')}`);
+
+  await denied('events', await scopedA(`${path}/events`));
+  await denied('peers', await scopedA(`${path}/peers`));
+  await denied('messages', await scopedA(`${path}/messages`, post({ kind: 'send', body: '你好' })));
+
+  // 对照组：限定在项目 B 的令牌，三条路由都能用。
+  assert.equal((await scopedB(`${path}/events`)).status, 200);
+  assert.equal((await scopedB(`${path}/peers`)).status, 200);
+  const sent = await scopedB(`${path}/messages`, post({ kind: 'send', body: '你好' }));
+  assert.equal(sent.status, 201, JSON.stringify(sent.body));
+});

@@ -898,18 +898,36 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
-  /** 长轮询（P1d）：每 500ms 看一次，满足条件或到点就返回；不取消任何东西。 */
-  const waitUntil = async (seconds: number | undefined, done: () => Promise<boolean>): Promise<void> => {
-    if (!seconds) return;
-    const until = Date.now() + Math.min(seconds, 50) * 1000;
-    while (Date.now() < until && !(await done())) await new Promise((resolve) => setTimeout(resolve, 500));
+  /** 在途长轮询按令牌计数（LOW5）：上限与 SSE 的事件流一致。 */
+  const openPolls = new Map<string, number>();
+  /** 长轮询（P1d）：每 500ms 看一次，满足条件或到点就返回；客户端断开（signal.abort）立刻停。 */
+  const waitUntil = async (c: Context, seconds: number | undefined, done: () => Promise<boolean>): Promise<Response | null> => {
+    if (!seconds) return null;
+    const token = principal(c).via!.tokenId;
+    const open = openPolls.get(token) ?? 0;
+    if (open >= maxStreams) return tooMany(c, 5, `每个令牌最多同时挂起 ${maxStreams} 条长轮询`);
+    openPolls.set(token, open + 1);
+    try {
+      const until = Date.now() + Math.min(seconds, 50) * 1000;
+      while (Date.now() < until && !c.req.raw.signal.aborted && !(await done())) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } finally {
+      const left = (openPolls.get(token) ?? 1) - 1;
+      if (left <= 0) openPolls.delete(token);
+      else openPolls.set(token, left);
+    }
+    return null;
   };
   on(routes.getSession, async (c) => {
     const id = asSessionId(c.req.param('sessionId') ?? '');
     const session = await deps.sessions.byId(id);
     if (!session) return fail(c, notFound('会话不存在'));
     const query = valid<{ waitSec?: number }>(c, 'query');
-    if (session.status === 'running') await waitUntil(query.waitSec, async () => (await deps.sessions.byId(id))?.status !== 'running');
+    if (session.status === 'running') {
+      const limited = await waitUntil(c, query.waitSec, async () => (await deps.sessions.byId(id))?.status !== 'running');
+      if (limited) return limited;
+    }
     return c.json((await deps.sessions.byId(id)) ?? session);
   });
   on(routes.prompt, async (c) => {
@@ -985,20 +1003,30 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   const keepEvents = (entries: Awaited<ReturnType<typeof deps.sessions.eventsAfter>>, sinceTurn: number | undefined) =>
     sinceTurn === undefined ? entries : entries.filter((entry) => entry.turn !== undefined && entry.turn >= sinceTurn);
   on(routes.events, async (c) => {
+    const actor = principal(c);
     const sessionId = asSessionId(c.req.param('sessionId') ?? '');
-    if (!(await deps.sessions.byId(sessionId))) return fail(c, notFound('会话不存在'));
+    const target = await deps.sessions.byId(sessionId);
+    if (!target) return fail(c, notFound('会话不存在'));
+    // #243：容器会话没有任务，installAccess 的 projectOfRef 会放行；这里按归属反推项目再判 project.read。
+    const project = await projectOfSession(deps, target);
+    const allowed = await authorizeProject(deps.access, actor, project, 'session.read');
+    if (!allowed.ok) return fail(c, allowed.error);
     const query = valid<{ after?: number; sinceTurn?: number; waitSec?: number }>(c, 'query');
     const after = query.after ?? 0;
     let scanned = await deps.sessions.eventsAfter(sessionId, after);
     let entries = keepEvents(scanned, query.sinceTurn);
     // 长轮询等「可投影」的事件：prompt/thinking 等不会被投影的条目不能结束等待，也不能把 nextAfter 卡住。
     if (!entries.some(isProjectableEntry) && query.waitSec) {
-      await waitUntil(query.waitSec, async () => {
+      const limited = await waitUntil(c, query.waitSec, async () => {
         scanned = await deps.sessions.eventsAfter(sessionId, after);
         return keepEvents(scanned, query.sinceTurn).some(isProjectableEntry);
       });
-      scanned = await deps.sessions.eventsAfter(sessionId, after);
-      entries = keepEvents(scanned, query.sinceTurn);
+      if (limited) return limited;
+      // LOW5：客户端已断开就不再打库收尾——连接都关了，这次扫描没人读。
+      if (!c.req.raw.signal.aborted) {
+        scanned = await deps.sessions.eventsAfter(sessionId, after);
+        entries = keepEvents(scanned, query.sinceTurn);
+      }
     }
     const kept = await refreshAuthors(ctx.activity, entries);
     const payload = projectEvents(kept, after, lastJournalSeq(scanned, after));
@@ -1044,7 +1072,14 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   });
   on(routes.sessionPeers, async (c) => {
     if (!ctx.messaging) return noMessaging(c);
-    const peers = await ctx.messaging.bus.peers(asSessionId(c.req.param('sessionId') ?? ''));
+    const actor = principal(c);
+    const target = await deps.sessions.byId(asSessionId(c.req.param('sessionId') ?? ''));
+    if (!target) return fail(c, notFound('会话不存在'));
+    // #243：容器会话按归属反推项目，再过 project.read（installAccess 对无任务会话放行）。
+    const project = await projectOfSession(deps, target);
+    const allowed = await authorizeProject(deps.access, actor, project, 'session.read');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const peers = await ctx.messaging.bus.peers(target.id);
     return peers.ok ? c.json({ peers: peers.value }) : fail(c, peers.error);
   });
   on(routes.sessionMessage, async (c) => {
@@ -1052,6 +1087,10 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const actor = principal(c);
     const target = await deps.sessions.byId(asSessionId(c.req.param('sessionId') ?? ''));
     if (!target) return fail(c, notFound('会话不存在'));
+    // #243：容器会话没有任务，installAccess 会放行；先按归属反推项目、按 session.prompt 判（和普通会话一致），再查机器。
+    const project = await projectOfSession(deps, target);
+    const allowed = await authorizeSession(deps.access, actor, project, target, 'session.prompt');
+    if (!allowed.ok) return fail(c, allowed.error);
     // 消息会让目标会话开新一轮：和 session_reply 一样，所在机器要过 authorizeWorker（本机 Worker 永远不对令牌开放）。
     const worker = await authorizeWorker(deps.access, actor, target.workerId);
     if (!worker.ok) return fail(c, worker.error);
@@ -1079,10 +1118,11 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const settled = (got: { message: { kind: string; status: string }; reply: unknown }) =>
       got.reply !== null || got.message.kind === 'reply' || (got.message.kind === 'send' && got.message.status !== 'queued' && got.message.status !== 'held');
     if (!settled(first.value)) {
-      await waitUntil(valid<{ waitSec?: number }>(c, 'query').waitSec, async () => {
+      const limited = await waitUntil(c, valid<{ waitSec?: number }>(c, 'query').waitSec, async () => {
         const again = await bus.externalMessage(inboxId, messageId);
         return again.ok && settled(again.value);
       });
+      if (limited) return limited;
     }
     const got = await bus.externalMessage(inboxId, messageId);
     if (!got.ok) return fail(c, got.error);
@@ -1123,12 +1163,28 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
           : `删除后 ${models.length} 个模型将不可用。`
     };
   };
+  /** LOW6：机器维度的路由覆盖只给能看见这台机器的令牌——按 worker.read 逐台过滤；没有 workers:read 就整个字段省略。 */
+  const visibleWorkerRouting = async (
+    deps: Deps,
+    actor: Principal,
+    providers: { workerRouting: () => Promise<Record<string, unknown>> }
+  ): Promise<Record<string, unknown> | undefined> => {
+    if (!can(actor, 'worker.read')) return undefined;
+    const readable = await workerReader(deps.access, actor);
+    const visible: Record<string, unknown> = {};
+    for (const [workerId, routing] of Object.entries(await providers.workerRouting())) {
+      if (await readable(workerId)) visible[workerId] = routing;
+    }
+    return visible;
+  };
   on(routes.providerList, async (c) => {
     if (!ctx.providers) return noProviders(c);
     const actor = principal(c);
     if (!can(actor, 'provider.read')) return fail(c, forbidden('令牌没有 providers:read'));
     const listed = await listProviders(ctx.providers.deps, actor);
-    return c.json({ providers: listed.map(publicProvider), workerRouting: await ctx.providers.deps.providers.workerRouting() });
+    // LOW6：workerRouting 只含调用方能看见的机器；没有 workers:read 的令牌整个字段省略。
+    const workerRouting = await visibleWorkerRouting(deps, actor, ctx.providers.deps.providers);
+    return workerRouting === undefined ? c.json({ providers: listed.map(publicProvider) }) : c.json({ providers: listed.map(publicProvider), workerRouting });
   });
   on(routes.providerCreate, async (c) => {
     if (!ctx.providers) return noProviders(c);
