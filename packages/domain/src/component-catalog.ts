@@ -191,6 +191,8 @@ export interface ComponentJobResult {
   readonly integrityMismatch?: boolean;
   readonly ignoredScripts?: boolean;
   readonly scripts?: { package: string; script: string }[];
+  /** 内置浏览器：下载完成但缺系统库（要 root 装系统包），浏览器起不来——列缺哪些。 */
+  readonly missingDeps?: readonly string[];
   readonly exitCode?: number | null;
   readonly durationMs?: number;
 }

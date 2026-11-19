@@ -195,9 +195,8 @@ export async function createRuntimeManager(options: RuntimeManagerOptions): Prom
                 npm: components.npm,
                 env,
                 log,
-                run: async (file, args, runOptions) => {
-                  await runCommand(file, args, { cwd: runOptions.cwd, env: runOptions.env, signal: controller.signal, onLine: log });
-                }
+                run: async (file, args, runOptions) =>
+                  runCommand(file, args, { cwd: runOptions.cwd, env: runOptions.env, signal: controller.signal, onLine: log })
               }
             );
       if (outcome.ok) await options.onChange?.();

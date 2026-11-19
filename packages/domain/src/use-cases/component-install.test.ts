@@ -6,7 +6,7 @@ import type { CatalogComponent, NpmArtifactInfo, WorkerComponentPin } from '../c
 import type { RuntimeJob } from '../runtime-install.ts';
 import { placeSession, type WorkerStatus } from '../worker.ts';
 import type { AccessPolicy } from './authorization.ts';
-import { inventoryViewer, redactInventory } from './authorization.ts';
+import { inventoryViewer, redactInventory, LOCAL_WORKER_DENIED } from './authorization.ts';
 import { componentJobFinished, listComponentCatalog, reviewComponent, startBundleJob, startComponentJob, submitComponent, type ComponentDeps } from './component-install.ts';
 
 const person = (id: string, role: User['role'], clusterAdmin = false): Principal =>
@@ -247,6 +247,29 @@ test('整套安装（P3）：每项按单装规则检查，一项不行整体拒
   assert.deepEqual(pins.map((p) => p.componentId).sort(), ['a', 'b']);
   const dup = await startBundleJob(deps, member, 'w1', { components: [{ componentId: 'a', version: '1.0.0' }, { componentId: 'a', version: '1.0.0' }] });
   assert.equal(!dup.ok && dup.error.code, 'invalid');
+});
+
+test('令牌装组件：管理员 / 机器登记人的个人令牌能装，陌生令牌和本机不能；审计带令牌名', async () => {
+  const { deps, jobs, entries, workers } = setup();
+  workers.push(machine('w1'), machine('hub-local', { origin: 'local' }));
+  await submitComponent(deps, david, submission);
+  await reviewComponent(deps, david, 'demo', '1.0.0', { approve: true });
+  const asToken = (p: Principal): Principal => ({ user: p.user, via: { tokenId: 'tok-1', name: 'ci', kind: 'personal', permissions: [] } }) as unknown as Principal;
+  // runtime.component.install 永远不在令牌权限里：能不能装只看账号是管理员还是机器登记人
+  const adminToken = await startComponentJob(deps, asToken(david), 'w1', { componentId: 'demo', version: '1.0.0', action: 'install_component' });
+  assert.ok(adminToken.ok, adminToken.ok ? '' : adminToken.error.message);
+  assert.match(entries[0]?.detail ?? '', /经令牌 ci/);
+  const ownerToken = await startComponentJob(deps, asToken(member), 'w1', { componentId: 'demo', version: '1.0.0', action: 'install_component' });
+  assert.ok(ownerToken.ok, ownerToken.ok ? '' : ownerToken.error.message);
+  const strangerToken = await startComponentJob(deps, asToken(stranger), 'w1', { componentId: 'demo', version: '1.0.0', action: 'install_component' });
+  assert.equal(!strangerToken.ok && strangerToken.error.code, 'forbidden');
+  assert.match(strangerToken.ok ? '' : strangerToken.error.message, /登记人/);
+  const localToken = await startComponentJob(deps, asToken(david), 'hub-local', { componentId: 'demo', version: '1.0.0', action: 'install_component' });
+  assert.equal(!localToken.ok && localToken.error.code, 'forbidden');
+  assert.equal(localToken.ok ? '' : localToken.error.message, LOCAL_WORKER_DENIED);
+  const bundleToken = await startBundleJob(deps, asToken(stranger), 'w1', { components: [{ componentId: 'demo', version: '1.0.0' }] });
+  assert.equal(!bundleToken.ok && bundleToken.error.code, 'forbidden');
+  assert.equal(jobs.length, 2);
 });
 
 test('内置浏览器：一键装 = 按清单提交（哈希必须对得上）→ 管理员批准 → 发安装任务；成员不能装', async () => {

@@ -20,8 +20,8 @@ export interface ComponentInstallOptions {
   readonly node: string;
   /** npm-cli.js（和 Worker 同一个 node 配套）；null = 没法装。 */
   readonly npm: string | null;
-  /** 真正跑命令（runtime-jobs 的 runCommand，带超时和日志）。 */
-  readonly run: (file: string, args: readonly string[], options: { cwd: string; env: Record<string, string> }) => Promise<void>;
+  /** 真正跑命令（runtime-jobs 的 runCommand，带超时和日志）；成功时返回完整输出（核对用）。 */
+  readonly run: (file: string, args: readonly string[], options: { cwd: string; env: Record<string, string> }) => Promise<string>;
   readonly env: Record<string, string>;
   readonly log: (line: string) => void;
   readonly now?: () => number;
@@ -92,6 +92,49 @@ interface Staged {
 
 type StageResult = { ok: true; staged: Staged } | { ok: false; outcome: ComponentOutcome };
 
+/**
+ * 装完 Chromium 后核对动态库（Linux）：headless chrome 起不来多半是缺系统库（libnss3 之类），
+ * ldd 一查就知道（playwright 自己只在启动时报错）。返回缺的库名（去重排序）；
+ * 非 Linux / 找不到下载目录或二进制 / ldd 不可用时返回空数组（不拦安装）。
+ */
+async function missingBrowserLibraries(options: ComponentInstallOptions, staging: string): Promise<string[]> {
+  if (process.platform !== 'linux') return [];
+  const browsersRoot =
+    options.env['PLAYWRIGHT_BROWSERS_PATH'] && options.env['PLAYWRIGHT_BROWSERS_PATH'] !== '0'
+      ? options.env['PLAYWRIGHT_BROWSERS_PATH']
+      : options.env['HOME']
+        ? join(options.env['HOME'], '.cache', 'ms-playwright')
+        : null;
+  if (!browsersRoot || !existsSync(browsersRoot)) {
+    options.log('提示：没找到 Chromium 的下载目录，跳过系统库核对');
+    return [];
+  }
+  const binaries: string[] = [];
+  for (const entry of readdirSync(browsersRoot)) {
+    if (!entry.startsWith('chromium')) continue;
+    for (const bin of ['chrome-linux/chrome', 'chrome-linux/headless_shell']) {
+      const path = join(browsersRoot, entry, bin);
+      if (existsSync(path)) binaries.push(path);
+    }
+  }
+  if (!binaries.length) {
+    options.log('提示：下载目录里没有 chromium 二进制，跳过系统库核对');
+    return [];
+  }
+  // ldd 每个二进制，收集 not found；脚本永远退出码 0，输出交给这里解析（run 返回完整输出）
+  const script = `for f in "$@"; do [ -f "$f" ] || continue; ldd "$f" 2>/dev/null | grep 'not found' || true; done | sort -u`;
+  const output = await options.run('/bin/sh', ['-c', script, 'verify-browser-deps', ...binaries], { cwd: staging, env: options.env });
+  return [...new Set(
+    output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.includes('not found'))
+      .map((line) => line.split(/\s+/)[0] ?? '')
+  )]
+    .filter(Boolean)
+    .sort();
+}
+
 /** 装进暂存目录并核对（不切换）。失败时暂存已删。 */
 async function stageComponent(options: ComponentInstallOptions, spec: ComponentJobSpec, elapsed: () => number): Promise<StageResult> {
   const base = join(options.root, spec.runtime, spec.componentId);
@@ -150,6 +193,20 @@ async function stageComponent(options: ComponentInstallOptions, spec: ComponentJ
     if (installsBrowser(spec)) {
       options.log('$ playwright-core install chromium（下载到 ~/.cache/ms-playwright）');
       await options.run(options.node, [join(pkgDir, 'cli.js'), 'install', 'chromium'], { cwd: staging, env: { ...options.env } });
+      // 下载完成 ≠ 能用：缺系统库（要 root 装系统包）时浏览器起不来。明说缺哪些，不静默失败、不假装装好。
+      const missingDeps = await missingBrowserLibraries(options, staging);
+      if (missingDeps.length) {
+        rmSync(staging, { recursive: true, force: true });
+        options.log(`缺系统库：${missingDeps.join('、')}`);
+        return {
+          ok: false,
+          outcome: {
+            ok: false,
+            message: `${spec.componentId}：Chromium 下载完成，但机器缺系统库（${missingDeps.slice(0, 8).join('、')}）：浏览器起不来。缺的要 root 装系统包——root 下跑 npx playwright install-deps chromium（或 apt / dnf 装对应的包）；装好后重新发起安装任务。`,
+            result: { missingDeps, exitCode: 0, durationMs: elapsed() }
+          }
+        };
+      }
     }
     rmSync(join(staging, '.npm-cache'), { recursive: true, force: true });
     writeFileSync(

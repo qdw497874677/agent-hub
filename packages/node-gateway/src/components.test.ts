@@ -18,7 +18,7 @@ function options(root: string, registry: MockRegistry, extra: Partial<ComponentI
     node: process.execPath,
     npm: npmCli(),
     env: { PATH: process.env['PATH'] ?? '', npm_config_registry: registry.url },
-    run: async (file, args, opts) => void (await runCommand(file, args, { ...opts, signal: AbortSignal.timeout(60_000), onLine: (line) => lines.push(line) })),
+    run: async (file, args, opts) => runCommand(file, args, { ...opts, signal: AbortSignal.timeout(60_000), onLine: (line) => lines.push(line) }),
     log: (line) => lines.push(line),
     lines,
     ...extra
@@ -154,6 +154,7 @@ test('git 来源（P4）：锁文件钉住的必须是审核时的提交；openc
       mkdirSync(join(opts.cwd, 'node_modules', 'oc-plugin'), { recursive: true });
       writeFileSync(join(opts.cwd, 'node_modules', 'oc-plugin', 'package.json'), JSON.stringify({ name: 'oc-plugin', version: '0.1.0' }));
       writeFileSync(join(opts.cwd, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/oc-plugin': { version: '0.1.0', resolved: `git+ssh://git@example.com/org/oc-plugin.git#${lockCommit}` } } }));
+      return '';
     }
   };
   const gitSpec: ComponentJobSpec = {
@@ -201,4 +202,59 @@ test('内置浏览器组件：只认 playwright-core + browser:chromium 才下�
     symlinkSync(V, join(root, 'pi', id, 'current'));
   }
   assert.deepEqual(hubComponentDirs(root, 'pi').map((dir) => dir.split('/').pop()), ['demo-pi-ext']);
+});
+
+test('内置浏览器缺系统库：Chromium 下载完成但 ldd 报缺库 → 安装失败、不切换不钉住、报错点名要 root；修复后重装成功', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'comp-deps-'));
+  const browsers = mkdtempSync(join(tmpdir(), 'comp-browsers-')); // 相当于 PLAYWRIGHT_BROWSERS_PATH，隔离的假目录，不碰真实 ~/.cache/ms-playwright
+  const lines: string[] = [];
+  const INTEGRITY = `sha512-${'A'.repeat(44)}==`;
+  const browserSpec: ComponentJobSpec = {
+    componentId: 'chromium',
+    runtime: 'pi',
+    packageName: 'playwright-core',
+    version: '0.55.0',
+    resolved: 'https://registry.example.com/playwright-core/-/playwright-core-0.55.0.tgz',
+    integrity: INTEGRITY,
+    provides: [{ capability: 'browser:chromium', mode: 'machine-tool' }],
+    ignoreScripts: true,
+    expectedCurrent: null
+  };
+  let depsFixed = false;
+  const fake: ComponentInstallOptions = {
+    root,
+    node: process.execPath,
+    npm: '/fake/npm-cli.js',
+    env: { PLAYWRIGHT_BROWSERS_PATH: browsers },
+    log: (line) => lines.push(line),
+    run: async (_file, args, opts) => {
+      if (args[0] === '-c') return depsFixed ? '' : '  libnss3.so => not found\n\tlibnspr4.so => not found'; // ldd 核对脚本
+      if (args.includes('chromium')) {
+        // 假装下载好了 Chromium 二进制
+        mkdirSync(join(browsers, 'chromium-1234', 'chrome-linux'), { recursive: true });
+        writeFileSync(join(browsers, 'chromium-1234', 'chrome-linux', 'chrome'), '#!/bin/sh\n');
+        return '';
+      }
+      // npm install：写出包 + 锁文件（含完整性）
+      mkdirSync(join(opts.cwd, 'node_modules', 'playwright-core'), { recursive: true });
+      writeFileSync(join(opts.cwd, 'node_modules', 'playwright-core', 'package.json'), JSON.stringify({ name: 'playwright-core', version: browserSpec.version }));
+      writeFileSync(join(opts.cwd, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/playwright-core': { version: browserSpec.version, resolved: browserSpec.resolved, integrity: INTEGRITY } } }));
+      return '';
+    }
+  };
+  const failed = await installComponent(fake, browserSpec);
+  assert.equal(failed.ok, false);
+  assert.equal(failed.refused, undefined, '缺库是失败不是拒绝（需要的是 root 装系统包，不是改策略）');
+  assert.match(failed.message, /Chromium 下载完成/);
+  assert.match(failed.message, /缺系统库（libnspr4\.so、libnss3\.so）/);
+  assert.match(failed.message, /root/);
+  assert.match(failed.message, /install-deps chromium/);
+  assert.deepEqual(failed.result.missingDeps, ['libnspr4.so', 'libnss3.so']);
+  assert.ok(lines.some((line) => line.includes('libnss3.so')), '日志里也要点名');
+  assert.ok(!existsSync(join(root, 'pi', 'chromium', 'current')), '缺库不切换 current、不钉住');
+  depsFixed = true;
+  const ok = await installComponent(fake, browserSpec);
+  assert.ok(ok.ok, ok.message);
+  assert.ok(existsSync(join(root, 'pi', 'chromium', 'current')));
+  assert.equal(ok.result.missingDeps, undefined);
 });

@@ -522,6 +522,40 @@ export const routes = {
       }))
     }
   }, { module: 'workers', need: 'worker.read', expose: 'list_models' }),
+  workerBrowserStatus: route('workers:read', {
+    method: 'get', path: `${V1}/workers/browser-status`, tags: ['workers'], summary: '各机器的内置浏览器（Chromium）就绪状态',
+    description:
+      '逐台机器看内置 Chromium（Playwright）能不能用：ready / installing / blocker（不在线、Worker 太旧、没有 pi 运行时…），以及最近一次安装任务 installJob（jobId、state、message——进度和失败原因从这查，失败也看得到）。\n' +
+      '权限：workers:read（可见性同 list_workers）。\n' +
+      '下一步：没有就绪机器且也没在装，用 install_builtin_browser 发安装任务；会话 requires browser:chromium 时也会自动挑能装的机器装。\n' +
+      '错误：401 令牌无效；403 无 workers:read。',
+    responses: {
+      200: json(
+        z.array(
+          z.object({
+            workerId: z.string(),
+            label: z.string(),
+            online: z.boolean(),
+            ready: z.boolean(),
+            installing: z.boolean(),
+            blocker: z.string().nullable(),
+            installJob: z.object({ jobId: z.string(), state: z.string(), message: z.string() }).nullable()
+          })
+        )
+      )
+    }
+  }, { module: 'workers', need: 'worker.read', expose: 'worker_component_status' }),
+  installBuiltinBrowser: route('workers:read', {
+    method: 'post', path: `${V1}/workers/{workerId}/builtin-browser`, tags: ['workers'], summary: '给机器装内置 Chromium（Playwright）',
+    description:
+      '在一台在线 Worker 上发起 Chromium 安装任务（走内置组件目录：目录里没有时由集群管理员提交并批准，再安装）。返回 202 和任务，安装要几分钟。\n' +
+      '权限：集群管理员账号（界面），或「集群管理员 / 这台机器的登记人」的个人令牌；本机（origin=local）永远不让开放 API 碰。机器缺系统库时任务会失败并点名缺哪些、要 root 装什么（npx playwright install-deps chromium）。\n' +
+      '返回：202 { job }（jobId、state、message…）。\n' +
+      '下一步：用 worker_component_status 查进度；装好后会话 requires browser:chromium 就能用。\n' +
+      '错误：401 令牌无效；403 权限不够（点名谁能装）；404 机器不存在；409 组件目录待双人审核 / 哈希不符；501 这个 hub 没开组件安装。',
+    request: { params: workerIdParam },
+    responses: { 202: json(z.object({ jobId: z.string(), agentId: z.string(), action: z.string(), state: z.string(), message: z.string() })) }
+  }, { module: 'workers', need: 'worker.read', readOnly: false, expose: 'install_builtin_browser', idempotent: true }),
 
   listProjects: route('projects:read', {
     method: 'get', path: `${V1}/projects`, tags: ['projects'], summary: '我可见的项目',
@@ -740,6 +774,53 @@ export const routes = {
     },
     responses: { 200: json(z.object({ assetId: z.string(), workerId: z.string(), installed: z.boolean() })) }
   }, { module: 'assets', need: 'asset.assign', readOnly: false, expose: 'asset_assign', idempotent: true }),
+  listBuiltinAssets: route('assets:read', {
+    method: 'get', path: `${V1}/builtin-assets`, tags: ['assets'], summary: '内置资产清单与项目启用状态',
+    description:
+      '列出 hub 自带的资产（Playwright 浏览器 MCP、web-testing 技能等）和它们在某个项目里的启用状态。\n' +
+      '参数：projectId（必填）：看哪个项目的启用状态。\n' +
+      '权限：assets:read 看清单本身；启用状态与项目设置页同门（要能改该项目，个人令牌要 projects:write + 项目权限），没有就 403。\n' +
+      '下一步：用 enable_builtin_asset 把缺的启用；会话需要浏览器（requires browser:chromium）时 session_start 也会自动启用未配置的。\n' +
+      '错误：401 令牌无效；403 无 assets:read，或看不到该项目设置；404 项目不存在。',
+    request: { query: z.object({ projectId: z.string().min(1) }) },
+    responses: {
+      200: json(
+        z.array(
+          z.object({
+            id: z.string(),
+            kind: z.enum(['skill', 'instruction', 'mcp']),
+            name: z.string(),
+            title: z.string(),
+            summary: z.string(),
+            version: z.string(),
+            source: z.object({ label: z.string(), url: z.string(), license: z.string() }),
+            secrets: z.array(z.object({ name: z.string(), label: z.string(), set: z.boolean() }).passthrough()),
+            requiresBrowser: z.boolean(),
+            note: z.string().nullable(),
+            pairsWith: z.array(z.string()),
+            enabled: z.object({ assetId: z.string(), version: z.string(), on: z.boolean(), update: z.string().nullable() }).nullable(),
+            clash: z.string().nullable()
+          })
+        ),
+        '内置资产与该项目里的启用状态'
+      )
+    }
+  }, { module: 'assets', need: 'asset.read', expose: 'list_builtin_assets' }),
+  enableBuiltinAsset: route('assets:submit', {
+    method: 'post', path: `${V1}/builtin-assets/{builtinId}/enable`, tags: ['assets'], summary: '给项目启用一项内置资产',
+    description:
+      '把 hub 自带资产（如 playwright 浏览器 MCP、web-testing 技能）启用到项目：与项目设置页同一条用例，不复制另一套。密钥缺了会 400 并点名要填哪些。\n' +
+      '参数：builtinId（路径）；projectId（必填）；secrets（可选，{ 名字: 值 }，顺手存成团队密钥，只写不回）。\n' +
+      '权限：assets:write + 能改该项目（个人令牌加 projects:write）。已启用的只把项目开关打开（created=false）；项目里已有同名的自己的资产时不覆盖（409）。\n' +
+      '返回：{ asset, created }。\n' +
+      '下一步：会话 requires browser:chromium 时资产自动带上；机器还没有 Chromium 就用 worker_component_status 看，再 install_builtin_browser 装。\n' +
+      '错误：400 内置资产需要密钥（点名）；403 无权限；404 项目或内置资产不存在；409 同名冲突。',
+    request: {
+      params: z.object({ builtinId: z.string().min(1).openapi({ param: { name: 'builtinId', in: 'path' } }) }),
+      ...body(z.object({ projectId: z.string().min(1), secrets: z.record(z.string(), z.string()).optional() }))
+    },
+    responses: { 200: json(z.object({ asset: assetSchema, created: z.boolean() })) }
+  }, { module: 'assets', need: 'asset.submit', readOnly: false, expose: 'enable_builtin_asset', idempotent: true }),
   submitAssetRevision: route('assets:submit', {
     method: 'post', path: `${V1}/assets/{assetId}/revisions`, tags: ['assets'], summary: '给资产交一个新版本（进审核）',
     description: '只有作者（或团队负责人）能交；新版本进待审队列，审核通过才上线。令牌默认不能审核、发布、装机或下架（除非显式给了 assets:publish）。文件内容 base64。',

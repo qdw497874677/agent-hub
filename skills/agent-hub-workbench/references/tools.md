@@ -1,7 +1,7 @@
 # 工具清单（自动生成）
 
 由 `npm run skill:tools` 从 `apps/server/src/openapi/routes.ts` 的 MCP 元数据生成，等于 `tools/list` 的结果。
-当前 68 个：只读 24，写 44。
+当前 72 个：只读 26，写 46。
 
 「参数」只列名字，`?` 表示可选；具体类型和必填组合见 `SKILL.md` 与 `<hub>/openapi/v1/openapi.json`。
 
@@ -9,6 +9,8 @@
 | --- | --- | --- | --- | --- | --- |
 | `list_workers` | 读 | `worker.read` | `/workers` | — | 能用的机器 |
 | `list_models` | 读 | `worker.read` | `/models` | workerId?, agentId? | 开会话能用的模型 |
+| `worker_component_status` | 读 | `worker.read` | `/workers/browser-status` | — | 各机器的内置浏览器（Chromium）就绪状态 |
+| `install_builtin_browser` | 写 | `worker.read` | `/workers/{workerId}/builtin-browser` | workerId | 给机器装内置 Chromium（Playwright）（写工具，要 `clientRequestId`） |
 | `list_projects` | 读 | `project.read` | `/projects` | — | 我可见的项目 |
 | `project_create` | 写 | `project.create` | `/projects` | name, rootPath?, workerId?, repoUrl?, defaultBranch?, description? | 新建项目（写工具，要 `clientRequestId`） |
 | `get_project` | 读 | `project.read` | `/projects/{projectId}` | projectId | 看一个项目 |
@@ -25,6 +27,8 @@
 | `asset_import` | 写 | `asset.submit` | `/assets/import` | kind, url, ref?, path?, name?, scope?, projectId?, publish?, policy?, credential? | 从 Git 仓库导入资产（可选直接发布）（写工具，要 `clientRequestId`） |
 | `asset_publish` | 写 | `asset.review` | `/assets/{assetId}/publish` | assetId | 发布资产的最新版本（写工具，要 `clientRequestId`） |
 | `asset_assign` | 写 | `asset.assign` | `/assets/{assetId}/workers` | assetId, workerId, installed? | 把资产装到机器上（或卸下）（写工具，要 `clientRequestId`） |
+| `list_builtin_assets` | 读 | `asset.read` | `/builtin-assets` | projectId | 内置资产清单与项目启用状态 |
+| `enable_builtin_asset` | 写 | `asset.submit` | `/builtin-assets/{builtinId}/enable` | builtinId, projectId, secrets? | 给项目启用一项内置资产（写工具，要 `clientRequestId`） |
 | `list_tasks` | 读 | `task.read` | `/tasks` | projectId | 项目下的任务 |
 | `task_create` | 写 | `task.create` | `/tasks` | projectId, title, goal? | 新建任务（写工具，要 `clientRequestId`） |
 | `get_task` | 读 | `task.read` | `/tasks/{taskId}` | taskId | 任务详情（带会话列表） |
