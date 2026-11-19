@@ -471,3 +471,47 @@ test('没有 tokens:manage 的令牌仍然不能创建 / 吊销 / 轮换令牌',
   const revoke = await revokeApiToken(deps, actor, plain.value.info.id);
   assert.equal(revoke.ok, false);
 });
+
+test('经 tokens:manage 令牌轮换：旧令牌的 scope 超出自身权限或带提权 scope 一律拒绝（#261 HIGH1）', async () => {
+  const { deps, owner } = world();
+  const callerTok = await createApiToken(deps, owner, { name: 'caller', kind: 'personal', scopes: ['tokens:manage', 'projects:read'] });
+  assert.ok(callerTok.ok);
+  const actor = await authenticateApiToken(deps, callerTok.value.token);
+  assert.ok(actor && actor.via);
+
+  // 目标：同一用户的 providers:manage 个人令牌——轮换等于重签，不能绕开提权检查。
+  const esc = await createApiToken(deps, owner, { name: 'prov-tok', kind: 'personal', scopes: ['providers:manage'] });
+  assert.ok(esc.ok);
+  const escOld = await deps.apiTokens.byId(esc.value.info.id);
+  assert.ok(escOld && escOld.revokedAt === null);
+  const escRotated = await rotateApiToken(deps, actor, esc.value.info.id);
+  assert.equal(escRotated.ok, false);
+  if (!escRotated.ok) assert.match(escRotated.error.message, /提权|tokens:manage 或 providers:manage/);
+  // 旧令牌没有被吊销，还能正常鉴权；库里也没有出现新哈希。
+  const escStillValid = await authenticateApiToken(deps, esc.value.token);
+  assert.ok(escStillValid && escStillValid.via && (escStillValid.via.scopes ?? []).includes('providers:manage'));
+  const escAfter = await deps.apiTokens.byId(esc.value.info.id);
+  assert.ok(escAfter && escAfter.tokenHash === `hash:${esc.value.token}` && escAfter.revokedAt === null);
+  const escRows = await deps.apiTokens.listByTeam('team-1');
+  assert.equal(escRows.filter((row) => row.name === 'prov-tok').length, 1);
+
+  // 目标：同一用户的 projects:write 个人令牌——projects:write 不在调用方自身权限内。
+  const wider = await createApiToken(deps, owner, { name: 'wide-tok', kind: 'personal', scopes: ['projects:write'] });
+  assert.ok(wider.ok);
+  const widerRotated = await rotateApiToken(deps, actor, wider.value.info.id);
+  assert.equal(widerRotated.ok, false);
+  if (!widerRotated.ok) assert.match(widerRotated.error.message, /自身权限/);
+  const widerStillValid = await authenticateApiToken(deps, wider.value.token);
+  assert.ok(widerStillValid);
+  const widerRows = await deps.apiTokens.listByTeam('team-1');
+  assert.equal(widerRows.filter((row) => row.name === 'wide-tok').length, 1);
+
+  // 对照：旧令牌的 scope 是自身权限的子集时，轮换照常成功。
+  const subset = await createApiToken(deps, owner, { name: 'subset-tok', kind: 'personal', scopes: ['projects:read'], expiresAt: deps.now() + 3_600_000 });
+  assert.ok(subset.ok);
+  const subsetRotated = await rotateApiToken(deps, actor, subset.value.info.id);
+  assert.ok(subsetRotated.ok, JSON.stringify(subsetRotated));
+  assert.deepEqual(subsetRotated.ok ? subsetRotated.value.info.scopes : [], ['projects:read']);
+  const subsetOld = await deps.apiTokens.byId(subset.value.info.id);
+  assert.ok(subsetOld && subsetOld.revokedAt !== null);
+});

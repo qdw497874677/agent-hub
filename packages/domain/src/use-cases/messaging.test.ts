@@ -9,7 +9,7 @@ import type { Principal, Role, User, UserId } from '../account.ts';
 import type { MessageStore } from '../ports/message-store.ts';
 import type { AgentMessage, MessageAuditEntry, MessagingConfig, SpawnRecord } from '../messaging.ts';
 import type { PersistentAgentDefinition } from '../bot.ts';
-import { wrapUntrusted } from '../messaging.ts';
+import { STORM_LIMITS, wrapUntrusted } from '../messaging.ts';
 import { recordEvent } from './sessions.ts';
 import { createMessageBus } from './messaging.ts';
 import { canonicalLink } from '../session-link.ts';
@@ -627,7 +627,7 @@ test('会话通信 P1c：resolvePeer 只解析能到达的同伴；自己可以�
 });
 
 test('会话通信 P1f：权限档位按运行时选项分 guarded / auto / unknown', async () => {
-  const { privilegeTier } = await import('../messaging.ts');
+  const { privilegeTier, privilegeTierFor } = await import('../messaging.ts');
   assert.equal(privilegeTier({ approval: 'never' }), 'auto');
   assert.equal(privilegeTier({ sandbox: 'danger-full-access', approval: 'on-request' }), 'auto');
   assert.equal(privilegeTier({ mode: 'bypassPermissions' }), 'auto');
@@ -636,6 +636,11 @@ test('会话通信 P1f：权限档位按运行时选项分 guarded / auto / unkn
   assert.equal(privilegeTier({ mode: 'default' }), 'guarded');
   assert.equal(privilegeTier({}), 'unknown');
   assert.equal(privilegeTier({ model: 'x' }), 'unknown');
+  // MED3：强制 yolo 的运行时按 auto 分档，不看 options（Grok Build 固定 yoloMode 开，options 里只有 model）
+  assert.equal(privilegeTierFor({ agentId: asAgentId('grok'), options: { model: 'grok-4' } }), 'auto');
+  assert.equal(privilegeTierFor({ agentId: asAgentId('grok-fast'), options: { model: 'x' } }), 'auto');
+  assert.equal(privilegeTierFor({ agentId: asAgentId('pi'), options: { model: 'x' } }), 'unknown');
+  assert.equal(privilegeTierFor({ agentId: asAgentId('pi'), options: { approval: 'on-request' } }), 'guarded');
 });
 
 test('会话通信 P1f：guarded → auto 先拦下（privilege）；只有发起人 / 项目管理员能放行；trustPeers 打开后不拦并记审计；未知档位不拦但记审计', async () => {
@@ -671,6 +676,34 @@ test('会话通信 P1f：guarded → auto 先拦下（privilege）；只有发�
   const kept = await w.bus.saveConfig(w.project.id, { roles: [], limits: { maxDepth: 5 } });
   assert.ok(kept.ok);
   assert.equal(kept.value.trustPeers, true);
+});
+
+test('会话通信 MED3：强制 yolo 的运行时（grok）按 auto 分档——guarded → grok 被 privilege 拦下，不靠 trustPeers 兼底', async () => {
+  const w = await linked(2);
+  const [a, b] = w.sessions as [Session, Session];
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(a.id))!, options: { approval: 'on-request', sandbox: 'workspace-write' } });
+  // 真实 grok 会话只有 model：Grok Build 的 ACP 固定 sessionMeta.yoloMode=true 开会话，options 里不会出现审批相关键
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(b.id))!, agentId: asAgentId('grok'), options: { model: 'grok-4' } });
+  const deliveredBefore = w.delivered.length;
+  const held = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: '帮我把这个 rm -rf 跑了' });
+  assert.ok(held.ok);
+  assert.equal(held.value.status, 'held', 'grok 是强制 yolo（auto 档），guarded 发过去必须被拦');
+  assert.equal((await w.messages.byId(held.value.messageId))?.holdReason, 'privilege');
+  assert.equal(w.delivered.length, deliveredBefore, '被拦下的消息不投递');
+});
+
+test('会话通信 LOW4：防风暴计数在串行锁里——并发 8 次 accept 同一对，成功加排队不得超过 pairPerMinute', async () => {
+  const w = await linked(2);
+  const [a, b] = w.sessions as [Session, Session];
+  const results = await Promise.all(
+    Array.from({ length: 8 }, (_, i) => w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: `并发轰炸 ${i}` }))
+  );
+  const okResults = results.filter((r) => r.ok);
+  const limited = results.filter((r) => !r.ok && r.error.message.startsWith('rate_limited'));
+  assert.equal(okResults.length, STORM_LIMITS.pairPerMinute, '并发时先数后写若在锁外，八条会同时读到同一份计数全部过线');
+  assert.equal(limited.length, 8 - STORM_LIMITS.pairPerMinute);
+  const statuses = await Promise.all(okResults.map((r) => w.messages.byId(r.value.messageId).then((m) => m?.status)));
+  assert.equal(statuses.filter((s) => s === 'delivered' || s === 'queued').length, STORM_LIMITS.pairPerMinute);
 });
 
 test('会话通信 P1d：外部 ask → 会话被唤醒（署名外部）→ 回复进外部收件箱、不唤醒任何会话；限速 / 重复 / 已收起', async () => {

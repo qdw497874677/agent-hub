@@ -1101,6 +1101,8 @@ const providerWiring = createProviderWiring({
   hostOf: (sessionId) => serverGateway?.hostOf(sessionId as SessionId) ?? null,
   testFromWorker: async (workerId, input) => (serverGateway ? serverGateway.testProvider(workerId, input) : err(unavailable('worker 通道尚未就绪'))),
   updateProvider: (sessionId, workerId, models) => serverGateway?.updateProvider(sessionId, workerId, models) ?? false,
+  // #261 HIGH2：probe 点名 workerId 时先过 worker.use 授权。
+  access: deps.access,
   log
 });
 const assetDeps: AssetReviewDeps = {

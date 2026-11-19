@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Context, Hono } from 'hono';
 import {
+  authorizeWorker,
   checkProviderModel,
   createProvider,
   deleteProvider,
@@ -8,7 +9,9 @@ import {
   forbidden,
   notFound,
   listProviders,
+  newId,
   parseHubModel,
+  principalOfSubject,
   PROVIDER_PROTOCOLS,
   providerActor,
   providerUsableIn,
@@ -21,6 +24,7 @@ import {
   hubModelId,
   err,
   ok,
+  type AccessPolicy,
   type DomainError,
   type ModelProvider,
   type ProviderModel,
@@ -53,6 +57,8 @@ export interface ProviderWiring {
   userTeam(userId: string): Promise<string | null>;
   hostOf(sessionId: string): string | null;
   testFromWorker(workerId: string, input: { protocol: ModelProvider['protocol']; baseUrl: string; apiKey: string }): Promise<Result<{ ok: boolean; status: number; message: string; models: string[] }, DomainError>>;
+  /** 机器授权（ADR 0014）：probe 点名 workerId 时先过 worker.use，不能把请求打进别的团队的机器。 */
+  readonly access?: AccessPolicy;
   /** 把 provider 的新模型定义推给已建立的 direct 会话（只有 extra 这类请求参数即时生效）。离线/失败返回 false。 */
   updateProvider?(sessionId: string, workerId: string, models: readonly ProviderModel[]): boolean;
   log(line: string): void;
@@ -361,6 +367,33 @@ export function createProviderWiring(wiring: ProviderWiring) {
 
   const textOf = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
 
+  /** 提取 baseUrl 的主机部分（审计用：只记主机，不记路径 / 查询，更不会记密钥）。 */
+  const hostOfUrl = (baseUrl: string): string => {
+    try {
+      return new URL(baseUrl).host;
+    } catch {
+      return '';
+    }
+  };
+
+  /** 探测审计（#261 HIGH2）：成功失败都记目标主机；不记密钥。 */
+  async function auditProbe(actor: Subject | null, host: string, workerId: string | null, via: 'worker' | 'hub', reached: boolean): Promise<void> {
+    const principal = principalOfSubject(actor);
+    if (!deps.audit || !principal || !host) return;
+    const who = principal.via?.name ? `${principal.user.email}（经令牌 ${principal.via.name}）` : principal.user.email;
+    await deps.audit
+      .append({
+        id: newId(),
+        actorId: principal.user.id,
+        actorEmail: principal.user.email,
+        action: 'provider.probe',
+        target: host,
+        detail: `探测 ${host}${workerId ? `（经 ${workerId}）` : ''}，via=${via}，${reached ? '通' : '不通'}；操作者：${who}`,
+        at: deps.now()
+      })
+      .catch(() => undefined);
+  }
+
   /** 探测上游模型列表：给 providerId 用已存密钥，否则用请求里的临时地址 / 密钥。密钥不出现在返回值里。 */
   async function probe(principal: Subject | null, input: Record<string, unknown>): Promise<Result<{ ok: boolean; status: number; message: string; via: 'worker' | 'hub'; models: { id: string }[] }, DomainError>> {
     if (!principal) return err(forbidden('登录后才能探测模型列表'));
@@ -373,18 +406,30 @@ export function createProviderWiring(wiring: ProviderWiring) {
     }
     const protocol = (textOf(input['protocol']) || provider?.protocol || 'openai-chat') as ProviderProtocol;
     if (!PROVIDER_PROTOCOLS.includes(protocol)) return err(invalid('不支持的协议'));
-    const baseUrl = (textOf(input['baseUrl']) || provider?.baseUrl || '').trim().replace(/\/+$/, '');
-    if (!/^https?:\/\/[^\s/]+(\/\S*)?$/.test(baseUrl)) return err(invalid('Base URL 需要是 http(s) 地址'));
-    let apiKey = typeof input['apiKey'] === 'string' ? input['apiKey'].trim() : '';
-    if (!apiKey && provider) apiKey = (await deps.providers.revealKey(provider.id)) ?? '';
+    const requestedBaseUrl = textOf(input['baseUrl']).trim().replace(/\/+$/, '');
+    if (requestedBaseUrl && !/^https?:\/\/[^\s/]+(\/\S*)?$/.test(requestedBaseUrl)) return err(invalid('Base URL 需要是 http(s) 地址'));
+    const givenKey = typeof input['apiKey'] === 'string' ? input['apiKey'].trim() : '';
+    // #261 HIGH2：已存密钥只打提供商登记的地址——请求里的 baseUrl 一律忽略；要测新地址必须带本次的 apiKey。
+    const storedKey = !givenKey && provider ? ((await deps.providers.revealKey(provider.id)) ?? '') : '';
+    const baseUrl = (givenKey || !provider ? requestedBaseUrl || provider?.baseUrl || '' : provider.baseUrl).trim().replace(/\/+$/, '');
+    if (!baseUrl || !/^https?:\/\/[^\s/]+(\/\S*)?$/.test(baseUrl)) return err(invalid('Base URL 需要是 http(s) 地址'));
+    const apiKey = givenKey || storedKey;
     const workerId = textOf(input['workerId']);
+    // #261 HIGH2：点名的机器先过 authorizeWorker（worker.use）——本地机器仍限集群管理员，别的团队的机器拒绝。
+    if (workerId && wiring.access) {
+      const allowed = await authorizeWorker(wiring.access, principal, workerId);
+      if (!allowed.ok) return allowed;
+    }
+    const host = hostOfUrl(baseUrl);
     if (workerId && apiKey) {
       const tested = await wiring.testFromWorker(workerId, { protocol, baseUrl, apiKey });
       if (tested.ok) {
+        await auditProbe(principal, host, workerId, 'worker', tested.value.ok);
         return ok({ ok: tested.value.ok, status: tested.value.status, message: tested.value.message, via: 'worker', models: tested.value.models.map((id) => ({ id })) });
       }
     }
     const probed = await probeModelsDirect({ protocol, baseUrl, ...(apiKey ? { apiKey } : {}) });
+    await auditProbe(principal, host, workerId || null, 'hub', probed.ok);
     return ok({ ...probed, via: 'hub' });
   }
 

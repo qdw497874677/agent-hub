@@ -46,12 +46,18 @@ function harness(enrolledBy: Map<string, string> = new Map()) {
   };
   const tokenDeps = { apiTokens, users: accounts.users, projects: world.deps.projects, tokens: accounts.tokens, audit, now: () => Date.now() };
   const providers = createSqliteProviders(new DatabaseSync(':memory:'), randomBytes(32));
+  const workerTests: { workerId: string; input: { protocol: string; baseUrl: string; apiKey: string } }[] = [];
   const wiring = createProviderWiring({
     deps: { providers, audit, now: () => Date.now() },
     projectTeam: async () => null,
     userTeam: async () => null,
     hostOf: () => 'worker-1',
-    testFromWorker: async () => ({ ok: true, value: { ok: true, status: 200, message: '通了：1 个模型', models: ['glm-5.3-flash'] } }),
+    testFromWorker: async (workerId, input) => {
+      workerTests.push({ workerId, input });
+      return { ok: true, value: { ok: true, status: 200, message: '通了：1 个模型', models: ['glm-5.3-flash'] } };
+    },
+    // #261 HIGH2：probe 点名 workerId 时走 authorizeWorker（worker.use）。
+    access,
     log: () => undefined
   });
   const hub = createStreamHub();
@@ -105,7 +111,7 @@ function harness(enrolledBy: Map<string, string> = new Map()) {
     }
     return { status: response.status, text, body };
   };
-  return { accounts, app, auditRows, session, api, world };
+  return { accounts, app, auditRows, session, api, world, workerTests, enrolledBy };
 }
 
 const post = (body: unknown) => ({ method: 'POST' as const, body: JSON.stringify(body) });
@@ -158,7 +164,7 @@ test('授予：管理员能开 providers:manage；成员不能；项目级令牌
 
 test('管理令牌：新建、列表、探测、测试、无确认只预览、确认后删除；密钥不进响应和审计', async () => {
   const { david, mint, api, auditRows } = await setup();
-  const minted = await mint(david, ['providers:manage']);
+  const minted = await mint(david, ['providers:manage', 'sessions:write']); // sessions:write → worker.use：probe 点名 workerId 要过机器授权（#261 HIGH2）
   assert.equal(minted.status, 201);
   const call = api(minted.body.token);
 
@@ -374,4 +380,83 @@ test('provider_list：workerRouting 只回本令牌读得到的机器（#261 LOW
   assert.equal(peeked.status, 200, peeked.text);
   assert.equal(peeked.body.providers.length, 1);
   assert.equal('workerRouting' in peeked.body, false, '没有 workers:read 时整个字段省略');
+});
+
+test('探测（#261 HIGH2）：已存密钥只打登记地址；跨团队机器 403；成功失败都审计主机、不记密钥', async () => {
+  const enrolledBy = new Map<string, string>([['w-outsider', 'u-outsider']]);
+  const h = harness(enrolledBy);
+  const david = h.session();
+  assert.equal((await david('/api/auth/register', post({ email: 'david@b.co', password: PASSWORD }))).status, 200);
+  // 别的团队的机器：凭据归属另一个用户（t-other 团队）
+  await h.accounts.users.save({
+    id: 'u-outsider',
+    email: 'outsider@x.co',
+    displayName: 'outsider',
+    role: 'member',
+    passwordHash: null,
+    emailVerifiedAt: 1,
+    disabledAt: null,
+    createdAt: 1,
+    teamId: 't-other',
+    clusterAdmin: false,
+    deletedAt: null
+  } as never);
+  h.world.workers.push({ workerId: 'w-outsider', label: 'other', origin: 'remote', state: 'online' } as never);
+
+  const minted = await david('/api/tokens', post({ name: 'mgr', scopes: ['providers:manage', 'sessions:write'] }));
+  assert.equal(minted.status, 201, JSON.stringify(minted.body));
+  const call = h.api(minted.body.token);
+  const created = await call('/providers', post(providerBody));
+  assert.equal(created.status, 201, created.text);
+  const id = created.body.id as string;
+
+  // 拦下 hub 直连探测的出站请求，记录 URL 与鉴权头
+  const realFetch = globalThis.fetch;
+  const outbound: { url: string; authorization?: string }[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    outbound.push({ url, authorization: headers.authorization });
+    if (url.includes('127.0.0.1')) throw new Error('connect ECONNREFUSED 127.0.0.1:9');
+    return new Response(JSON.stringify({ data: [{ id: 'glm-5.3-flash' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    // 1) 已存密钥 + 另一个 baseUrl：出站仍然是登记地址，evil 主机一个请求都没收到
+    const probed = await call('/providers/probe', post({ providerId: id, baseUrl: 'https://evil.example/v1' }));
+    assert.equal(probed.status, 200, probed.text);
+    assert.equal(probed.body.via, 'hub');
+    assert.ok(outbound.length >= 1, '应该有一次出站探测');
+    assert.ok(outbound.every((row) => row.url.startsWith('https://open.bigmodel.cn/api/coding/paas/v4/models')), JSON.stringify(outbound));
+    assert.ok(!outbound.some((row) => row.url.includes('evil.example')), '已存密钥不能被指到请求里的新地址');
+
+    // 2) 要测新地址必须带本次的 apiKey：新地址收到的是新密钥，旧密钥不出站
+    const fresh = 'sk-fresh-just-for-this-probe';
+    const probedNew = await call('/providers/probe', post({ providerId: id, baseUrl: 'https://other.example/v1', apiKey: fresh }));
+    assert.equal(probedNew.status, 200, probedNew.text);
+    const toOther = outbound.find((row) => row.url.startsWith('https://other.example/v1/models'));
+    assert.ok(toOther, '带了本次 apiKey 的新地址应该被探测');
+    assert.equal(toOther!.authorization, `Bearer ${fresh}`);
+    assert.ok(!outbound.some((row) => row.url.includes('other.example') && row.authorization?.includes(SECRET)), '旧密钥不能出站');
+
+    // 3) 失败也审计：连不上的主机照样留一条
+    const badProbe = await call('/providers/probe', post({ providerId: id, baseUrl: 'http://127.0.0.1:9/v1', apiKey: fresh }));
+    assert.equal(badProbe.status, 200, badProbe.text);
+    assert.equal(badProbe.body.ok, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // 4) 别的团队的机器：403，且请求根本没到 worker 通道
+  const before = h.workerTests.length;
+  const cross = await call('/providers/probe', post({ providerId: id, workerId: 'w-outsider' }));
+  assert.equal(cross.status, 403, cross.text);
+  assert.equal(h.workerTests.length, before, '跨团队机器不该收到探测请求');
+
+  // 5) 审计：provider.probe 只记目标主机，不含密钥、不含 evil 主机
+  const probeRows = h.auditRows.filter((row) => row.action === 'provider.probe');
+  assert.ok(probeRows.length >= 3, `要有成功 / 新地址 / 失败三条审计，实际 ${probeRows.length}`);
+  assert.ok(probeRows.every((row) => row.target === 'open.bigmodel.cn' || row.target === 'other.example' || row.target === '127.0.0.1:9'), JSON.stringify(probeRows));
+  assert.ok(probeRows.some((row) => row.target === '127.0.0.1:9'), '失败探测也要留审计');
+  assert.equal(leak(JSON.stringify(probeRows)), false, '审计里出现了密钥');
+  assert.ok(!JSON.stringify(probeRows).includes('evil.example'), '被忽略的恶意地址不该进审计');
 });

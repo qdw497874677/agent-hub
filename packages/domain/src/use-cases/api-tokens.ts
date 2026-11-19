@@ -361,6 +361,14 @@ export async function rotateApiToken(
   if (!old || !(await manages(deps, actor, old))) return err(notFound('令牌不存在'));
   if (old.kind === 'bot') return err(invalid('bot 凭据请在 Bot 页重新生成'));
   if (old.revokedAt !== null) return err(conflict('这个令牌已经吊销了，新建一个吧'));
+  // HIGH1（qdw497874677/agent-hub#261）：经令牌轮换不能借「整份复制旧令牌」绕开提权检查——
+  // 旧令牌的 scopes 必须也满足 createApiToken 的同一套规则（无提权 scope、是自身权限的子集）。
+  if (actor.via) {
+    const blocked = old.scopes.filter((scope) => ESCALATION_SCOPES.includes(scope));
+    if (blocked.length > 0) return err(forbidden('不能签发带 tokens:manage 或 providers:manage 的令牌'));
+    const own = new Set(actor.via.scopes);
+    if (old.scopes.some((scope) => !own.has(scope))) return err(forbidden('只能签发自身权限范围内的令牌'));
+  }
   const now = deps.now();
   const length = old.expiresAt === null ? null : Math.max(old.expiresAt - old.createdAt, 60_000);
   // 经令牌轮换：有效期仍沿用原来的长度，但上限 30 天，且不允许再变成永不过期。
