@@ -17,6 +17,8 @@
 
 `npm run ci` 不启动服务，也不需要 pi。`npm run e2e` 会自己构建前端并拉起一套 server + 本机 worker。
 
+本机缺 node-pty / OpenCode 导致的环境失败怎么补，见 [e2e-local-env.md](e2e-local-env.md)。
+
 ## 官方命令
 
 ```bash
