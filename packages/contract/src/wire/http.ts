@@ -194,8 +194,8 @@ export type WorkLogEntryDto = z.infer<typeof workLogEntrySchema>;
 export const deriveSessionRequest = z.object({
   taskId: id,
   agentId: id,
-  // 空字符串 = 用 agent 自己的默认模型（见 apps/web 的派生对话框）
-  model: z.string(),
+  // 省略或空字符串 = 按默认 Agent 层级解析（任务默认 > 项目默认 > 团队运行时默认）；内部派生对话框仍传空串 = 用 agent 自己的默认模型
+  model: z.string().optional(),
   /** 点名交给哪台 Worker；不给就按落点规则挑。 */
   workerId: z.string().min(1).nullable().optional(),
   /** 运行面板里选的工作空间；会话跟着它落到那台机器、那个目录。 */

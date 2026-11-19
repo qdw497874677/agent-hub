@@ -8,15 +8,16 @@ import type { PersistentAgentRepository } from '../ports/bot-repository.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import { CHECKPOINT_REF_PREFIX, CHECKPOINT_RETENTION_MS, checkpointRef, type ChangedFile, type CheckpointStore, type DirectoryPage, type FileChangeNotice, type FileContent, type FileDiff, type RestoreOutcome, type SessionBaseStore, type TurnCheckpoint, type WorkspaceBrowser } from '../ports/workspace-browser.ts';
+import type { WorkspaceGit } from '../ports/workspace-git.ts';
 import type { Project } from '../project.ts';
 import type { Session } from '../session.ts';
 import { asSessionId, newId } from '../ids.ts';
 import { invalid, notFound, unavailable, type DomainError } from '../errors.ts';
 import { groupLayout } from '../workspace-group.ts';
 import { err, ok, type Result } from '../result.ts';
-import { FILES_LIMITS, isBrowsablePath, isSensitivePath } from '../workspace-files.ts';
+import { FILES_LIMITS, isBrowsablePath, isSensitivePath, OPEN_WORKSPACE_LIMITS } from '../workspace-files.ts';
 import { authorizeProject, authorizeSession, type AccessPolicy } from './authorization.ts';
-import { routeOf } from './machine-dirs.ts';
+import { gitFor, routeOf } from './machine-dirs.ts';
 import { locationsOf, projectOfSession, type SessionLocation, type SessionLocationMember } from './workspaces.ts';
 
 /**
@@ -43,11 +44,24 @@ export interface WorkspaceFilesDeps {
   readonly bases: SessionBaseStore;
   /** 回合检查点（ADR 0027 阶段 1）；不给 = 没有「本轮」视图。 */
   readonly checkpoints?: CheckpointStore;
+  /** Server 本机的 git（workspace_diff 用；远端走 gateway.git）。 */
+  readonly git: WorkspaceGit;
   readonly now: () => number;
 }
 
 /** session：会话开始时的 HEAD → 工作区；head：当前 HEAD → 工作区；turn：某一轮开始前 → 这一轮结束后（没结束 = 工作区）；branch：默认分支的 merge-base → 工作区（只算这条分支自己的改动）。 */
 export type DiffBase = 'session' | 'head' | 'turn' | 'branch';
+
+/** 整棵工作树的未提交改动（workspace_diff）：相对 HEAD 的 git diff 文本 + 改动清单。 */
+export interface WorktreeDiff {
+  readonly branch: string | null;
+  /** 未提交文件（含未跟踪，status 同前端映射）；未跟踪的只列名字，内容不进 patch。 */
+  readonly files: readonly { readonly path: string; readonly status: string }[];
+  /** 相对 HEAD 的 `git diff` 文本；无改动 = ''（不是错误）。 */
+  readonly patch: string;
+  /** patch 超过上限被截断时 true。 */
+  readonly truncated: boolean;
+}
 
 export interface FilesContextMember {
   readonly workspaceId: string;
@@ -266,6 +280,31 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
     async download(subject: Subject | null, sessionId: string, path: string, confirmed: boolean, member?: string): Promise<Result<FileContent, DomainError>> {
       const got = await readUpTo(subject, sessionId, path, confirmed, FILES_LIMITS.downloadBytes, '下载', member);
       if (got.ok && got.value.truncated) return err(invalid(`文件超过 ${FILES_LIMITS.downloadBytes / 1024 / 1024} MB，不能在这里下载`));
+      return got;
+    },
+    /**
+     * 开放 API（MCP 工具 workspace_diff）：整棵工作树相对 HEAD 的未提交 diff 文本。
+     * 权限与路径约束同 read（session.read + workspace.files.read）；无改动返回空 patch，不是错误。
+     * 未跟踪文件只列名字，内容不进 diff（同一台机器的 git 预览规则）；超上限截断并标 truncated。
+     */
+    async worktreeDiff(subject: Subject | null, sessionId: string, opts: { member?: string; maxBytes?: number } = {}): Promise<Result<WorktreeDiff, DomainError>> {
+      const found = await locate(subject, sessionId, { member: opts.member });
+      if (!found.ok) return found;
+      if (found.value.container) return err(invalid('这是组合工作空间的容器根（不是 git 仓库）：member 选一个成员仓库再取 diff'));
+      const git = await gitFor({ git: deps.git, gateway: deps.gateway }, found.value.workerId);
+      const maxBytes = opts.maxBytes === undefined || opts.maxBytes <= 0 || opts.maxBytes > OPEN_WORKSPACE_LIMITS.diffBytes ? OPEN_WORKSPACE_LIMITS.diffBytes : opts.maxBytes;
+      const preview = await git.preview(found.value.root, maxBytes);
+      if (!preview.ok) return preview;
+      if (!preview.value.isGit) return err(invalid('这个工作空间不是 git 仓库（没有可对比的 HEAD）'));
+      return ok({ branch: preview.value.branch, files: preview.value.files, patch: preview.value.patch, truncated: preview.value.truncated });
+    },
+    /**
+     * 开放 API（MCP 工具 workspace_read_file）：按 256 KiB 上限读工作树内的文件。
+     * 路径规则同 read（拒绝绝对路径 / .. / .git / 组合容器标记）；超上限明确报错，不返回截断内容。
+     */
+    async readWorktreeFile(subject: Subject | null, sessionId: string, path: string, opts: { confirmed?: boolean; member?: string } = {}): Promise<Result<FileContent, DomainError>> {
+      const got = await readUpTo(subject, sessionId, path, opts.confirmed ?? false, OPEN_WORKSPACE_LIMITS.fileBytes, '读取', opts.member);
+      if (got.ok && got.value.truncated) return err(invalid(`文件超过 ${OPEN_WORKSPACE_LIMITS.fileBytes / 1024} KiB：workspace_read_file 不返回截断内容，请缩小路径（比如先读目录分块取）`));
       return got;
     },
     async find(subject: Subject | null, sessionId: string, query: string, member?: string): Promise<Result<readonly string[], DomainError>> {

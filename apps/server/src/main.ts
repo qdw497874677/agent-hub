@@ -690,6 +690,7 @@ const filesService = createWorkspaceFilesService({
   remote: (workerId) => (serverGateway ? serverGateway.browser(workerId) : offlineBrowser),
   bases: store.sessionBases,
   checkpoints: store.checkpoints,
+  git: deps.git,
   now: () => Date.now()
 });
 const rewindService = createRewindService({ ...deps, files: filesService, turnRefs: store.turnRefs });
