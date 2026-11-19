@@ -358,6 +358,88 @@ export function createProviderWiring(wiring: ProviderWiring) {
     return ok(true);
   }
 
+
+  const textOf = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
+
+  /** 探测上游模型列表：给 providerId 用已存密钥，否则用请求里的临时地址 / 密钥。密钥不出现在返回值里。 */
+  async function probe(principal: Subject | null, input: Record<string, unknown>): Promise<Result<{ ok: boolean; status: number; message: string; via: 'worker' | 'hub'; models: { id: string }[] }, DomainError>> {
+    if (!principal) return err(forbidden('登录后才能探测模型列表'));
+    let provider: ModelProvider | null = null;
+    const providerId = textOf(input['providerId']);
+    if (providerId) {
+      provider = await deps.providers.byId(providerId);
+      if (!provider) return err(notFound('没有这个模型提供商'));
+      if (!canManageProvider(providerActor(principal), provider)) return err(forbidden('无权管理这个模型提供商'));
+    }
+    const protocol = (textOf(input['protocol']) || provider?.protocol || 'openai-chat') as ProviderProtocol;
+    if (!PROVIDER_PROTOCOLS.includes(protocol)) return err(invalid('不支持的协议'));
+    const baseUrl = (textOf(input['baseUrl']) || provider?.baseUrl || '').trim().replace(/\/+$/, '');
+    if (!/^https?:\/\/[^\s/]+(\/\S*)?$/.test(baseUrl)) return err(invalid('Base URL 需要是 http(s) 地址'));
+    let apiKey = typeof input['apiKey'] === 'string' ? input['apiKey'].trim() : '';
+    if (!apiKey && provider) apiKey = (await deps.providers.revealKey(provider.id)) ?? '';
+    const workerId = textOf(input['workerId']);
+    if (workerId && apiKey) {
+      const tested = await wiring.testFromWorker(workerId, { protocol, baseUrl, apiKey });
+      if (tested.ok) {
+        return ok({ ok: tested.value.ok, status: tested.value.status, message: tested.value.message, via: 'worker', models: tested.value.models.map((id) => ({ id })) });
+      }
+    }
+    const probed = await probeModelsDirect({ protocol, baseUrl, ...(apiKey ? { apiKey } : {}) });
+    return ok({ ...probed, via: 'hub' });
+  }
+
+  /** 从指定 worker 实测提供商连通。经 hub 时用短期中转句柄，真密钥不离开 hub、也不返回。 */
+  async function testProvider(principal: Subject | null, id: string, workerId: string): Promise<Result<{ ok: boolean; message: string; at: number; via: ProviderRouting; workerId: string; models: string[] }, DomainError>> {
+    const provider = await deps.providers.byId(id);
+    if (!provider || !canManageProvider(providerActor(principal), provider)) return err(invalid('没有这个模型提供商，或你无权管理它'));
+    if (!workerId) return err(invalid('要选一台 worker 来测'));
+    const via = await routingFor(deps, provider, workerId);
+    let target: { baseUrl: string; apiKey: string };
+    let testHandle: string | null = null;
+    if (via === 'hub') {
+      if (!provider.hasKey) return err(invalid('这个模型提供商还没有配置密钥'));
+      const issued = issue({ sessionId: `test:${provider.id}`, workerId, providerId: provider.id, projectTeam: null, expiresAt: Date.now() + 60_000 });
+      testHandle = issued.handle;
+      target = { baseUrl: `${relayPath}/${issued.handle}`, apiKey: issued.token };
+    } else {
+      const apiKey = await deps.providers.revealKey(provider.id);
+      if (!apiKey) return err(invalid('这个模型提供商还没有配置密钥'));
+      target = { baseUrl: provider.baseUrl, apiKey };
+    }
+    const result = await wiring.testFromWorker(workerId, { protocol: provider.protocol, ...target });
+    if (testHandle) handles.delete(testHandle);
+    if (!result.ok) return result;
+    const check = { ok: result.value.ok, message: result.value.message, at: deps.now(), via, workerId };
+    await recordProviderCheck(deps, principal, provider, check);
+    return ok({ ...check, models: result.value.models });
+  }
+
+  async function removeProvider(principal: Subject | null, id: string): Promise<Result<void, DomainError>> {
+    const provider = await deps.providers.byId(id);
+    const result = await deleteProvider(deps, principal, id);
+    if (result.ok && provider) {
+      pushModels(provider, []);
+      for (const [sessionId, entry] of directSessions) if (entry.providerId === provider.id) directSessions.delete(sessionId);
+    }
+    return result;
+  }
+
+
+  async function updateManaged(principal: Subject | null, id: string, input: Parameters<typeof updateProvider>[3]): Promise<Awaited<ReturnType<typeof updateProvider>>> {
+    const result = await updateProvider(deps, principal, id, input);
+    if (result.ok) pushModels(result.value, result.value.models);
+    return result;
+  }
+
+  async function setKeyManaged(principal: Subject | null, id: string, apiKey: string): Promise<Awaited<ReturnType<typeof setProviderKey>>> {
+    const result = await setProviderKey(deps, principal, id, apiKey);
+    if (result.ok) {
+      const provider = await deps.providers.byId(id);
+      if (provider) pushModels(provider, provider.models);
+    }
+    return result;
+  }
+
   function install(app: Hono, principalOf: (c: Context) => Subject | null): void {
     const read = async (c: Context): Promise<Record<string, unknown> | null> => {
       try {
@@ -408,34 +490,10 @@ export function createProviderWiring(wiring: ProviderWiring) {
      * 上游 4xx/5xx 也返回 200 + ok:false；连不上 status:0。
      */
     app.post('/api/providers/probe', async (c) => {
-      const principal = principalOf(c);
-      if (!principal) return fail(c, forbidden('登录后才能探测模型列表'));
       const input = await read(c);
       if (!input) return badBody(c);
-      let provider: ModelProvider | null = null;
-      const providerId = str(input['providerId']);
-      if (providerId) {
-        provider = await deps.providers.byId(providerId);
-        if (!provider) return fail(c, notFound('没有这个模型提供商'));
-        if (!canManageProvider(providerActor(principal), provider)) return fail(c, forbidden('无权管理这个模型提供商'));
-      }
-      const protocol = (str(input['protocol']) || provider?.protocol || 'openai-chat') as ProviderProtocol;
-      if (!PROVIDER_PROTOCOLS.includes(protocol)) return fail(c, invalid('不支持的协议'));
-      const baseUrl = (str(input['baseUrl']) || provider?.baseUrl || '').trim().replace(/\/+$/, '');
-      if (!/^https?:\/\/[^\s/]+(\/\S*)?$/.test(baseUrl)) return fail(c, invalid('Base URL 需要是 http(s) 地址'));
-      let apiKey = typeof input['apiKey'] === 'string' ? input['apiKey'].trim() : '';
-      if (!apiKey && provider) apiKey = (await deps.providers.revealKey(provider.id)) ?? '';
-      const workerId = str(input['workerId']);
-      // 契约里 apiKey 必填：没密钥（本机免鉴权的上游）就直接走 hub 直连
-      if (workerId && apiKey) {
-        const tested = await wiring.testFromWorker(workerId, { protocol, baseUrl, apiKey });
-        if (tested.ok) {
-          return c.json({ ok: tested.value.ok, status: tested.value.status, message: tested.value.message, via: 'worker', models: tested.value.models.map((id) => ({ id })) });
-        }
-        // 这台 worker 不在线 / 通道不可用：退回 hub 直连，别让探测因为选错机器就失败
-      }
-      const probe = await probeModelsDirect({ protocol, baseUrl, ...(apiKey ? { apiKey } : {}) });
-      return c.json({ ...probe, via: 'hub' });
+      const result = await probe(principalOf(c), input);
+      return result.ok ? c.json(result.value) : fail(c, result.error);
     });
 
     app.post('/api/providers', async (c) => {
@@ -484,36 +542,14 @@ export function createProviderWiring(wiring: ProviderWiring) {
 
     /** D4：从 worker 发起（直连 = worker→提供商；经 hub = worker→hub→提供商）。 */
     app.post('/api/providers/:id/test', async (c) => {
-      const principal = principalOf(c);
       const input = await read(c);
       if (!input) return badBody(c);
-      const workerId = str(input['workerId']);
-      const provider = await deps.providers.byId(c.req.param('id'));
-      if (!provider || !canManageProvider(providerActor(principal), provider)) return fail(c, invalid('没有这个模型提供商，或你无权管理它'));
-      if (!workerId) return fail(c, invalid('要选一台 worker 来测'));
-      const via = await routingFor(deps, provider, workerId);
-      let target: { baseUrl: string; apiKey: string };
-      let testHandle: string | null = null;
-      if (via === 'hub') {
-        if (!provider.hasKey) return fail(c, invalid('这个模型提供商还没有配置密钥'));
-        const issued = issue({ sessionId: `test:${provider.id}`, workerId, providerId: provider.id, projectTeam: null, expiresAt: Date.now() + 60_000 });
-        testHandle = issued.handle;
-        target = { baseUrl: `${relayPath}/${issued.handle}`, apiKey: issued.token };
-      } else {
-        const apiKey = await deps.providers.revealKey(provider.id);
-        if (!apiKey) return fail(c, invalid('这个模型提供商还没有配置密钥'));
-        target = { baseUrl: provider.baseUrl, apiKey };
-      }
-      const result = await wiring.testFromWorker(workerId, { protocol: provider.protocol, ...target });
-      if (testHandle) handles.delete(testHandle);
-      if (!result.ok) return fail(c, result.error);
-      const check = { ok: result.value.ok, message: result.value.message, at: deps.now(), via, workerId };
-      await recordProviderCheck(deps, principal, provider, check);
-      return c.json({ ...check, models: result.value.models });
+      const result = await testProvider(principalOf(c), c.req.param('id'), str(input['workerId']));
+      return result.ok ? c.json(result.value) : fail(c, result.error);
     });
   }
 
-  return { grantFor, relay, revoke, checkModel, optionAllowed, crossesProviders, modelSwitchable, install, activeHandles: () => handles.size };
+  return { deps, grantFor, relay, revoke, checkModel, optionAllowed, crossesProviders, modelSwitchable, install, probe, testProvider, removeProvider, updateManaged, setKeyManaged, asInput: (input: Record<string, unknown>) => ({ slug: textOf(input['slug']), name: textOf(input['name']), protocol: textOf(input['protocol'], 'openai-chat') as ModelProvider['protocol'], baseUrl: textOf(input['baseUrl']), models: Array.isArray(input['models']) ? (input['models'] as unknown[]).flatMap(asModel) : [], routing: textOf(input['routing'], 'direct') as ProviderRouting, enabled: input['enabled'] !== false }), activeHandles: () => handles.size };
 }
 
 export type ProviderWiringApi = ReturnType<typeof createProviderWiring>;

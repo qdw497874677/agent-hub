@@ -334,3 +334,34 @@ test('限定项目的令牌：认证时带上项目所在团队；同团队的�
   const loose = { ...principal!, via: { ...principal!.via!, teamIds: undefined } };
   assert.deepEqual(decide(loose, 'asset.submit', teamAsset('team-1')), { allow: false, reason: 'token_project' });
 });
+
+test('providers:manage：管理员能授；成员不能；项目级和 bot 一律拒绝；调用时限定项目也拒', async () => {
+  const { deps, owner, admin, member } = world();
+  const okOwner = await createApiToken(deps, owner, { name: 'mgr', kind: 'personal', scopes: ['providers:manage'] });
+  assert.ok(okOwner.ok, JSON.stringify(okOwner));
+  const okAdmin = await createApiToken(deps, admin, { name: 'mgr-admin', kind: 'personal', scopes: ['providers:read', 'providers:manage'] });
+  assert.ok(okAdmin.ok, JSON.stringify(okAdmin));
+
+  const asMember = await createApiToken(deps, member, { name: 'nope', kind: 'personal', scopes: ['providers:manage'] });
+  assert.equal(asMember.ok, false);
+  if (!asMember.ok) assert.match(asMember.error.message, /只有管理员/);
+
+  const scoped = await createApiToken(deps, owner, { name: 'scoped-mgr', kind: 'personal', scopes: ['providers:manage'], projectIds: ['p1'] });
+  assert.equal(scoped.ok, false);
+  if (!scoped.ok) assert.match(scoped.error.message, /只限项目/);
+
+  const bot = await createApiToken(deps, owner, { name: 'bot-mgr', kind: 'bot', projectId: 'p1', scopes: ['providers:manage'] });
+  assert.equal(bot.ok, false);
+  if (!bot.ok) assert.match(bot.error.message, /bot 凭据/);
+
+  const principal = await authenticateApiToken(deps, okOwner.value.token);
+  assert.ok(principal);
+  assert.ok(principal.via?.permissions.includes('provider.manage'));
+  assert.equal(decide(principal, 'provider.manage').allow, true);
+
+  // 调用时再挡一层：即便 scopes 里有，限定项目的令牌也管不了。
+  const forged = { ...principal, via: { ...principal.via!, projectIds: ['p1'] } };
+  const denied = decide(forged, 'provider.manage');
+  assert.equal(denied.allow, false);
+  assert.equal(denied.allow === false && denied.reason, 'token_project');
+});

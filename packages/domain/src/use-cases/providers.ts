@@ -32,7 +32,8 @@ export const providerActor = (subject: Subject | null): ProviderActor => subject
 async function audit(deps: ProviderDeps, subject: Subject | null, action: 'provider.create' | 'provider.update' | 'provider.key' | 'provider.delete' | 'provider.test' | 'provider.routing', target: string, detail: string) {
   const principal = principalOfSubject(subject);
   if (!deps.audit || !principal) return;
-  await deps.audit.append({ id: newId(), actorId: principal.user.id, actorEmail: principal.user.email, action, target, detail, at: deps.now() });
+  const via = principal.via ? `（经令牌 ${principal.via.name} / ${principal.via.tokenId}）` : '';
+  await deps.audit.append({ id: newId(), actorId: principal.user.id, actorEmail: principal.user.email, action, target, detail: `${detail}${via}`, at: deps.now() });
 }
 
 export interface ProviderView extends ModelProvider {
@@ -114,7 +115,12 @@ export async function deleteProvider(deps: ProviderDeps, principal: Subject | nu
 }
 
 export async function setWorkerProviderRouting(deps: ProviderDeps, principal: Subject | null, workerId: string, routing: ProviderRouting | null): Promise<Result<void, DomainError>> {
-  if (!can(principal, 'hub.providers')) return err(forbidden('只有集群管理员能改机器的提供商路由'));
+  const actor = principalOfSubject(principal);
+  // 令牌拿不到 hub.providers：集群管理员且持有 provider.manage 即可。
+  const allowed = actor?.via
+    ? Boolean(actor.user.clusterAdmin && can(principal, 'provider.manage'))
+    : can(principal, 'hub.providers');
+  if (!allowed) return err(forbidden('只有集群管理员能改机器的提供商路由'));
   await deps.providers.setWorkerRouting(workerId, routing);
   await audit(deps, principal, 'provider.routing', workerId, routing ?? '跟随提供商');
   return ok(undefined);

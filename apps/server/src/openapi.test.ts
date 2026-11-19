@@ -9,6 +9,7 @@ import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { buildSpecApp, openApiInfo } from './openapi/app.ts';
 import { mcpTools, mcpToolsFor, projectEvents } from './openapi/mcp.ts';
+import { workbenchSkillManifest, workbenchSkillZip } from './workbench-skill.ts';
 import { createRepoAuth } from './repo-auth.ts';
 
 const PASSWORD = 'long enough pw';
@@ -430,28 +431,42 @@ test('MCP：resources 可列出并读取 agent-hub-workbench skill；公开 GET 
   assert.match(text, /project_repos/);
   assert.match(text, /primaryRepoId/);
   assert.match(text, /events/);
+  assert.match(text, /providers:manage/);
   // skill 点到的工具名必须出现在完整 MCP 清单里（以路由元数据为准，不看当前令牌的子集）
-  const catalog = new Set(mcpToolsFor(undefined, { writes: true }).map((tool) => tool.name));
+  const catalog = mcpToolsFor(undefined, { writes: true });
+  const catalogNames = new Set(catalog.map((tool) => tool.name));
   for (const name of ['list_projects', 'get_project', 'list_workers', 'task_create', 'session_start', 'session_reply', 'events', 'get_session', 'workspace_changes', 'project_repos', 'sync_workspace']) {
     assert.ok(text.includes(name), `skill 应提到 ${name}`);
-    assert.ok(catalog.has(name), `skill 写了不存在的工具：${name}`);
+    assert.ok(catalogNames.has(name), `skill 写了不存在的工具：${name}`);
   }
   assert.match(text, /workspace_group_create|没有.*建组合组|不能建组合组/);
+  assert.ok(uris.includes('skill://agent-hub-workbench/references/tools.md'), JSON.stringify(uris));
+  const toolsDoc = await rpc({ jsonrpc: '2.0', id: 6, method: 'resources/read', params: { uri: 'skill://agent-hub-workbench/references/tools.md' } });
+  assert.equal(toolsDoc.status, 200, JSON.stringify(toolsDoc.body));
+  const toolsText = toolsDoc.body.result.contents[0].text as string;
+  const missingTools = catalog.filter((tool) => !toolsText.includes('`' + tool.name + '`')).map((tool) => tool.name);
+  assert.deepEqual(missingTools, [], 'MCP 资源 tools.md 应列出全部已注册工具');
+  for (const name of ['provider_list', 'provider_create', 'provider_delete', 'provider_routing_set']) {
+    assert.ok(toolsText.includes('`' + name + '`'), name);
+  }
   const missing = await rpc({ jsonrpc: '2.0', id: 5, method: 'resources/read', params: { uri: 'skill://agent-hub-workbench/nope.md' } });
   assert.ok(missing.body.error || missing.body.result?.isError, JSON.stringify(missing.body));
 
   const json = await app.fetch(new Request('http://hub/openapi/v1/skills/agent-hub-workbench?format=json'));
   assert.equal(json.status, 200, await json.clone().text());
-  const manifest = (await json.json()) as { name: string; files: { path: string }[] };
-  assert.equal(manifest.name, 'agent-hub-workbench');
-  assert.ok(manifest.files.some((file) => file.path === 'SKILL.md'));
+  const manifest = (await json.json()) as { name: string; files: { path: string; content?: string }[] };
+  assert.deepEqual(manifest, workbenchSkillManifest());
+  const toolsFile = manifest.files.find((file) => file.path === 'references/tools.md');
+  assert.ok(toolsFile?.content, 'json 清单应带 tools.md 正文');
+  assert.equal(toolsFile!.content, toolsText);
+  const skillFile = manifest.files.find((file) => file.path === 'SKILL.md');
+  assert.match(skillFile?.content ?? '', /providers:manage/);
   const zip = await app.fetch(new Request('http://hub/openapi/v1/skills/agent-hub-workbench'));
   assert.equal(zip.status, 200);
   assert.equal(zip.headers.get('content-type'), 'application/zip');
   assert.match(zip.headers.get('content-disposition') ?? '', /agent-hub-workbench\.zip/);
   const bytes = Buffer.from(await zip.arrayBuffer());
-  assert.equal(bytes[0], 0x50);
-  assert.equal(bytes[1], 0x4b);
+  assert.deepEqual(bytes, Buffer.from(workbenchSkillZip()));
 });
 
 test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口要更新快照）', async () => {
@@ -485,7 +500,7 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   // 默认不强制只读：有写工具就一起列出来（能不能调由令牌权限和只读模式决定）
   assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create', 'task_pull_requests']);
   assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name), ['list_projects', 'get_project', 'workspace_changes']);
-  assert.equal(mcpTools({ readOnly: true }).length, 19);
+  assert.equal(mcpTools({ readOnly: true }).length, 20);
   const workspaceTools = mcpTools({ modules: new Set(['workspaces']), writes: true });
   const workspaceNames = workspaceTools.map((t) => t.name).sort();
   for (const name of [

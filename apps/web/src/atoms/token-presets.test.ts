@@ -11,6 +11,7 @@ test('预设：勾选正好等于某个预设才算它，顺序无关；多勾�
   assert.ok(readonly.scopes.every((scope) => scope.endsWith(':read')));
   // 预设里不带高风险的 assets:publish
   assert.ok(TOKEN_PRESETS.every((p) => !p.scopes.includes('assets:publish')));
+  assert.ok(TOKEN_PRESETS.every((p) => !(p.scopes as readonly string[]).includes('providers:manage')));
 });
 
 test('调用记录的动作名', () => {

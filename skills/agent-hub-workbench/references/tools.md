@@ -1,7 +1,7 @@
 # 工具清单（自动生成）
 
 由 `npm run skill:tools` 从 `apps/server/src/openapi/routes.ts` 的 MCP 元数据生成，等于 `tools/list` 的结果。
-当前 51 个：只读 19，写 32。
+当前 59 个：只读 20，写 39。
 
 「参数」只列名字，`?` 表示可选；具体类型和必填组合见 `SKILL.md` 与 `<hub>/openapi/v1/openapi.json`。
 
@@ -58,6 +58,14 @@
 | `session_settle` | 写 | `session.settle` | `/sessions/{sessionId}/settle` | sessionId, settled | 收起或恢复会话（写工具，要 `clientRequestId`） |
 | `workspace_sweep` | 写 | `project.update` | `/projects/{projectId}/cleanup/sweep` | projectId | 按项目规则清理临时工作空间（写工具，要 `clientRequestId`） |
 | `workspace_sweep_records` | 读 | `project.read` | `/projects/{projectId}/cleanup/records` | projectId | 查看项目的清理记录 |
+| `provider_list` | 读 | `provider.read` | `/providers` | — | 列出模型提供商、模型和机器路由 |
+| `provider_create` | 写 | `provider.manage` | `/providers` | slug, name, protocol, baseUrl, models, routing, enabled?, scope?, apiKey? | 新建模型提供商（写工具，要 `clientRequestId`） |
+| `provider_update` | 写 | `provider.manage` | `/providers/{providerId}` | providerId, slug, name, protocol, baseUrl, models, routing, enabled? | 更新模型提供商（写工具，要 `clientRequestId`） |
+| `provider_set_key` | 写 | `provider.manage` | `/providers/{providerId}/key` | providerId, apiKey | 设置或轮换提供商密钥（写工具，要 `clientRequestId`） |
+| `provider_probe` | 写 | `provider.manage` | `/providers/probe` | providerId?, protocol?, baseUrl?, apiKey?, workerId? | 探测上游模型列表 |
+| `provider_test` | 写 | `provider.manage` | `/providers/{providerId}/test` | providerId, workerId | 从机器测试提供商连通 |
+| `provider_delete` | 写 | `provider.manage` | `/providers/{providerId}` | providerId, confirm? | 删除模型提供商（写工具，要 `clientRequestId`） |
+| `provider_routing_set` | 写 | `provider.manage` | `/providers/routing/{workerId}` | workerId, routing, confirm? | 设置机器的提供商路由（写工具，要 `clientRequestId`） |
 
 ## 写工具的重试约定
 

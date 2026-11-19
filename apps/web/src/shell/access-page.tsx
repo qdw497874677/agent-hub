@@ -107,6 +107,8 @@ function FreshToken({ token, onDone }: { token: string; onDone: () => void }) {
 
 function CreateForm({ onCreated }: { onCreated: (token: string) => void }) {
   const client = useQueryClient();
+  const account = useAccount();
+  const canGrantManage = Boolean(account?.clusterAdmin || account?.role === 'owner' || account?.role === 'admin');
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
   const [name, setName] = useState('');
   const [scopes, setScopes] = useState<ApiScopeDto[]>([...TOKEN_PRESETS[0]!.scopes]);
@@ -135,6 +137,7 @@ function CreateForm({ onCreated }: { onCreated: (token: string) => void }) {
     if (found && id !== 'custom') setScopes([...found.scopes]);
   };
   const toggle = (id: ApiScopeDto) => {
+    if (id === 'providers:manage' && (!canGrantManage || limit)) return;
     const next = scopes.includes(id) ? scopes.filter((s) => s !== id) : [...scopes, id];
     setScopes(next);
     setPreset(presetOf(next) === 'custom' ? 'custom' : presetOf(next));
@@ -170,26 +173,40 @@ function CreateForm({ onCreated }: { onCreated: (token: string) => void }) {
       {preset === 'custom' ? (
         <fieldset className="flex flex-col gap-1">
           <legend className="mb-1 text-meta text-secondary">权限</legend>
-          {SCOPES.map((scope) => (
-            <label key={scope.id} data-scope={scope.id} className="flex cursor-pointer items-start gap-2 rounded-sm px-1 py-1 hover:bg-card">
-              <input type="checkbox" className="mt-1 accent-[var(--color-fg)]" checked={scopes.includes(scope.id)} onChange={() => toggle(scope.id)} />
+          {SCOPES.map((scope) => {
+            const manageLocked = scope.id === 'providers:manage' && (!canGrantManage || limit);
+            return (
+            <label key={scope.id} data-scope={scope.id} className={`flex items-start gap-2 rounded-sm px-1 py-1 ${manageLocked ? 'opacity-50' : 'cursor-pointer hover:bg-card'}`}>
+              <input type="checkbox" className="mt-1 accent-[var(--color-fg)]" checked={scopes.includes(scope.id)} disabled={manageLocked} onChange={() => toggle(scope.id)} />
               <span className="min-w-0">
                 <span className="flex items-center gap-1.5">
                   <span className="text-meta text-primary">{scope.label}</span>
                   {scope.risky ? <span className="rounded-sm bg-rust/15 px-1.5 py-0.5 text-[11px] text-rust">高风险</span> : null}
                 </span>
                 <span className="block text-[11px] text-tertiary">
-                  {scope.hint}
-                  {scope.detail ? `；${scope.detail}` : ''}
+                  {scope.id === 'providers:manage' && !canGrantManage
+                    ? '管理员可开'
+                    : scope.id === 'providers:manage' && limit
+                      ? '只限项目的令牌不能开'
+                      : `${scope.hint}${scope.detail ? `；${scope.detail}` : ''}`}
                 </span>
               </span>
             </label>
-          ))}
+            );
+          })}
         </fieldset>
       ) : null}
       <div className="flex flex-col gap-1.5">
         <label className="flex items-center gap-2 text-meta text-secondary">
-          <input type="checkbox" data-testid="token-limit-projects" className="accent-[var(--color-fg)]" checked={limit} onChange={(e) => setLimit(e.target.checked)} />
+          <input type="checkbox" data-testid="token-limit-projects" className="accent-[var(--color-fg)]" checked={limit} onChange={(e) => {
+            const on = e.target.checked;
+            setLimit(on);
+            if (on && scopes.includes('providers:manage')) {
+              const next = scopes.filter((s) => s !== 'providers:manage');
+              setScopes(next);
+              setPreset(presetOf(next) === 'custom' ? 'custom' : presetOf(next));
+            }
+          }} />
           只给指定项目
         </label>
         {limit ? (

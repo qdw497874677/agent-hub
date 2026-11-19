@@ -30,7 +30,7 @@ export interface McpPolicy {
   readonly writes?: boolean;
 }
 
-const ALL_MODULES: readonly McpModuleName[] = ['tasks', 'projects', 'sessions', 'assets', 'workers', 'workspaces'];
+const ALL_MODULES: readonly McpModuleName[] = ['tasks', 'projects', 'sessions', 'assets', 'workers', 'workspaces', 'providers'];
 
 interface ToolDef {
   readonly name: string;
@@ -48,6 +48,7 @@ interface ToolDef {
   readonly scope: string | null;
   readonly readOnly: boolean;
   readonly idempotent: boolean;
+  readonly destructive: boolean;
   readonly project?: (value: unknown) => unknown;
 }
 
@@ -119,6 +120,7 @@ function toolOf(key: string, route: RouteDef, meta: ResolvedMcp): ToolDef {
     scope: ((route as { security?: { bearer?: string[] }[] }).security?.[0]?.bearer?.[0]) ?? null,
     readOnly: meta.readOnly,
     idempotent: meta.idempotent,
+    destructive: meta.destructive,
     ...(meta.project === undefined ? {} : { project: meta.project })
   };
 }
@@ -206,7 +208,7 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
       annotations: {
         title: routeTitle(tool.route),
         readOnlyHint: tool.readOnly,
-        destructiveHint: !tool.readOnly,
+        destructiveHint: tool.destructive,
         idempotentHint: tool.idempotent
       }
     }))
