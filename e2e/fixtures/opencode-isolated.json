@@ -1,0 +1,16 @@
+{
+  "autoupdate": false,
+  "disabled_providers": ["opencode", "opencode-go"],
+  "agent": {
+    "orchestrator": {
+      "mode": "primary",
+      "description": "编排者：自己不动手，把具体工作用子代理工具交给 specialist（例如 explorer）。",
+      "prompt": "你是编排者。收到任务后派给合适的子代理去做（查看文件、目录用 explorer），等它返回后再汇总回答。"
+    },
+    "explorer": {
+      "mode": "subagent",
+      "description": "只读探索子代理：列目录、读文件、搜索，不改任何东西。",
+      "prompt": "你是只读探索子代理。只用列目录、读文件、搜索类工具，不修改任何文件，简短汇报结果。"
+    }
+  }
+}

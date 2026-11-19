@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { currentRun } from './run-id.ts';
 import { loginByApi } from './login.ts';
+import { opencodeModel, opencodeReady } from './opencode-model.ts';
 
 /**
  * 真 OpenCode：会话创建后，运行时应通过 ACP available_commands_update
@@ -12,7 +13,7 @@ import { loginByApi } from './login.ts';
 const RUN = currentRun();
 const PROJECT_NAME = `e2e-opencode-commands-${RUN}`;
 const PROJECT_DIR = `/tmp/agent-hub-opencode-commands-${RUN}`;
-const MODEL = 'my-codex/go-deepseek-v4.1-flash';
+const MODEL = opencodeModel();
 
 test.beforeAll(() => {
   mkdirSync(PROJECT_DIR, { recursive: true });
@@ -47,7 +48,7 @@ test('OpenCode 的运行时斜杠命令透出到 Hub 输入框', async ({ page }
         const list = (await workers.json()) as Worker[];
         local = list.find((worker) => worker.origin === 'local');
         const opencode = local?.agentModels?.find((entry) => entry.agentId === 'opencode');
-        return opencode?.models?.includes(MODEL) ? 'ready' : null;
+        return opencodeReady(opencode, MODEL) ? 'ready' : null;
       },
       { timeout: 60_000, message: `等待本机 Worker 上报 opencode/${MODEL}` }
     )

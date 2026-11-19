@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { currentRun } from './run-id.ts';
 import { loginByApi } from './login.ts';
+import { opencodeModel, opencodeReady } from './opencode-model.ts';
 
 /**
  * 真 OpenCode：通过 hub 派生一个 orchestrator 会话，让 OpenCode 自己开 explorer 子代理，
@@ -13,7 +14,7 @@ import { loginByApi } from './login.ts';
 const RUN = currentRun();
 const PROJECT_NAME = `e2e-opencode-subagent-${RUN}`;
 const PROJECT_DIR = `/tmp/agent-hub-opencode-subagent-${RUN}`;
-const MODEL = 'my-codex/go-deepseek-v4.1-flash';
+const MODEL = opencodeModel();
 
 test.beforeAll(() => {
   mkdirSync(PROJECT_DIR, { recursive: true });
@@ -49,7 +50,7 @@ test('OpenCode 子代理通过 hub 触发并在会话里显示', async ({ page }
         const list = (await workers.json()) as Worker[];
         local = list.find((worker) => worker.origin === 'local');
         opencode = local?.agentModels?.find((entry) => entry.agentId === 'opencode');
-        return opencode?.models?.includes(MODEL) ? 'ready' : null;
+        return opencodeReady(opencode, MODEL) ? 'ready' : null;
       },
       { timeout: 60_000, message: `等待本机 Worker 上报 opencode/${MODEL}` }
     )
