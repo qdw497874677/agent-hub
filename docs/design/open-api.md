@@ -4,7 +4,7 @@
 - 相关：ADR 0011（团队与 RBAC）、#107（操作人记录）、ADR 0013（模型提供商）、ADR 0015（本设计）
 
 ## 1. 目标
-把平台能力（项目管理、任务、智能体对话、机器）用一份**有版本、有文档、有权限范围**的 HTTP API 开放出来，内部 agent、外部 agent、自动化脚本都用同一套接入。UI 仍可用现有 `/api/*`，开放 API 是它的稳定子集。
+把平台能力（项目管理、任务、智能体对话、机器）用一份**有版本、有文档、有权限范围**的 HTTP API 开放出来，内部 agent、外部 agent、自动化脚本都用同一套接入。UI 仍可用现有 `/api/*`，开放 API 是它的稳定子集。外部调用方可用 `list_models` 看开会话能选的模型（hub 托管模型排在前面，id 为 `hub-<slug>/<modelId>`），用 `resolve_default_agent` 查看不显式点名模型时新会话会用的生效默认 Agent。
 
 ## 2. 现状盘点（origin/master，共 105 条 HTTP 路由 + 1 条 SSE + worker WebSocket）
 认证：httpOnly cookie 登录态 + CSRF 双提交；旧 `HUB_TOKEN` Bearer 过渡期放行（无身份）；`/api/stream` 唯一允许 `?token=`。权限：`packages/domain/src/access.ts` 的 `can()`，权限点见下表“权限”列。请求体 zod schema 已集中在 `packages/contract/src/wire/http.ts`，这是生成 spec 的基础。
