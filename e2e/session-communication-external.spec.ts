@@ -97,6 +97,8 @@ test('外部 agent：连线、同伴、ask 回复进外部收件箱、长轮询�
     const tail = (await (await bot.get(`/openapi/v1/sessions/${verify}/events?after=999999&waitSec=2`)).json()) as { events: unknown[]; nextAfter: number };
     expect(Array.isArray(tail.events)).toBe(true);
     expect(tail.events.length).toBe(0);
+    expect(typeof tail.nextAfter).toBe('number');
+    expect(tail.nextAfter).toBeGreaterThanOrEqual(999999);
     expect(Date.now() - t0).toBeGreaterThanOrEqual(1500);
 
     // 防风暴：重复内容

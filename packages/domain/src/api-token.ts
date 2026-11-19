@@ -45,6 +45,42 @@ export const API_SCOPES: readonly ApiScope[] = [
   'tokens:manage'
 ];
 
+/** 解析落库的 scopes：正式路径是 JSON 数组；老的空格分隔若全部是合法 scope 则归一化。非法值返回 null（调用方按无效令牌处理，不要抛）。 */
+export type ParseScopesReason = 'empty' | 'malformed';
+export type ParseScopesResult =
+  | { readonly ok: true; readonly scopes: ApiScope[]; readonly legacy?: boolean }
+  | { readonly ok: false; readonly reason: ParseScopesReason };
+
+const SCOPE_SET: ReadonlySet<string> = new Set(API_SCOPES);
+
+export function parseApiTokenScopes(raw: unknown): ParseScopesResult {
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) return { ok: false, reason: 'empty' };
+    const scopes: ApiScope[] = [];
+    for (const item of raw) {
+      if (typeof item !== 'string' || !SCOPE_SET.has(item)) return { ok: false, reason: 'malformed' };
+      scopes.push(item as ApiScope);
+    }
+    return { ok: true, scopes };
+  }
+  if (typeof raw !== 'string') return { ok: false, reason: 'malformed' };
+  const text = raw.trim();
+  if (!text) return { ok: false, reason: 'empty' };
+  if (text.startsWith('[')) {
+    try {
+      return parseApiTokenScopes(JSON.parse(text) as unknown);
+    } catch {
+      return { ok: false, reason: 'malformed' };
+    }
+  }
+  const parts = text.split(/\s+/);
+  if (parts.length > 0 && parts.every((part) => SCOPE_SET.has(part))) {
+    return { ok: true, scopes: parts as ApiScope[], legacy: true };
+  }
+  return { ok: false, reason: 'malformed' };
+}
+
+
 /** scope → 权限点。这里永远不出现 hub.*；本机 Worker 在 can() 里对令牌一律拒绝。 */
 export const SCOPE_PERMISSIONS: Readonly<Record<ApiScope, readonly Permission[]>> = {
   'projects:read': ['project.read', 'task.read'],

@@ -47,12 +47,35 @@ function lines(text: string, sign: '+' | '-'): DiffLine[] {
   return text.replace(/\n$/, '').split('\n').map((line) => ({ sign, text: line }));
 }
 
+/**
+ * git 的元信息行：不是文件内容，不占行号，显示出来也只是噪音。
+ * 上下文行一定以空格开头，所以这些前缀不会误伤真正的代码行。
+ */
+const GIT_META = [
+  'diff --git ',
+  'diff --cc ',
+  'diff --combined ',
+  'index ',
+  'old mode ',
+  'new mode ',
+  'new file mode ',
+  'deleted file mode ',
+  'similarity index ',
+  'dissimilarity index ',
+  'rename from ',
+  'rename to ',
+  'copy from ',
+  'copy to ',
+  'Binary files ',
+  'GIT binary patch'
+];
+
 /** 统一 diff 文本（ACP 的 diff 块被 adapter 写成这样）→ 着色用的行。 */
 export function parseUnifiedDiff(text: string): readonly DiffLine[] | null {
   const all = text.split('\n');
   if (!all.some((line) => line.startsWith('+++ ') || line.startsWith('@@'))) return null;
   return all
-    .filter((line) => !line.startsWith('--- ') && !line.startsWith('+++ '))
+    .filter((line) => !line.startsWith('--- ') && !line.startsWith('+++ ') && !GIT_META.some((meta) => line.startsWith(meta)))
     .map((line): DiffLine => {
       const head = line[0];
       if (head === '+' || head === '-') return { sign: head, text: line.slice(1) };

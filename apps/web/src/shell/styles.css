@@ -388,6 +388,46 @@ body {
   border-radius: 4px;
 }
 
+/*
+ * 思考窗口：思考比答案长，长到一定高度就停住自己滚（高度与上下渐隐都由 chat-blocks.tsx 直接写 style）。
+ * 滚动条压到 6px、用发丝色——这里的东西是「可以翻回去看」的，不是让人一眼看到的控件。
+ */
+.think-window {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-hair) transparent;
+}
+
+.think-window::-webkit-scrollbar {
+  width: 6px;
+}
+
+.think-window::-webkit-scrollbar-thumb {
+  background: var(--color-hair);
+  border-radius: 3px;
+}
+
+/* 可滚区域是 Tab 站，键盘能进去；焦点环只在键盘来时出现。 */
+.think-window:focus-visible {
+  outline: 1px solid var(--color-hair);
+  outline-offset: 2px;
+}
+
+/*
+ * 「回到底部」的入场：从对话区底部浮上来一点。它只在自己该出现时出现，
+ * 所以入场必须轻——读者是来找内容的，不是来看按钮的。
+ * 用 translate 而不是 transform：Tailwind v4 的 -translate-x-1/2 也写 translate，终态正好接上。
+ */
+@keyframes scroll-to-end-in {
+  from {
+    opacity: 0;
+    translate: -50% 6px;
+  }
+  to {
+    opacity: 1;
+    translate: -50% 0;
+  }
+}
+
 /* 流光字：只给「正在进行」的标题（正在思考 / 正在处理）。不动画的环境里就是普通的弱化字。 */
 .shimmer-text {
   background-image: linear-gradient(

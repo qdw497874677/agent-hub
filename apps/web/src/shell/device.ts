@@ -3,6 +3,14 @@ import { useSyncExternalStore } from 'react';
 /** 手指还是鼠标：决定要不要提示 ⌘↵ 之类的键盘捷径。 */
 export const coarsePointer = (): boolean => window.matchMedia('(pointer: coarse)').matches;
 
+/**
+ * 用户要求减少动效吗（系统设置里的「减少动态效果」）。
+ *
+ * 只在真的要开动画的那一刻问一次：这条设置可能在页面开着的时候被改，
+ * 每次动之前现问，比在挂载时记一个布尔值更跟得上。
+ */
+export const reducedMotion = (): boolean => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
 const NARROW = '(max-width: 767px)';
 const COMPACT = '(max-width: 639px)';
 

@@ -50,6 +50,25 @@ test('统一 diff 文本解析；不是 diff 返回 null', () => {
   assert.equal(parseUnifiedDiff('hello\nworld'), null);
 });
 
+test('git 头（diff --git / index / mode）不算 diff 行', () => {
+  const text = [
+    'diff --git a/src/a.ts b/src/a.ts',
+    'index 1111111..2222222 100644',
+    '--- a/src/a.ts',
+    '+++ b/src/a.ts',
+    '@@ -1,2 +1,2 @@',
+    ' const a = 1;',
+    '-const b = 2;',
+    '+const b = 4;'
+  ].join('\n');
+  assert.deepEqual(parseUnifiedDiff(text), [
+    { sign: '@', text: '@@ -1,2 +1,2 @@' },
+    { sign: ' ', text: 'const a = 1;' },
+    { sign: '-', text: 'const b = 2;' },
+    { sign: '+', text: 'const b = 4;' }
+  ]);
+});
+
 test('长输出截断，报告藏了几行', () => {
   const text = Array.from({ length: 20 }, (_, i) => `l${i}`).join('\n');
   assert.deepEqual(clipLines(text, 3), { shown: 'l0\nl1\nl2', hidden: 17 });

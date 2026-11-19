@@ -129,11 +129,11 @@ route('projects:write', { ... }, { skip: '会改项目描述，留给界面' })
 
 | 分组 | 工具 |
 | --- | --- |
-| `projects` | `list_projects`、`get_project`、`project_create`、`project_update`、`project_repos`、`project_archive`、`workspace_changes` |
-| `tasks` | `list_tasks`、`get_task`、`list_task_log`、`task_create`、`append_task_log`、`edit_task_log`、`set_task_status`、`set_task_summary` |
+| `projects` | `list_projects`、`get_project`、`project_update`（含默认 Agent）、`project_create`、`project_repos`、`project_archive`、`workspace_changes`、`resolve_default_agent`、`team_agent_defaults`、`team_agent_defaults_set` |
+| `tasks` | `list_tasks`、`get_task`、`list_task_log`、`task_create`、`append_task_log`、`edit_task_log`、`set_task_status`、`set_task_summary`、`task_default_agent` |
 | `sessions` | `get_session`、`events`、`activity`、`session_start`、`session_reply`、`session_cancel`、`session_model`、`fork_session`、`change_option` |
 | `assets` | `list_assets`、`get_asset`、`asset_create`、`asset_import`、`asset_publish`、`asset_assign` |
-| `workers` | `list_workers` |
+| `workers` | `list_workers`、`list_models` |
 | `workspaces` | `sync_workspace`、`create_workspace`、`remove_workspace`、`retry_workspace_setup` |
 
 `MCP_MODULES` 用这些分组名做灰度；`MCP_READ_ONLY=1` 在 `tools/list` 与 `tools/call` 两边同时生效。
@@ -240,6 +240,16 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 - `session_model` 与界面「模型」下拉走同一条路：同提供商只改选项（下一轮生效）；换到 hub 提供商
   或反向回原生模型会停掉会话进程、按新模型重新托管，靠 `resume{agentSessionRef, cursor}` 接回历史，
   正在跑的回合会中断。权限是 `session.prompt`，模型本身还要过调用方可见的提供商/运行时名单。
+- 开会话或换模型时，用 `list_models` 看可用模型（要 `workers:read`）：hub 托管模型排在前面，id 写成
+  `hub-<slug>/<modelId>`（例如 `hub-cn-glm-flash/glm-5.3-flash`），并带提供商与路由信息；后面是各可见机器的本地模型。
+  `list_workers` 的 `agentModels` 也会把这些 hub 模型插到每台 agent 清单前面。不要把机器本地目录里的
+  `opencode-go/*` 或 `zai-coding-cn/*` 误当成 hub 托管模型。
+- 默认 Agent：`get_project` / `get_task` 会带 `defaultAgent`（未配则为空）。用 `project_update` 的
+  `defaultAgent`（`null` = 清掉）和 `task_default_agent` 读写；`team_agent_defaults` 读团队按运行时的
+  默认模型，`team_agent_defaults_set` 改它（要团队 owner / admin，且令牌不能只限项目；普通成员即使
+  有 `projects:write` 也会 403）。新会话不显式点名模型时的生效值用 `resolve_default_agent`
+  （层级：团队运行时默认 < 项目 < 任务 < 显式），与 `session_start` 省略 `model` 时走同一套解析。
+  项目限定令牌只能动它范围内的项目。
 - 已知欠缺：资产还没有协议级 digest 冻结（E4c），所以委派出去的会话在别人同步资产新版后
   可能换内容；这一步完成前，「对外委派」适合内部可信调用方。
 

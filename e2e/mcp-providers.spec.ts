@@ -172,6 +172,8 @@ async function waitText(bot: APIRequestContext, sessionId: string, turn: number,
     expect(res.status(), text.slice(0, 300)).toBe(200);
     const payload = JSON.parse(text) as { events?: { seq?: number; turn?: number; event?: { kind?: string; text?: string; delta?: string; outcome?: string; reason?: string } }[]; nextAfter?: number };
     if (!Array.isArray(payload.events)) throw new Error(`events 返回不是 { events, nextAfter }：${text.slice(0, 200)}`);
+    // nextAfter 是本窗最后一条原始 seq：events 为空（只丢掉了 thinking/prompt）时也必须前进，不能只靠条目 seq。
+    expect(typeof payload.nextAfter, text.slice(0, 200)).toBe('number');
     if (typeof payload.nextAfter === 'number') after = Math.max(after, payload.nextAfter);
     for (const entry of payload.events) {
       after = Math.max(after, entry.seq ?? 0);
