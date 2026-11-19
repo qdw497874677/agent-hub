@@ -462,10 +462,10 @@ export const routes = {
     method: 'post', path: `${V1}/projects`, tags: ['projects'], summary: '新建项目',
     description:
       '新建一个项目（代码与任务的边界）。\n' +
-      '参数：name（1–60）、rootPath（这台 hub 上已存在的目录）。\n' +
+      '参数：name（1–80，必填）；其余都可选：rootPath（不给或空串 = 先不选目录，开始任务时再选机器和工作空间；给了则须是 hub 机器上已存在的绝对路径）、workerId、repoUrl、defaultBranch、description。\n' +
       '返回：项目对象（id、name、rootPath）。记下 id。\n' +
       '下一步：用 task_create 在项目里建任务，再 session_start 派一台机器。\n' +
-      '错误：401 令牌无效；403 无 projects:write；409 同名或目录不合法。',
+      '错误：401 令牌无效；403 无 projects:write；409 同名；400 目录不合法（仅在给了 rootPath 时）。',
     request: body(createProjectRequest),
     responses: { 201: json(projectSchema, '已创建') }
   }, { module: 'projects', need: 'project.create', readOnly: false, expose: 'project_create', idempotent: true }),
