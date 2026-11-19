@@ -127,6 +127,7 @@ export { matchesAudit } from './ports/audit-log.ts';
 export type { InviteRepository } from './ports/invite-repository.ts';
 export * from './use-cases/team.ts';
 export * from './use-cases/agent-defaults.ts';
+export { applyDefaultAgentLayers, resolveDefaultAgent, type ResolvedDefaultAgent, type DefaultAgentSource } from './use-cases/resolve-default-agent.ts';
 export * from './agent-defaults.ts';
 export type { AgentDefaultsStore } from './ports/agent-defaults.ts';
 export * from './use-cases/personal.ts';

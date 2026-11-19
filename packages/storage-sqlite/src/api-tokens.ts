@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { ApiScope, ApiToken, ApiTokenRepository } from '@agent-hub/domain';
+import { parseApiTokenScopes, type ApiToken, type ApiTokenRepository } from '@agent-hub/domain';
 
 /** 表体（建表 / 重建共用）。bot 凭据用 bot_project_id + bot_name 记归属（C1）。 */
 const TABLE_BODY = `
@@ -73,9 +73,31 @@ function addProjectIds(db: DatabaseSync): void {
 
 export function createSqliteApiTokens(db: DatabaseSync): ApiTokenRepository {
   migrate(db);
-  const toToken = (row: Row): ApiToken => {
+  const parseProjectIds = (raw: unknown): string[] | null | 'corrupt' => {
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw !== 'string') return 'corrupt';
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) return 'corrupt';
+      return value as string[];
+    } catch {
+      return 'corrupt';
+    }
+  };
+
+  /** 解析失败返回 null：鉴权按无效令牌处理，列表跳过，绝不抛出让请求 500。 */
+  const toToken = (row: Row): ApiToken | null => {
+    const parsed = parseApiTokenScopes(row.scopes);
+    if (!parsed.ok) {
+      console.warn(`[tokens] 令牌 scopes 无法解析（id=${String(row.id)} name=${String(row.name)} reason=${parsed.reason}）`);
+      return null;
+    }
+    const projectIds = parseProjectIds(row.project_ids);
+    if (projectIds === 'corrupt') {
+      console.warn(`[tokens] 令牌 project_ids 无法解析（id=${String(row.id)} name=${String(row.name)}）`);
+      return null;
+    }
     const botProjectId = row.bot_project_id;
-    const projectIds = typeof row.project_ids === 'string' ? (JSON.parse(row.project_ids) as string[]) : null;
     return {
       id: row.id as string,
       teamId: row.team_id as string,
@@ -84,7 +106,7 @@ export function createSqliteApiTokens(db: DatabaseSync): ApiTokenRepository {
       ...(typeof botProjectId === 'string' ? { bot: { projectId: botProjectId, name: (row.bot_name as string | null) ?? '' } } : {}),
       ...(projectIds && projectIds.length > 0 ? { projectIds } : {}),
       name: row.name as string,
-      scopes: JSON.parse(row.scopes as string) as ApiScope[],
+      scopes: parsed.scopes,
       prefix: row.prefix as string,
       tokenHash: row.token_hash as string,
       createdBy: row.created_by as string,
@@ -134,10 +156,10 @@ export function createSqliteApiTokens(db: DatabaseSync): ApiTokenRepository {
       return row ? toToken(row) : null;
     },
     async listByTeam(teamId) {
-      return (team.all(teamId) as Row[]).map(toToken);
+      return (team.all(teamId) as Row[]).map(toToken).filter((token): token is ApiToken => token !== null);
     },
     async listBotsByProject(projectId) {
-      return (bots.all(projectId) as Row[]).map(toToken);
+      return (bots.all(projectId) as Row[]).map(toToken).filter((token): token is ApiToken => token !== null);
     },
     async touch(id, at) {
       touch.run(at, id);

@@ -6,10 +6,14 @@
 
 ```
 list_projects → projectId
-get_project { projectId }                      # 看 repos / checks / 约定
-list_workers                                    # 选在线、runtime 对得上的机器
+get_project { projectId }                      # 看 repos / checks / 约定 / defaultAgent
+list_workers                                    # 选在线、runtime 对得上的机器（agentModels 也会带 hub 模型）
+list_models                                      # 开会话用的模型：hub-<slug>/<modelId> 在前
+resolve_default_agent { projectId, taskId? }     # 不点名模型时会用哪个（任务 > 项目 > 团队）
+# 可选：project_update { projectId, defaultAgent: { runtime, model } }
+# 可选：task_default_agent { taskId, defaultAgent }  或 null 清掉
 task_create { projectId, title, goal?, clientRequestId }
-session_start { taskId, workerId, agentId, model?, clientRequestId }
+session_start { taskId, workerId, agentId, model?, clientRequestId }  # 省略 model = 用上面的默认
 session_reply { sessionId, text, clientRequestId, clientMessageId }
 ```
 
@@ -172,6 +176,7 @@ provider_list
 provider_create { slug, name, protocol, baseUrl, models, routing, scope?, apiKey?, clientRequestId }
 provider_probe { providerId }                  # 或临时 baseUrl / apiKey（不会入库）
 provider_test { providerId, workerId, clientRequestId }
+list_models                                      # hub 托管模型在前，id 为 hub-<slug>/<modelId>
 # 开会话时模型写 hub-<slug>/<modelId>，例如 hub-cn-glm-flash/glm-5.3-flash
 provider_delete { providerId }                 # 先看影响
 provider_delete { providerId, confirm: true, clientRequestId }
