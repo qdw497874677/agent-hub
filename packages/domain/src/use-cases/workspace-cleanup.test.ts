@@ -447,3 +447,13 @@ test('组合组：每个成员的 PR 都合并才整组收起并拆掉；只合�
   assert.deepEqual(again.removed, []);
   assert.ok(await partial.groups.byId(partial.group.id));
 });
+
+test('收起时已拆除：再 sweep 会说明没有待清理项，并列出 alreadyRemoved', async () => {
+  const w = await world('https://example.com/demo.git');
+  await w.deps.workspaces.save({ ...w.temp, state: 'removed', updatedAt: 2 });
+  const report = await sweepTemporaryWorkspacesUseCase(w.deps, { projectId: w.project.id, trigger: 'manual' });
+  assert.deepEqual(report.removed, []);
+  assert.deepEqual(report.kept, []);
+  assert.ok(report.alreadyRemoved?.includes(w.temp.id));
+  assert.match(report.message ?? '', /收起时拆除/);
+});

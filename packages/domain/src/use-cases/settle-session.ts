@@ -10,7 +10,7 @@ import type { Session } from '../session.ts';
 import type { Deps } from './deps.ts';
 import { authorizeSession } from './authorization.ts';
 import { projectOfSession } from './workspaces.ts';
-import { releaseSessionWorktrees, restoreSessionWorktrees, type SessionWorktreeDeps } from './session-worktrees.ts';
+import { releaseSessionWorktrees, restoreSessionWorktrees, type SessionWorktreeDeps, type WorktreeCleanupItem } from './session-worktrees.ts';
 
 export interface SettleSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'>,
   // 容器会话没有任务：按组合工作空间 / bot 找回项目（#221 步骤 7）。
@@ -28,6 +28,13 @@ export interface SettleSessionCommand {
   readonly now: number;
 }
 
+export interface SessionCleanupReport {
+  readonly items: readonly WorktreeCleanupItem[];
+}
+
+/** 收起 / 恢复的结果：会话字段原样保留，另带每个 worktree 的清理明细。 */
+export type SettleSessionResult = Session & { readonly cleanup: SessionCleanupReport };
+
 const signedIn = (actor: Principal | null): Result<Principal, DomainError> =>
   !actor || actor.user.disabledAt !== null || actor.user.deletedAt !== null ? err(forbidden('需要登录')) : ok(actor);
 
@@ -39,7 +46,7 @@ const signedIn = (actor: Principal | null): Result<Principal, DomainError> =>
 export async function settleSessionUseCase(
   deps: SettleSessionDeps,
   command: SettleSessionCommand
-): Promise<Result<Session, DomainError>> {
+): Promise<Result<SettleSessionResult, DomainError>> {
   const who = signedIn(command.actor);
   if (!who.ok) return who;
   const session = await deps.sessions.byId(command.sessionId);
@@ -50,9 +57,17 @@ export async function settleSessionUseCase(
   const current = allowed.value;
   if (command.settled && current.status === 'running') return err(conflict('会话还在跑，先停止再收起'));
   const next: Session = { ...current, settledAt: command.settled ? command.now : null };
-  if (deps.gateway || deps.git) {
-    if (command.settled) await releaseSessionWorktrees(deps as SessionWorktreeDeps, current, { force: false });
-    else await restoreSessionWorktrees(deps as SessionWorktreeDeps, next);
+  let items: WorktreeCleanupItem[] = [];
+  if (command.settled) {
+    if (deps.gateway || deps.git) {
+      items = [...(await releaseSessionWorktrees(deps as SessionWorktreeDeps, current, { force: false }))];
+    } else if (current.workspaceId) {
+      items = [{ workspaceId: current.workspaceId, action: 'deferred', reason: '本机未接 Git，留给 workspace_sweep' }];
+    } else if (current.groupId) {
+      items = [{ workspaceId: current.groupId, action: 'deferred', reason: '本机未接 Git，留给 workspace_sweep' }];
+    }
+  } else if (deps.gateway || deps.git) {
+    await restoreSessionWorktrees(deps as SessionWorktreeDeps, next);
   }
   await deps.sessions.save(next);
   if (deps.audit) {
@@ -67,5 +82,5 @@ export async function settleSessionUseCase(
       teamId: project?.teamId ?? null
     });
   }
-  return ok(next);
+  return ok({ ...next, cleanup: { items } });
 }

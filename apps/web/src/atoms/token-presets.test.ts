@@ -12,6 +12,7 @@ test('预设：勾选正好等于某个预设才算它，顺序无关；多勾�
   // 预设里不带高风险的 assets:publish
   assert.ok(TOKEN_PRESETS.every((p) => !p.scopes.includes('assets:publish')));
   assert.ok(TOKEN_PRESETS.every((p) => !(p.scopes as readonly string[]).includes('providers:manage')));
+  assert.ok(TOKEN_PRESETS.every((p) => !(p.scopes as readonly string[]).includes('tokens:manage')));
 });
 
 test('调用记录的动作名', () => {

@@ -223,6 +223,8 @@ grants(id, team_id, subject_user_id, action, resource_kind, resource_id, created
 
 不变（ADR 0015）：有效权限 = 账号权限 ∩ scope 权限；新拆的权限点（`session.prompt` 等）映射进现有 scope：`sessions:write` = `session.create/prompt/interrupt/fork/derive` + `worker.use`。
 
+`tokens:manage`（权限点 `token.manage`）默认关闭，只由管理员在界面授予，不能给项目级令牌或 bot。经这张令牌签发的新令牌，scopes 必须是子集，且不能带 `tokens:manage` / `providers:manage`，有效期必填、最长 30 天。详见 `docs/design/mcp-token-management.md`。
+
 ## 4. 迁移
 
 1. **数据**：`users.hub_admin = 1` 的人 → `hub_roles(user_id, role='cluster_admin')`；David 成为集群管理员。保留 `hub_admin` 列一个版本做兼容读，之后删除。

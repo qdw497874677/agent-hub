@@ -22,6 +22,7 @@ import { recordSystemLog } from './work-log.ts';
 import { defaultWorkspaceFor, locationOf, projectOfSession, usableByProject } from './workspaces.ts';
 import { authorizeSession, authorizeWorker } from './authorization.ts';
 import { agentProfileForUse } from './agent-profiles.ts';
+import { resolveDefaultAgent } from './resolve-default-agent.ts';
 
 export interface DeriveCommand {
   /** 归属任务。容器会话（群角色 / bot P2P，#221 步骤 7）不传，改用 `projectId` 定位项目。 */
@@ -127,32 +128,8 @@ export async function deriveSessionUseCase(
   }
 
   // 默认 Agent 的层级（从低到高）：团队按运行时的默认模型 < 项目默认 < 任务默认 < 显式选择。
-  // runtime 只有完全没说时才由任务 / 项目补；模型按层从高到低取第一个非空；选项逐层铺开、上层覆盖下层。
-  const layers = [project.defaultAgent ?? null, task?.defaultAgent ?? null].filter(
-    (layer): layer is AgentRef => layer !== null
-  );
-  if (ref.runtime === '') {
-    ref = { ...ref, runtime: layers.reduce<string>((found, layer) => (found === '' ? layer.runtime : found), '') };
-  }
-  const sameRuntime = layers.filter((layer) => layer.runtime === ref.runtime);
-  if (ref.model === '') {
-    for (const layer of [...sameRuntime].reverse()) {
-      if (layer.model !== '') {
-        ref = { ...ref, model: layer.model };
-        break;
-      }
-    }
-  }
-  if (sameRuntime.length > 0) {
-    ref = { ...ref, options: { ...sameRuntime.reduce((merged, layer) => ({ ...merged, ...layer.options }), {}), ...ref.options } };
-  }
+  ref = (await resolveDefaultAgent(deps, { project, task, explicit: ref })).effective;
   const agentId = asAgentId(ref.runtime);
-  // 团队级默认模型：只在调用方没点名模型时补（显式选择永远优先；空串才是「没说」）。
-  if (ref.model === '' && deps.agentDefaults && project.teamId) {
-    const defaults = await deps.agentDefaults.forTeam(project.teamId);
-    const fallback = defaults[ref.runtime];
-    if (fallback !== undefined) ref = { ...ref, model: fallback };
-  }
   const descriptor = deps.agents.descriptor(agentId);
   if (!descriptor) return err(conflict(`没有在线节点提供 ${ref.runtime}`));
   if (descriptor.capabilities.prompt.state === 'denied') {

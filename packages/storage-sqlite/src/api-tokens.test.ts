@@ -106,3 +106,32 @@ test('迁移：缺 project_ids 列的库补上；老令牌读出来不限项目�
   const again = createSqliteApiTokens(db);
   assert.deepEqual((await again.byId('scoped'))?.projectIds, ['p1', 'p2']);
 });
+
+test('scopes 为 JSON 数组时正常读取；空格分隔旧格式可归一化；非法值不抛、当作不存在', async () => {
+  const db = new DatabaseSync(':memory:');
+  const repo = createSqliteApiTokens(db);
+  db.exec(`INSERT INTO api_tokens (id, team_id, kind, user_id, name, scopes, prefix, token_hash, created_by, created_at)
+    VALUES
+      ('json', 'team-1', 'personal', 'owner', 'json', '["projects:read","sessions:write"]', 'ahp_json', 'hash-json', 'owner', 1),
+      ('legacy', 'team-1', 'personal', 'owner', 'legacy', 'projects:read sessions:write', 'ahp_leg', 'hash-legacy', 'owner', 1),
+      ('bad', 'team-1', 'personal', 'owner', 'bad', 'tokens:mana not-json', 'ahp_bad', 'hash-bad', 'owner', 1)`);
+
+  const warnings: string[] = [];
+  const orig = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(' '));
+  };
+  try {
+    const json = await repo.byId('json');
+    assert.deepEqual(json?.scopes, ['projects:read', 'sessions:write']);
+    const legacy = await repo.byHash('hash-legacy');
+    assert.deepEqual(legacy?.scopes, ['projects:read', 'sessions:write']);
+    assert.equal(await repo.byHash('hash-bad'), null);
+    assert.equal(await repo.byId('bad'), null);
+    const listed = await repo.listByTeam('team-1');
+    assert.deepEqual(listed.map((row) => row.id).sort(), ['json', 'legacy']);
+    assert.ok(warnings.some((line) => line.includes('bad') && line.includes('scopes 无法解析') && !line.includes('ahp_') && !line.includes('hash-bad')));
+  } finally {
+    console.warn = orig;
+  }
+});

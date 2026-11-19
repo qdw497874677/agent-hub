@@ -26,10 +26,17 @@ export const createProjectRequest = z.object({
 /** 改项目说明：null 或空串 = 清掉。 */
 export const setProjectDescriptionRequest = z.object({ description: z.string().max(8000).nullable() });
 
-/** 开放 API：一次改项目说明与检查命令（至少给一项）。 */
+/** 开放 API：一次改项目说明、检查命令或默认 Agent（至少给一项）。 */
 export const updateProjectRequest = z
-  .object({ description: z.string().max(8000).nullable().optional(), checks: z.array(z.string().max(300)).max(5).optional() })
-  .refine((v) => v.description !== undefined || v.checks !== undefined, { message: '至少给 description 或 checks' });
+  .object({
+    description: z.string().max(8000).nullable().optional(),
+    checks: z.array(z.string().max(300)).max(5).optional(),
+    /** 项目默认 Agent；`null` = 清掉。 */
+    defaultAgent: defaultAgentSchema.nullable().optional()
+  })
+  .refine((v) => v.description !== undefined || v.checks !== undefined || v.defaultAgent !== undefined, {
+    message: '至少给 description、checks 或 defaultAgent'
+  });
 
 
 /**
@@ -635,6 +642,33 @@ export const setAgentDefaultsRequest = z.object({
   defaults: z.record(z.string(), z.string()).default({})
 });
 export type SetAgentDefaultsRequest = z.infer<typeof setAgentDefaultsRequest>;
+
+/** 团队级运行时默认模型的读/写响应。 */
+export const teamAgentDefaultsSchema = z.object({
+  defaults: z.record(z.string(), z.string())
+});
+
+/**
+ * 新会话不显式点名模型时会用到的有效默认 Agent。
+ * `effective.runtime` / `model` 都可能是空串（层层都没配）。
+ */
+export const resolvedDefaultAgentSchema = z.object({
+  effective: z.object({
+    runtime: z.string().max(64),
+    model: z.string().max(200),
+    options: optionValuesSchema
+  }),
+  layers: z.object({
+    project: defaultAgentSchema.nullable(),
+    task: defaultAgentSchema.nullable(),
+    teamDefaults: z.record(z.string(), z.string()),
+    teamModel: z.string().nullable()
+  }),
+  sources: z.object({
+    runtime: z.enum(['explicit', 'task', 'project', 'unset']),
+    model: z.enum(['explicit', 'task', 'project', 'team', 'unset'])
+  })
+});
 
 /** 改一项可调项：值可以是模型串、也可以是思考强度的档位名。 */
 export const changeOptionRequest = z.object({

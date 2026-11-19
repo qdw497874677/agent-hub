@@ -158,3 +158,46 @@ for (const width of [1280, 390]) {
   });
 }
 });
+
+test('回到底部：翻上去出现，点一下回到最新内容并收起（画布卡片 + 专注对话）', async ({ page, baseURL }) => {
+  const { project, say } = await longSession(page, baseURL!);
+  await page.goto(`/#/p/${project.id}/canvas`);
+  const card = page.locator('.react-flow__node-session');
+  await expect(card).toHaveCount(1);
+  const log = card.getByTestId('session-card-log');
+  // 长内容：光靠默认那几句不够翻
+  let n = 14;
+  while (n < 40 && (await log.evaluate((node) => node.scrollHeight < node.clientHeight * 2.5))) await say(++n);
+
+  const jump = card.getByTestId('scroll-to-end');
+  // 停在最后时不占位置：按钮只在读者离开底部后才出现
+  await expect.poll(() => gap(log)).toBeLessThan(4);
+  await expect(jump, '在底部时没有按钮').toHaveCount(0);
+
+  // 往上翻一屏：按钮出现，命中区够大（手机也能点）
+  await log.evaluate((node) => (node.scrollTop = 0));
+  await expect(jump).toBeVisible();
+  // 画布卡片整体被 React Flow 缩放，量盒子自己（offsetHeight）而不是屏幕像素
+  expect(await jump.evaluate((node) => node.offsetHeight), '命中区至少 40px').toBeGreaterThanOrEqual(40);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/scroll-to-end-card.png` });
+  // 画布卡片整体会缩放，量 CSS 高度而不是屏幕像素
+  expect(await jump.evaluate((node) => node.offsetHeight), '命中区至少 40px').toBeGreaterThanOrEqual(40);
+
+  await jump.click();
+  await expect.poll(() => gap(log), { message: '点一下回到最新内容' }).toBeLessThan(4);
+  await expect(jump, '回到最新内容后按钮收起').toHaveCount(0);
+
+  // 专注对话：同一套行为
+  await card.getByRole('button', { name: '打开' }).click();
+  const chat = page.getByRole('log', { name: '会话记录' }).locator('xpath=..');
+  const chatJump = page.getByTestId('scroll-to-end');
+  await expect.poll(() => gap(chat)).toBeLessThan(4);
+  await expect(chatJump, '专注对话在底部时没有按钮').toHaveCount(0);
+
+  await chat.evaluate((node) => (node.scrollTop = 0));
+  await expect(chatJump).toBeVisible();
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/scroll-to-end-chat.png` });
+  await chatJump.click();
+  await expect.poll(() => gap(chat), { message: '专注对话也回到底部' }).toBeLessThan(4);
+  await expect(chatJump).toHaveCount(0);
+});

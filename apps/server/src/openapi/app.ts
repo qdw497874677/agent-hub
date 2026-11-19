@@ -49,6 +49,12 @@ import {
   promptSessionUseCase,
   setProjectChecksUseCase,
   setProjectDescriptionUseCase,
+  setProjectDefaultAgentUseCase,
+  setTaskDefaultAgentUseCase,
+  resolveDefaultAgent,
+  viewAgentDefaults,
+  setAgentDefaults,
+  newId,
   updateProjectReposUseCase,
   setProjectRepoUseCase,
   setTaskStatusUseCase,
@@ -74,6 +80,10 @@ import {
   scopedTokenCreateDenied,
   listProviders,
   createProvider,
+  listApiTokens,
+  createApiToken,
+  rotateApiToken,
+  revokeApiToken,
   setWorkerProviderRouting,
   hubModelId,
   canManageProvider,
@@ -100,6 +110,8 @@ import { createAssetVisibility } from '../asset-visibility.ts';
 import { effectiveWrites, handleMcp, INTERNAL } from './mcp.ts';
 import { workspaceForApiStart } from '../session-workspace.ts';
 import { projectDto } from '../project-dto.ts';
+import { isProjectableEntry, lastJournalSeq, projectEvents } from './projection.ts';
+import { attachHubModelsToWorker, collectSessionModels } from './session-models.ts';
 
 export interface OpenApiOptions {
   readonly tokens: Pick<ApiTokenDeps, 'apiTokens' | 'users' | 'tokens' | 'now'> & Partial<Pick<ApiTokenDeps, 'projects'>>;
@@ -111,6 +123,8 @@ export interface OpenApiOptions {
   readonly settings?: { get(): Promise<import('@agent-hub/domain').HubSettings>; save(next: import('@agent-hub/domain').HubSettings): Promise<void> };
   /** MCP 调用记录（mcp.call）写到这里。 */
   readonly audit?: Pick<import('@agent-hub/domain').AuditLog, 'append'>;
+  /** 团队目录：读/写团队运行时默认模型要用。不给则这两条路由 503。 */
+  readonly teams?: import('@agent-hub/domain').TeamRepository;
 }
 
 interface V1Context {
@@ -149,6 +163,30 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   const principal = (c: Context): Principal => c.get('principal') as Principal;
   /** 审计里标出「经哪个令牌做的」：自动化发布 / 分配要能追到令牌。 */
   const viaNote = (actor: Principal): string => (actor.via ? `（经令牌 ${actor.via.name} / ${actor.via.tokenId}）` : '');
+  const projectLimited = (actor: Principal): boolean => (actor.via?.projectIds?.length ?? 0) > 0;
+  const auditDefaultAgent = async (
+    actor: Principal,
+    target: string,
+    agent: { readonly runtime: string; readonly model: string } | null
+  ): Promise<void> => {
+    if (!options.audit) return;
+    const detail = agent === null ? '清空默认 Agent' : `默认 Agent：${agent.runtime} · ${agent.model === '' ? '运行时默认模型' : agent.model}`;
+    await options.audit.append({
+      id: newId(),
+      actorId: actor.user.id,
+      actorEmail: actor.user.email,
+      action: 'project.worktree',
+      target,
+      detail: `${detail}${viaNote(actor)}`,
+      at: now(),
+      ip: null,
+      teamId: actor.user.teamId ?? null
+    });
+  };
+  const teamDefaultsDeps = () => {
+    if (!options.teams || !deps.agentDefaults) return null;
+    return { teams: options.teams, agentDefaults: deps.agentDefaults };
+  };
 
   const general = createRateLimiter({ max: options.rate?.general ?? 120, windowMs: 60_000, now });
   const prompts = createRateLimiter({ max: options.rate?.prompt ?? 20, windowMs: 60_000, now });
@@ -376,9 +414,31 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!can(actor, 'worker.read')) return fail(c, forbidden('令牌没有 workers:read'));
     const readable = await workerReader(deps.access, actor);
     const workers = [];
+    const collected = await collectSessionModels({
+      actor,
+      workers: await listWorkers(deps),
+      readable,
+      providers: ctx.providers?.deps
+    });
     // 开放 API 是集成面：不出套件清单、外部组件的包名 / 来源串（ADR 0021 §7），只留能力
-    for (const worker of await listWorkers(deps)) if (await readable(worker.workerId)) workers.push(redactInventory(worker));
+    for (const worker of collected.workers) workers.push(redactInventory(attachHubModelsToWorker(worker, collected.hub)));
     return c.json(workers);
+  });
+
+  on(routes.listModels, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'worker.read')) return fail(c, forbidden('令牌没有 workers:read'));
+    const readable = await workerReader(deps.access, actor);
+    const query = valid<{ workerId?: string; agentId?: string }>(c, 'query');
+    const collected = await collectSessionModels({
+      actor,
+      workers: await listWorkers(deps),
+      readable,
+      providers: ctx.providers?.deps,
+      workerId: query.workerId,
+      agentId: query.agentId
+    });
+    return c.json({ models: collected.models });
   });
 
   on(routes.listProjects, async (c) => {
@@ -411,7 +471,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!project) return fail(c, notFound('项目不存在'));
     const readable = await projectReader(deps.access, actor);
     if (!readable(project)) return fail(c, notFound('项目不存在'));
-    const input = valid<{ description?: string | null; checks?: string[] }>(c, 'json');
+    const input = valid<{ description?: string | null; checks?: string[]; defaultAgent?: unknown }>(c, 'json');
     let next = project;
     if (input.description !== undefined) {
       const result = await setProjectDescriptionUseCase(deps, { projectId: next.id, description: input.description });
@@ -423,7 +483,55 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       if (!result.ok) return fail(c, result.error);
       next = result.value;
     }
+    if (input.defaultAgent !== undefined) {
+      const result = await setProjectDefaultAgentUseCase(deps, { projectId: next.id, defaultAgent: input.defaultAgent });
+      if (!result.ok) return fail(c, result.error);
+      next = result.value;
+      await auditDefaultAgent(actor, next.id, next.defaultAgent ?? null);
+    }
     return c.json(projectDto(next));
+  });
+  on(routes.resolveDefaultAgent, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.read')) return fail(c, forbidden('令牌没有 projects:read'));
+    const query = valid<{ projectId: string; taskId?: string; runtime?: string; model?: string }>(c, 'query');
+    const project = await deps.projects.byId(asProjectId(query.projectId));
+    if (!project) return fail(c, notFound('项目不存在'));
+    const readable = await projectReader(deps.access, actor);
+    if (!readable(project)) return fail(c, notFound('项目不存在'));
+    let task = null;
+    if (query.taskId) {
+      task = await deps.tasks.byId(asTaskId(query.taskId));
+      if (!task || task.projectId !== project.id) return fail(c, notFound('任务不存在'));
+    }
+    const resolved = await resolveDefaultAgent(deps, {
+      project,
+      task,
+      explicit: { runtime: query.runtime ?? '', model: query.model ?? '', options: {} }
+    });
+    return c.json(resolved);
+  });
+  on(routes.getTeamAgentDefaults, async (c) => {
+    const actor = principal(c);
+    const wired = teamDefaultsDeps();
+    if (!wired) return fail(c, unavailable('这个 hub 还没装配默认模型'));
+    const result = await viewAgentDefaults(wired, actor);
+    return result.ok ? c.json({ defaults: result.value }) : fail(c, result.error);
+  });
+  on(routes.setTeamAgentDefaults, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    if (projectLimited(actor)) return fail(c, forbidden('项目限定令牌不能改团队默认模型'));
+    const teamId = actor.user.teamId;
+    const account = { ...actor, via: undefined };
+    if (!teamId || !can(account, 'team.manage', { teamId })) {
+      return fail(c, forbidden('只有团队 owner / admin 能改默认模型'));
+    }
+    const wired = teamDefaultsDeps();
+    if (!wired) return fail(c, unavailable('这个 hub 还没装配默认模型'));
+    const input = valid<{ defaults: Record<string, string> }>(c, 'json');
+    const result = await setAgentDefaults(wired, account, { defaults: input.defaults });
+    return result.ok ? c.json({ defaults: result.value }) : fail(c, result.error);
   });
   on(routes.setProjectRepos, async (c) => {
     const actor = principal(c);
@@ -489,6 +597,23 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const task = await deps.tasks.byId(asTaskId(c.req.param('taskId') ?? ''));
     if (!task) return fail(c, notFound('任务不存在'));
     return c.json({ ...task, sessions: await deps.sessions.listByTask(task.id) });
+  });
+  on(routes.setTaskDefaultAgent, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const taskId = asTaskId(c.req.param('taskId') ?? '');
+    const task = await deps.tasks.byId(taskId);
+    if (!task) return fail(c, notFound('任务不存在'));
+    const project = await deps.projects.byId(task.projectId);
+    if (!project) return fail(c, notFound('项目不存在'));
+    const readable = await projectReader(deps.access, actor);
+    if (!readable(project)) return fail(c, notFound('任务不存在'));
+    const allowed = await authorizeProject(deps.access, actor, project, 'project.update');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const input = valid<{ defaultAgent: unknown }>(c, 'json');
+    const result = await setTaskDefaultAgentUseCase(deps, taskId, input.defaultAgent);
+    if (result.ok) await auditDefaultAgent(actor, taskId, result.value.defaultAgent ?? null);
+    return result.ok ? c.json(result.value) : fail(c, result.error);
   });
   on(routes.setTaskStatus, async (c) => {
     const input = valid<{ status: TaskStatus; note?: string }>(c, 'json');
@@ -740,7 +865,9 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       actor,
       now: deps.now()
     });
-    return result.ok ? c.json(sessionSchema.parse(result.value)) : fail(c, result.error);
+    if (!result.ok) return fail(c, result.error);
+    const { cleanup, ...session } = result.value;
+    return c.json({ ...sessionSchema.parse(session), cleanup: cleanup ?? { items: [] } });
   });
   on(routes.workspaceSweep, async (c) => {
     const actor = principal(c);
@@ -855,20 +982,27 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     await ctx.waitOptions?.(sessionId);
     return c.json((await deps.sessions.byId(asSessionId(sessionId))) ?? changed.value);
   });
+  const keepEvents = (entries: Awaited<ReturnType<typeof deps.sessions.eventsAfter>>, sinceTurn: number | undefined) =>
+    sinceTurn === undefined ? entries : entries.filter((entry) => entry.turn !== undefined && entry.turn >= sinceTurn);
   on(routes.events, async (c) => {
     const sessionId = asSessionId(c.req.param('sessionId') ?? '');
     if (!(await deps.sessions.byId(sessionId))) return fail(c, notFound('会话不存在'));
     const query = valid<{ after?: number; sinceTurn?: number; waitSec?: number }>(c, 'query');
-    let entries = await deps.sessions.eventsAfter(sessionId, query.after ?? 0);
-    if (entries.length === 0 && query.waitSec) {
-      await waitUntil(query.waitSec, async () => (await deps.sessions.eventsAfter(sessionId, query.after ?? 0)).length > 0);
-      entries = await deps.sessions.eventsAfter(sessionId, query.after ?? 0);
+    const after = query.after ?? 0;
+    let scanned = await deps.sessions.eventsAfter(sessionId, after);
+    let entries = keepEvents(scanned, query.sinceTurn);
+    // 长轮询等「可投影」的事件：prompt/thinking 等不会被投影的条目不能结束等待，也不能把 nextAfter 卡住。
+    if (!entries.some(isProjectableEntry) && query.waitSec) {
+      await waitUntil(query.waitSec, async () => {
+        scanned = await deps.sessions.eventsAfter(sessionId, after);
+        return keepEvents(scanned, query.sinceTurn).some(isProjectableEntry);
+      });
+      scanned = await deps.sessions.eventsAfter(sessionId, after);
+      entries = keepEvents(scanned, query.sinceTurn);
     }
-    // sinceTurn 是按轮次补读：没有 turn 的老事件不属于任何轮次，不返回（只有在不带 sinceTurn 时给全量）。
-    const kept = query.sinceTurn === undefined
-      ? entries
-      : entries.filter((entry) => entry.turn !== undefined && entry.turn >= query.sinceTurn!);
-    return c.json(await refreshAuthors(ctx.activity, kept));
+    const kept = await refreshAuthors(ctx.activity, entries);
+    const payload = projectEvents(kept, after, lastJournalSeq(scanned, after));
+    return c.json(payload);
   });
   // ── 会话通信 P1d：连线、同伴、外部消息、收件箱 ──
   const noMessaging = (c: Context) => fail(c, { code: 'not_implemented', message: '这台 hub 没装消息总线' });
@@ -1081,6 +1215,46 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (input.confirm !== true) return c.json({ confirmRequired: true, ...impact });
     const result = await setWorkerProviderRouting(ctx.providers.deps, actor, workerId, routing);
     return result.ok ? c.json({ confirmed: true, ...impact }) : fail(c, result.error);
+  });
+
+  const tokenManageDeps = {
+    apiTokens: options.tokens.apiTokens,
+    users: options.tokens.users,
+    tokens: options.tokens.tokens,
+    now: options.tokens.now,
+    projects: options.tokens.projects ?? deps.projects,
+    // OpenApiOptions.audit 只保证 append；创建/轮换/吊销只用 append。
+    audit: options.audit as import('@agent-hub/domain').ApiTokenDeps['audit']
+  };
+  on(routes.tokenList, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'token.manage')) return fail(c, forbidden('令牌没有 tokens:manage'));
+    return c.json({ tokens: await listApiTokens(tokenManageDeps, actor) });
+  });
+  on(routes.tokenCreate, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'token.manage')) return fail(c, forbidden('令牌没有 tokens:manage'));
+    const input = valid<{ name: string; scopes: import('@agent-hub/domain').ApiScope[]; expiresAt: number; projectIds?: string[] | null }>(c, 'json');
+    const result = await createApiToken(tokenManageDeps, actor, {
+      name: input.name,
+      kind: 'personal',
+      scopes: input.scopes,
+      expiresAt: input.expiresAt,
+      projectIds: input.projectIds
+    });
+    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+  on(routes.tokenRotate, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'token.manage')) return fail(c, forbidden('令牌没有 tokens:manage'));
+    const result = await rotateApiToken(tokenManageDeps, actor, c.req.param('tokenId') ?? '');
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  on(routes.tokenRevoke, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'token.manage')) return fail(c, forbidden('令牌没有 tokens:manage'));
+    const result = await revokeApiToken(tokenManageDeps, actor, c.req.param('tokenId') ?? '');
+    return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
   on(routes.activity, async (c) => {

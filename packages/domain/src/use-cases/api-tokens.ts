@@ -2,7 +2,7 @@ import { can, type Permission, type Resource } from '../access.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
 import { asLoginId, isEmailVerified, newUserId } from '../account.ts';
 import type { ApiScope, ApiToken, ApiTokenKind } from '../api-token.ts';
-import { API_SCOPES, API_TOKEN_PREFIX, DEFAULT_TOKEN_TTL_MS, BOT_TOKEN_PREFIX, SERVICE_EMAIL_DOMAIN, apiTokenUsable, effectivePermissions } from '../api-token.ts';
+import { API_SCOPES, API_TOKEN_PREFIX, DEFAULT_TOKEN_TTL_MS, MCP_TOKEN_MAX_TTL_MS, BOT_TOKEN_PREFIX, SERVICE_EMAIL_DOMAIN, apiTokenUsable, effectivePermissions } from '../api-token.ts';
 import { conflict, forbidden, invalid, notFound } from '../errors.ts';
 import type { DomainError } from '../errors.ts';
 import { asProjectId, newId } from '../ids.ts';
@@ -103,13 +103,41 @@ export function providerManageGrantDenied(
   return null;
 }
 
+/** tokens:manage 只能由管理员授予；项目级令牌和 bot 凭据一律不给。 */
+export function tokenManageGrantDenied(
+  actor: Principal,
+  input: { readonly kind: ApiTokenKind; readonly scopes: readonly ApiScope[]; readonly projectIds?: readonly string[] | null }
+): string | null {
+  if (!input.scopes.includes('tokens:manage')) return null;
+  if (input.kind === 'bot') return 'bot 凭据不能管理访问令牌';
+  if (input.projectIds && input.projectIds.length > 0) return '只限项目的令牌不能管理访问令牌';
+  if (!actor.user.clusterAdmin && actor.user.role !== 'owner' && actor.user.role !== 'admin') {
+    return '只有管理员能授予「管理访问令牌」';
+  }
+  return null;
+}
+
+const ESCALATION_SCOPES: readonly ApiScope[] = ['tokens:manage', 'providers:manage'];
+
+/** 经令牌管理令牌：要有 tokens:manage（映射 token.manage），且账号本身也有这个权限。 */
+export function viaCanManageTokens(actor: Principal): boolean {
+  return Boolean(actor.via && can(actor, 'token.manage'));
+}
+
+const viaManageOrPerson = (actor: Principal, whenVia: string): import('../result.ts').Result<void, DomainError> => {
+  if (!actor.via) return ok(undefined);
+  if (!viaCanManageTokens(actor)) return err(forbidden(whenVia));
+  return ok(undefined);
+};
+
 export async function createApiToken(
   deps: ApiTokenDeps,
   actor: Principal,
   input: CreateApiTokenInput
 ): Promise<Result<{ readonly token: string; readonly info: ApiTokenView }, DomainError>> {
-  // 令牌不能再造令牌：只有登录态（人）能管令牌。
-  if (actor.via) return err(forbidden('令牌不能创建令牌'));
+  // 登录态可以管令牌；经令牌只有带着 tokens:manage 才能签发（且不能再签发管理类 scope）。
+  const viaOk = viaManageOrPerson(actor, '令牌不能创建令牌（需要 tokens:manage）');
+  if (!viaOk.ok) return viaOk;
   const teamId = actor.user.teamId;
   if (!teamId) return err(forbidden('你还没有团队'));
   const name = input.name.trim();
@@ -120,8 +148,19 @@ export async function createApiToken(
   // 个人 / 服务账号令牌：不给 = 默认 30 天；要永不过期得显式传 null。
   // bot 凭据是项目里长期挂着的集成，永不过期，也不接受有效期（免得 bot 到期突然失联）。
   if (input.kind === 'bot' && input.expiresAt != null) return err(invalid('bot 凭据不会过期，不用设有效期'));
+  if (actor.via) {
+    if (input.kind !== 'personal') return err(forbidden('经令牌只能签发个人令牌'));
+    if (input.expiresAt === undefined || input.expiresAt === null) return err(invalid('经令牌签发必须设置过期时间（最长 30 天）'));
+  }
   const expiresAt = input.kind === 'bot' ? null : input.expiresAt !== undefined ? input.expiresAt : now + DEFAULT_TOKEN_TTL_MS;
   if (expiresAt !== null && expiresAt <= now) return err(invalid('过期时间要在将来'));
+  if (actor.via) {
+    if (expiresAt === null || expiresAt > now + MCP_TOKEN_MAX_TTL_MS) return err(invalid('经令牌签发的有效期最长 30 天'));
+    const blocked = input.scopes.filter((scope) => ESCALATION_SCOPES.includes(scope));
+    if (blocked.length > 0) return err(forbidden('不能签发带 tokens:manage 或 providers:manage 的令牌'));
+    const own = new Set(actor.via.scopes);
+    if (input.scopes.some((scope) => !own.has(scope))) return err(forbidden('只能签发自身权限范围内的令牌'));
+  }
 
   let userId: string = actor.user.id;
   let bot: ApiToken['bot'];
@@ -177,6 +216,8 @@ export async function createApiToken(
 
   const manageDenied = providerManageGrantDenied(actor, { kind: input.kind, scopes, projectIds });
   if (manageDenied) return err(forbidden(manageDenied));
+  const tokenDenied = tokenManageGrantDenied(actor, { kind: input.kind, scopes, projectIds });
+  if (tokenDenied) return err(forbidden(tokenDenied));
 
   const issued = deps.tokens.issue();
   const prefix = input.kind === 'bot' ? BOT_TOKEN_PREFIX : API_TOKEN_PREFIX;
@@ -231,7 +272,8 @@ export async function listApiTokens(deps: ApiTokenDeps, actor: Principal): Promi
 }
 
 export async function revokeApiToken(deps: ApiTokenDeps, actor: Principal, id: string): Promise<Result<ApiTokenView, DomainError>> {
-  if (actor.via) return err(forbidden('令牌不能吊销令牌'));
+  const viaRevoke = viaManageOrPerson(actor, '令牌不能吊销令牌（需要 tokens:manage）');
+  if (!viaRevoke.ok) return viaRevoke;
   const token = await deps.apiTokens.byId(id);
   if (!token || token.teamId !== actor.user.teamId) return err(notFound('令牌不存在'));
   const mine =
@@ -288,6 +330,7 @@ export async function authenticateApiToken(
       kind: token.kind,
       // bot 令牌再与 BOT_PERMISSIONS 取交集：scope 可以更宽，越界权限不会生效。
       permissions: effectivePermissions(token),
+      scopes: token.scopes,
       ...(token.bot ? { bot: { projectId: token.bot.projectId, name: token.bot.name } } : {}),
       ...(token.projectIds && token.projectIds.length > 0 ? { projectIds: token.projectIds, ...(teamIds.length ? { teamIds } : {}) } : {})
     }
@@ -312,13 +355,20 @@ export async function rotateApiToken(
   actor: Principal,
   id: string
 ): Promise<Result<{ readonly token: string; readonly info: ApiTokenView; readonly replaced: ApiTokenView }, DomainError>> {
-  if (actor.via) return err(forbidden('令牌不能轮换令牌'));
+  const viaRotate = viaManageOrPerson(actor, '令牌不能轮换令牌（需要 tokens:manage）');
+  if (!viaRotate.ok) return viaRotate;
   const old = await deps.apiTokens.byId(id);
   if (!old || !(await manages(deps, actor, old))) return err(notFound('令牌不存在'));
   if (old.kind === 'bot') return err(invalid('bot 凭据请在 Bot 页重新生成'));
   if (old.revokedAt !== null) return err(conflict('这个令牌已经吊销了，新建一个吧'));
   const now = deps.now();
   const length = old.expiresAt === null ? null : Math.max(old.expiresAt - old.createdAt, 60_000);
+  // 经令牌轮换：有效期仍沿用原来的长度，但上限 30 天，且不允许再变成永不过期。
+  const expiresAt = actor.via
+    ? now + Math.min(length ?? MCP_TOKEN_MAX_TTL_MS, MCP_TOKEN_MAX_TTL_MS)
+    : length === null
+      ? null
+      : now + length;
   const issued = deps.tokens.issue();
   const raw = `${API_TOKEN_PREFIX}${issued.token}`;
   const next: ApiToken = {
@@ -328,7 +378,7 @@ export async function rotateApiToken(
     tokenHash: deps.tokens.hashOf(raw),
     createdBy: actor.user.id,
     createdAt: now,
-    expiresAt: length === null ? null : now + length,
+    expiresAt,
     lastUsedAt: null,
     revokedAt: null
   };
@@ -346,7 +396,8 @@ export async function apiTokenActivity(
   id: string,
   limit = 50
 ): Promise<Result<readonly { readonly action: string; readonly detail: string; readonly at: number }[], DomainError>> {
-  if (actor.via) return err(forbidden('令牌不能查令牌'));
+  const viaInspect = viaManageOrPerson(actor, '令牌不能查令牌（需要 tokens:manage）');
+  if (!viaInspect.ok) return viaInspect;
   const token = await deps.apiTokens.byId(id);
   if (!token || !(await manages(deps, actor, token))) return err(notFound('令牌不存在'));
   if (!deps.audit) return ok([]);
@@ -360,7 +411,8 @@ export async function authenticateApiTokenById(
   actor: Principal,
   id: string
 ): Promise<Result<{ readonly permissions: readonly Permission[]; readonly usable: boolean }, DomainError>> {
-  if (actor.via) return err(forbidden('令牌不能查令牌'));
+  const viaInspect = viaManageOrPerson(actor, '令牌不能查令牌（需要 tokens:manage）');
+  if (!viaInspect.ok) return viaInspect;
   const token = await deps.apiTokens.byId(id);
   if (!token || !(await manages(deps, actor, token))) return err(notFound('令牌不存在'));
   return ok({ permissions: effectivePermissions(token), usable: apiTokenUsable(token, deps.now()) });

@@ -1117,6 +1117,7 @@
           "workers"
         ],
         "summary": "能用的机器",
+        "description": "列出令牌能看见的机器。agentModels 里会把调用方能用的 hub 托管模型（hub-<slug>/<modelId>）放在每台 agent 清单前面，再跟机器本地模型。\n更完整的模型目录（含提供商 / 路由信息）用 list_models。\n错误：401 令牌无效；403 没有 workers:read。\n\n权限范围：`workers:read`\n\nMCP 工具：`list_workers`",
         "security": [
           {
             "bearer": [
@@ -1124,7 +1125,6 @@
             ]
           }
         ],
-        "description": "权限范围：`workers:read`\n\nMCP 工具：`list_workers`",
         "responses": {
           "200": {
             "description": "成功",
@@ -1985,6 +1985,175 @@
         }
       }
     },
+    "/openapi/v1/models": {
+      "get": {
+        "tags": [
+          "workers"
+        ],
+        "summary": "开会话能用的模型",
+        "description": "列出这条令牌开会话或 session_model 能选的模型：先是调用方可见且可用的 hub 托管模型（id 为 hub-<slug>/<modelId>，带提供商与路由），再是各可见机器上报的本地模型。\n参数：workerId?、agentId?（可选，只看某一台机器 / 某一个 agent 能用的；hub 模型仍按该 agent 申报的协议过滤）。\n权限：workers:read。看不到或没有密钥的提供商不会出现。本机 Worker 上的模型仍会列出，但开放 API 不能在 origin=local 的机器上开会话。\n下一步：要知道「不显式点名模型时会用哪个」，用 resolve_default_agent（按项目/任务/团队默认解析），不要假设 list_models 的第一项就是默认。\n错误：401 令牌无效；403 没有 workers:read。\n\n权限范围：`workers:read`\n\nMCP 工具：`list_models`",
+        "security": [
+          {
+            "bearer": [
+              "workers:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "workerId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "agentId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "hub",
+                              "worker"
+                            ]
+                          },
+                          "provider": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "slug": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "routing": {
+                                "type": "string"
+                              },
+                              "scope": {
+                                "type": "string"
+                              },
+                              "protocol": {
+                                "type": "string"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "slug",
+                              "name",
+                              "routing",
+                              "scope",
+                              "protocol",
+                              "enabled"
+                            ]
+                          },
+                          "workerId": {
+                            "type": "string"
+                          },
+                          "workerLabel": {
+                            "type": "string"
+                          },
+                          "agentId": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "source"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "models"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/openapi/v1/projects": {
       "get": {
         "tags": [
@@ -2061,6 +2230,9 @@
                             },
                             "hasToken": {
                               "type": "boolean"
+                            },
+                            "tokenHint": {
+                              "type": "string"
                             }
                           },
                           "required": [
@@ -2070,6 +2242,9 @@
                           ]
                         },
                         "default": []
+                      },
+                      "gitTokenHint": {
+                        "type": "string"
                       },
                       "primaryRepoId": {
                         "type": [
@@ -2264,7 +2439,7 @@
           "projects"
         ],
         "summary": "新建项目",
-        "description": "新建一个项目（代码与任务的边界）。\n参数：name（1–60）、rootPath（这台 hub 上已存在的目录）。\n返回：项目对象（id、name、rootPath）。记下 id。\n下一步：用 task_create 在项目里建任务，再 session_start 派一台机器。\n错误：401 令牌无效；403 无 projects:write；409 同名或目录不合法。\n\n权限范围：`projects:write`\n\nMCP 工具：`project_create`",
+        "description": "新建一个项目（代码与任务的边界）。\n参数：name（1–80，必填）；其余都可选：rootPath（不给或空串 = 先不选目录，开始任务时再选机器和工作空间；给了则须是 hub 机器上已存在的绝对路径）、workerId、repoUrl、defaultBranch、description。\n返回：项目对象（id、name、rootPath、repos）。仓库 hasToken=false 时带 tokenHint / gitTokenHint：用 project_repos 写入 credential（只写不回）再推送或开 PR。\n下一步：用 task_create 在项目里建任务，再 session_start 派一台机器。\n错误：401 令牌无效；403 无 projects:write；409 同名；400 目录不合法（仅在给了 rootPath 时）。\n\n权限范围：`projects:write`\n\nMCP 工具：`project_create`",
         "security": [
           {
             "bearer": [
@@ -2383,6 +2558,9 @@
                           },
                           "hasToken": {
                             "type": "boolean"
+                          },
+                          "tokenHint": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -2392,6 +2570,9 @@
                         ]
                       },
                       "default": []
+                    },
+                    "gitTokenHint": {
+                      "type": "string"
                     },
                     "primaryRepoId": {
                       "type": [
@@ -2665,6 +2846,9 @@
                           },
                           "hasToken": {
                             "type": "boolean"
+                          },
+                          "tokenHint": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -2674,6 +2858,9 @@
                         ]
                       },
                       "default": []
+                    },
+                    "gitTokenHint": {
+                      "type": "string"
                     },
                     "primaryRepoId": {
                       "type": [
@@ -2866,8 +3053,8 @@
         "tags": [
           "projects"
         ],
-        "summary": "改项目说明或检查命令",
-        "description": "改项目的说明（description）和/或检查命令（checks，最多 5 条、每条 ≤300 字、不能换行；空数组=清掉）。\n参数：projectId（路径）；body 至少给 description 或 checks 之一。\n返回：更新后的项目对象。\n下一步：用 get_project 复核；检查命令由 agent 的 run_checks 执行。\n错误：400 参数不合法（含换行、超长）；403 无 projects:write 或不是项目管理员；404 项目不存在。\n\n权限范围：`projects:write`\n\nMCP 工具：`project_update`",
+        "summary": "改项目说明、检查命令或默认 Agent",
+        "description": "改项目的说明（description）、检查命令（checks，最多 5 条、每条 ≤300 字、不能换行；空数组=清掉）和/或默认 Agent（defaultAgent；null=清掉）。\n默认 Agent 是 { runtime, model?, options? }：新会话没显式点名时，按 任务默认 > 项目默认 > 团队运行时默认模型 生效。\n参数：projectId（路径）；body 至少给 description、checks 或 defaultAgent 之一。\n返回：更新后的项目对象（含 defaultAgent）。\n下一步：用 get_project 或 resolve_default_agent 复核；检查命令由 agent 的 run_checks 执行。\n错误：400 参数不合法（含换行、超长、runtime 不合法）；403 无 projects:write 或不是项目管理员；404 项目不存在或你看不见。项目限定令牌只能改它范围内的项目。\n\n权限范围：`projects:write`\n\nMCP 工具：`project_update`",
         "security": [
           {
             "bearer": [
@@ -2906,6 +3093,41 @@
                       "maxLength": 300
                     },
                     "maxItems": 5
+                  },
+                  "defaultAgent": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "runtime": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      "model": {
+                        "type": "string",
+                        "maxLength": 200,
+                        "default": ""
+                      },
+                      "options": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "boolean"
+                            }
+                          ]
+                        },
+                        "default": {}
+                      }
+                    },
+                    "required": [
+                      "runtime"
+                    ]
                   }
                 }
               }
@@ -2972,6 +3194,9 @@
                           },
                           "hasToken": {
                             "type": "boolean"
+                          },
+                          "tokenHint": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -2981,6 +3206,9 @@
                         ]
                       },
                       "default": []
+                    },
+                    "gitTokenHint": {
+                      "type": "string"
                     },
                     "primaryRepoId": {
                       "type": [
@@ -3291,6 +3519,476 @@
         }
       }
     },
+    "/openapi/v1/defaults/resolve": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "解析新会话会用的默认 Agent",
+        "description": "算出一条新会话在不显式点名模型时会用的 runtime + 模型 + 选项。层级从低到高：团队按运行时的默认模型 < 项目 defaultAgent < 任务 defaultAgent < 本次传入的 runtime/model。\n参数：projectId（必填）；taskId?（可选，带上任务默认）；runtime?、model?（可选，模拟显式选择）。\n返回：effective（可能 runtime/model 为空串，表示层层都没配）、layers（项目/任务/团队原值）、sources（runtime 与 model 分别来自哪一层）。\n权限：projects:read；项目限定令牌只能查它范围内的项目。不要求该 runtime 当前在线。\n下一步：session_start 时省略 model（或传空串）就会用这里的 effective。\n错误：401 令牌无效；404 项目/任务不存在或你看不见。\n\n权限范围：`projects:read`\n\nMCP 工具：`resolve_default_agent`",
+        "security": [
+          {
+            "bearer": [
+              "projects:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "taskId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "required": false,
+            "name": "runtime",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "required": false,
+            "name": "model",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "effective": {
+                      "type": "object",
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "runtime",
+                        "model",
+                        "options"
+                      ]
+                    },
+                    "layers": {
+                      "type": "object",
+                      "properties": {
+                        "project": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "runtime": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 64
+                            },
+                            "model": {
+                              "type": "string",
+                              "maxLength": 200,
+                              "default": ""
+                            },
+                            "options": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "boolean"
+                                  }
+                                ]
+                              },
+                              "default": {}
+                            }
+                          },
+                          "required": [
+                            "runtime"
+                          ]
+                        },
+                        "task": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "runtime": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 64
+                            },
+                            "model": {
+                              "type": "string",
+                              "maxLength": 200,
+                              "default": ""
+                            },
+                            "options": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "boolean"
+                                  }
+                                ]
+                              },
+                              "default": {}
+                            }
+                          },
+                          "required": [
+                            "runtime"
+                          ]
+                        },
+                        "teamDefaults": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "teamModel": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "project",
+                        "task",
+                        "teamDefaults",
+                        "teamModel"
+                      ]
+                    },
+                    "sources": {
+                      "type": "object",
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "enum": [
+                            "explicit",
+                            "task",
+                            "project",
+                            "unset"
+                          ]
+                        },
+                        "model": {
+                          "type": "string",
+                          "enum": [
+                            "explicit",
+                            "task",
+                            "project",
+                            "team",
+                            "unset"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "runtime",
+                        "model"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "effective",
+                    "layers",
+                    "sources"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/team/agent-defaults": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "读团队运行时默认模型",
+        "description": "读本团队给各运行时配的默认模型（界面：团队页 → 默认模型）。新会话没点名模型、且项目/任务默认也没给出模型时，按会话用的 runtime 来取。\n参数：无。\n返回：{ defaults }，key 是运行时 id（如 opencode），value 是模型名（可写 hub-<slug>/<modelId>）。空对象 = 还没配。\n权限：团队成员均可读（要能进开放 API 的令牌）。项目限定令牌也可以读（这是团队约定，不是项目机密）。\n下一步：要改用 team_agent_defaults_set（要团队 admin，且令牌不能只限项目）；查某次开会话会用什么，用 resolve_default_agent。\n错误：401 令牌无效；404 账号还没有团队；503 这个 hub 还没装配默认模型。\n\n权限范围：`projects:read`\n\nMCP 工具：`team_agent_defaults`",
+        "security": [
+          {
+            "bearer": [
+              "projects:read"
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "defaults": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "defaults"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "设置团队运行时默认模型",
+        "description": "设置本团队给各运行时配的默认模型。空对象 = 全部清掉。只改传入的整张表，不会和旧值合并。\n参数：body.defaults，key 是运行时 id，value 是模型名（可写 hub-<slug>/<modelId>；空串会丢掉这一条）。最多 16 个运行时。\n权限：账号必须是团队 owner / admin（或集群管理员），令牌要有 projects:write，且不能是只限项目的令牌。普通成员即使有 projects:write 也会 403。\n返回：{ defaults }（归一后的表）。\n下一步：用 resolve_default_agent 确认新会话会用它；项目/任务 defaultAgent 仍优先于团队默认。\n错误：400 参数不合法；403 不是团队 admin 或令牌只限项目；404 账号还没有团队；503 这个 hub 还没装配默认模型。\n\n权限范围：`projects:write`\n\nMCP 工具：`team_agent_defaults_set`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "defaults": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "default": {}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "defaults": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "defaults"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/openapi/v1/projects/{projectId}/repos": {
       "put": {
         "tags": [
@@ -3432,6 +4130,9 @@
                           },
                           "hasToken": {
                             "type": "boolean"
+                          },
+                          "tokenHint": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -3441,6 +4142,9 @@
                         ]
                       },
                       "default": []
+                    },
+                    "gitTokenHint": {
+                      "type": "string"
                     },
                     "primaryRepoId": {
                       "type": [
@@ -3743,6 +4447,9 @@
                           },
                           "hasToken": {
                             "type": "boolean"
+                          },
+                          "tokenHint": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -3752,6 +4459,9 @@
                         ]
                       },
                       "default": []
+                    },
+                    "gitTokenHint": {
+                      "type": "string"
                     },
                     "primaryRepoId": {
                       "type": [
@@ -4047,6 +4757,9 @@
                           },
                           "hasToken": {
                             "type": "boolean"
+                          },
+                          "tokenHint": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -4056,6 +4769,9 @@
                         ]
                       },
                       "default": []
+                    },
+                    "gitTokenHint": {
+                      "type": "string"
                     },
                     "primaryRepoId": {
                       "type": [
@@ -7011,6 +7727,252 @@
         }
       }
     },
+    "/openapi/v1/tasks/{taskId}/default-agent": {
+      "patch": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "设置或清空任务默认 Agent",
+        "description": "改这条任务的默认 Agent（覆盖项目默认）；会话里显式选的仍然优先。body.defaultAgent 为 null = 清掉。\n参数：taskId（路径）；body.defaultAgent 为 { runtime, model?, options? } 或 null。\n返回：更新后的任务对象（含 defaultAgent）。\n权限：projects:write，且是该任务所属项目的管理员。项目限定令牌只能改它范围内的项目。\n下一步：用 get_task 或 resolve_default_agent（带 taskId）复核；session_start 省略 model 就会用它。\n错误：400 参数不合法；403 无 projects:write 或不是项目管理员；404 任务不存在或你看不见。\n\n权限范围：`projects:write`\n\nMCP 工具：`task_default_agent`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "taskId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "defaultAgent": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "runtime": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      "model": {
+                        "type": "string",
+                        "maxLength": 200,
+                        "default": ""
+                      },
+                      "options": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "boolean"
+                            }
+                          ]
+                        },
+                        "default": {}
+                      }
+                    },
+                    "required": [
+                      "runtime"
+                    ]
+                  }
+                },
+                "required": [
+                  "defaultAgent"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "projectId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "goal": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "todo",
+                        "in_progress",
+                        "blocked",
+                        "in_review",
+                        "done",
+                        "abandoned"
+                      ]
+                    },
+                    "ownerId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "branch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "summary": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "logSeq": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "defaultAgent": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "default": ""
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "runtime"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "updatedAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "projectId",
+                    "title",
+                    "goal",
+                    "status",
+                    "ownerId",
+                    "branch",
+                    "summary",
+                    "logSeq",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/openapi/v1/tasks/{taskId}/status": {
       "patch": {
         "tags": [
@@ -8330,7 +9292,7 @@
           "sessions"
         ],
         "summary": "在任务下开一条会话",
-        "description": "在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了，必须给一台已登记的远程 Worker。\n参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）、groupId（可选：已有的组合工作空间；多仓项目要先在 Hub 建组，本工具不会自动建组合组）、assetIds（可选：只带这些资产）。\n会话通信：repoId（可选：一仓一会话——只为项目里这个仓库新开隔离 worktree，和 workspaceId / groupId 互斥）、handle（可选：任务内短名，别的会话用 peer:<handle> 找它）、linkWith（可选：建好后和这些同项目会话连线，连上才能互发消息）。\n资产：不传 assetIds = 用项目生效的全部资产；要排除某个技能/指令时，传完整清单减掉它（清单里的 id 必须对该项目可见，看不见的会被丢掉）。\n返回：会话对象（id、status、model、workspaceId）。\n下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n错误：400 参数不合法（含 handle 格式、repoId 不在项目里）；403 无 sessions:write 或不能和 linkWith 里的会话说话；404 linkWith 的会话不在同一项目；409 机器不可用、没装该 runtime、短名已被占用或 linkWith 的会话已收起（archived）。\n重试：MCP 调用要给 clientRequestId，同一值重试不会开第二条会话。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_start`",
+        "description": "在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了，必须给一台已登记的远程 Worker。\n参数：taskId、agentId、model（省略或空串=按 resolve_default_agent 的层级取：任务默认 > 项目默认 > 团队运行时默认模型）、workerId（建议显式给在线机器）、workspaceId（可选）、groupId（可选：已有的组合工作空间；多仓项目要先在 Hub 建组，本工具不会自动建组合组）、assetIds（可选：只带这些资产）。\n会话通信：repoId（可选：一仓一会话——只为项目里这个仓库新开隔离 worktree，和 workspaceId / groupId 互斥）、handle（可选：任务内短名，别的会话用 peer:<handle> 找它）、linkWith（可选：建好后和这些同项目会话连线，连上才能互发消息）。\n资产：不传 assetIds = 用项目生效的全部资产；要排除某个技能/指令时，传完整清单减掉它（清单里的 id 必须对该项目可见，看不见的会被丢掉）。\n返回：会话对象（id、status、model、workspaceId）。\n下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n错误：400 参数不合法（含 handle 格式、repoId 不在项目里）；403 无 sessions:write 或不能和 linkWith 里的会话说话；404 linkWith 的会话不在同一项目；409 机器不可用、没装该 runtime、短名已被占用或 linkWith 的会话已收起（archived）。\n重试：MCP 调用要给 clientRequestId，同一值重试不会开第二条会话。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_start`",
         "security": [
           {
             "bearer": [
@@ -9915,7 +10877,7 @@
           "sessions"
         ],
         "summary": "换这条会话的模型（可换提供商）",
-        "description": "把会话切到另一个模型；目标模型在另一个提供商下时，服务端会停掉旧进程、按新配置重启，并用 resume 接回历史。\n参数：sessionId（路径）、model（模型 id；hub 提供商的模型写成 hub-<标识>/<模型>，用 list_models 看有哪些）。\n返回：更新后的会话对象。\n副作用：正在跑的回合会中断；历史保留。\n错误：400 模型不在可选清单里；403 没有 session.prompt 权限或那个提供商用不了；404 会话不存在；409 会话已结束或无法重启。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_model`",
+        "description": "把会话切到另一个模型；目标模型在另一个提供商下时，服务端会停掉旧进程、按新配置重启，并用 resume 接回历史。\n参数：sessionId（路径）、model（模型 id；hub 提供商的模型写成 hub-<标识>/<模型>，用 list_models 看有哪些——hub 托管模型排在前面；list_workers 的 agentModels 也会带上这些 hub 模型）。\n返回：更新后的会话对象。\n副作用：正在跑的回合会中断；历史保留。\n错误：400 模型不在可选清单里；403 没有 session.prompt 权限或那个提供商用不了；404 会话不存在；409 会话已结束或无法重启。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_model`",
         "security": [
           {
             "bearer": [
@@ -11252,7 +12214,7 @@
           "sessions"
         ],
         "summary": "会话事件（after 之后的）",
-        "description": "读会话时间线（对外已投影）：只有文本、工具名与成败、结束原因、诊断占位。\n参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）；waitSec（0–50，没有新事件时最多等这么久，有新事件立刻返回）。\n返回：[{ seq, at, turn, event }]，event.kind ∈ text | tool | tool_result | ended | diagnostic。\n轮询用法：第一次 sinceTurn=turn；之后用 after=最后一条 seq 增量拉；本 turn 出现 ended 即结束；没结束时 3–5 秒后再拉（running 时密一点，卡住时退到 10 秒）。\n下一步：把 after 设为最后一条 seq 继续轮；工具细节与思考过程不对开放 API 暴露。\n错误：404 会话不存在或看不见。\n\n权限范围：`sessions:read`\n\nMCP 工具：`events`",
+        "description": "读会话时间线（对外已投影）：只有文本、工具名与成败、结束原因、诊断占位。\n参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）；waitSec（0–50，没有*可投影且符合过滤条件*的事件时最多等这么久，有就立刻返回）。\n返回：`{ events: [{ seq, at, turn, event }], nextAfter }`。MCP 的 structuredContent 就是这份对象（不要把数组再包进 result）。event.kind ∈ text | tool | tool_result | ended | diagnostic。\nnextAfter 是本窗扫到的最后一条原始 journal seq（thinking / prompt 等被投影丢掉时也要前进），没有原始事件时沿用入参 after 或 0。下次把 after 设为 nextAfter，不要因为 events 为空就重复拉同一段。\n轮询用法：第一次 sinceTurn=turn、after 可省略；之后用 after=返回的 nextAfter 增量拉；本 turn 出现 ended 即结束。有 waitSec 时这一次调用会阻塞到有可投影的匹配事件或超时，不必自己短间隔空转。\nwaitSec 与 sinceTurn / after 一起用时：只在还没有可投影且符合过滤条件的事件时才等待（会话启动留下的 prompt / thinking / 无 turn 旧事件不会让它立刻空返回，也不会把 nextAfter 卡在 0）。\n下一步：把 after 设为 nextAfter 继续轮；工具细节与思考过程不对开放 API 暴露。\n错误：404 会话不存在或看不见。\n\n权限范围：`sessions:read`\n\nMCP 工具：`events`",
         "security": [
           {
             "bearer": [
@@ -11313,592 +12275,605 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "seq": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0
-                      },
-                      "event": {
-                        "oneOf": [
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "prompt"
-                                ]
-                              },
-                              "text": {
-                                "type": "string"
-                              },
-                              "attachments": {
-                                "type": "array",
-                                "items": {
-                                  "type": "object",
-                                  "properties": {
-                                    "kind": {
-                                      "type": "string",
-                                      "enum": [
-                                        "image",
-                                        "file",
-                                        "mention"
-                                      ]
-                                    },
-                                    "name": {
-                                      "type": "string"
-                                    },
-                                    "path": {
-                                      "type": "string"
-                                    },
-                                    "mimeType": {
-                                      "type": "string"
-                                    },
-                                    "bytes": {
-                                      "type": "integer",
-                                      "minimum": 0
-                                    }
-                                  },
-                                  "required": [
-                                    "kind",
-                                    "name",
-                                    "path"
-                                  ]
-                                }
-                              },
-                              "author": {
+                  "type": "object",
+                  "properties": {
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "seq": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          },
+                          "event": {
+                            "oneOf": [
+                              {
                                 "type": "object",
                                 "properties": {
-                                  "id": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "prompt"
+                                    ]
+                                  },
+                                  "text": {
                                     "type": "string"
                                   },
-                                  "name": {
-                                    "type": "string"
-                                  },
-                                  "via": {
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "id",
-                                  "name"
-                                ]
-                              },
-                              "handoff": {
-                                "type": "object",
-                                "properties": {
-                                  "sourceSessionId": {
-                                    "type": "string"
-                                  },
-                                  "turns": {
-                                    "type": "integer",
-                                    "minimum": 0
-                                  },
-                                  "carriedTurns": {
-                                    "type": "integer",
-                                    "minimum": 0
-                                  },
-                                  "carried": {
-                                    "type": "integer",
-                                    "minimum": 0
-                                  },
-                                  "omitted": {
-                                    "type": "integer",
-                                    "minimum": 0
-                                  },
-                                  "omittedTurns": {
+                                  "attachments": {
                                     "type": "array",
                                     "items": {
-                                      "type": "array",
-                                      "prefixItems": [
-                                        {
-                                          "type": "integer"
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "enum": [
+                                            "image",
+                                            "file",
+                                            "mention"
+                                          ]
                                         },
-                                        {
-                                          "type": "integer"
+                                        "name": {
+                                          "type": "string"
+                                        },
+                                        "path": {
+                                          "type": "string"
+                                        },
+                                        "mimeType": {
+                                          "type": "string"
+                                        },
+                                        "bytes": {
+                                          "type": "integer",
+                                          "minimum": 0
                                         }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "name",
+                                        "path"
                                       ]
                                     }
                                   },
-                                  "tokens": {
-                                    "type": "integer",
-                                    "minimum": 0
+                                  "author": {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string"
+                                      },
+                                      "name": {
+                                        "type": "string"
+                                      },
+                                      "via": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "name"
+                                    ]
                                   },
-                                  "budget": {
-                                    "type": "integer",
-                                    "minimum": 0
+                                  "handoff": {
+                                    "type": "object",
+                                    "properties": {
+                                      "sourceSessionId": {
+                                        "type": "string"
+                                      },
+                                      "turns": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "carriedTurns": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "carried": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "omitted": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "omittedTurns": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "array",
+                                          "prefixItems": [
+                                            {
+                                              "type": "integer"
+                                            },
+                                            {
+                                              "type": "integer"
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "tokens": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      },
+                                      "budget": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                      }
+                                    },
+                                    "required": [
+                                      "sourceSessionId",
+                                      "turns",
+                                      "carriedTurns",
+                                      "carried",
+                                      "omitted",
+                                      "omittedTurns",
+                                      "tokens",
+                                      "budget"
+                                    ]
+                                  },
+                                  "clientMessageId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 80
                                   }
                                 },
                                 "required": [
-                                  "sourceSessionId",
-                                  "turns",
-                                  "carriedTurns",
-                                  "carried",
-                                  "omitted",
-                                  "omittedTurns",
-                                  "tokens",
-                                  "budget"
-                                ]
-                              },
-                              "clientMessageId": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 80
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "text"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
+                                  "kind",
                                   "text"
                                 ]
                               },
-                              "delta": {
-                                "type": "string"
-                              },
-                              "subagentId": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "delta"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "thinking"
-                                ]
-                              },
-                              "delta": {
-                                "type": "string"
-                              },
-                              "subagentId": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "delta"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "tool_call"
-                                ]
-                              },
-                              "name": {
-                                "type": "string"
-                              },
-                              "input": {
-                                "type": "string"
-                              },
-                              "subagentId": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "name",
-                              "input"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "tool_result"
-                                ]
-                              },
-                              "name": {
-                                "type": "string"
-                              },
-                              "ok": {
-                                "type": "boolean"
-                              },
-                              "durationMs": {
-                                "type": "integer",
-                                "minimum": 0
-                              },
-                              "output": {
-                                "type": "string"
-                              },
-                              "subagentId": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "name",
-                              "ok",
-                              "durationMs"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "artifact"
-                                ]
-                              },
-                              "path": {
-                                "type": "string"
-                              },
-                              "bytes": {
-                                "type": "integer",
-                                "minimum": 0
-                              },
-                              "subagentId": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "path",
-                              "bytes"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "subagent"
-                                ]
-                              },
-                              "phase": {
-                                "type": "string",
-                                "enum": [
-                                  "start",
-                                  "end"
-                                ]
-                              },
-                              "id": {
-                                "type": "string",
-                                "minLength": 1
-                              },
-                              "parentId": {
-                                "type": "string",
-                                "minLength": 1
-                              },
-                              "depth": {
-                                "type": "integer",
-                                "minimum": 0
-                              },
-                              "title": {
-                                "type": "string",
-                                "maxLength": 4000
-                              },
-                              "agent": {
-                                "type": "string",
-                                "maxLength": 200
-                              },
-                              "status": {
-                                "type": "string",
-                                "enum": [
-                                  "running",
-                                  "completed",
-                                  "failed",
-                                  "cancelled"
-                                ]
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "phase",
-                              "id",
-                              "parentId",
-                              "depth"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "commands"
-                                ]
-                              },
-                              "commands": {
-                                "type": "array",
-                                "items": {
-                                  "type": "object",
-                                  "properties": {
-                                    "name": {
-                                      "type": "string",
-                                      "minLength": 1,
-                                      "maxLength": 200
-                                    },
-                                    "description": {
-                                      "type": "string",
-                                      "maxLength": 4000
-                                    },
-                                    "hint": {
-                                      "type": "string",
-                                      "maxLength": 4000
-                                    }
-                                  },
-                                  "required": [
-                                    "name"
-                                  ]
-                                }
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "commands"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "ended"
-                                ]
-                              },
-                              "outcome": {
-                                "type": "string",
-                                "enum": [
-                                  "done",
-                                  "stopped",
-                                  "interrupted",
-                                  "failed"
-                                ]
-                              },
-                              "reason": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "outcome"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "diagnostic"
-                                ]
-                              },
-                              "level": {
-                                "type": "string",
-                                "enum": [
-                                  "info",
-                                  "warn",
-                                  "error"
-                                ]
-                              },
-                              "text": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "level",
-                              "text"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "context_usage"
-                                ]
-                              },
-                              "usedTokens": {
-                                "type": [
-                                  "integer",
-                                  "null"
-                                ],
-                                "minimum": 0
-                              },
-                              "windowTokens": {
-                                "type": "integer",
-                                "minimum": 0
-                              },
-                              "percent": {
-                                "type": [
-                                  "number",
-                                  "null"
-                                ],
-                                "minimum": 0
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "usedTokens",
-                              "windowTokens",
-                              "percent"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "compaction"
-                                ]
-                              },
-                              "phase": {
-                                "type": "string",
-                                "enum": [
-                                  "start",
-                                  "end"
-                                ]
-                              },
-                              "reason": {
-                                "type": "string",
-                                "enum": [
-                                  "manual",
-                                  "threshold",
-                                  "overflow"
-                                ]
-                              },
-                              "ok": {
-                                "type": "boolean"
-                              },
-                              "tokensBefore": {
-                                "type": "integer",
-                                "minimum": 0
-                              },
-                              "tokensAfter": {
-                                "type": "integer",
-                                "minimum": 0
-                              },
-                              "summary": {
-                                "type": "string",
-                                "maxLength": 20000
-                              },
-                              "error": {
-                                "type": "string",
-                                "maxLength": 2000
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "phase",
-                              "reason"
-                            ]
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "approval"
-                                ]
-                              },
-                              "phase": {
-                                "type": "string",
-                                "enum": [
-                                  "request",
-                                  "resolved"
-                                ]
-                              },
-                              "id": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 256
-                              },
-                              "title": {
-                                "type": "string",
-                                "maxLength": 4000
-                              },
-                              "detail": {
-                                "type": "string",
-                                "maxLength": 20000
-                              },
-                              "expiresAt": {
-                                "type": "integer",
-                                "minimum": 0
-                              },
-                              "decision": {
-                                "type": "string",
-                                "enum": [
-                                  "allow",
-                                  "deny"
-                                ]
-                              },
-                              "by": {
-                                "type": "string",
-                                "enum": [
-                                  "user",
-                                  "timeout",
-                                  "runtime"
-                                ]
-                              },
-                              "author": {
+                              {
                                 "type": "object",
                                 "properties": {
-                                  "id": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "text"
+                                    ]
+                                  },
+                                  "delta": {
                                     "type": "string"
                                   },
-                                  "name": {
+                                  "subagentId": {
                                     "type": "string"
                                   }
                                 },
                                 "required": [
+                                  "kind",
+                                  "delta"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "thinking"
+                                    ]
+                                  },
+                                  "delta": {
+                                    "type": "string"
+                                  },
+                                  "subagentId": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "delta"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "tool_call"
+                                    ]
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "input": {
+                                    "type": "string"
+                                  },
+                                  "subagentId": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "name",
+                                  "input"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "tool_result"
+                                    ]
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "ok": {
+                                    "type": "boolean"
+                                  },
+                                  "durationMs": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "output": {
+                                    "type": "string"
+                                  },
+                                  "subagentId": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "name",
+                                  "ok",
+                                  "durationMs"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "artifact"
+                                    ]
+                                  },
+                                  "path": {
+                                    "type": "string"
+                                  },
+                                  "bytes": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "subagentId": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "path",
+                                  "bytes"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "subagent"
+                                    ]
+                                  },
+                                  "phase": {
+                                    "type": "string",
+                                    "enum": [
+                                      "start",
+                                      "end"
+                                    ]
+                                  },
+                                  "id": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "parentId": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "depth": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "title": {
+                                    "type": "string",
+                                    "maxLength": 4000
+                                  },
+                                  "agent": {
+                                    "type": "string",
+                                    "maxLength": 200
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "running",
+                                      "completed",
+                                      "failed",
+                                      "cancelled"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "phase",
                                   "id",
-                                  "name"
+                                  "parentId",
+                                  "depth"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "commands"
+                                    ]
+                                  },
+                                  "commands": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 200
+                                        },
+                                        "description": {
+                                          "type": "string",
+                                          "maxLength": 4000
+                                        },
+                                        "hint": {
+                                          "type": "string",
+                                          "maxLength": 4000
+                                        }
+                                      },
+                                      "required": [
+                                        "name"
+                                      ]
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "commands"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "ended"
+                                    ]
+                                  },
+                                  "outcome": {
+                                    "type": "string",
+                                    "enum": [
+                                      "done",
+                                      "stopped",
+                                      "interrupted",
+                                      "failed"
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "outcome"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "diagnostic"
+                                    ]
+                                  },
+                                  "level": {
+                                    "type": "string",
+                                    "enum": [
+                                      "info",
+                                      "warn",
+                                      "error"
+                                    ]
+                                  },
+                                  "text": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "level",
+                                  "text"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "context_usage"
+                                    ]
+                                  },
+                                  "usedTokens": {
+                                    "type": [
+                                      "integer",
+                                      "null"
+                                    ],
+                                    "minimum": 0
+                                  },
+                                  "windowTokens": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "percent": {
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ],
+                                    "minimum": 0
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "usedTokens",
+                                  "windowTokens",
+                                  "percent"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "compaction"
+                                    ]
+                                  },
+                                  "phase": {
+                                    "type": "string",
+                                    "enum": [
+                                      "start",
+                                      "end"
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string",
+                                    "enum": [
+                                      "manual",
+                                      "threshold",
+                                      "overflow"
+                                    ]
+                                  },
+                                  "ok": {
+                                    "type": "boolean"
+                                  },
+                                  "tokensBefore": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "tokensAfter": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "summary": {
+                                    "type": "string",
+                                    "maxLength": 20000
+                                  },
+                                  "error": {
+                                    "type": "string",
+                                    "maxLength": 2000
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "phase",
+                                  "reason"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "approval"
+                                    ]
+                                  },
+                                  "phase": {
+                                    "type": "string",
+                                    "enum": [
+                                      "request",
+                                      "resolved"
+                                    ]
+                                  },
+                                  "id": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "title": {
+                                    "type": "string",
+                                    "maxLength": 4000
+                                  },
+                                  "detail": {
+                                    "type": "string",
+                                    "maxLength": 20000
+                                  },
+                                  "expiresAt": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "decision": {
+                                    "type": "string",
+                                    "enum": [
+                                      "allow",
+                                      "deny"
+                                    ]
+                                  },
+                                  "by": {
+                                    "type": "string",
+                                    "enum": [
+                                      "user",
+                                      "timeout",
+                                      "runtime"
+                                    ]
+                                  },
+                                  "author": {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string"
+                                      },
+                                      "name": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "name"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "phase",
+                                  "id"
                                 ]
                               }
-                            },
-                            "required": [
-                              "kind",
-                              "phase",
-                              "id"
                             ]
+                          },
+                          "at": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "turn": {
+                            "type": "integer",
+                            "minimum": 0
                           }
+                        },
+                        "required": [
+                          "seq",
+                          "event",
+                          "at"
                         ]
-                      },
-                      "at": {
-                        "type": "integer",
-                        "minimum": 0
-                      },
-                      "turn": {
-                        "type": "integer",
-                        "minimum": 0
                       }
                     },
-                    "required": [
-                      "seq",
-                      "event",
-                      "at"
-                    ]
-                  }
+                    "nextAfter": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "events",
+                    "nextAfter"
+                  ]
                 }
               }
             }
@@ -15508,7 +16483,7 @@
           "sessions"
         ],
         "summary": "收起或恢复会话",
-        "description": "settled=true 把会话移出活跃列表（对话保留）；工作区干净时拆 worktree，有未提交/未跟踪/未推送改动则留下并记原因。settled=false 按原分支恢复 worktree。\n还在跑的会话要先 session_cancel。PR 合并后也可先调 task_pull_requests?refresh=1，平台会尝试自动收起。\n参数：sessionId；body.{ settled: boolean }。返回：会话对象。错误：403 无 session.settle（sessions:write 已包含）/ 409 还在跑 / 404。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_settle`",
+        "description": "settled=true 把会话移出活跃列表（对话保留）；独占且干净的临时 worktree 会立刻拆除，有未提交/未跟踪/未推送改动则留下（kept）并记原因，仍被其它会话占用的会 deferred 留给 workspace_sweep。settled=false 按原分支恢复 worktree。\n还在跑的会话要先 session_cancel。PR 合并后也可先调 task_pull_requests?refresh=1，平台会尝试自动收起。\n参数：sessionId；body.{ settled: boolean }。返回：会话对象，另带 cleanup.items[]（每条 worktree / 成员仓：removed / kept+reason / deferred+reason）。\n下一步：看 cleanup.items；若都是 removed，不必指望 workspace_sweep 再拆一次（它会说明已经在收起时拆除）。错误：403 无 session.settle（sessions:write 已包含）/ 409 还在跑 / 404。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_settle`",
         "security": [
           {
             "bearer": [
@@ -15926,6 +16901,44 @@
                     "updatedAt": {
                       "type": "integer",
                       "minimum": 0
+                    },
+                    "cleanup": {
+                      "type": "object",
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "workspaceId": {
+                                "type": "string"
+                              },
+                              "member": {
+                                "type": "string"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "removed",
+                                  "kept",
+                                  "deferred"
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "workspaceId",
+                              "action",
+                              "reason"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "items"
+                      ]
                     }
                   },
                   "required": [
@@ -15940,7 +16953,8 @@
                     "options",
                     "optionSpec",
                     "createdAt",
-                    "updatedAt"
+                    "updatedAt",
+                    "cleanup"
                   ]
                 }
               }
@@ -16005,7 +17019,7 @@
           "workspaces"
         ],
         "summary": "按项目规则清理临时工作空间",
-        "description": "跑一轮两段清理：先收起已满足条件的会话，下一轮才拆干净的 worktree。组合组原子处理。脏工作区整组留下，items[].reason / action=kept 写明原因。\n参数：projectId。返回：removed/kept/skipped/failed、runId、items（含 reason）。\n下一步：用 workspace_sweep_records 核对记录和孤儿目录。错误：403 无 projects:write / 404。\n\n权限范围：`projects:write`\n\nMCP 工具：`workspace_sweep`",
+        "description": "按项目规则跑一轮清理。组合组原子处理。脏工作区整组留下，items[].reason / action=kept 写明原因。\n若刚刚 session_settle 已经拆掉了干净的临时 worktree，这一轮可能是空的：返回 message（以及 alreadyRemoved）说明原因，不要当成失败。\n参数：projectId。返回：removed/kept/skipped/failed、runId、items、message?、alreadyRemoved?。\n下一步：用 workspace_sweep_records 核对记录和孤儿目录。错误：403 无 projects:write / 404。\n\n权限范围：`projects:write`\n\nMCP 工具：`workspace_sweep`",
         "security": [
           {
             "bearer": [
@@ -16119,6 +17133,15 @@
                           "sizeBytes",
                           "at"
                         ]
+                      }
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "alreadyRemoved": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
                       }
                     }
                   },
@@ -17053,6 +18076,1019 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProviderImpact"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/tokens": {
+      "get": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "列出可管理的访问令牌",
+        "description": "列出当前身份能看见的访问令牌（个人令牌、以及主人能看的服务账号 / 项目 bot 凭据）。响应没有哈希、没有明文。\n权限：需要 `tokens:manage`（默认关闭，只能由管理员在界面授予；不能给只限项目的令牌或 bot 凭据）。\n错误：403 无 tokens:manage。\n\n权限范围：`tokens:manage`\n\nMCP 工具：`token_list`",
+        "security": [
+          {
+            "bearer": [
+              "tokens:manage"
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tokens": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "teamId": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "personal",
+                              "service",
+                              "bot"
+                            ]
+                          },
+                          "userId": {
+                            "type": "string"
+                          },
+                          "bot": {
+                            "type": "object",
+                            "properties": {
+                              "projectId": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "projectId",
+                              "name"
+                            ]
+                          },
+                          "projectIds": {
+                            "type": [
+                              "array",
+                              "null"
+                            ],
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "scopes": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "projects:read",
+                                "projects:write",
+                                "sessions:read",
+                                "sessions:write",
+                                "workers:read",
+                                "assets:submit",
+                                "assets:read",
+                                "assets:write",
+                                "assets:publish",
+                                "providers:read",
+                                "providers:use",
+                                "providers:manage",
+                                "groups:write",
+                                "files:read",
+                                "memory:read",
+                                "memory:write",
+                                "tokens:manage"
+                              ]
+                            }
+                          },
+                          "prefix": {
+                            "type": "string"
+                          },
+                          "createdBy": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "number"
+                          },
+                          "expiresAt": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "lastUsedAt": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "revokedAt": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "usable": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "teamId",
+                          "kind",
+                          "userId",
+                          "name",
+                          "scopes",
+                          "prefix",
+                          "createdBy",
+                          "createdAt",
+                          "expiresAt",
+                          "lastUsedAt",
+                          "revokedAt",
+                          "usable"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "tokens"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "签发访问令牌（明文只返回一次）",
+        "description": "经已有的管理令牌签发一张新的个人令牌。scopes 必须是调用方令牌的子集，且不能包含 `tokens:manage` 或 `providers:manage`（不能提权）。必须设置 expiresAt，最长 30 天。明文只在这一次响应的 token 字段里出现，之后只能看到前缀。\n第一张带 `tokens:manage` 的管理员令牌只能在界面（外部接入 / 访问令牌）签发一次。\n审计只记名字、scope 和是否限定项目，不记明文。错误：400 缺过期时间 / 超出 30 天 / 范围非法；403 无权限或试图提权。\n\n权限范围：`tokens:manage`\n\nMCP 工具：`token_create`",
+        "security": [
+          {
+            "bearer": [
+              "tokens:manage"
+            ]
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 60
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "projects:read",
+                        "projects:write",
+                        "sessions:read",
+                        "sessions:write",
+                        "workers:read",
+                        "assets:submit",
+                        "assets:read",
+                        "assets:write",
+                        "assets:publish",
+                        "providers:read",
+                        "providers:use",
+                        "providers:manage",
+                        "groups:write",
+                        "files:read",
+                        "memory:read",
+                        "memory:write",
+                        "tokens:manage"
+                      ]
+                    },
+                    "minItems": 1
+                  },
+                  "expiresAt": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "projectIds": {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1,
+                    "maxItems": 50
+                  }
+                },
+                "required": [
+                  "name",
+                  "scopes",
+                  "expiresAt"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string"
+                    },
+                    "info": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "teamId": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "personal",
+                            "service",
+                            "bot"
+                          ]
+                        },
+                        "userId": {
+                          "type": "string"
+                        },
+                        "bot": {
+                          "type": "object",
+                          "properties": {
+                            "projectId": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "projectId",
+                            "name"
+                          ]
+                        },
+                        "projectIds": {
+                          "type": [
+                            "array",
+                            "null"
+                          ],
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "scopes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "projects:read",
+                              "projects:write",
+                              "sessions:read",
+                              "sessions:write",
+                              "workers:read",
+                              "assets:submit",
+                              "assets:read",
+                              "assets:write",
+                              "assets:publish",
+                              "providers:read",
+                              "providers:use",
+                              "providers:manage",
+                              "groups:write",
+                              "files:read",
+                              "memory:read",
+                              "memory:write",
+                              "tokens:manage"
+                            ]
+                          }
+                        },
+                        "prefix": {
+                          "type": "string"
+                        },
+                        "createdBy": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "number"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "lastUsedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "revokedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "usable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "teamId",
+                        "kind",
+                        "userId",
+                        "name",
+                        "scopes",
+                        "prefix",
+                        "createdBy",
+                        "createdAt",
+                        "expiresAt",
+                        "lastUsedAt",
+                        "revokedAt",
+                        "usable"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "info"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/tokens/{tokenId}/rotate": {
+      "post": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "轮换访问令牌（明文只返回一次）",
+        "description": "吊销旧令牌并签发一张同名、同权限的新令牌。新明文只返回一次。经令牌轮换时有效期最长 30 天。审计不记明文。\n参数：tokenId。错误：403 / 404 / 409 已吊销。\n\n权限范围：`tokens:manage`\n\nMCP 工具：`token_rotate`",
+        "security": [
+          {
+            "bearer": [
+              "tokens:manage"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "tokenId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string"
+                    },
+                    "info": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "teamId": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "personal",
+                            "service",
+                            "bot"
+                          ]
+                        },
+                        "userId": {
+                          "type": "string"
+                        },
+                        "bot": {
+                          "type": "object",
+                          "properties": {
+                            "projectId": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "projectId",
+                            "name"
+                          ]
+                        },
+                        "projectIds": {
+                          "type": [
+                            "array",
+                            "null"
+                          ],
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "scopes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "projects:read",
+                              "projects:write",
+                              "sessions:read",
+                              "sessions:write",
+                              "workers:read",
+                              "assets:submit",
+                              "assets:read",
+                              "assets:write",
+                              "assets:publish",
+                              "providers:read",
+                              "providers:use",
+                              "providers:manage",
+                              "groups:write",
+                              "files:read",
+                              "memory:read",
+                              "memory:write",
+                              "tokens:manage"
+                            ]
+                          }
+                        },
+                        "prefix": {
+                          "type": "string"
+                        },
+                        "createdBy": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "number"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "lastUsedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "revokedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "usable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "teamId",
+                        "kind",
+                        "userId",
+                        "name",
+                        "scopes",
+                        "prefix",
+                        "createdBy",
+                        "createdAt",
+                        "expiresAt",
+                        "lastUsedAt",
+                        "revokedAt",
+                        "usable"
+                      ]
+                    },
+                    "replaced": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "teamId": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "personal",
+                            "service",
+                            "bot"
+                          ]
+                        },
+                        "userId": {
+                          "type": "string"
+                        },
+                        "bot": {
+                          "type": "object",
+                          "properties": {
+                            "projectId": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "projectId",
+                            "name"
+                          ]
+                        },
+                        "projectIds": {
+                          "type": [
+                            "array",
+                            "null"
+                          ],
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "scopes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "projects:read",
+                              "projects:write",
+                              "sessions:read",
+                              "sessions:write",
+                              "workers:read",
+                              "assets:submit",
+                              "assets:read",
+                              "assets:write",
+                              "assets:publish",
+                              "providers:read",
+                              "providers:use",
+                              "providers:manage",
+                              "groups:write",
+                              "files:read",
+                              "memory:read",
+                              "memory:write",
+                              "tokens:manage"
+                            ]
+                          }
+                        },
+                        "prefix": {
+                          "type": "string"
+                        },
+                        "createdBy": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "number"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "lastUsedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "revokedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "usable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "teamId",
+                        "kind",
+                        "userId",
+                        "name",
+                        "scopes",
+                        "prefix",
+                        "createdBy",
+                        "createdAt",
+                        "expiresAt",
+                        "lastUsedAt",
+                        "revokedAt",
+                        "usable"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "info",
+                    "replaced"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/tokens/{tokenId}/revoke": {
+      "post": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "吊销访问令牌",
+        "description": "吊销一张令牌（记录保留，列表里仍能看见）。审计不记明文。参数：tokenId。错误：403 / 404。\n\n权限范围：`tokens:manage`\n\nMCP 工具：`token_revoke`",
+        "security": [
+          {
+            "bearer": [
+              "tokens:manage"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "tokenId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "teamId": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "personal",
+                        "service",
+                        "bot"
+                      ]
+                    },
+                    "userId": {
+                      "type": "string"
+                    },
+                    "bot": {
+                      "type": "object",
+                      "properties": {
+                        "projectId": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "projectId",
+                        "name"
+                      ]
+                    },
+                    "projectIds": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "scopes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "projects:read",
+                          "projects:write",
+                          "sessions:read",
+                          "sessions:write",
+                          "workers:read",
+                          "assets:submit",
+                          "assets:read",
+                          "assets:write",
+                          "assets:publish",
+                          "providers:read",
+                          "providers:use",
+                          "providers:manage",
+                          "groups:write",
+                          "files:read",
+                          "memory:read",
+                          "memory:write",
+                          "tokens:manage"
+                        ]
+                      }
+                    },
+                    "prefix": {
+                      "type": "string"
+                    },
+                    "createdBy": {
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "type": "number"
+                    },
+                    "expiresAt": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "lastUsedAt": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "revokedAt": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "usable": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "teamId",
+                    "kind",
+                    "userId",
+                    "name",
+                    "scopes",
+                    "prefix",
+                    "createdBy",
+                    "createdAt",
+                    "expiresAt",
+                    "lastUsedAt",
+                    "revokedAt",
+                    "usable"
+                  ]
                 }
               }
             }

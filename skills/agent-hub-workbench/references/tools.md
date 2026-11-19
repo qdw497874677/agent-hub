@@ -1,17 +1,21 @@
 # 工具清单（自动生成）
 
 由 `npm run skill:tools` 从 `apps/server/src/openapi/routes.ts` 的 MCP 元数据生成，等于 `tools/list` 的结果。
-当前 59 个：只读 20，写 39。
+当前 68 个：只读 24，写 44。
 
 「参数」只列名字，`?` 表示可选；具体类型和必填组合见 `SKILL.md` 与 `<hub>/openapi/v1/openapi.json`。
 
 | 工具 | 读/写 | 需要 scope | REST 路由 | 参数 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `list_workers` | 读 | `worker.read` | `/workers` | — | 能用的机器 |
+| `list_models` | 读 | `worker.read` | `/models` | workerId?, agentId? | 开会话能用的模型 |
 | `list_projects` | 读 | `project.read` | `/projects` | — | 我可见的项目 |
 | `project_create` | 写 | `project.create` | `/projects` | name, rootPath?, workerId?, repoUrl?, defaultBranch?, description? | 新建项目（写工具，要 `clientRequestId`） |
 | `get_project` | 读 | `project.read` | `/projects/{projectId}` | projectId | 看一个项目 |
-| `project_update` | 写 | `project.update` | `/projects/{projectId}` | projectId, description?, checks? | 改项目说明或检查命令（写工具，要 `clientRequestId`） |
+| `project_update` | 写 | `project.update` | `/projects/{projectId}` | projectId, description?, checks?, defaultAgent? | 改项目说明、检查命令或默认 Agent（写工具，要 `clientRequestId`） |
+| `resolve_default_agent` | 读 | `project.read` | `/defaults/resolve` | projectId, taskId?, runtime?, model? | 解析新会话会用的默认 Agent |
+| `team_agent_defaults` | 读 | `project.read` | `/team/agent-defaults` | — | 读团队运行时默认模型 |
+| `team_agent_defaults_set` | 写 | `project.update` | `/team/agent-defaults` | defaults? | 设置团队运行时默认模型（写工具，要 `clientRequestId`） |
 | `project_repos` | 写 | `project.update` | `/projects/{projectId}/repos` | projectId, repos, primaryRepoId? | 设置项目仓库清单（可带私有仓库令牌）（写工具，要 `clientRequestId`） |
 | `project_archive` | 写 | `project.delete` | `/projects/{projectId}` | projectId, confirmName | 把项目放进回收站 |
 | `workspace_changes` | 读 | `project.read` | `/workspaces/{workspaceId}/changes` | workspaceId | 工作空间里未提交的改动 |
@@ -24,6 +28,7 @@
 | `list_tasks` | 读 | `task.read` | `/tasks` | projectId | 项目下的任务 |
 | `task_create` | 写 | `task.create` | `/tasks` | projectId, title, goal? | 新建任务（写工具，要 `clientRequestId`） |
 | `get_task` | 读 | `task.read` | `/tasks/{taskId}` | taskId | 任务详情（带会话列表） |
+| `task_default_agent` | 写 | `project.update` | `/tasks/{taskId}/default-agent` | taskId, defaultAgent | 设置或清空任务默认 Agent（写工具，要 `clientRequestId`） |
 | `set_task_status` | 写 | `task.create` | `/tasks/{taskId}/status` | taskId, status, note? | 改任务状态（写工具，要 `clientRequestId`） |
 | `set_task_summary` | 写 | `task.create` | `/tasks/{taskId}/summary` | taskId, summary | 改任务摘要（写工具，要 `clientRequestId`） |
 | `list_task_log` | 读 | `task.read` | `/tasks/{taskId}/log` | taskId, limit?, beforeSeq? | 工作日志（倒序分页） |
@@ -66,6 +71,10 @@
 | `provider_test` | 写 | `provider.manage` | `/providers/{providerId}/test` | providerId, workerId | 从机器测试提供商连通 |
 | `provider_delete` | 写 | `provider.manage` | `/providers/{providerId}` | providerId, confirm? | 删除模型提供商（写工具，要 `clientRequestId`） |
 | `provider_routing_set` | 写 | `provider.manage` | `/providers/routing/{workerId}` | workerId, routing, confirm? | 设置机器的提供商路由（写工具，要 `clientRequestId`） |
+| `token_list` | 读 | `token.manage` | `/tokens` | — | 列出可管理的访问令牌 |
+| `token_create` | 写 | `token.manage` | `/tokens` | name, scopes, expiresAt, projectIds? | 签发访问令牌（明文只返回一次）（写工具，要 `clientRequestId`） |
+| `token_rotate` | 写 | `token.manage` | `/tokens/{tokenId}/rotate` | tokenId | 轮换访问令牌（明文只返回一次）（写工具，要 `clientRequestId`） |
+| `token_revoke` | 写 | `token.manage` | `/tokens/{tokenId}/revoke` | tokenId | 吊销访问令牌（写工具，要 `clientRequestId`） |
 
 ## 写工具的重试约定
 

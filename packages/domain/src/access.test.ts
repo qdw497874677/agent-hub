@@ -281,6 +281,7 @@ test('令牌：hub 级、team.roles、本机 Worker 永远授不出去，哪怕�
   assert.ok(permissionsOf(['providers:manage']).includes('provider.manage'));
   assert.ok(permissionsOf(['providers:manage']).includes('provider.read'));
   assert.ok(permissionsOf(['providers:manage']).includes('provider.use'));
+  assert.ok(permissionsOf(['tokens:manage']).includes('token.manage'));
   const token = viaToken(david, [...API_SCOPES]);
   assert.equal(can(token, 'worker.use', local, ctx), false);
   assert.equal(can(token, 'worker.use', { kind: 'worker', id: 'w', teamId: 'hub', createdBy: 'david' }, ctx), true);

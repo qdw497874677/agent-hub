@@ -29,6 +29,7 @@ import { useDeliveries } from '../../atoms/delivery-note.tsx';
 import { NEXT_STATUS } from './task-status.ts';
 import { TaskBadge } from './task-detail.tsx';
 import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
+import { ScrollToEnd } from '../../atoms/scroll-to-end.tsx';
 import { LogMarkdown } from '../../atoms/log-markdown.tsx';
 import { StoppedDivider } from '../../atoms/chat-blocks.tsx';
 import { toolDisplayName } from '../../atoms/tool-rows.ts';
@@ -296,7 +297,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, [phase]);
-  const scroller = useStickToBottom<HTMLDivElement>(session.id);
+  const { nearEnd, ref: scroller, scrollToEnd } = useStickToBottom<HTMLDivElement>(session.id);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   /**
@@ -553,46 +554,50 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         </div>
       )}
 
-      <div
-        ref={scroller}
-        // nowheel/nopan/nodrag：滚轮、触摸滑动滚的是这段对话，不是拖动或缩放画布。
-        data-testid="session-card-log"
-        className={`nowheel nopan nodrag min-h-0 flex-1 cursor-auto select-text touch-pan-y space-y-1.5 overflow-y-auto overscroll-contain pr-1 ${
-          size ? '' : 'max-h-[320px] min-h-[120px]'
-        }`}>
-        {failureReason ? (
-          <p className="border-l border-rust pl-2 text-meta text-rust">{failureReason}</p>
-        ) : null}
-        {blocks.length === 0 && delivery.pending.length === 0 ? (
-          <p className="text-meta text-tertiary">
-            {status === 'running' && (live?.lastSeq ?? session.lastSeq) === 0
-              ? session.origin.kind === 'fork'
-                ? '已从来源的最新处分叉，带着之前的上下文，发一句话接着聊'
-                : '就绪，发一句话开始'
-              : '尚无输出'}
-          </p>
-        ) : (
-          timeline.map((block, index) => (
-            <BlockView key={index} block={block} showAuthor={showAuthor} queued={block.queued === true} />
-          ))
-        )}
-        {/* 还没写进对话的消息就是日志末尾的普通一行：发完立刻看得到「已收到 · 排队中」还是「未送达」。 */}
-        <PendingPrompts
-          pending={delivery.pending}
-          onRetry={(pending) => void retry(pending)}
-          onDiscard={delivery.discard}
-          compact
-          testIdPrefix="card-"
-          className="gap-1.5"
-          renderPrompt={(pending) => (
-            <CardPromptBubble
-              text={pending.text}
-              count={pending.attachments.length}
-              testId="card-msg-pending"
-              queued={pending.state === 'queued'}
-            />
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div
+          ref={scroller}
+          // nowheel/nopan/nodrag：滚轮、触摸滑动滚的是这段对话，不是拖动或缩放画布。
+          data-testid="session-card-log"
+          // overflow-anchor:none：位置由 useStickToBottom 自己钉，别让浏览器二次锚定改 scrollTop。
+          className={`nowheel nopan nodrag min-h-0 flex-1 cursor-auto select-text touch-pan-y space-y-1.5 overflow-y-auto overscroll-contain pr-1 [overflow-anchor:none] ${
+            size ? '' : 'max-h-[320px] min-h-[120px]'
+          }`}>
+          {failureReason ? (
+            <p className="border-l border-rust pl-2 text-meta text-rust">{failureReason}</p>
+          ) : null}
+          {blocks.length === 0 && delivery.pending.length === 0 ? (
+            <p className="text-meta text-tertiary">
+              {status === 'running' && (live?.lastSeq ?? session.lastSeq) === 0
+                ? session.origin.kind === 'fork'
+                  ? '已从来源的最新处分叉，带着之前的上下文，发一句话接着聊'
+                  : '就绪，发一句话开始'
+                : '尚无输出'}
+            </p>
+          ) : (
+            timeline.map((block, index) => (
+              <BlockView key={index} block={block} showAuthor={showAuthor} queued={block.queued === true} />
+            ))
           )}
-        />
+          {/* 还没写进对话的消息就是日志末尾的普通一行：发完立刻看得到「已收到 · 排队中」还是「未送达」。 */}
+          <PendingPrompts
+            pending={delivery.pending}
+            onRetry={(pending) => void retry(pending)}
+            onDiscard={delivery.discard}
+            compact
+            testIdPrefix="card-"
+            className="gap-1.5"
+            renderPrompt={(pending) => (
+              <CardPromptBubble
+                text={pending.text}
+                count={pending.attachments.length}
+                testId="card-msg-pending"
+                queued={pending.state === 'queued'}
+              />
+            )}
+          />
+        </div>
+        <ScrollToEnd visible={!nearEnd} onClick={() => scrollToEnd()} />
       </div>
 
       <CardComposer

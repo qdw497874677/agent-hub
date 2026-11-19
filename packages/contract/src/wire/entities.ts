@@ -182,7 +182,9 @@ export const projectRepoSchema = z.object({
    * 这个仓库配了 HTTPS 令牌（存在 hub 的密钥箱里）。
    * **令牌本身永远不出现在任何 HTTP 响应里**，只有这个布尔。
    */
-  hasToken: z.boolean().optional()
+  hasToken: z.boolean().optional(),
+  /** hasToken=false 时的配置提示（不含密钥）。 */
+  tokenHint: z.string().optional()
 });
 
 export const projectSchema = z.object({
@@ -192,6 +194,8 @@ export const projectSchema = z.object({
   repo: z.object({ url: z.string(), defaultBranch: z.string().nullable() }).nullable().default(null),
   /** 项目绑定的仓库清单（0..8）。 */
   repos: z.array(projectRepoSchema).default([]),
+  /** 有仓库还没配令牌时的总提示（与 repos[].tokenHint 相同；不含密钥）。 */
+  gitTokenHint: z.string().optional(),
   /** 组合会话指定的主仓库；null / 省略 = 未指定，不开组合会话。 */
   primaryRepoId: z.string().nullable().optional(),
   /** 项目说明（markdown）。 */

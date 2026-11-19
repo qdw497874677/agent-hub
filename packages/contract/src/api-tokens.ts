@@ -17,7 +17,8 @@ export const apiScopeSchema = z.enum([
   'groups:write',
   'files:read',
   'memory:read',
-  'memory:write'
+  'memory:write',
+  'tokens:manage'
 ]);
 
 export const createApiTokenRequest = z.object({

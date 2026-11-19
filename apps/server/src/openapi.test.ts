@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { addTeamMember, fakeAssetSets, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps } from '@agent-hub/domain/testing';
 import { asAgentId, createAccessPolicy, newWorkspace, permissionsOf, uploadAsset, type AgentDescriptor, type AssetReviewDeps } from '@agent-hub/domain';
-import { journalEntrySchema, projectSchema, sessionSchema, taskSchema } from '@agent-hub/contract';
+import { projectSchema, sessionSchema, taskSchema } from '@agent-hub/contract';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { buildSpecApp, openApiInfo } from './openapi/app.ts';
@@ -24,6 +24,19 @@ const fake: AgentDescriptor = {
   options: []
 };
 
+
+function memoryAgentDefaults() {
+  const rows = new Map<string, Record<string, string>>();
+  return {
+    async forTeam(teamId: string) {
+      return rows.get(teamId) ?? {};
+    },
+    async save(teamId: string, defaults: Record<string, string>) {
+      rows.set(teamId, defaults);
+    }
+  };
+}
+
 function harness(rate?: { general?: number; prompt?: number; streams?: number }, enrolledBy: Map<string, string> = new Map()) {
   const accounts = inMemoryAccounts(() => Date.now());
   const world = inMemoryDeps();
@@ -34,9 +47,11 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     enrollment: { credentialFor: async (workerId) => (enrolledBy.has(workerId) ? ({ enrolledBy: enrolledBy.get(workerId)! } as never) : null) },
     gateway: world.deps.gateway
   });
+  const agentDefaults = memoryAgentDefaults();
   const deps = {
     ...world.deps,
     access,
+    agentDefaults,
     repoAuth: createRepoAuth({ projects: world.deps.projects, workspaces: world.deps.workspaces, secrets: world.deps.secrets })
   };
   const apiTokens = inMemoryApiTokens();
@@ -61,7 +76,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     auth: { accounts },
     activity: { audit: accounts.audit!, users: accounts.users },
     assets: { deps: assetReview, audit: accounts.audit!, assetSets: fakeAssetSets() },
-    openApi: { tokens: tokenDeps, manage: tokenDeps, rate, settings: accounts.settings, audit: accounts.audit! }
+    openApi: { tokens: tokenDeps, manage: tokenDeps, rate, settings: accounts.settings, audit: accounts.audit!, teams: accounts.teams }
   });
   const browser = () => {
     const jar = new Map<string, string>();
@@ -176,21 +191,27 @@ test('对话：开会话 → prompt（作者带 via）→ events / stream；审�
   assert.equal(prompted.status, 202, JSON.stringify(prompted.body));
   // 回执带轮次：调用方拿它配 sinceTurn 跟这一轮。
   assert.equal(prompted.body.turn, 1);
-  const events = (await call(`/sessions/${session.body.id}/events`)).body;
-  const prompt = events.map((e: unknown) => journalEntrySchema.parse(e)).find((e: { event: { kind: string } }) => e.event.kind === 'prompt');
-  assert.equal(prompt.event.author.via, 'bot');
-  assert.equal(prompt.turn, 1);
+  const eventList = (await call(`/sessions/${session.body.id}/events`)).body;
+  assert.ok(Array.isArray(eventList.events), 'events 要包在 { events, nextAfter } 里');
+  assert.equal(typeof eventList.nextAfter, 'number');
+  const events = eventList.events as { event: { kind: string }; turn?: number }[];
+  // 对外投影不含 prompt 原文；作者 via 在 SSE 里仍能看到。
+  assert.ok(!events.some((e: { event: { kind: string } }) => e.event.kind === 'prompt'));
 
   const second = await call(`/sessions/${session.body.id}/prompt`, post({ text: '再来一句' }));
   assert.equal(second.body.turn, 2);
-  const secondOnly = (await call(`/sessions/${session.body.id}/events?sinceTurn=2`)).body.map((e: unknown) => journalEntrySchema.parse(e));
+  // 对外投影不含 prompt，补一条可见文本，确认 sinceTurn 能筛到这一轮。
+  world.deps.sessions.journal.get(session.body.id)!.push({ seq: 50, at: 2, turn: 2, event: { kind: 'text', delta: '第二轮' } });
+  const secondList = (await call(`/sessions/${session.body.id}/events?sinceTurn=2`)).body;
+  const secondOnly = secondList.events as { event: { kind: string; text?: string }; turn?: number }[];
+  assert.equal(typeof secondList.nextAfter, 'number');
   assert.ok(secondOnly.length > 0);
   assert.ok(secondOnly.every((entry: { turn?: number }) => entry.turn === 2));
   // 老事件没有 turn（不属于任何轮次）：sinceTurn 不返回，不带时照常给全量（#230）
   world.deps.sessions.journal.get(session.body.id)!.push({ seq: 999, at: 3, event: { kind: 'diagnostic', level: 'info', text: '老事件没有轮次' } });
-  const all = (await call(`/sessions/${session.body.id}/events`)).body.map((e: unknown) => journalEntrySchema.parse(e));
+  const all = (await call(`/sessions/${session.body.id}/events`)).body.events as { event: { kind: string }; turn?: number }[];
   assert.ok(all.some((entry: { event: { kind: string } }) => entry.event.kind === 'diagnostic'), '不带 sinceTurn 时老事件仍然返回');
-  const turnsOnly = (await call(`/sessions/${session.body.id}/events?sinceTurn=2`)).body.map((e: unknown) => journalEntrySchema.parse(e));
+  const turnsOnly = (await call(`/sessions/${session.body.id}/events?sinceTurn=2`)).body.events as { event: { kind: string }; turn?: number }[];
   assert.ok(turnsOnly.every((entry: { turn?: number }) => entry.turn === 2));
   assert.ok(!turnsOnly.some((entry: { event: { kind: string } }) => entry.event.kind === 'diagnostic'), '没有 turn 的旧事件被过滤');
   assert.ok(accounts.auditRows.some((row) => row.action === 'session.start' && row.detail.includes('via 令牌「bot」')));
@@ -388,7 +409,7 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   const list = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = list.body.result.tools.map((t: { name: string }) => t.name);
   // 只列这个令牌用得了的：projects:read 只有项目 / 任务，看不到会话、资产（#E4）
-  assert.deepEqual(names.sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'task_pull_requests', 'workspace_changes', 'workspace_group_get', 'workspace_sweep_records']);
+  assert.deepEqual(names.sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'resolve_default_agent', 'task_pull_requests', 'team_agent_defaults', 'workspace_changes', 'workspace_group_get', 'workspace_sweep_records']);
   // 写工具不进清单；注解标成只读。
   assert.ok(!names.includes('prompt') && !names.includes('create_task') && !names.includes('delete_project'));
   const project = list.body.result.tools.find((t: { name: string }) => t.name === 'list_projects');
@@ -479,7 +500,7 @@ test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口
   assert.deepEqual(live, snapshot, '规范变了：跑 npm run openapi:snapshot 并在 PR 里说明');
   assert.ok(Object.values(live.paths).flatMap((p: any) => Object.keys(p)).length >= 26);
   assert.equal((await app.fetch(new Request('http://hub/openapi/v1/docs'))).status, 200);
-  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 40);
+  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 44);
 });
 
 test('过期的令牌、被停用的人的令牌：401', async () => {
@@ -498,9 +519,9 @@ test('过期的令牌、被停用的人的令牌：401', async () => {
 
 test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输出', () => {
   // 默认不强制只读：有写工具就一起列出来（能不能调由令牌权限和只读模式决定）
-  assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create', 'task_pull_requests']);
-  assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name), ['list_projects', 'get_project', 'workspace_changes']);
-  assert.equal(mcpTools({ readOnly: true }).length, 20);
+  assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create', 'task_default_agent', 'task_pull_requests']);
+  assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name).sort(), ['get_project', 'list_projects', 'resolve_default_agent', 'team_agent_defaults', 'workspace_changes']);
+  assert.equal(mcpTools({ readOnly: true }).length, 24);
   const workspaceTools = mcpTools({ modules: new Set(['workspaces']), writes: true });
   const workspaceNames = workspaceTools.map((t) => t.name).sort();
   for (const name of [
@@ -519,14 +540,16 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   assert.deepEqual(assetWrites.map((t) => t.name).sort(), ['asset_assign', 'asset_create', 'asset_import', 'asset_publish', 'get_asset', 'list_assets']);
   assert.ok(assetWrites.filter((t) => !t.readOnly).every((t) => t.idempotent));
   assert.equal(assetWrites.filter((t) => t.readOnly).length, 2);
-  const projected = projectEvents([
+  const projectedWrap = projectEvents([
     { seq: 1, at: 1, event: { kind: 'prompt', text: 'AWS_SECRET_ACCESS_KEY=abc' } },
     { seq: 2, at: 2, turn: 1, event: { kind: 'tool_call', name: 'bash', input: { command: 'echo AWS_SECRET_ACCESS_KEY=abc' } } },
     { seq: 3, at: 3, event: { kind: 'tool_result', ok: true, output: 'AWS_SECRET_ACCESS_KEY=abc' } },
     { seq: 4, at: 4, event: { kind: 'text', delta: '好了' } },
     { seq: 5, at: 5, event: { kind: 'thinking', text: '密钥是 abc' } },
     { seq: 6, at: 6, event: { kind: 'ended', outcome: 'done', reason: 'ok' } }
-  ]) as { event: Record<string, unknown>; turn?: number }[];
+  ]) as { events: { event: Record<string, unknown>; turn?: number; seq: number }[]; nextAfter: number };
+  assert.equal(projectedWrap.nextAfter, 6);
+  const projected = projectedWrap.events;
   const text = JSON.stringify(projected);
   assert.ok(!text.includes('AWS_SECRET'), text);
   assert.deepEqual(projected.map((p) => p.event['kind']), ['tool', 'tool_result', 'text', 'ended']);
@@ -537,6 +560,7 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   assert.equal(projected[0]!.turn, 1);
   assert.equal('turn' in projected[1]!, false);
 });
+
 
 test('MCP 委派：写工具默认不出现，MCP_WRITE 打开后可建任务，clientRequestId 重放同一结果', async () => {
   const { david, mint, app } = await setup();
@@ -816,7 +840,7 @@ test('外部接入：限定项目的令牌经 MCP 只看得到选中的项目；
   assert.ok(calls.some((row) => row.detail.startsWith('get_project · 失败')));
   // 能用的工具数：projects:read → 项目 + 任务的只读工具
   const tools = await david(`/api/tokens/${info.id}/tools`);
-  assert.deepEqual((tools.body as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'task_pull_requests', 'workspace_changes', 'workspace_group_get', 'workspace_sweep_records']);
+  assert.deepEqual((tools.body as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'resolve_default_agent', 'task_pull_requests', 'team_agent_defaults', 'workspace_changes', 'workspace_group_get', 'workspace_sweep_records']);
 });
 
 test('外部接入：轮换后旧令牌 401、新令牌可用，旧记录留在列表里', async () => {
@@ -1086,3 +1110,266 @@ test('MCP 多仓工具：写要 clientRequestId；缺 git 时 503；缺主仓库
   assert.equal(noGit.result.isError, true);
   assert.match(JSON.stringify(noGit.result), /Git 工作流未就绪|没有这个|不存在|404|503/);
 });
+
+
+test('events：返回 { events, nextAfter }；waitSec 在 sinceTurn 无匹配时才阻塞', async () => {
+  const { david, mint, api, world, app } = await setup();
+  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token;
+  const call = api(token);
+  const project = (await call('/projects', post({ name: 'wait-events' }))).body;
+  const task = (await call('/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body;
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online' } as never);
+  const workspace = newWorkspace({ projectId: project.id, workerId: 'w1', path: '/srv/x', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(workspace.ok);
+  await world.deps.workspaces.save(workspace.value);
+  const session = await call('/sessions', post({ taskId: task.id, agentId: 'fake', model: 'm1', workspaceId: workspace.value.id }));
+  assert.equal(session.status, 201, JSON.stringify(session.body));
+  world.deps.sessions.journal.set(session.body.id, [{ seq: 1, at: 1, event: { kind: 'diagnostic', level: 'info', text: '无轮次' } }]);
+
+  const started = Date.now();
+  const empty = await call(`/sessions/${session.body.id}/events?sinceTurn=1&waitSec=1`);
+  const elapsed = Date.now() - started;
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body.events, []);
+  assert.equal(empty.body.nextAfter, 1, '无 turn 的原始事件也要把 nextAfter 推到最后一条 seq');
+  assert.ok(elapsed >= 900, `waitSec 应阻塞到超时，实际 ${elapsed}ms`);
+
+  const pending = call(`/sessions/${session.body.id}/events?sinceTurn=1&waitSec=5`);
+  await new Promise((r) => setTimeout(r, 200));
+  const current = world.deps.sessions.journal.get(session.body.id) ?? [];
+  world.deps.sessions.journal.set(session.body.id, [
+    ...current,
+    { seq: 2, at: Date.now(), turn: 1, event: { kind: 'text', delta: '来了' } }
+  ]);
+  const got = await pending;
+  assert.equal(got.status, 200);
+  assert.equal(got.body.events.length, 1);
+  assert.equal(got.body.events[0].event.kind, 'text');
+  assert.equal(got.body.nextAfter, 2);
+
+  const mcp = await app.fetch(
+    new Request('http://hub/openapi/v1/mcp', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'events', arguments: { sessionId: session.body.id, sinceTurn: 1 } } })
+    })
+  );
+  const payload = (await mcp.json()) as { result?: { structuredContent?: { events?: unknown; result?: unknown; nextAfter?: number } } };
+  const structured = payload.result?.structuredContent;
+  assert.ok(structured && Array.isArray(structured.events), JSON.stringify(structured));
+  assert.equal('result' in (structured ?? {}), false);
+  assert.equal(structured?.nextAfter, 2);
+  assert.equal((structured?.events as { event: { kind: string } }[])[0]?.event.kind, 'text');
+});
+
+test('events：waitSec 等可投影事件；prompt/thinking 不结束等待，但 nextAfter 仍前进', async () => {
+  const { david, mint, api, world } = await setup();
+  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token;
+  const call = api(token);
+  const project = (await call('/projects', post({ name: 'wait-projectable' }))).body;
+  const task = (await call('/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body;
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online' } as never);
+  const workspace = newWorkspace({ projectId: project.id, workerId: 'w1', path: '/srv/y', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(workspace.ok);
+  await world.deps.workspaces.save(workspace.value);
+  const session = await call('/sessions', post({ taskId: task.id, agentId: 'fake', model: 'm1', workspaceId: workspace.value.id }));
+  assert.equal(session.status, 201, JSON.stringify(session.body));
+  world.deps.sessions.journal.set(session.body.id, [
+    { seq: 1, at: 1, turn: 1, event: { kind: 'prompt', text: 'hi' } },
+    { seq: 3, at: 2, turn: 1, event: { kind: 'thinking', delta: '…' } }
+  ]);
+
+  const immediate = await call(`/sessions/${session.body.id}/events`);
+  assert.deepEqual(immediate.body.events, []);
+  assert.equal(immediate.body.nextAfter, 3);
+
+  const started = Date.now();
+  const pending = call(`/sessions/${session.body.id}/events?after=0&waitSec=5`);
+  await new Promise((r) => setTimeout(r, 200));
+  const elapsedWhileWaiting = Date.now() - started;
+  assert.ok(elapsedWhileWaiting >= 150, '有 prompt/thinking 时不应立刻返回');
+  const current = world.deps.sessions.journal.get(session.body.id) ?? [];
+  world.deps.sessions.journal.set(session.body.id, [
+    ...current,
+    { seq: 8, at: Date.now(), turn: 1, event: { kind: 'text', delta: '好了' } }
+  ]);
+  const got = await pending;
+  const waited = Date.now() - started;
+  assert.equal(got.status, 200);
+  assert.equal(got.body.events.length, 1);
+  assert.equal(got.body.events[0].event.kind, 'text');
+  assert.equal(got.body.nextAfter, 8);
+  assert.ok(waited < 4000, `有可投影事件后应提前返回，实际 ${waited}ms`);
+});
+
+
+test('project_create / get_project：hasToken=false 时给出配置提示', async () => {
+  const { david, mint, api } = await setup();
+  const token = (await mint(david, ['projects:read', 'projects:write'])).token;
+  const call = api(token);
+  const created = await call('/projects', post({ name: 'tok-hint', repoUrl: 'https://github.com/example/demo.git' }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(created.body.repos?.[0]?.hasToken, false);
+  assert.match(created.body.repos?.[0]?.tokenHint ?? '', /project_repos/);
+  assert.match(created.body.gitTokenHint ?? '', /project_repos/);
+  const got = await call(`/projects/${created.body.id}`);
+  assert.equal(got.body.repos?.[0]?.hasToken, false);
+  assert.match(got.body.gitTokenHint ?? '', /credential|project_repos/);
+});
+
+test('token MCP：tokens:manage 才能列出/签发；不能提权；明文只出现一次', async () => {
+  const { david, mint, app } = await setup();
+  const noManage = (await mint(david, ['projects:read'])).token;
+  const admin = (await mint(david, ['tokens:manage', 'projects:read', 'sessions:read'])).token;
+  const rpc = async (token: string, body: unknown) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify(body)
+      })
+    );
+    return (await response.json()) as any;
+  };
+
+  const listed = await rpc(noManage, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+  const names = (listed.result?.tools ?? []).map((t: { name: string }) => t.name);
+  assert.ok(!names.includes('token_create') && !names.includes('token_list'));
+
+  const adminList = await rpc(admin, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  const adminNames = (adminList.result?.tools ?? []).map((t: { name: string }) => t.name);
+  assert.ok(adminNames.includes('token_list') && adminNames.includes('token_create') && adminNames.includes('token_rotate') && adminNames.includes('token_revoke'));
+
+  const denied = await rpc(noManage, {
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: { name: 'token_list', arguments: {} }
+  });
+  assert.equal(denied.result.isError, true);
+  assert.match(denied.result.content[0].text, /403|tokens:manage|没有这个工具/);
+
+  const expiresAt = Date.now() + 60 * 60 * 1000;
+  const created = await rpc(admin, {
+    jsonrpc: '2.0',
+    id: 4,
+    method: 'tools/call',
+    params: { name: 'token_create', arguments: { name: 'e2e-child', scopes: ['projects:read'], expiresAt, clientRequestId: 'tok-1' } }
+  });
+  assert.equal(created.result.isError, false, JSON.stringify(created.result));
+  const info = created.result.structuredContent;
+  assert.match(info.token, /^ahp_/);
+  assert.equal('token' in info.info, false);
+  assert.equal('tokenHash' in info.info, false);
+  const plaintext = info.token;
+
+  const escalate = await rpc(admin, {
+    jsonrpc: '2.0',
+    id: 5,
+    method: 'tools/call',
+    params: { name: 'token_create', arguments: { name: 'esc', scopes: ['tokens:manage'], expiresAt, clientRequestId: 'tok-2' } }
+  });
+  assert.equal(escalate.result.isError, true);
+  assert.ok(!JSON.stringify(escalate.result).includes(plaintext));
+
+  const listed2 = await rpc(admin, { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'token_list', arguments: {} } });
+  assert.equal(listed2.result.isError, false);
+  const arr = listed2.result.structuredContent.tokens as { name: string; id: string }[];
+  assert.ok(Array.isArray(arr));
+  assert.ok(arr.some((row) => row.name === 'e2e-child'));
+  assert.ok(arr.every((row) => !('token' in row) && !('tokenHash' in row)));
+
+  const child = arr.find((row) => row.name === 'e2e-child');
+  assert.ok(child);
+  const childId = child.id;
+  const revoked = await rpc(admin, {
+    jsonrpc: '2.0',
+    id: 7,
+    method: 'tools/call',
+    params: { name: 'token_revoke', arguments: { tokenId: childId, clientRequestId: 'tok-3' } }
+  });
+  assert.equal(revoked.result.isError, false, JSON.stringify(revoked.result));
+  assert.ok(revoked.result.structuredContent.revokedAt);
+});
+test('默认 Agent：读/设/清项目与任务、团队默认、解析生效值；权限与项目范围', async () => {
+  const h = await setup();
+  const { david, mint, api, accounts } = h;
+  const write = api((await mint(david, ['projects:read', 'projects:write'])).token);
+  const read = api((await mint(david, ['projects:read'])).token);
+  const created = await write('/projects', post({ name: 'defaults-p' }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const projectId = created.body.id as string;
+  const task = await write('/tasks', post({ projectId, title: 'defaults-t', goal: '' }));
+  assert.equal(task.status, 201, JSON.stringify(task.body));
+  const taskId = task.body.id as string;
+
+  const emptyTeam = await read('/team/agent-defaults');
+  assert.equal(emptyTeam.status, 200, JSON.stringify(emptyTeam.body));
+  assert.deepEqual(emptyTeam.body, { defaults: {} });
+
+  assert.equal((await read('/team/agent-defaults', { method: 'PUT', body: JSON.stringify({ defaults: { fake: 'team-model' } }) })).status, 403);
+
+  const setTeam = await write('/team/agent-defaults', { method: 'PUT', body: JSON.stringify({ defaults: { fake: 'team-model' } }) });
+  assert.equal(setTeam.status, 200, JSON.stringify(setTeam.body));
+  assert.deepEqual(setTeam.body, { defaults: { fake: 'team-model' } });
+
+  const byRuntime = await write(`/defaults/resolve?projectId=${projectId}&runtime=fake`);
+  assert.equal(byRuntime.status, 200, JSON.stringify(byRuntime.body));
+  assert.equal(byRuntime.body.effective.runtime, 'fake');
+  assert.equal(byRuntime.body.effective.model, 'team-model');
+  assert.equal(byRuntime.body.sources.runtime, 'explicit');
+  assert.equal(byRuntime.body.sources.model, 'team');
+
+  const setProject = await write(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify({ defaultAgent: { runtime: 'fake', model: 'hub-cn-glm-flash/glm-5.3-flash' } }) });
+  assert.equal(setProject.status, 200, JSON.stringify(setProject.body));
+  assert.equal(setProject.body.defaultAgent.runtime, 'fake');
+  assert.equal(setProject.body.defaultAgent.model, 'hub-cn-glm-flash/glm-5.3-flash');
+  assert.equal((await read(`/projects/${projectId}`)).body.defaultAgent.model, 'hub-cn-glm-flash/glm-5.3-flash');
+
+  const resolvedProject = await read(`/defaults/resolve?projectId=${projectId}`);
+  assert.equal(resolvedProject.status, 200, JSON.stringify(resolvedProject.body));
+  assert.equal(resolvedProject.body.effective.runtime, 'fake');
+  assert.equal(resolvedProject.body.effective.model, 'hub-cn-glm-flash/glm-5.3-flash');
+  assert.deepEqual(resolvedProject.body.sources, { runtime: 'project', model: 'project' });
+
+  assert.equal((await read(`/tasks/${taskId}/default-agent`, { method: 'PATCH', body: JSON.stringify({ defaultAgent: { runtime: 'fake', model: 'task-model' } }) })).status, 403);
+  const setTask = await write(`/tasks/${taskId}/default-agent`, { method: 'PATCH', body: JSON.stringify({ defaultAgent: { runtime: 'fake', model: 'task-model' } }) });
+  assert.equal(setTask.status, 200, JSON.stringify(setTask.body));
+  assert.equal(setTask.body.defaultAgent.model, 'task-model');
+  const resolvedTask = await read(`/defaults/resolve?projectId=${projectId}&taskId=${taskId}`);
+  assert.equal(resolvedTask.body.effective.model, 'task-model');
+  assert.deepEqual(resolvedTask.body.sources, { runtime: 'task', model: 'task' });
+
+  const clearedTask = await write(`/tasks/${taskId}/default-agent`, { method: 'PATCH', body: JSON.stringify({ defaultAgent: null }) });
+  assert.equal(clearedTask.status, 200, JSON.stringify(clearedTask.body));
+  assert.equal(clearedTask.body.defaultAgent ?? null, null);
+  assert.equal((await read(`/defaults/resolve?projectId=${projectId}&taskId=${taskId}`)).body.effective.model, 'hub-cn-glm-flash/glm-5.3-flash');
+
+  const clearedProject = await write(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify({ defaultAgent: null }) });
+  assert.equal(clearedProject.status, 200);
+  assert.equal(clearedProject.body.defaultAgent ?? null, null);
+  const afterClear = await read(`/defaults/resolve?projectId=${projectId}&runtime=fake`);
+  assert.equal(afterClear.body.effective.model, 'team-model');
+  assert.equal(afterClear.body.sources.model, 'team');
+
+  const audit = accounts.auditRows.filter((row) => String(row.detail).includes('默认 Agent'));
+  assert.ok(audit.length >= 3, `expected default-agent audit, got ${audit.length}`);
+
+  const elsewhere = await write('/projects', post({ name: 'other-p' }));
+  assert.equal(elsewhere.status, 201);
+  const scoped = api((await mint(david, ['projects:read', 'projects:write'], { projectIds: [projectId] })).token);
+  assert.equal((await scoped('/team/agent-defaults', { method: 'PUT', body: JSON.stringify({ defaults: { fake: 'nope' } }) })).status, 403);
+  assert.equal((await scoped(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify({ defaultAgent: { runtime: 'fake', model: 'scoped-ok' } }) })).status, 200);
+  assert.equal((await scoped(`/projects/${elsewhere.body.id}`, { method: 'PATCH', body: JSON.stringify({ defaultAgent: { runtime: 'fake', model: 'nope' } }) })).status, 404);
+  assert.equal((await scoped(`/defaults/resolve?projectId=${elsewhere.body.id}`)).status, 404);
+
+  await addTeamMember(accounts, 'member-defaults@b.co', PASSWORD);
+  const memberBrowser = h.browser();
+  assert.equal((await memberBrowser('/api/auth/login', post({ email: 'member-defaults@b.co', password: PASSWORD }))).status, 200);
+  const memberWrite = api((await mint(memberBrowser, ['projects:read', 'projects:write'])).token);
+  const denied = await memberWrite('/team/agent-defaults', { method: 'PUT', body: JSON.stringify({ defaults: { fake: 'member-nope' } }) });
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  const still = await read('/team/agent-defaults');
+  assert.deepEqual(still.body, { defaults: { fake: 'team-model' } });
+});
+

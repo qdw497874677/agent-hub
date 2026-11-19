@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent } from 'react';
 import type { AttachmentInputDto, CapabilityDto, SessionDto } from '../shell/api.ts';
 import { api } from '../shell/api.ts';
 import { checkAdd, filterCommands, formatBytes, mentionDraft, toInput, triggerAt, type Draft, type SlashCommand } from './attachments.ts';
 import { readDraft } from './commands.ts';
+import { growField } from './composer-grow.ts';
 import { OptionControls } from './options.tsx';
 import { HubSwitchNote, useSessionOptions } from './session-options.tsx';
 import { coarsePointer } from '../shell/device.ts';
@@ -10,6 +11,9 @@ import { useOfflineNotice } from '../shell/workers.tsx';
 import { ActionDot, OfflineNotice } from './composer-parts.tsx';
 import { Icon } from './icons.tsx';
 import { composerKeyAction, currentPlatform, sendKeyHint } from './composer-keys.ts';
+
+/** 输入框长到 200px 就停住、自己滚：再高就开始吃对话区了，窄屏尤其明显。 */
+const AREA_MAX = 200;
 
 interface Props {
   readonly session: SessionDto;
@@ -88,11 +92,42 @@ export function Composer({
   const [dragging, setDragging] = useState(false);
   const denied = capability.state === 'denied';
 
+  /**
+   * 让输入框跟着内容长高，到 200px 就自己滚。
+   *
+   * 走的是直接写 `style.height`，不是受控 value：React Flow 节点里受控 textarea 会丢字
+   * （见上面 `area` 的注释），高度也只能绕开 React 自己量。
+   * 先把高度置成 `auto` 再读 `scrollHeight`：盒子停在旧高度时，它自己的 padding 盒会被算成
+   * overflow，读出来的永远是「比原来还高」，于是只长不缩。
+   */
+  function fitArea(): void {
+    const element = area.current;
+    if (!element) return;
+    const floor = large ? 52 : 44; // 和 min-h-[52px] / min-h-[44px] 同一条线
+    element.style.height = 'auto';
+    const { height, overflowY } = growField({ scrollHeight: element.scrollHeight, floor, max: AREA_MAX });
+    element.style.height = `${height}px`;
+    element.style.overflowY = overflowY;
+  }
+
+  // 初次挂载、换草稿（发送后清空、恢复失败的文字）、`large` 变了：都重新量一次。
+  useLayoutEffect(() => {
+    fitArea();
+  }, [draft, large]);
+
+  // 变窄会让同样的字多折一行：宽度变了也要重量（分栏拖动、转屏）。
+  useEffect(() => {
+    const onResize = () => fitArea();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [large]);
+
   useEffect(() => {
     const element = area.current;
     if (element && draft === '' && element.value !== '') {
       element.value = '';
       setFilled(false);
+      fitArea();
     }
   }, [draft]);
 
@@ -116,6 +151,7 @@ export function Composer({
     element.selectionStart = element.selectionEnd = quoted.length;
     setFilled(quoted.trim() !== '');
     setTrigger(null);
+    fitArea();
     element.focus();
   }, [quoteNonce, quoted]);
 
@@ -175,6 +211,7 @@ export function Composer({
     setFilled(element.value.trim() !== '');
     onDraftChange(element.value);
     setTrigger(null);
+    fitArea();
     element.focus();
   }
 
@@ -261,6 +298,7 @@ export function Composer({
     } else if (element && element.value === '') {
       element.value = value;
       setFilled(value !== '');
+      fitArea();
     }
     return sent;
   }
@@ -363,8 +401,8 @@ export function Composer({
               ? 'Meta+Enter Control+Enter'
               : 'Meta+Enter Control+Enter Meta+Shift+Enter Control+Shift+Enter'
           }
-          className={`w-full resize-none bg-transparent text-primary outline-none placeholder:text-tertiary ${large ? 'text-chat' : 'text-body'} ${
-            large ? 'min-h-[52px] max-h-56' : 'min-h-[44px] max-h-40'
+          className={`w-full resize-none overflow-y-hidden bg-transparent text-primary outline-none placeholder:text-tertiary ${large ? 'text-chat' : 'text-body'} ${
+            large ? 'min-h-[52px]' : 'min-h-[44px]'
           }`}
           placeholder={coarsePointer() ? '接着说…（@ 引用文件，/ 命令）' : `接着说…（@ 引用文件，/ 命令，${sendKeyHint(currentPlatform())}）`}
           ref={area}
@@ -373,6 +411,7 @@ export function Composer({
             setFilled(event.target.value.trim() !== '');
             onDraftChange(event.target.value);
             refreshTrigger();
+            fitArea();
           }}
           onClick={refreshTrigger}
           onBlur={() => setTrigger(null)}

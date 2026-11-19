@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import {
   MIN_OVERFLOW,
   contentEffect,
@@ -6,6 +6,7 @@ import {
   endProbeTarget,
   holdsScroll,
   maxScrollOf,
+  nearEndOf,
   needsEndProbe,
   reachedEnd,
   scrollKey,
@@ -20,43 +21,83 @@ import {
 /** 滚动停下来多久算「停」：触屏松手后惯性还在滑，这段时间用来等它真的停。 */
 const IDLE_MS = 120;
 
+export interface StickToBottom<T extends HTMLElement> {
+  /** 挂到滚动容器上。 */
+  readonly ref: RefObject<T | null>;
+  /**
+   * 离底部够近（`NEAR_END_PX`，宽松阈值，和贴底的 0.5px 无关）：
+   * 「回到底部」按钮据此收起。内容不足一屏时恒为 true。
+   */
+  readonly nearEnd: boolean;
+  /** 平滑滚回最后一条（系统开了「减少动态效果」就直接跳）。 */
+  readonly scrollToEnd: (smooth?: boolean) => void;
+}
+
 /**
  * 对话区跟着最新消息走（专注对话页、画布卡片、子代理面板共用）。
  * - 打开 / 换会话（resetKey 变了）：直接滚到最后，从跟随重新开始。
  * - 流式输出、新消息：只有在「跟随」里才贴底；读者往上翻着看历史时一律不抢。
  * - 状态判定全在 stick-to-bottom.ts 的纯状态机里，这里只做接线：事件 → 动作，状态 → 要不要写 scrollTop。
  * 内容变化用 MutationObserver 盯，不靠调用方传依赖——流式追加文字时块数和 seq 都可能不变。
+ *
+ * `nearEnd` 复用同一个 scroll 监听（不额外加监听器），只在布尔值变化时 setState。
  */
-export function useStickToBottom<T extends HTMLElement>(resetKey: string) {
+export function useStickToBottom<T extends HTMLElement>(resetKey: string): StickToBottom<T> {
   const ref = useRef<T | null>(null);
+  const [nearEnd, setNearEnd] = useState(true);
 
   // 换会话、首次挂载：先落到最后，别让首帧闪在顶部（状态机随后从 following 重来）。
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    setNearEnd(nearEndOf(measureOf(el)));
   }, [resetKey]);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    return attachFollow(el);
+    return attachFollow(el, setNearEnd);
   }, [resetKey]);
 
-  return ref;
+  // 平滑滚到底之后，滚动事件会让状态机自己恢复跟随（和拖滚动条到底一样），这里不另设监听。
+  const scrollToEnd = useCallback((smooth = true) => {
+    const el = ref.current;
+    if (!el) return;
+    const reduced =
+      typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth && !reduced ? 'smooth' : 'auto' });
+  }, []);
+
+  return { nearEnd, ref, scrollToEnd };
+}
+
+function measureOf(el: HTMLElement): ScrollGeometry {
+  return { clientHeight: el.clientHeight, scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
 }
 
 /** 把状态机接到一个真实滚动区上；返回卸载函数。 */
-function attachFollow(el: HTMLElement): () => void {
+function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () => void {
   let state: FollowState = createFollowState();
-  let last: ScrollGeometry = measure();
+  let last: ScrollGeometry = measureOf(el);
   let contact: Contact | null = null;
   let attempt = 0;
   let frame: number | null = null;
   let idle: ReturnType<typeof setTimeout> | null = null;
   let lastScrollAt = 0;
+  // 记一份本地值：普通滚动每帧都来，只在跨过阈值时才麻烦 React。
+  let near = nearEndOf(last);
 
   function measure(): ScrollGeometry {
-    return { clientHeight: el.clientHeight, scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+    return measureOf(el);
+  }
+
+  /** 按钮的可见性：几何变了就报一次，值没变就什么都不做。 */
+  function reportNear(): void {
+    const next = nearEndOf(last);
+    if (next === near) return;
+    near = next;
+    onNearEnd(next);
   }
 
   function metrics(): ScrollMetrics {
@@ -131,6 +172,7 @@ function attachFollow(el: HTMLElement): () => void {
     lastScrollAt = Date.now();
     dispatch({ type: 'scroll' });
     last = measure();
+    reportNear();
     scheduleIdle();
   }
 
@@ -158,6 +200,7 @@ function attachFollow(el: HTMLElement): () => void {
     if (effect === 'idle') {
       // 停在读者放下的地方：只记住新的尺寸，等下一次滚动再判定。
       last = measure();
+      reportNear();
       return;
     }
 
@@ -229,6 +272,7 @@ function attachFollow(el: HTMLElement): () => void {
 
   dispatch({ type: 'attach' });
   snap();
+  reportNear();
 
   return () => {
     if (frame !== null) cancelAnimationFrame(frame);

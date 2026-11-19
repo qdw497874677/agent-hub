@@ -129,11 +129,11 @@ route('projects:write', { ... }, { skip: '会改项目描述，留给界面' })
 
 | 分组 | 工具 |
 | --- | --- |
-| `projects` | `list_projects`、`get_project`、`project_create`、`project_update`、`project_repos`、`project_archive`、`workspace_changes` |
-| `tasks` | `list_tasks`、`get_task`、`list_task_log`、`task_create`、`append_task_log`、`edit_task_log`、`set_task_status`、`set_task_summary` |
+| `projects` | `list_projects`、`get_project`、`project_update`（含默认 Agent）、`project_create`、`project_repos`、`project_archive`、`workspace_changes`、`resolve_default_agent`、`team_agent_defaults`、`team_agent_defaults_set` |
+| `tasks` | `list_tasks`、`get_task`、`list_task_log`、`task_create`、`append_task_log`、`edit_task_log`、`set_task_status`、`set_task_summary`、`task_default_agent` |
 | `sessions` | `get_session`、`events`、`activity`、`session_start`、`session_reply`、`session_cancel`、`session_model`、`fork_session`、`change_option` |
 | `assets` | `list_assets`、`get_asset`、`asset_create`、`asset_import`、`asset_publish`、`asset_assign` |
-| `workers` | `list_workers` |
+| `workers` | `list_workers`、`list_models` |
 | `workspaces` | `sync_workspace`、`create_workspace`、`remove_workspace`、`retry_workspace_setup` |
 
 `MCP_MODULES` 用这些分组名做灰度；`MCP_READ_ONLY=1` 在 `tools/list` 与 `tools/call` 两边同时生效。
@@ -196,7 +196,8 @@ annotations: {
 | `ended` | ended | `outcome`, `reason` |
 | `diagnostic` | diagnostic | 只保留 `level` 与「已脱敏」的通用文案 |
 
-`?after=seq` 的分页保持现有语义；投影在 MCP 层做，HTTP v1 保持不变。
+`GET /openapi/v1/sessions/:id/events` 与 MCP `events` 返回同一形状 `{ events, nextAfter }`，其中 `events` 已经过投影（不含 prompt / thinking / 工具输入输出）。内部 `GET /api/sessions/:id/events` 仍是原样 journal，给网页用。
+`waitSec`（0–50）在**过滤之后**没有匹配事件时才阻塞：`sinceTurn` 会忽略没有 turn 的旧事件，这些旧事件不会让长轮询立刻空返回。下一次轮询把 `after` 设为 `nextAfter`。
 
 ### 5.5 运行感知：只报告，不自动杀
 
@@ -239,8 +240,16 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 - `session_model` 与界面「模型」下拉走同一条路：同提供商只改选项（下一轮生效）；换到 hub 提供商
   或反向回原生模型会停掉会话进程、按新模型重新托管，靠 `resume{agentSessionRef, cursor}` 接回历史，
   正在跑的回合会中断。权限是 `session.prompt`，模型本身还要过调用方可见的提供商/运行时名单。
-- `list_workers` 返回的 `agentModels` 是机器本地模型目录，不包含 hub 托管模型 id；开会话时模型写成
-  `hub-<slug>/<modelId>`（例如 `hub-cn-glm-flash/glm-5.3-flash`），已配置的提供商用 `provider_list` 查看。
+- 开会话或换模型时，用 `list_models` 看可用模型（要 `workers:read`）：hub 托管模型排在前面，id 写成
+  `hub-<slug>/<modelId>`（例如 `hub-cn-glm-flash/glm-5.3-flash`），并带提供商与路由信息；后面是各可见机器的本地模型。
+  `list_workers` 的 `agentModels` 也会把这些 hub 模型插到每台 agent 清单前面。不要把机器本地目录里的
+  `opencode-go/*` 或 `zai-coding-cn/*` 误当成 hub 托管模型。
+- 默认 Agent：`get_project` / `get_task` 会带 `defaultAgent`（未配则为空）。用 `project_update` 的
+  `defaultAgent`（`null` = 清掉）和 `task_default_agent` 读写；`team_agent_defaults` 读团队按运行时的
+  默认模型，`team_agent_defaults_set` 改它（要团队 owner / admin，且令牌不能只限项目；普通成员即使
+  有 `projects:write` 也会 403）。新会话不显式点名模型时的生效值用 `resolve_default_agent`
+  （层级：团队运行时默认 < 项目 < 任务 < 显式），与 `session_start` 省略 `model` 时走同一套解析。
+  项目限定令牌只能动它范围内的项目。
 - 已知欠缺：资产还没有协议级 digest 冻结（E4c），所以委派出去的会话在别人同步资产新版后
   可能换内容；这一步完成前，「对外委派」适合内部可信调用方。
 
@@ -251,7 +260,7 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 
 - `repos[]`：`url`、`name`（可选）、`defaultBranch`（可选，`null` = 远端默认），最多 8 个，第 0 个是主仓库。
 - `credential` **只写不读**：非空存进密钥箱（`repo-git:<repoId>`）、空串清掉、省略不动。
-  响应只给 `hasToken: true|false`，明文永不回显、不进审计 detail、不进日志。
+  响应给 `hasToken: true|false`；`hasToken=false` 时还有 `tokenHint` 与项目级 `gitTokenHint`，提示用本工具写入 `credential`。明文永不回显、不进审计 detail、不进日志。
 - 存下之后，这条仓库的 clone / worktree / push 都由 hub 按 URL 或目录前缀自动取令牌下发，
   worker 端只拿到一次性的 `http.extraHeader`。
 - 要确认机器能不能拉到：先 `POST /api/projects/{id}/repos/check`（界面入口；开放 API 暂未开）。

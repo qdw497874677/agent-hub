@@ -21,7 +21,7 @@ function AgentMessageCard({ message }: { message: ParsedAgentMessage }) {
     </div>
   );
 }
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { api, attachmentUrl } from '../shell/api.ts';
 import { useAccount } from '../shell/auth.tsx';
 import {
@@ -40,6 +40,7 @@ import type { HandoffDto } from './live-core.ts';
 import { formatRoute, parseRoute } from '../shell/route.ts';
 import { LogMarkdown } from './log-markdown.tsx';
 import { clipLines, parseUnifiedDiff, toolFamily, toolFileTarget, toolSummary, toolView, type DiffLine, type ToolView } from './tool-format.ts';
+import { analyzeDiff, sliceTokens, type DiffTokenSlice, type WordSegment } from './diff-words.ts';
 import { diffStat, runLength, startsRun, toolHeadline, toolRowKind, toolRowLine, toolRowTitle, toolRunChip, type ToolRowKind, type ToolRowProbe } from './tool-rows.ts';
 import { durationText, summaryCounts, type WorkSummary } from './timeline-groups.ts';
 import { languageOf } from './files-core.ts';
@@ -48,6 +49,8 @@ import { currentTheme } from '../shell/theme.ts';
 import { ThemeSwitch } from '../shell/theme-switch.tsx';
 import { subagentStepCount } from './live.ts';
 import { useFileLinks } from './file-links.tsx';
+import { coarsePointer, reducedMotion } from '../shell/device.ts';
+import { FOLLOW_SLACK, RISE_EASING, RISE_MS, THINKING_MAX, edgeMask, hiddenBelow, riseFrom, transformOffset } from './thinking-window.ts';
 
 /**
  * 专注对话里的一条条消息（参照 OpenCode web 的时间线）：
@@ -312,6 +315,9 @@ function DiffView({ lines, path = null }: { lines: readonly DiffLine[]; path?: s
   const [all, setAll] = useState(false);
   const links = useFileLinks();
   const tokens = useDiffTokens(lines, path);
+  // 词级分段 + 行号只算一次：长 diff 重算一次就是几十万次字符比较。
+  // 2000 行以上的兜底在 diff-words.ts 的 pairLines（那里是唯一该管性能的地方）。
+  const { rows, gutter } = useMemo(() => analyzeDiff(lines), [lines]);
   const shown = all ? lines : lines.slice(0, DIFF_PREVIEW);
   // tokens 只给非 @@ 行编号，这里把下标对上
   let codeIndex = 0;
@@ -320,29 +326,50 @@ function DiffView({ lines, path = null }: { lines: readonly DiffLine[]; path?: s
     <div className="overflow-hidden rounded-control border border-hair bg-surface-1" data-testid="tool-diff">
       <div className="overflow-x-auto py-1 font-mono text-meta leading-[1.6]">
         {shown.map((line, index) => {
-          const row = tokens?.[codeIndexOf[index]!];
+          const row = tokens?.[codeIndexOf[index]!] ?? null;
+          const info = rows[index];
+          const highlight = info?.highlight ?? null;
+          const wordTone = line.sign === '+' ? 'bg-success/25' : 'bg-danger/25';
           return (
             <div
               key={index}
+              data-testid="diff-row"
+              data-sign={line.sign}
               className={`flex whitespace-pre pr-3 ${line.sign === '+' ? 'bg-diff-add/10' : line.sign === '-' ? 'bg-diff-del/10' : ''}`}
             >
+              {/* 行号只给人看：select-none，复制时只拿到正文 */}
               <span
                 aria-hidden
+                data-testid="diff-line-no"
+                data-side="old"
+                className={`shrink-0 select-none pl-2 pr-1.5 text-right tabular-nums text-fg-faint ${line.sign === '@' ? '' : 'border-r border-hair/60'}`}
+                style={{ minWidth: gutter }}
+              >
+                {info?.old ?? ''}
+              </span>
+              <span
+                aria-hidden
+                data-testid="diff-line-no"
+                data-side="new"
+                className={`shrink-0 select-none pl-1.5 pr-1.5 text-right tabular-nums text-fg-faint ${line.sign === '@' ? '' : 'border-r border-hair/60'}`}
+                style={{ minWidth: gutter }}
+              >
+                {info?.new ?? ''}
+              </span>
+              <span
+                aria-hidden
+                data-testid="diff-mark"
                 className={`w-6 shrink-0 select-none text-center ${line.sign === '+' ? 'text-diff-add' : line.sign === '-' ? 'text-diff-del' : 'text-fg-faint'}`}
               >
                 {line.sign === '@' ? '⋯' : line.sign === ' ' ? '' : line.sign === '-' ? '−' : '+'}
               </span>
-              <span className="sr-only">{line.sign === '@' ? '' : `${line.sign} `}</span>
-              {line.sign === '@' ? null : row ? (
-                <span>
-                  {row.map((tok, k) => (
-                    <span key={k} style={tok.color ? { color: tok.color } : undefined}>
-                      {tok.content}
-                    </span>
-                  ))}
+              <span className="sr-only select-none">{line.sign === '@' ? '' : `${line.sign} `}</span>
+              {line.sign === '@' ? null : highlight === 'whole' ? (
+                <span className={wordTone}>
+                  <DiffText tokens={row} segments={null} text={line.text} sign={line.sign} wordTone={wordTone} />
                 </span>
               ) : (
-                <span className={line.sign === '+' ? 'text-diff-add' : line.sign === '-' ? 'text-diff-del' : 'text-secondary'}>{line.text}</span>
+                <DiffText tokens={row} segments={typeof highlight === 'object' ? highlight : null} text={line.text} sign={line.sign} wordTone={wordTone} />
               )}
             </div>
           );
@@ -367,9 +394,55 @@ function DiffView({ lines, path = null }: { lines: readonly DiffLine[]; path?: s
   );
 }
 
+/**
+ * 一行正文：shiki 的 token 负责颜色，词级分段负责「哪几个字变了」。
+ * 两套坐标按字符数对齐（sliceTokens），有分段就切在 token 边界上，颜色不错位。
+ */
+function DiffText({
+  tokens,
+  segments,
+  text,
+  sign,
+  wordTone
+}: {
+  tokens: readonly Tok[] | null;
+  segments: readonly WordSegment[] | null;
+  text: string;
+  sign: DiffLine['sign'];
+  wordTone: string;
+}) {
+  if (tokens === null && segments === null) {
+    return <span className={sign === '+' ? 'text-diff-add' : sign === '-' ? 'text-diff-del' : 'text-secondary'}>{text}</span>;
+  }
+  const slices: readonly DiffTokenSlice[] =
+    segments === null
+      ? (tokens ?? []).map((tok) => ({ content: tok.content, ...(tok.color === undefined ? {} : { color: tok.color }), changed: false }))
+      : tokens === null
+        ? segments.map((segment) => ({ content: segment.text, changed: segment.changed }))
+        : sliceTokens(tokens, segments);
+  // 外层这一个 span 把整行正文包成「一个」flex 项：否则每个词/配色片段都是独立 flex item，
+  // 浏览器复制选区时会在它们之间塞空格（复制出来变成 `const b = 4 ;`）。
+  return (
+    <span>
+      {slices.map((slice, k) =>
+        slice.changed ? (
+          <span key={k} data-testid="diff-word" className={`rounded-[2px] ${wordTone}`}>
+            {slice.content}
+          </span>
+        ) : (
+          <span key={k} style={slice.color === undefined ? undefined : { color: slice.color }}>
+            {slice.content}
+          </span>
+        )
+      )}
+    </span>
+  );
+}
+
 function OutputView({ text, failed }: { text: string; failed: boolean }) {
   const [all, setAll] = useState(false);
-  const diff = parseUnifiedDiff(text);
+  // 解析一次就够：每渲染一次都重解析会让 DiffView 的 useMemo 白算
+  const diff = useMemo(() => parseUnifiedDiff(text), [text]);
   if (diff !== null) return <DiffView lines={diff} />;
   const clipped = clipLines(text);
   return (
@@ -664,6 +737,139 @@ function PathText({ path, input }: { path: string; input: string }) {
   );
 }
 
+/**
+ * 思考正文：一个固定高度的窗口。
+ *
+ * 思考比答案长、来得比答案快，于是这一块不跟着内容无限长高——到了 `THINKING_MAX` 就停住，
+ * 底下接新行、再滑上去（pin 拿到实际位移，用 WAAPI 滑回来），上下边缘按「还藏着多少」渐隐。
+ * 几何算式在 thinking-window.ts，这里只管 DOM。
+ *
+ * 全是命令式写入（`style.height` / `style.maskImage` / `dataset`），不走 React 状态：
+ * 这块每来一段 delta 就要重算一次，进 state 等于每帧重渲一遍 markdown。
+ */
+function ThinkingWindow({ text }: { text: string }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const streamRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const box = boxRef.current;
+    const stream = streamRef.current;
+    if (!box || !stream) return;
+
+    // 手机：不做窗口。手指在窄屏上要滚的是整段对话，里面再套一层滚动区会先吃掉一半手势，
+    // 也和外层「跟到底」的滚动逻辑互相拉扯。保持现在的整段展开。
+    if (coarsePointer()) {
+      box.style.maxHeight = 'none';
+      box.style.overflowY = 'visible';
+      return;
+    }
+
+    let layout = -1; // 上一帧的布局高度；-1 = 还没量过（刚挂载 / 刚展开）
+    let following = true; // 读者在底部才把新内容顶上来；往上翻过就别抢
+    let windowed = false; // 内容是否已经超过窗口、正在用遮罩 + 内部滚动
+    let rise: Animation | null = null;
+
+    // 一律用布局高度，不用 scrollHeight：上滑动画把内容 translate 到了底边以下，
+    // 浏览器把它算成 overflow，跟着它就会去追自己那一滑。
+    const streamHeight = (): number => stream.getBoundingClientRect().height;
+
+    const paintMask = (): void => {
+      if (!windowed) return;
+      const mask = edgeMask(box.scrollTop, hiddenBelow(streamHeight(), box.clientHeight, box.scrollTop));
+      // Safari 还只认前缀版，两个都写。
+      box.style.setProperty('mask-image', mask);
+      box.style.setProperty('-webkit-mask-image', mask);
+    };
+
+    const readScroll = (): void => {
+      following = hiddenBelow(streamHeight(), box.clientHeight, box.scrollTop) <= FOLLOW_SLACK;
+    };
+
+    /** 滚到底，返回真正滚走的位移（可能小于「该滚的量」——已经在底了就是 0）。 */
+    const pin = (): number => {
+      const before = box.scrollTop;
+      box.scrollTop = Math.max(0, streamHeight() - box.clientHeight);
+      return box.scrollTop - before;
+    };
+
+    /** 正在飞的那一滑还剩多少位移，接着它起步，快流就是一条连续的滑行。 */
+    const inFlight = (): number => (rise ? transformOffset(getComputedStyle(stream).transform) : 0);
+
+    const measure = (): void => {
+      if (!boxRef.current || !streamRef.current) return; // 正在卸载
+      const height = streamHeight();
+      const capped = height > THINKING_MAX + 0.5;
+
+      if (capped !== windowed) {
+        windowed = capped;
+        box.dataset.windowed = capped ? 'true' : 'false';
+        // 还没到窗口高度时不该有内部滚动条，也不该有渐隐；
+        // 同样地，不能滚的时候别占一个空的 Tab 站。
+        box.style.overflowY = capped ? 'auto' : 'hidden';
+        box.tabIndex = capped ? 0 : -1;
+        if (!capped) {
+          box.style.removeProperty('mask-image');
+          box.style.removeProperty('-webkit-mask-image');
+        }
+      }
+
+      // 首次量到高度（挂载 / 展开）：只记位置，不追。读者该看到的是从头开始的一段，
+      // 而不是「一打开就跳到底」。之后才是「长出来的内容接住再回落」。
+      const grew = layout > 0.5 && height - layout > 0.5;
+
+      if (windowed && grew && following) {
+        const moved = pin();
+        if (moved > 0.5 && !reducedMotion()) {
+          const from = riseFrom(inFlight(), moved);
+          rise?.cancel();
+          rise = stream.animate(
+            [{ transform: `translateY(${from}px)` }, { transform: 'translateY(0)' }],
+            { duration: RISE_MS, easing: RISE_EASING }
+          );
+        }
+      }
+
+      layout = height;
+      readScroll();
+      paintMask();
+    };
+
+    // 读者自己滚：更新「还在跟随吗」，顺手重画遮罩（滚走了就该多一条边上的渐隐）。
+    const onScroll = (): void => {
+      readScroll();
+      paintMask();
+    };
+
+    box.addEventListener('scroll', onScroll, { passive: true });
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    observer.observe(stream);
+    measure();
+
+    return () => {
+      box.removeEventListener('scroll', onScroll);
+      observer.disconnect();
+      rise?.cancel();
+    };
+  }, []);
+
+  return (
+    <div
+      ref={boxRef}
+      data-testid="thinking-window"
+      data-windowed="false"
+      tabIndex={-1}
+      className="think-window mt-1.5 ml-1 overflow-y-hidden border-l-2 border-hair pl-3 [overflow-anchor:none]"
+      style={{ maxHeight: THINKING_MAX }}
+    >
+      {/* 内层是正文本身：高度由它撑，窗口只负责裁。flow-root 免得首行 margin 折叠出去。 */}
+      <div ref={streamRef} data-testid="thinking-stream" className="flow-root whitespace-pre-wrap leading-relaxed text-fg-faint/80">
+        {text}
+      </div>
+    </div>
+  );
+}
+
 function ThinkingBlock({ text, settings, live }: { text: string; settings: DisplaySettings; live: boolean }) {
   if (settings.thinking === 'hidden') return null;
   return (
@@ -672,7 +878,7 @@ function ThinkingBlock({ text, settings, live }: { text: string; settings: Displ
         <span aria-hidden className="inline-block w-2.5 transition-transform group-open/think:rotate-90 motion-reduce:transition-none">›</span>
         <span className={live ? 'shimmer-text' : ''}>{live ? '正在思考…' : '思考过程'}</span>
       </summary>
-      <p className="mt-1.5 ml-1 whitespace-pre-wrap border-l-2 border-hair pl-3 leading-relaxed text-fg-faint/80">{text}</p>
+      <ThinkingWindow text={text} />
     </details>
   );
 }

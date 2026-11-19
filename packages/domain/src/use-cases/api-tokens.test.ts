@@ -5,7 +5,8 @@ import { asLoginId, asProjectId, asTeamId, asUserId, type Principal, type User }
 import type { Project } from '../project.ts';
 import { inMemoryApiTokens } from '../testing/in-memory.ts';
 import { BOT_TOKEN_PREFIX } from '../api-token.ts';
-import { apiTokenActivity, authenticateApiToken, createApiToken, listApiTokens, revokeApiToken, rotateApiToken, type ApiTokenDeps } from './api-tokens.ts';
+import { apiTokenActivity, authenticateApiToken, createApiToken, listApiTokens, revokeApiToken, rotateApiToken, tokenManageGrantDenied, type ApiTokenDeps } from './api-tokens.ts';
+import { MCP_TOKEN_MAX_TTL_MS } from '../api-token.ts';
 
 /** C1：bot 的独立凭据——签发要项目 admin；令牌只能在本项目里做事。 */
 function userOf(id: string, role: User['role'] = 'member', teamId = 'team-1'): User {
@@ -364,4 +365,109 @@ test('providers:manage：管理员能授；成员不能；项目级和 bot 一�
   const denied = decide(forged, 'provider.manage');
   assert.equal(denied.allow, false);
   assert.equal(denied.allow === false && denied.reason, 'token_project');
+});
+
+
+test('tokens:manage：管理员能授；成员不能；项目级和 bot 一律拒绝', async () => {
+  const { deps, owner, admin, member } = world();
+  const okOwner = await createApiToken(deps, owner, { name: 'tokmgr', kind: 'personal', scopes: ['tokens:manage', 'projects:read'] });
+  assert.ok(okOwner.ok);
+  const okAdmin = await createApiToken(deps, admin, { name: 'tokmgr-admin', kind: 'personal', scopes: ['tokens:manage'] });
+  assert.ok(okAdmin.ok);
+  const asMember = await createApiToken(deps, member, { name: 'nope', kind: 'personal', scopes: ['tokens:manage'] });
+  assert.equal(asMember.ok, false);
+  const scoped = await createApiToken(deps, owner, { name: 'scoped', kind: 'personal', scopes: ['tokens:manage'], projectIds: ['p1'] });
+  assert.equal(scoped.ok, false);
+  const bot = await createApiToken(deps, owner, { name: 'bot-tok', kind: 'bot', projectId: 'p1', scopes: ['tokens:manage'] });
+  assert.equal(bot.ok, false);
+  assert.equal(tokenManageGrantDenied(owner, { kind: 'personal', scopes: ['projects:read'] }), null);
+});
+
+test('经 tokens:manage 令牌可签发子集个人令牌：要过期、不能提权、明文只在结果里、审计不记明文', async () => {
+  const { deps, owner } = world();
+  const adminTok = await createApiToken(deps, owner, {
+    name: 'admin-mcp',
+    kind: 'personal',
+    scopes: ['tokens:manage', 'projects:read', 'sessions:read']
+  });
+  assert.ok(adminTok.ok);
+  const actor = await authenticateApiToken(deps, adminTok.value.token);
+  assert.ok(actor && actor.via);
+  const now = deps.now();
+  const made = await createApiToken(deps, actor, {
+    name: 'e2e',
+    kind: 'personal',
+    scopes: ['projects:read'],
+    expiresAt: now + 60_000
+  });
+  assert.ok(made.ok, JSON.stringify(made));
+  assert.match(made.value.token, /^ahp_/);
+  assert.ok(!made.value.info.scopes.includes('tokens:manage'));
+  const audit = (await deps.audit!.query({ limit: 200 })) as { detail: string; action: string }[];
+  // query mock returns all auditRows pushed as entry
+  const rows = audit as unknown as { detail?: string; action?: string }[];
+  assert.ok(rows.some((row) => (row.action === 'token.create' || JSON.stringify(row).includes('token.create'))));
+  assert.ok(!JSON.stringify(rows).includes(made.value.token));
+
+  const escalate = await createApiToken(deps, actor, {
+    name: 'esc',
+    kind: 'personal',
+    scopes: ['tokens:manage'],
+    expiresAt: now + 60_000
+  });
+  assert.equal(escalate.ok, false);
+  const prov = await createApiToken(deps, actor, {
+    name: 'prov',
+    kind: 'personal',
+    scopes: ['providers:manage'],
+    expiresAt: now + 60_000
+  });
+  assert.equal(prov.ok, false);
+  const wider = await createApiToken(deps, actor, {
+    name: 'wide',
+    kind: 'personal',
+    scopes: ['projects:write'],
+    expiresAt: now + 60_000
+  });
+  assert.equal(wider.ok, false);
+  const noExp = await createApiToken(deps, actor, {
+    name: 'immortal',
+    kind: 'personal',
+    scopes: ['projects:read']
+  });
+  assert.equal(noExp.ok, false);
+  const tooLong = await createApiToken(deps, actor, {
+    name: 'long',
+    kind: 'personal',
+    scopes: ['projects:read'],
+    expiresAt: now + MCP_TOKEN_MAX_TTL_MS + 86_400_000
+  });
+  assert.equal(tooLong.ok, false);
+  const asService = await createApiToken(deps, actor, {
+    name: 'svc',
+    kind: 'service',
+    scopes: ['projects:read'],
+    expiresAt: now + 60_000
+  });
+  assert.equal(asService.ok, false);
+
+  const listed = await listApiTokens(deps, actor);
+  assert.ok(listed.some((row) => row.name === 'e2e'));
+  const revoked = await revokeApiToken(deps, actor, made.value.info.id);
+  assert.ok(revoked.ok);
+  assert.ok(revoked.value.revokedAt !== null);
+});
+
+test('没有 tokens:manage 的令牌仍然不能创建 / 吊销 / 轮换令牌', async () => {
+  const { deps, owner } = world();
+  const plain = await createApiToken(deps, owner, { name: 'plain', kind: 'personal', scopes: ['projects:read'] });
+  assert.ok(plain.ok);
+  const actor = await authenticateApiToken(deps, plain.value.token);
+  assert.ok(actor && actor.via);
+  const denied = await createApiToken(deps, actor, { name: 'x', kind: 'personal', scopes: ['projects:read'], expiresAt: deps.now() + 60_000 });
+  assert.equal(denied.ok, false);
+  const rotate = await rotateApiToken(deps, actor, plain.value.info.id);
+  assert.equal(rotate.ok, false);
+  const revoke = await revokeApiToken(deps, actor, plain.value.info.id);
+  assert.equal(revoke.ok, false);
 });
