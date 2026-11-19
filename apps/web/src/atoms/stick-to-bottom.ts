@@ -25,6 +25,14 @@ export const UNOWNED_DETACH_PX = 24;
 /** 可滚范围小于等于这个值就算没有溢出（内容不足一屏）。 */
 export const MIN_OVERFLOW = 1;
 
+/**
+ * 「回到底部」按钮的宽松阈值：离底部不到这么多像素就收起按钮。
+ *
+ * 刻意独立于 END_EPSILON（0.5px）：那个阈值回答的是「要不要恢复跟随」，差一像素都得算离开；
+ * 这个回答的是「还要不要帮读者回去」，差二十来像素时按钮只会挡住正文。两件事别共用同一个数字。
+ */
+export const NEAR_END_PX = 24;
+
 /** 读者此刻与滚动区的接触。触屏松手之后还有一段惯性，那也算读者的手（只是抬起了）。 */
 export type Contact = 'touch' | 'momentum' | 'pointer';
 
@@ -116,6 +124,16 @@ export function endProbeTarget(geometry: ScrollGeometry): number {
 /** 探底之后读回来的位置：缩放下差 4px 也算到底。 */
 export function reachedEnd(geometry: ScrollGeometry): boolean {
   return maxScrollOf(geometry) - geometry.scrollTop <= ZOOM_SLACK;
+}
+
+/**
+ * 「就在底部附近」——只给「回到底部」按钮用，不参与跟随判定。
+ * 内容不足一屏时没有可翻的，也算附近（按钮不该在不需要的时候出现）。
+ */
+export function nearEndOf(geometry: ScrollGeometry): boolean {
+  const maxScroll = maxScrollOf(geometry);
+
+  return maxScroll <= MIN_OVERFLOW || maxScroll - geometry.scrollTop <= NEAR_END_PX;
 }
 
 /** 内容或容器尺寸变了该怎么办：贴底、等惯性结束再贴，还是别动。 */

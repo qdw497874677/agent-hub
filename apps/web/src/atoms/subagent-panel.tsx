@@ -40,7 +40,7 @@ export function SubagentPanel({
 }) {
   const chain = resolveSubagentPath(blocks, path);
   const current = chain[chain.length - 1] ?? null;
-  const scroller = useStickToBottom<HTMLDivElement>(current?.id ?? '');
+  const { ref: scroller } = useStickToBottom<HTMLDivElement>(current?.id ?? '');
   const back = useRef<HTMLButtonElement | null>(null);
   // 进面板、再进一层，都把焦点放在「返回」上：读屏先听到这是哪一层，
   // 键盘用户按一次就能退回去，不会落在背后页面的某个按钮上。

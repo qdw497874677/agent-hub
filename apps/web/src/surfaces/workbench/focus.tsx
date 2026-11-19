@@ -16,9 +16,11 @@ import { localTime } from '../../shell/local-time.ts';
 import { StatusPill } from '../../atoms/status.tsx';
 import { attachmentsCapability } from '../../atoms/attachments.ts';
 import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
+import { ScrollToEnd } from '../../atoms/scroll-to-end.tsx';
 import { backgroundActivityText } from '../../atoms/background-activity.ts';
 import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
 import { useTurnProgress } from '../../atoms/use-turn-progress.ts';
+import { TurnWave } from '../../atoms/wave.tsx';
 import { sessionCommands } from '../../atoms/commands.ts';
 import { useIsFetching, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FILES_QUERY, shown } from '../../atoms/files-core.ts';
@@ -270,7 +272,7 @@ export function FocusView({
     predicate: (q) => q.queryKey[0] === 'files' && (q.queryKey[1] === fileKeys.dir[1] || q.queryKey[1] === session.id)
   }) > 0;
   const [settings, changeSettings] = useDisplaySettings();
-  const scroller = useStickToBottom<HTMLDivElement>(session.id);
+  const { nearEnd, ref: scroller, scrollToEnd } = useStickToBottom<HTMLDivElement>(session.id);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
   const blocks = live?.blocks ?? [];
@@ -318,11 +320,8 @@ export function FocusView({
   const backgroundNotice = backgroundActivityText(background, Date.now());
   /** 「查看」：滚到对话末尾，再把焦点交给记录区——键盘用户从这里接着往下读。 */
   function jumpToConversationEnd(): void {
-    const element = scroller.current;
-    if (!element) return;
-    const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-    element.scrollTo({ top: element.scrollHeight, behavior: reduced ? 'auto' : 'smooth' });
-    element.focus({ preventScroll: true });
+    scrollToEnd();
+    scroller.current?.focus({ preventScroll: true });
   }
   /** 子代理面板：push 进栈、pop 出栈；出栈到空就是关掉，焦点还给轨道。 */
   function navigateSubagent(next: readonly string[]): void {
@@ -1022,100 +1021,105 @@ export function FocusView({
       {/* 会话内搜索：夹在页签和对话区之间，只有对话页签用得上；命中数由它直接写在下面这个滚动容器上 */}
       <FindInSession open={findOpen && tab === 'chat'} onOpenChange={setFindOpen} scrollerRef={scroller} resetKey={session.id} />
 
-      <div
-        ref={scroller}
-        // 程序化聚焦的落点（「查看」跳转过来）：不是 Tab 停靠站，但焦点环要看得见。
-        tabIndex={-1}
-        className={`min-h-0 flex-1 overflow-y-auto outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring ${tab === 'chat' ? '' : 'hidden'}`}
-      >
+      <div className={`relative flex min-h-0 flex-1 flex-col ${tab === 'chat' ? '' : 'hidden'}`}>
         <div
-          role="log"
-          aria-label="会话记录"
-          data-compact={settings.compact ? 'true' : undefined}
-          className={`mx-auto flex max-w-[760px] flex-col ${settings.compact ? 'gap-2 px-3 py-3 text-[0.95em]' : 'gap-4 px-4 py-6'}`}
+          ref={scroller}
+          // 程序化聚焦的落点（「查看」跳转过来）：不是 Tab 停靠站，但焦点环要看得见。
+          tabIndex={-1}
+          // overflow-anchor:none：位置由 useStickToBottom 自己钉（贴底 / 停住），
+          // 浏览器的二次锚定会在内容补长时偷偷改 scrollTop，和状态机打架。
+          className="min-h-0 flex-1 overflow-y-auto outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring [overflow-anchor:none]"
         >
-          {origin.kind === 'fork' && inherited.length > 0 ? (
-            <section aria-label="分叉前的会话" className="flex flex-col gap-4 opacity-60" data-testid="fork-inherited">
-              {inherited.map((block, index) => (
-                <ChatBlock key={index} block={block} agentLabel={agentLabel} sessionId={origin.fromSessionId} settings={settings} last={false} running={false} showAuthor={showAuthor} />
-              ))}
-            </section>
-          ) : null}
-          {origin.kind === 'fork' ? (
-            <div role="separator" aria-label="分叉点" className="flex items-center gap-3 text-meta text-tertiary" data-testid="fork-divider">
-              <span className="h-px flex-1 border-t border-dashed border-sage" />
-              <span className="shrink-0">
-                从「
-                <button className="text-sage underline-offset-2 hover:underline" onClick={() => onOpenSession(origin.fromSessionId)}>
-                  {sourceName}
-                </button>
-                」分叉 · {localTime(session.createdAt)}
-              </span>
-              <span className="h-px flex-1 border-t border-dashed border-sage" />
-            </div>
-          ) : null}
-          {blocks.length === 0 && delivery.pending.length === 0 ? (
-            <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
-          ) : (
-            <FileLinksContext.Provider value={fileLinks}>
-            <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
-            {timelineItems.map((item) => {
-              const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }) => (
-                <ChatBlock
-                  key={index}
-                  block={block}
-                  agentLabel={agentLabel}
-                  sessionId={session.id}
-                  settings={settings}
-                  last={index === timelineBlocks.length - 1}
-                  running={turnRunning}
-                  showAuthor={showAuthor}
-                  queued={block.queued === true}
-                  recovered={recovered}
-                />
-              );
-              if (item.type === 'work') {
-                return (
-                  <WorkGroup key={item.key} summary={item.summary} defaultOpen={item.open} live={item.live} forceOpen={settings.tools === 'expanded'}>
-                    {item.items.map(renderBlock)}
-                  </WorkGroup>
-                );
-              }
-              const { block, index } = item;
-              return (
-                <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
-                  onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
-                  {renderBlock(item)}
-                </TurnFrag>
-              );
-            })}
-            {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
-            {/* 还没写进对话的消息：就是列表末尾的普通气泡，和 journal 用的是同一套外壳 */}
-            <PendingPrompts
-              pending={delivery.pending}
-              onRetry={(pending) => void retryPending(pending)}
-              onDiscard={delivery.discard}
-              className={settings.compact ? 'gap-2' : 'gap-4'}
-              renderPrompt={(pending, _index, seq) => (
-                <ChatBlock
-                  block={{ kind: 'prompt', text: pending.text, attachments: [], seq }}
-                  agentLabel={agentLabel}
-                  sessionId={session.id}
-                  settings={settings}
-                  last={false}
-                  running={false}
-                  showAuthor={showAuthor}
-                  queued={pending.state === 'queued'}
-                />
-              )}
-            />
-            {reason && !['error', 'stopped'].includes(timelineBlocks[timelineBlocks.length - 1]?.kind ?? '') ? (
-              <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
+          <div
+            role="log"
+            aria-label="会话记录"
+            data-compact={settings.compact ? 'true' : undefined}
+            className={`mx-auto flex max-w-[760px] flex-col ${settings.compact ? 'gap-2 px-3 py-3 text-[0.95em]' : 'gap-4 px-4 py-6'}`}
+          >
+            {origin.kind === 'fork' && inherited.length > 0 ? (
+              <section aria-label="分叉前的会话" className="flex flex-col gap-4 opacity-60" data-testid="fork-inherited">
+                {inherited.map((block, index) => (
+                  <ChatBlock key={index} block={block} agentLabel={agentLabel} sessionId={origin.fromSessionId} settings={settings} last={false} running={false} showAuthor={showAuthor} />
+                ))}
+              </section>
             ) : null}
-            </DeliveryContext.Provider>
-            </FileLinksContext.Provider>
-          )}
+            {origin.kind === 'fork' ? (
+              <div role="separator" aria-label="分叉点" className="flex items-center gap-3 text-meta text-tertiary" data-testid="fork-divider">
+                <span className="h-px flex-1 border-t border-dashed border-sage" />
+                <span className="shrink-0">
+                  从「
+                  <button className="text-sage underline-offset-2 hover:underline" onClick={() => onOpenSession(origin.fromSessionId)}>
+                    {sourceName}
+                  </button>
+                  」分叉 · {localTime(session.createdAt)}
+                </span>
+                <span className="h-px flex-1 border-t border-dashed border-sage" />
+              </div>
+            ) : null}
+            {blocks.length === 0 && delivery.pending.length === 0 ? (
+              <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
+            ) : (
+              <FileLinksContext.Provider value={fileLinks}>
+              <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
+              {timelineItems.map((item) => {
+                const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }) => (
+                  <ChatBlock
+                    key={index}
+                    block={block}
+                    agentLabel={agentLabel}
+                    sessionId={session.id}
+                    settings={settings}
+                    last={index === timelineBlocks.length - 1}
+                    running={turnRunning}
+                    showAuthor={showAuthor}
+                    queued={block.queued === true}
+                    recovered={recovered}
+                  />
+                );
+                if (item.type === 'work') {
+                  return (
+                    <WorkGroup key={item.key} summary={item.summary} defaultOpen={item.open} live={item.live} forceOpen={settings.tools === 'expanded'}>
+                      {item.items.map(renderBlock)}
+                    </WorkGroup>
+                  );
+                }
+                const { block, index } = item;
+                return (
+                  <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
+                    onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
+                    {renderBlock(item)}
+                  </TurnFrag>
+                );
+              })}
+              {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
+              {/* 还没写进对话的消息：就是列表末尾的普通气泡，和 journal 用的是同一套外壳 */}
+              <PendingPrompts
+                pending={delivery.pending}
+                onRetry={(pending) => void retryPending(pending)}
+                onDiscard={delivery.discard}
+                className={settings.compact ? 'gap-2' : 'gap-4'}
+                renderPrompt={(pending, _index, seq) => (
+                  <ChatBlock
+                    block={{ kind: 'prompt', text: pending.text, attachments: [], seq }}
+                    agentLabel={agentLabel}
+                    sessionId={session.id}
+                    settings={settings}
+                    last={false}
+                    running={false}
+                    showAuthor={showAuthor}
+                    queued={pending.state === 'queued'}
+                  />
+                )}
+              />
+              {reason && !['error', 'stopped'].includes(timelineBlocks[timelineBlocks.length - 1]?.kind ?? '') ? (
+                <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
+              ) : null}
+              </DeliveryContext.Provider>
+              </FileLinksContext.Provider>
+            )}
+          </div>
         </div>
+        <ScrollToEnd visible={!nearEnd} onClick={() => scrollToEnd()} />
       </div>
 
       <div className={`shrink-0 border-t border-hair px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-4 ${tab === 'chat' ? '' : 'hidden'}`}>
@@ -1166,7 +1170,7 @@ export function FocusView({
                   title={progress.detail}
                   data-testid="turn-progress"
                 >
-                  <span className="size-1.5 shrink-0 rounded-full bg-live motion-safe:animate-pulse" aria-hidden />
+                  <TurnWave />
                   <span className="min-w-0 truncate text-secondary" data-testid="turn-progress-phase">{progress.label}</span>
                   {/* 秒数只给眼睛：读屏别每秒被打断一次，完整说明在 title / aria-label 里。 */}
                   <span className="shrink-0 tabular-nums" aria-hidden data-testid="turn-progress-elapsed">· {progress.seconds} 秒</span>

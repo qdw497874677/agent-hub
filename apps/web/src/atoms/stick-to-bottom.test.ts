@@ -2,10 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  NEAR_END_PX,
   ZOOM_SLACK,
   createFollowState,
   isFollowing,
   maxScrollOf,
+  nearEndOf,
   needsEndProbe,
   reachedEnd,
   transitionFollow,
@@ -182,4 +184,19 @@ test('钉住的位置只让读者自己的输入放开', () => {
     expectDetached(transitionFollow(anchored, { type: 'scroll' }, metrics(geometry(300), geometry(320), 'touch'))).trigger,
     'touch'
   );
+});
+
+test('「回到底部」用独立的宽松阈值：24px 内收起，和贴底的 0.5px 无关', () => {
+  // 差一像素：跟随判定不认（那是往上看的意图），但按钮该收起来
+  assert.equal(nearEndOf(geometry(MAX - 1)), true);
+  // 刚好在阈值上还算附近，越过一个像素就露出按钮
+  assert.equal(nearEndOf(geometry(MAX - NEAR_END_PX)), true);
+  assert.equal(nearEndOf(geometry(MAX - NEAR_END_PX - 1)), false);
+  // 中间地带：状态机说「没到底」，按钮也说「还差得远」——两套判断互不影响
+  assert.equal(nearEndOf(geometry(MAX - 40)), false);
+  // 内容不足一屏：没有可回去的地方，永远算附近
+  assert.equal(nearEndOf(geometry(0, VIEW)), true);
+  assert.equal(nearEndOf({ clientHeight: VIEW, scrollHeight: VIEW + 1, scrollTop: 1 }), true);
+  // 橡皮筋回弹（scrollTop 超过上限）也不该露出来
+  assert.equal(nearEndOf(geometry(MAX + 12)), true);
 });
