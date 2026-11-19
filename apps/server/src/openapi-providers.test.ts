@@ -181,8 +181,9 @@ test('管理令牌：新建、列表、探测、测试、无确认只预览、�
   assert.equal(listed.body.providers[0].hasKey, true);
   assert.equal(listed.body.providers[0].apiKey, undefined);
   assert.ok(listed.body.providers[0].models.some((m: { id: string }) => m.id === 'glm-5.3-flash'));
-  // #261 LOW6：workersRouting 只给有 workers:read 的令牌，且只回它读得到的机器。
-  assert.equal('workerRouting' in listed.body, false, 'providers:manage 令牌没有 workers:read，workerRouting 应整个省略');
+  // #261 LOW6：无 workers:read 时省略 workerRouting。本令牌另有 sessions:write（HIGH2 探测要 worker.use），其中包含 worker.read，因此字段应在，只是还没有任何覆盖。
+  assert.equal(typeof listed.body.workerRouting, 'object', 'sessions:write 含 worker.read，应返回 workerRouting');
+  assert.deepEqual(listed.body.workerRouting, {}, listed.text);
 
   const probed = await call('/providers/probe', post({ providerId: id, workerId: 'worker-1' }));
   assert.equal(probed.status, 200, probed.text);
