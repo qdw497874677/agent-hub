@@ -1,0 +1,28 @@
+# agent-hub server 的 systemd 系统单元模板（用户级 unit 由 scripts/install.sh 生成，见 agent-hub.service）。
+#
+# 用法：按机器布局核对 WorkingDirectory / EnvironmentFile / node 路径（下面默认值对齐 AGENTS.md §2 的阿里云布局），然后
+#   cp scripts/agent-hub-server.service /etc/systemd/system/agent-hub-server.service
+#   systemctl daemon-reload && systemctl enable --now agent-hub-server
+#
+# 监听地址/端口不写死在单元里：HUB_HOST / HUB_PORT 等放 EnvironmentFile 指向的环境文件（每行一个 KEY=VALUE）；
+# 文件缺失时回落到 server 默认值 127.0.0.1:7878（apps/server/src/main.ts）。
+# scripts/deploy-hub.sh 只做 restart，不安装本单元——装一次即可。
+
+[Unit]
+Description=agent-hub server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 仓库检出目录（scripts/deploy-hub.sh --app 指向这里）
+WorkingDirectory=/root/ahub-server/app
+# HUB_HOST / HUB_PORT 等运行配置从这里读；前导 - 表示文件缺失不阻塞启动
+EnvironmentFile=-/root/ahub-server/server.env
+# systemd 的 PATH 不含自装目录，node 必须写绝对路径
+ExecStart=/root/.local/node26/bin/node apps/server/src/main.ts
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
