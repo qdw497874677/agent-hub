@@ -293,8 +293,7 @@
           }
         },
         "required": [
-          "providers",
-          "workerRouting"
+          "providers"
         ]
       },
       "Provider": {

@@ -20,13 +20,13 @@ const leak = (text: string): boolean => text.includes(SECRET);
 
 type Call = (path: string, init?: RequestInit) => Promise<{ status: number; text: string; body: any }>;
 
-function harness() {
+function harness(enrolledBy: Map<string, string> = new Map()) {
   const accounts = inMemoryAccounts(() => Date.now());
   const world = inMemoryDeps();
   const access = createAccessPolicy({
     users: accounts.users,
     settings: accounts.settings,
-    enrollment: { credentialFor: async () => null },
+    enrollment: { credentialFor: async (workerId) => (enrolledBy.has(workerId) ? ({ enrolledBy: enrolledBy.get(workerId)! } as never) : null) },
     gateway: world.deps.gateway
   });
   const deps = {
@@ -109,6 +109,7 @@ function harness() {
 }
 
 const post = (body: unknown) => ({ method: 'POST' as const, body: JSON.stringify(body) });
+const put = (body: unknown) => ({ method: 'PUT' as const, body: JSON.stringify(body) });
 const del = (body: unknown) => ({ method: 'DELETE' as const, body: JSON.stringify(body) });
 
 const providerBody = {
@@ -123,8 +124,8 @@ const providerBody = {
   apiKey: SECRET
 };
 
-async function setup() {
-  const h = harness();
+async function setup(enrolledBy: Map<string, string> = new Map()) {
+  const h = harness(enrolledBy);
   const david = h.session();
   assert.equal((await david('/api/auth/register', post({ email: 'david@b.co', password: PASSWORD }))).status, 200);
   const mint = async (who: Call, scopes: string[], extra: Record<string, unknown> = {}) => who('/api/tokens', post({ name: 'tok', scopes, ...extra }));
@@ -174,7 +175,8 @@ test('管理令牌：新建、列表、探测、测试、无确认只预览、�
   assert.equal(listed.body.providers[0].hasKey, true);
   assert.equal(listed.body.providers[0].apiKey, undefined);
   assert.ok(listed.body.providers[0].models.some((m: { id: string }) => m.id === 'glm-5.3-flash'));
-  assert.equal(typeof listed.body.workerRouting, 'object');
+  // #261 LOW6：workersRouting 只给有 workers:read 的令牌，且只回它读得到的机器。
+  assert.equal('workerRouting' in listed.body, false, 'providers:manage 令牌没有 workers:read，workerRouting 应整个省略');
 
   const probed = await call('/providers/probe', post({ providerId: id, workerId: 'worker-1' }));
   assert.equal(probed.status, 200, probed.text);
@@ -327,4 +329,49 @@ test('list_models / list_workers：hub 模型在前并带入 agentModels；无 w
   assert.equal(listed.status, 200, listed.text);
   const payload = listed.body.result.structuredContent as { models?: { id: string }[] };
   assert.ok(payload.models?.some((m) => m.id === 'hub-cn-glm-flash/glm-5.3-flash'), JSON.stringify(listed.body));
+});
+
+test('provider_list：workerRouting 只回本令牌读得到的机器（#261 LOW6）', async () => {
+  // w-b 由 T2 团队的 o2 接入：无 workers:read 的团队/令牌不应看到它的路由覆盖。
+  const enrolledBy = new Map([['w-b', 'o2']]);
+  const { david, mint, accounts, api, world } = await setup(enrolledBy);
+
+  await accounts.teams.save({ id: 't2' as never, name: 'T2', ownerId: 'o2' as never, createdAt: 1 });
+  await accounts.users.save({
+    id: 'o2' as never,
+    email: 'o2@b.co',
+    displayName: 'O2',
+    role: 'admin',
+    passwordHash: null,
+    emailVerifiedAt: 1,
+    disabledAt: null,
+    createdAt: 1,
+    teamId: 't2',
+    clusterAdmin: false,
+    deletedAt: null
+  } as never);
+  world.workers.push({ workerId: 'w-a', label: 'A 机', origin: 'remote', state: 'online' } as never);
+  world.workers.push({ workerId: 'w-b', label: 'B 机', origin: 'remote', state: 'online' } as never);
+
+  const minted = await mint(david, ['providers:manage']);
+  assert.equal(minted.status, 201, minted.text);
+  const manage = api(minted.body.token);
+  const created = await manage('/providers', post(providerBody));
+  assert.equal(created.status, 201, created.text);
+  const setA = await manage('/providers/routing/w-a', put({ routing: 'direct', confirm: true }));
+  assert.equal(setA.status, 200, setA.text);
+  const setB = await manage('/providers/routing/w-b', put({ routing: 'hub', confirm: true }));
+  assert.equal(setB.status, 200, setB.text);
+
+  const reader = (await mint(david, ['providers:read', 'workers:read'])).body.token;
+  const listed = await api(reader)('/providers');
+  assert.equal(listed.status, 200, listed.text);
+  assert.equal(listed.body.providers.length, 1);
+  assert.deepEqual(listed.body.workerRouting, { 'w-a': 'direct' }, `只能看见读得到的机器：${listed.text}`);
+
+  const peek = (await mint(david, ['providers:read'])).body.token;
+  const peeked = await api(peek)('/providers');
+  assert.equal(peeked.status, 200, peeked.text);
+  assert.equal(peeked.body.providers.length, 1);
+  assert.equal('workerRouting' in peeked.body, false, '没有 workers:read 时整个字段省略');
 });

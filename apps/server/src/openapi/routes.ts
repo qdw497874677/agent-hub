@@ -431,7 +431,8 @@ const providerViewSchema = z.object({
 }).passthrough().openapi('Provider');
 const providerListSchema = z.object({
   providers: z.array(providerViewSchema),
-  workerRouting: z.record(z.string(), providerRouting)
+  // LOW6：没有 workers:read 的令牌拿不到机器路由覆盖——字段整个省略。
+  workerRouting: z.record(z.string(), providerRouting).optional()
 }).openapi('ProviderList');
 const providerProbeResultSchema = z.object({
   ok: z.boolean(),
