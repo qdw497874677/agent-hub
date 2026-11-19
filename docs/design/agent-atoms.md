@@ -59,6 +59,8 @@
 这些默认只在**新会话**创建时应用；已有会话要通过换模型（`session_model` / 界面下拉）显式改。
 这样「团队统一用某个模型」「这个项目固定用某个 Agent」都不需要每次开会话各配一遍，同时不会悄悄改掉跑着的会话。
 
+同一套层级已通过开放 API / MCP 暴露：`project_update.defaultAgent` 与 `task_default_agent` 读写项目/任务默认，`team_agent_defaults` / `team_agent_defaults_set` 读/写团队运行时默认模型（写要团队 admin，且令牌不能只限项目），`resolve_default_agent` 给出新会话省略模型时的生效值。
+
 ## 3. P1 · 引入 `AgentRef`（收益最大，风险最低）
 
 ### 3.1 形状
