@@ -242,6 +242,7 @@ export type AuditAction =
   | 'provider.key'
   | 'provider.delete'
   | 'provider.test'
+  | 'provider.probe'
   | 'provider.routing'
   | 'asset.project'
   | 'asset.session_upgrade'

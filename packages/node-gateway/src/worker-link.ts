@@ -422,6 +422,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const upstreamUrl = (baseUrl: string): string => (baseUrl.startsWith('/') ? hubHttp + baseUrl : baseUrl);
   channel.handle(providerTest, async ({ protocol, baseUrl, apiKey }) => {
     const target = upstreamUrl(baseUrl).replace(/\/+$/, '') + '/models';
+    // 失败片段不回传密钥：照 hub 侧 probeModelsDirect 的方式先把密钥替换掉再截断。
+    const scrub = (text: string): string => (apiKey ? text.split(apiKey).join('***') : text).replace(/\s+/g, ' ').slice(0, 200);
     try {
       const response = await fetch(target, { headers: { ...authHeaders(protocol, apiKey), accept: 'application/json', ...(protocol === 'anthropic' ? { 'anthropic-version': '2023-06-01' } : {}) }, signal: AbortSignal.timeout(20_000) });
       const text = await response.text();
@@ -432,10 +434,11 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       } catch {
         // 不是 JSON：只报状态
       }
-      const message = response.ok ? `通了：${models.length} 个模型` : `HTTP ${response.status}${text ? '：' + text.slice(0, 200).replace(/\s+/g, ' ') : ''}`;
+      const message = response.ok ? `通了：${models.length} 个模型` : `HTTP ${response.status}${text ? '：' + scrub(text) : ''}`;
       return { ok: response.ok, status: response.status, message, models };
     } catch (failure) {
-      return { ok: false, status: 0, message: `连不上：${failure instanceof Error ? (failure.name === 'TimeoutError' ? '超时' : failure.message) : String(failure)}`, models: [] };
+      const reason = failure instanceof Error ? (failure.name === 'TimeoutError' ? '超时' : failure.message) : String(failure);
+      return { ok: false, status: 0, message: `连不上：${scrub(reason)}`, models: [] };
     }
   });
 
