@@ -82,6 +82,19 @@ test('会话通信 P1a：parts / wake / reply status / 已读 / 拦下原因往�
     assert.equal(await reopened.messages.sessionByHandle('t', 'maker'), 'a');
     assert.equal(await reopened.messages.sessionByHandle('t', 'builder'), null);
 
+    // LOW7：两个会话同时抢同一个短名，不靠先查再写——撞 (task_id, handle) 唯一索引的那个返回 false，表里只留一行
+    const [first, second] = await Promise.all([
+      reopened.messages.setHandle({ sessionId: asSessionId('s1'), taskId: 'race', handle: 'builder', updatedAt: 1 }),
+      reopened.messages.setHandle({ sessionId: asSessionId('s2'), taskId: 'race', handle: 'builder', updatedAt: 1 })
+    ]);
+    assert.deepEqual([first, second].sort(), [false, true], '一个 true、一个 false');
+    const winner = await reopened.messages.sessionByHandle('race', 'builder');
+    assert.ok(winner === 's1' || winner === 's2');
+    const counted = new DatabaseSync(path).prepare("SELECT COUNT(*) AS n FROM agent_session_handles WHERE task_id = 'race'").get() as { n: number };
+    assert.equal(counted.n, 1, '表里只留一行：赢家拿短名，输家什么都没有');
+    const loser = winner === 's1' ? 's2' : 's1';
+    assert.equal(await reopened.messages.handleOf(asSessionId(loser)), null);
+
     // P1d：外部署名与外部收件箱
     await reopened.messages.save(base({ id: 'x1', idempotencyKey: null, kind: 'send', fromSessionId: asSessionId('external:tok_1'), fromLabel: '外部 · ci', createdAt: 20 }));
     await reopened.messages.save(base({ id: 'x2', idempotencyKey: null, kind: 'reply', to: 'external:tok_1', targetSessionId: null, status: 'done', createdAt: 21 }));

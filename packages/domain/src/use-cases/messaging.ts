@@ -14,7 +14,7 @@ import {
   isHandle,
   externalAddress,
   isExternalSender,
-  privilegeTier,
+  privilegeTierFor,
   validateParts,
   type MessagePart,
   type ReplyStatus,
@@ -485,7 +485,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       const onBehalfOf = incoming?.onBehalfOf ?? command.onBehalfOf ?? caller;
       if (!onBehalfOf) return err(forbidden('这条会话没有主人，不能代人发消息'));
       const base = { traceId, projectId: project.id, onBehalfOf };
-      const deny = async (code: FailureCode, message: string): Promise<Result<Accepted, DomainError>> => {
+      const deny = async (code: FailureCode, message: string): Promise<Result<never, DomainError>> => {
         await audit(null, base, 'denied', from.id, `${code}: ${command.kind} ${command.to} — ${message}`);
         return err(code === 'rate_limited' || code === 'depth_exceeded' ? conflict(`${code}: ${message}`) : forbidden(`${code}: ${message}`));
       };
@@ -549,60 +549,69 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         return deny('denied', `没有现成的 ${addressName(address)} 会话，派生新会话要 agent.spawn 权限`);
       }
 
-      let holdReason: AgentMessage['holdReason'] = null;
-      if (target) {
-        const storm = await stormCheck(from, target, body, parts, trace);
-        if (storm === 'hold') holdReason = 'pingpong';
-        else if (storm) return deny(storm.code, storm.message);
-      }
-      // P1f 权限档位：guarded → auto 先拦下（不能借自动批准的会话做自己要审批的事）；项目 trustPeers 可关。
-      const tiers = target ? { from: privilegeTier(from.options), to: privilegeTier(target.options) } : null;
-      if (target && tiers && !holdReason && tiers.from === 'guarded' && tiers.to === 'auto' && config.trustPeers !== true) holdReason = 'privilege';
-      const wake = command.wake !== false;
-      const now = deps.now();
-      const message: AgentMessage = {
-        id: newMessageId(),
-        traceId,
-        depth,
-        projectId: project.id,
-        kind: command.kind,
-        fromSessionId: from.id,
-        onBehalfOf,
-        to: command.to.trim(),
-        targetSessionId: target?.id ?? null,
-        role: bot?.name ?? null,
-        replyTo: null,
-        body,
-        status: !target ? 'awaiting_approval' : holdReason ? 'held' : wake ? 'queued' : 'done',
-        failure: null,
-        failureDetail: null,
-        replyBody: null,
-        replySource: null,
-        idempotencyKey: command.idempotencyKey ?? null,
-        createdAt: now,
-        updatedAt: now,
-        deliveredAt: null,
-        deadlineAt: command.kind === 'ask' ? now + (command.timeoutSec !== undefined ? command.timeoutSec * 1000 : askTimeout) : null,
-        parts,
-        wake,
-        replyStatus: null,
-        replyParts: [],
-        readAt: null,
-        holdReason
+      // 防风暴计数、权限分档、落库必须同一把串行锁（LOW4）：先数后写放在锁外，
+      // 并发 accept 同一对时会同时读到同一份计数，全都过线。投递（pump）在锁释放后排同一条串行队，
+      // 不能在锁内调 pump——它会再入 serial(target.id)，排在还没结东的当前链后面，直接死锁。
+      const commit = async (): Promise<Result<AgentMessage, DomainError>> => {
+        let holdReason: AgentMessage['holdReason'] = null;
+        if (target) {
+          const storm = await stormCheck(from, target, body, parts, trace);
+          if (storm === 'hold') holdReason = 'pingpong';
+          else if (storm) return deny(storm.code, storm.message);
+        }
+        // P1f 权限档位：guarded → auto 先拦下（不能借自动批准的会话做自己要审批的事）；项目 trustPeers 可关。
+        // 分档看整个会话：强制 yolo 的运行时（grok 固定 yoloMode 开会话）按 auto 分档（MED3）。
+        const tiers = target ? { from: privilegeTierFor(from), to: privilegeTierFor(target) } : null;
+        if (target && tiers && !holdReason && tiers.from === 'guarded' && tiers.to === 'auto' && config.trustPeers !== true) holdReason = 'privilege';
+        const wake = command.wake !== false;
+        const now = deps.now();
+        const message: AgentMessage = {
+          id: newMessageId(),
+          traceId,
+          depth,
+          projectId: project.id,
+          kind: command.kind,
+          fromSessionId: from.id,
+          onBehalfOf,
+          to: command.to.trim(),
+          targetSessionId: target?.id ?? null,
+          role: bot?.name ?? null,
+          replyTo: null,
+          body,
+          status: !target ? 'awaiting_approval' : holdReason ? 'held' : wake ? 'queued' : 'done',
+          failure: null,
+          failureDetail: null,
+          replyBody: null,
+          replySource: null,
+          idempotencyKey: command.idempotencyKey ?? null,
+          createdAt: now,
+          updatedAt: now,
+          deliveredAt: null,
+          deadlineAt: command.kind === 'ask' ? now + (command.timeoutSec !== undefined ? command.timeoutSec * 1000 : askTimeout) : null,
+          parts,
+          wake,
+          replyStatus: null,
+          replyParts: [],
+          readAt: null,
+          holdReason
+        };
+        await deps.messages.save(message);
+        const tierNote = tiers && (tiers.from === 'unknown' || tiers.to === 'unknown') ? ` tier=${tiers.from}→${tiers.to}` : '';
+        await audit(message, message, 'accepted', from.id, `${command.kind} ${message.to} depth=${depth}${parts.length > 0 ? ` parts=${parts.length}` : ''}${wake ? '' : ' wake=false'}${tierNote} ${summary(body)}`);
+        if (holdReason === 'privilege') {
+          await audit(message, message, 'held', 'hub', '权限档位升级：要审批的会话（guarded）发给自动批准的会话（auto），等发起人或项目管理员放行');
+        } else if (holdReason) {
+          await audit(message, message, 'held', 'hub', `同一条链里和对方来回已到 ${STORM_LIMITS.pingpongMax} 次，等人放行`);
+        } else if (!target) {
+          await audit(message, message, 'spawn_requested', from.id, `${bot ? botAddress(bot.name) : 'bot'}（${bot?.ref.runtime}）等人批准`);
+        }
+        return ok(message);
       };
-      await deps.messages.save(message);
-      const tierNote = tiers && (tiers.from === 'unknown' || tiers.to === 'unknown') ? ` tier=${tiers.from}→${tiers.to}` : '';
-      await audit(message, message, 'accepted', from.id, `${command.kind} ${message.to} depth=${depth}${parts.length > 0 ? ` parts=${parts.length}` : ''}${wake ? '' : ' wake=false'}${tierNote} ${summary(body)}`);
-      if (holdReason === 'privilege') {
-        await audit(message, message, 'held', 'hub', '权限档位升级：要审批的会话（guarded）发给自动批准的会话（auto），等发起人或项目管理员放行');
-      } else if (holdReason) {
-        await audit(message, message, 'held', 'hub', `同一条链里和对方来回已到 ${STORM_LIMITS.pingpongMax} 次，等人放行`);
-      } else if (target) {
-        if (wake) await pump(target.id);
-      } else {
-        await audit(message, message, 'spawn_requested', from.id, `${bot ? botAddress(bot.name) : 'bot'}（${bot?.ref.runtime}）等人批准`);
-      }
-      const saved = (await deps.messages.byId(message.id)) ?? message;
+      const committed = target ? await serial(target.id, commit) : await commit();
+      if (!committed.ok) return committed;
+      // wake 且没人拦下才投递；状态里已经编好了这个条件（queued = 有目标、没被拦、要唤醒）
+      if (committed.value.status === 'queued' && target) await pump(target.id);
+      const saved = (await deps.messages.byId(committed.value.id)) ?? committed.value;
       return ok({ messageId: saved.id, traceId, status: saved.status, targetSessionId: saved.targetSessionId, ...(saved.holdReason ? { holdReason: saved.holdReason } : {}) });
     },
 
@@ -794,62 +803,69 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       }
       const traceId = newTraceId();
       const base = { traceId, projectId: project.id, onBehalfOf: command.onBehalfOf };
-      const deny = async (code: FailureCode, message: string): Promise<Result<Accepted, DomainError>> => {
+      const deny = async (code: FailureCode, message: string): Promise<Result<never, DomainError>> => {
         await audit(null, base, 'denied', fromId, `${code}: ${command.kind} session:${target.id} — ${message}`);
         return err(code === 'rate_limited' ? conflict(`${code}: ${message}`) : code === 'archived' ? conflict(`${code}: ${message}`) : forbidden(`${code}: ${message}`));
       };
       if (target.settledAt) return deny('archived', '对方会话已收起；要先重开才能收消息');
-      // 防风暴（外部这一侧）：同一对每分钟 6 条、10 分钟重复、对方收件队列 20
-      const now = deps.now();
-      const inbound = await deps.messages.forSession(target.id, 200);
-      const sent = inbound.filter((m) => m.fromSessionId === fromId && m.targetSessionId === target.id);
-      if (sent.filter((m) => m.createdAt > now - 60_000).length >= STORM_LIMITS.pairPerMinute) return deny('rate_limited', `1 分钟内已给这个会话发了 ${STORM_LIMITS.pairPerMinute} 条：合并成一条，或稍后再发`);
-      const sameParts = JSON.stringify(parts);
-      if (sent.some((m) => m.createdAt > now - STORM_LIMITS.duplicateWindowMs && m.status !== 'failed' && m.status !== 'denied' && m.body === body && JSON.stringify(m.parts ?? []) === sameParts)) {
-        return deny('duplicate', '10 分钟内已经发过完全一样的内容');
-      }
-      if (inbound.filter((m) => m.targetSessionId === target.id && (m.status === 'queued' || m.status === 'held')).length >= STORM_LIMITS.inboxMax) {
-        return deny('busy', `对方收件队列已满（${STORM_LIMITS.inboxMax} 条）`);
-      }
-      const wake = command.wake !== false;
-      const message: AgentMessage = {
-        id: newMessageId(),
-        traceId,
-        depth: 1,
-        projectId: project.id,
-        kind: command.kind,
-        fromSessionId: fromId,
-        onBehalfOf: command.onBehalfOf,
-        to: `session:${target.id}`,
-        targetSessionId: target.id,
-        role: null,
-        replyTo: null,
-        body,
-        status: wake ? 'queued' : 'done',
-        failure: null,
-        failureDetail: null,
-        replyBody: null,
-        replySource: null,
-        idempotencyKey: command.idempotencyKey ?? null,
-        createdAt: now,
-        updatedAt: now,
-        deliveredAt: null,
-        deadlineAt: command.kind === 'ask' ? now + (command.timeoutSec !== undefined ? command.timeoutSec * 1000 : askTimeout) : null,
-        parts,
-        wake,
-        replyStatus: null,
-        replyParts: [],
-        readAt: null,
-        holdReason: null,
-        fromLabel: command.label.slice(0, 80)
+      // 防风暴计数和落库同一把串行锁（LOW4）：外部发送也是先数后写，锁外并发会一起过线。
+      // 投递（pump）在锁释放后再排，不能在锁内调——pump 会再入同一条串行队，死锁。
+      const commit = async (): Promise<Result<AgentMessage, DomainError>> => {
+        // 防风暴（外部这一侧）：同一对每分钟 6 条、10 分钟重复、对方收件队列 20
+        const now = deps.now();
+        const inbound = await deps.messages.forSession(target.id, 200);
+        const sent = inbound.filter((m) => m.fromSessionId === fromId && m.targetSessionId === target.id);
+        if (sent.filter((m) => m.createdAt > now - 60_000).length >= STORM_LIMITS.pairPerMinute) return deny('rate_limited', `1 分钟内已给这个会话发了 ${STORM_LIMITS.pairPerMinute} 条：合并成一条，或稍后再发`);
+        const sameParts = JSON.stringify(parts);
+        if (sent.some((m) => m.createdAt > now - STORM_LIMITS.duplicateWindowMs && m.status !== 'failed' && m.status !== 'denied' && m.body === body && JSON.stringify(m.parts ?? []) === sameParts)) {
+          return deny('duplicate', '10 分钟内已经发过完全一样的内容');
+        }
+        if (inbound.filter((m) => m.targetSessionId === target.id && (m.status === 'queued' || m.status === 'held')).length >= STORM_LIMITS.inboxMax) {
+          return deny('busy', `对方收件队列已满（${STORM_LIMITS.inboxMax} 条）`);
+        }
+        const wake = command.wake !== false;
+        const message: AgentMessage = {
+          id: newMessageId(),
+          traceId,
+          depth: 1,
+          projectId: project.id,
+          kind: command.kind,
+          fromSessionId: fromId,
+          onBehalfOf: command.onBehalfOf,
+          to: `session:${target.id}`,
+          targetSessionId: target.id,
+          role: null,
+          replyTo: null,
+          body,
+          status: wake ? 'queued' : 'done',
+          failure: null,
+          failureDetail: null,
+          replyBody: null,
+          replySource: null,
+          idempotencyKey: command.idempotencyKey ?? null,
+          createdAt: now,
+          updatedAt: now,
+          deliveredAt: null,
+          deadlineAt: command.kind === 'ask' ? now + (command.timeoutSec !== undefined ? command.timeoutSec * 1000 : askTimeout) : null,
+          parts,
+          wake,
+          replyStatus: null,
+          replyParts: [],
+          readAt: null,
+          holdReason: null,
+          fromLabel: command.label.slice(0, 80)
+        };
+        await deps.messages.save(message);
+        await audit(message, message, 'accepted', fromId, `外部 ${command.kind} session:${target.id}${parts.length > 0 ? ` parts=${parts.length}` : ''}${wake ? '' : ' wake=false'} ${summary(body)}`);
+        if (wake) {
+          await audit(message, message, 'queued', 'hub', `→ ${target.id}`);
+        }
+        return ok(message);
       };
-      await deps.messages.save(message);
-      await audit(message, message, 'accepted', fromId, `外部 ${command.kind} session:${target.id}${parts.length > 0 ? ` parts=${parts.length}` : ''}${wake ? '' : ' wake=false'} ${summary(body)}`);
-      if (wake) {
-        await audit(message, message, 'queued', 'hub', `→ ${target.id}`);
-        await pump(target.id);
-      }
-      const current = (await deps.messages.byId(message.id)) ?? message;
+      const committed = await serial(`${fromId}:${target.id}`, commit);
+      if (!committed.ok) return committed;
+      if (committed.value.status === 'queued') await pump(target.id);
+      const current = (await deps.messages.byId(committed.value.id)) ?? committed.value;
       return ok({ messageId: current.id, traceId: current.traceId, status: current.status, targetSessionId: current.targetSessionId });
     },
 

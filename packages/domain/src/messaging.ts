@@ -1,4 +1,4 @@
-import { newId, type ProjectId, type SessionId } from './ids.ts';
+import { newId, type AgentId, type ProjectId, type SessionId } from './ids.ts';
 import { validateAgentRef } from './agent-ref.ts';
 import type { PersistentAgent, PersistentAgentDefinition } from './bot.ts';
 
@@ -297,6 +297,17 @@ export function privilegeTier(options: Readonly<Record<string, string | boolean>
   if (mode && GUARDED_MODES.has(mode)) return 'guarded';
   if (value('approval') || value('sandbox')) return 'guarded';
   return 'unknown';
+}
+
+/**
+ * 强制 yolo 的运行时（MED3）：Grok Build 的 ACP 会话固定 `sessionMeta: { yoloMode: true }` 开
+ * （packages/adapters/grok），session.options 里通常只有 model——单看 options 会把 auto 档算成 unknown。
+ */
+export const isForcedYoloAgent = (agentId: AgentId): boolean => agentId === 'grok' || agentId.startsWith('grok-');
+
+/** 分档看整个会话：强制 yolo 的运行时（至少 grok）视同 auto，与真实进程一致；其余按 options。 */
+export function privilegeTierFor(session: { agentId: AgentId; options?: Readonly<Record<string, string | boolean>> }): PrivilegeTier {
+  return isForcedYoloAgent(session.agentId) ? 'auto' : privilegeTier(session.options);
 }
 
 export const emptyConfig = (projectId: ProjectId): MessagingConfig => ({ projectId, roles: [], limits: {}, trustPeers: false, updatedAt: 0 });
