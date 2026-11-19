@@ -44,3 +44,5 @@ token_create { name, scopes: [...子集，不含 tokens:manage / providers:manag
 token_rotate { tokenId, clientRequestId }   # 可选
 token_revoke { tokenId, clientRequestId }   # 验收结束务必吊销
 ```
+
+若用与界面相同的 `createApiToken` 用例在服务端签发第一张管理令牌，明文只写入权限 600 的文件，不要打印到日志。scopes 应按 JSON 数组落库。读取时会安全解析：合法的空格分隔旧值会归一化成数组；非法值当作无效令牌返回 401，并打一条不含密钥的警告，不再让鉴权 500。

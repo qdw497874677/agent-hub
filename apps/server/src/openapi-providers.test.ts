@@ -62,7 +62,7 @@ function harness() {
     auth: { accounts },
     activity: { audit, users: accounts.users },
     providers: wiring,
-    openApi: { tokens: tokenDeps, manage: tokenDeps, settings: accounts.settings, audit }
+    openApi: { tokens: tokenDeps, manage: tokenDeps, settings: accounts.settings, audit, teams: accounts.teams }
   });
   const session = (): Call => {
     const jar = new Map<string, string>();
@@ -105,7 +105,7 @@ function harness() {
     }
     return { status: response.status, text, body };
   };
-  return { accounts, app, auditRows, session, api };
+  return { accounts, app, auditRows, session, api, world };
 }
 
 const post = (body: unknown) => ({ method: 'POST' as const, body: JSON.stringify(body) });
@@ -277,4 +277,54 @@ test('MCP：管理令牌能看到并调用 provider 工具；只读令牌只能 
   const dumped = JSON.stringify(auditRows);
   assert.equal(leak(dumped), false, '审计里出现了密钥');
   assert.ok(auditRows.some((row) => row.action === 'provider.routing' && String(row.detail).includes('经令牌')));
+});
+
+test('list_models / list_workers：hub 模型在前并带入 agentModels；无 workers:read 被拒', async () => {
+  const { david, mint, api, world } = await setup();
+  const manage = await mint(david, ['providers:manage', 'workers:read']);
+  assert.equal(manage.status, 201, JSON.stringify(manage.body));
+  const created = await api(manage.body.token)('/providers', post(providerBody));
+  assert.equal(created.status, 201, created.text);
+
+  world.workers.push({
+    workerId: 'remote-1',
+    label: 'omarchy',
+    origin: 'remote',
+    state: 'online',
+    agentIds: ['pi'],
+    agentModels: [
+      { agentId: 'pi', models: ['zai-coding-cn/glm-5.3-flash'], defaultModel: 'zai-coding-cn/glm-5.3-flash', providers: ['openai-chat'] }
+    ]
+  } as never);
+
+  const token = (await mint(david, ['workers:read', 'providers:use'])).body.token as string;
+  const models = await api(token)('/models');
+  assert.equal(models.status, 200, models.text);
+  const ids = (models.body.models as { id: string; source: string }[]).map((m) => m.id);
+  assert.ok(ids.includes('hub-cn-glm-flash/glm-5.3-flash'), JSON.stringify(models.body));
+  assert.ok(ids.includes('zai-coding-cn/glm-5.3-flash'));
+  assert.equal(ids[0], 'hub-cn-glm-flash/glm-5.3-flash', 'hub 模型应排在前面');
+  const hub = (models.body.models as { source: string; provider?: { slug: string; routing: string } }[])[0];
+  assert.ok(hub);
+  assert.equal(hub.source, 'hub');
+  assert.equal(hub.provider?.slug, 'cn-glm-flash');
+  assert.equal(hub.provider?.routing, 'hub');
+
+  const workers = await api(token)('/workers');
+  assert.equal(workers.status, 200, workers.text);
+  const remote = (workers.body as { workerId: string; agentModels?: { agentId: string; models: string[] }[] }[]).find((w) => w.workerId === 'remote-1');
+  assert.ok(remote, JSON.stringify(workers.body));
+  assert.deepEqual(remote?.agentModels?.[0]?.models.slice(0, 2), ['hub-cn-glm-flash/glm-5.3-flash', 'zai-coding-cn/glm-5.3-flash']);
+
+  const noWorkers = (await mint(david, ['providers:use'])).body.token as string;
+  assert.equal((await api(noWorkers)('/models')).status, 403);
+  assert.equal((await api(noWorkers)('/workers')).status, 403);
+
+  const mcp = await api(token)('/mcp', post({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }));
+  const names = (mcp.body.result.tools as { name: string }[]).map((t) => t.name);
+  assert.ok(names.includes('list_models'));
+  const listed = await api(token)('/mcp', post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_models', arguments: {} } }));
+  assert.equal(listed.status, 200, listed.text);
+  const payload = listed.body.result.structuredContent as { models?: { id: string }[] };
+  assert.ok(payload.models?.some((m) => m.id === 'hub-cn-glm-flash/glm-5.3-flash'), JSON.stringify(listed.body));
 });

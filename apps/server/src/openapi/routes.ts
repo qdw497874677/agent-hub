@@ -29,6 +29,10 @@ import {
   setProjectReposRequest,
   setTaskStatusRequest,
   setTaskSummaryRequest,
+  setDefaultAgentRequest,
+  setAgentDefaultsRequest,
+  resolvedDefaultAgentSchema,
+  teamAgentDefaultsSchema,
   taskSchema,
   workerInfoSchema,
   workLogEntrySchema,
@@ -332,7 +336,7 @@ const cleanupRecordsSchema = z.object({
 
 const eventListSchema = z.object({
   events: z.array(journalEntrySchema),
-  /** 下一次轮询应传的 after（最后一条 seq；没有事件时为入参 after 或 0）。 */
+  /** 下一次轮询应传的 after：本窗最后一条原始 journal seq（投影为空也要前进）；窗口为空时是入参 after 或 0。 */
   nextAfter: z.number().int().min(0)
 });
 
@@ -481,8 +485,42 @@ export const routes = {
   }, { skip: '令牌自己的身份在 /me 里；工具清单不需要一个「查我自己」的工具' }),
   listWorkers: route('workers:read', {
     method: 'get', path: `${V1}/workers`, tags: ['workers'], summary: '能用的机器',
+    description:
+      '列出令牌能看见的机器。agentModels 里会把调用方能用的 hub 托管模型（hub-<slug>/<modelId>）放在每台 agent 清单前面，再跟机器本地模型。\n' +
+      '更完整的模型目录（含提供商 / 路由信息）用 list_models。\n' +
+      '错误：401 令牌无效；403 没有 workers:read。',
     responses: { 200: json(z.array(workerInfoSchema)) }
   }, { module: 'workers', need: 'worker.read', expose: 'list_workers' }),
+  listModels: route('workers:read', {
+    method: 'get', path: `${V1}/models`, tags: ['workers'], summary: '开会话能用的模型',
+    description:
+      '列出这条令牌开会话或 session_model 能选的模型：先是调用方可见且可用的 hub 托管模型（id 为 hub-<slug>/<modelId>，带提供商与路由），再是各可见机器上报的本地模型。\n' +
+      '参数：workerId?、agentId?（可选，只看某一台机器 / 某一个 agent 能用的；hub 模型仍按该 agent 申报的协议过滤）。\n' +
+      '权限：workers:read。看不到或没有密钥的提供商不会出现。本机 Worker 上的模型仍会列出，但开放 API 不能在 origin=local 的机器上开会话。\n' +
+      '下一步：要知道「不显式点名模型时会用哪个」，用 resolve_default_agent（按项目/任务/团队默认解析），不要假设 list_models 的第一项就是默认。\n' +
+      '错误：401 令牌无效；403 没有 workers:read。',
+    request: { query: z.object({ workerId: z.string().min(1).optional(), agentId: z.string().min(1).optional() }) },
+    responses: {
+      200: json(z.object({
+        models: z.array(z.object({
+          id: z.string(),
+          source: z.enum(['hub', 'worker']),
+          provider: z.object({
+            id: z.string(),
+            slug: z.string(),
+            name: z.string(),
+            routing: z.string(),
+            scope: z.string(),
+            protocol: z.string(),
+            enabled: z.boolean()
+          }).optional(),
+          workerId: z.string().optional(),
+          workerLabel: z.string().optional(),
+          agentId: z.string().optional()
+        }))
+      }))
+    }
+  }, { module: 'workers', need: 'worker.read', expose: 'list_models' }),
 
   listProjects: route('projects:read', {
     method: 'get', path: `${V1}/projects`, tags: ['projects'], summary: '我可见的项目',
@@ -517,16 +555,57 @@ export const routes = {
     responses: { 200: json(projectSchema) }
   }),
   updateProject: route('projects:write', {
-    method: 'patch', path: `${V1}/projects/{projectId}`, tags: ['projects'], summary: '改项目说明或检查命令',
+    method: 'patch', path: `${V1}/projects/{projectId}`, tags: ['projects'], summary: '改项目说明、检查命令或默认 Agent',
     description:
-      '改项目的说明（description）和/或检查命令（checks，最多 5 条、每条 ≤300 字、不能换行；空数组=清掉）。\n' +
-      '参数：projectId（路径）；body 至少给 description 或 checks 之一。\n' +
-      '返回：更新后的项目对象。\n' +
-      '下一步：用 get_project 复核；检查命令由 agent 的 run_checks 执行。\n' +
-      '错误：400 参数不合法（含换行、超长）；403 无 projects:write 或不是项目管理员；404 项目不存在。',
+      '改项目的说明（description）、检查命令（checks，最多 5 条、每条 ≤300 字、不能换行；空数组=清掉）和/或默认 Agent（defaultAgent；null=清掉）。\n' +
+      '默认 Agent 是 { runtime, model?, options? }：新会话没显式点名时，按 任务默认 > 项目默认 > 团队运行时默认模型 生效。\n' +
+      '参数：projectId（路径）；body 至少给 description、checks 或 defaultAgent 之一。\n' +
+      '返回：更新后的项目对象（含 defaultAgent）。\n' +
+      '下一步：用 get_project 或 resolve_default_agent 复核；检查命令由 agent 的 run_checks 执行。\n' +
+      '错误：400 参数不合法（含换行、超长、runtime 不合法）；403 无 projects:write 或不是项目管理员；404 项目不存在或你看不见。项目限定令牌只能改它范围内的项目。',
     request: { params: projectId, ...body(updateProjectRequest) },
     responses: { 200: json(projectSchema) }
   }, { module: 'projects', need: 'project.update', readOnly: false, expose: 'project_update', idempotent: true }),
+  resolveDefaultAgent: route('projects:read', {
+    method: 'get', path: `${V1}/defaults/resolve`, tags: ['projects'], summary: '解析新会话会用的默认 Agent',
+    description:
+      '算出一条新会话在不显式点名模型时会用的 runtime + 模型 + 选项。层级从低到高：团队按运行时的默认模型 < 项目 defaultAgent < 任务 defaultAgent < 本次传入的 runtime/model。\n' +
+      '参数：projectId（必填）；taskId?（可选，带上任务默认）；runtime?、model?（可选，模拟显式选择）。\n' +
+      '返回：effective（可能 runtime/model 为空串，表示层层都没配）、layers（项目/任务/团队原值）、sources（runtime 与 model 分别来自哪一层）。\n' +
+      '权限：projects:read；项目限定令牌只能查它范围内的项目。不要求该 runtime 当前在线。\n' +
+      '下一步：session_start 时省略 model（或传空串）就会用这里的 effective。\n' +
+      '错误：401 令牌无效；404 项目/任务不存在或你看不见。',
+    request: { query: z.object({
+      projectId: z.string().min(1),
+      taskId: z.string().min(1).optional(),
+      runtime: z.string().max(64).optional(),
+      model: z.string().max(200).optional()
+    }) },
+    responses: { 200: json(resolvedDefaultAgentSchema) }
+  }, { module: 'projects', need: 'project.read', expose: 'resolve_default_agent' }),
+  getTeamAgentDefaults: route('projects:read', {
+    method: 'get', path: `${V1}/team/agent-defaults`, tags: ['projects'], summary: '读团队运行时默认模型',
+    description:
+      '读本团队给各运行时配的默认模型（界面：团队页 → 默认模型）。新会话没点名模型、且项目/任务默认也没给出模型时，按会话用的 runtime 来取。\n' +
+      '参数：无。\n' +
+      '返回：{ defaults }，key 是运行时 id（如 opencode），value 是模型名（可写 hub-<slug>/<modelId>）。空对象 = 还没配。\n' +
+      '权限：团队成员均可读（要能进开放 API 的令牌）。项目限定令牌也可以读（这是团队约定，不是项目机密）。\n' +
+      '下一步：要改用 team_agent_defaults_set（要团队 admin，且令牌不能只限项目）；查某次开会话会用什么，用 resolve_default_agent。\n' +
+      '错误：401 令牌无效；404 账号还没有团队；503 这个 hub 还没装配默认模型。',
+    responses: { 200: json(teamAgentDefaultsSchema) }
+  }, { module: 'projects', need: 'project.read', expose: 'team_agent_defaults' }),
+  setTeamAgentDefaults: route('projects:write', {
+    method: 'put', path: `${V1}/team/agent-defaults`, tags: ['projects'], summary: '设置团队运行时默认模型',
+    description:
+      '设置本团队给各运行时配的默认模型。空对象 = 全部清掉。只改传入的整张表，不会和旧值合并。\n' +
+      '参数：body.defaults，key 是运行时 id，value 是模型名（可写 hub-<slug>/<modelId>；空串会丢掉这一条）。最多 16 个运行时。\n' +
+      '权限：账号必须是团队 owner / admin（或集群管理员），令牌要有 projects:write，且不能是只限项目的令牌。普通成员即使有 projects:write 也会 403。\n' +
+      '返回：{ defaults }（归一后的表）。\n' +
+      '下一步：用 resolve_default_agent 确认新会话会用它；项目/任务 defaultAgent 仍优先于团队默认。\n' +
+      '错误：400 参数不合法；403 不是团队 admin 或令牌只限项目；404 账号还没有团队；503 这个 hub 还没装配默认模型。',
+    request: body(setAgentDefaultsRequest),
+    responses: { 200: json(teamAgentDefaultsSchema) }
+  }, { module: 'projects', need: 'project.update', readOnly: false, expose: 'team_agent_defaults_set', idempotent: true }),
   setProjectRepos: route('projects:write', {
     method: 'put', path: `${V1}/projects/{projectId}/repos`, tags: ['projects'], summary: '设置项目仓库清单（可带私有仓库令牌）',
     description:
@@ -706,6 +785,18 @@ export const routes = {
     request: { params: taskId },
     responses: { 200: json(taskSchema.extend({ sessions: z.array(sessionSchema) })) }
   }),
+  setTaskDefaultAgent: route('projects:write', {
+    method: 'patch', path: `${V1}/tasks/{taskId}/default-agent`, tags: ['tasks'], summary: '设置或清空任务默认 Agent',
+    description:
+      '改这条任务的默认 Agent（覆盖项目默认）；会话里显式选的仍然优先。body.defaultAgent 为 null = 清掉。\n' +
+      '参数：taskId（路径）；body.defaultAgent 为 { runtime, model?, options? } 或 null。\n' +
+      '返回：更新后的任务对象（含 defaultAgent）。\n' +
+      '权限：projects:write，且是该任务所属项目的管理员。项目限定令牌只能改它范围内的项目。\n' +
+      '下一步：用 get_task 或 resolve_default_agent（带 taskId）复核；session_start 省略 model 就会用它。\n' +
+      '错误：400 参数不合法；403 无 projects:write 或不是项目管理员；404 任务不存在或你看不见。',
+    request: { params: taskId, ...body(setDefaultAgentRequest) },
+    responses: { 200: json(taskSchema) }
+  }, { module: 'tasks', need: 'project.update', readOnly: false, expose: 'task_default_agent', idempotent: true }),
   setTaskStatus: route('projects:write', {
     method: 'patch', path: `${V1}/tasks/{taskId}/status`, tags: ['tasks'], summary: '改任务状态',
     request: { params: taskId, ...body(setTaskStatusRequest) },
@@ -742,7 +833,7 @@ export const routes = {
     method: 'post', path: `${V1}/sessions`, tags: ['sessions'], summary: '在任务下开一条会话',
     description:
       '在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了，必须给一台已登记的远程 Worker。\n' +
-      '参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）、groupId（可选：已有的组合工作空间；多仓项目要先在 Hub 建组，本工具不会自动建组合组）、assetIds（可选：只带这些资产）。\n' +
+      '参数：taskId、agentId、model（省略或空串=按 resolve_default_agent 的层级取：任务默认 > 项目默认 > 团队运行时默认模型）、workerId（建议显式给在线机器）、workspaceId（可选）、groupId（可选：已有的组合工作空间；多仓项目要先在 Hub 建组，本工具不会自动建组合组）、assetIds（可选：只带这些资产）。\n' +
       '会话通信：repoId（可选：一仓一会话——只为项目里这个仓库新开隔离 worktree，和 workspaceId / groupId 互斥）、handle（可选：任务内短名，别的会话用 peer:<handle> 找它）、linkWith（可选：建好后和这些同项目会话连线，连上才能互发消息）。\n' +
       '资产：不传 assetIds = 用项目生效的全部资产；要排除某个技能/指令时，传完整清单减掉它（清单里的 id 必须对该项目可见，看不见的会被丢掉）。\n' +
       '返回：会话对象（id、status、model、workspaceId）。\n' +
@@ -774,7 +865,7 @@ export const routes = {
     method: 'post', path: `${V1}/sessions/{sessionId}/model`, tags: ['sessions'], summary: '换这条会话的模型（可换提供商）',
     description:
       '把会话切到另一个模型；目标模型在另一个提供商下时，服务端会停掉旧进程、按新配置重启，并用 resume 接回历史。\n' +
-      '参数：sessionId（路径）、model（模型 id；hub 提供商的模型写成 hub-<标识>/<模型>，用 list_models 看有哪些）。\n' +
+      '参数：sessionId（路径）、model（模型 id；hub 提供商的模型写成 hub-<标识>/<模型>，用 list_models 看有哪些——hub 托管模型排在前面；list_workers 的 agentModels 也会带上这些 hub 模型）。\n' +
       '返回：更新后的会话对象。\n' +
       '副作用：正在跑的回合会中断；历史保留。\n' +
       '错误：400 模型不在可选清单里；403 没有 session.prompt 权限或那个提供商用不了；404 会话不存在；409 会话已结束或无法重启。',
@@ -813,10 +904,11 @@ export const routes = {
     method: 'get', path: `${V1}/sessions/{sessionId}/events`, tags: ['sessions'], summary: '会话事件（after 之后的）',
     description:
       '读会话时间线（对外已投影）：只有文本、工具名与成败、结束原因、诊断占位。\n' +
-      '参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）；waitSec（0–50，没有*符合过滤条件*的事件时最多等这么久，有就立刻返回）。\n' +
+      '参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）；waitSec（0–50，没有*可投影且符合过滤条件*的事件时最多等这么久，有就立刻返回）。\n' +
       '返回：`{ events: [{ seq, at, turn, event }], nextAfter }`。MCP 的 structuredContent 就是这份对象（不要把数组再包进 result）。event.kind ∈ text | tool | tool_result | ended | diagnostic。\n' +
-      '轮询用法：第一次 sinceTurn=turn、after 可省略；之后用 after=返回的 nextAfter 增量拉；本 turn 出现 ended 即结束。有 waitSec 时这一次调用会阻塞到有匹配事件或超时，不必自己短间隔空转。\n' +
-      'waitSec 与 sinceTurn 一起用时：只在还没有符合 sinceTurn / after 的事件时才等待（会话启动留下的无 turn 旧事件不会让它立刻空返回）。\n' +
+      'nextAfter 是本窗扫到的最后一条原始 journal seq（thinking / prompt 等被投影丢掉时也要前进），没有原始事件时沿用入参 after 或 0。下次把 after 设为 nextAfter，不要因为 events 为空就重复拉同一段。\n' +
+      '轮询用法：第一次 sinceTurn=turn、after 可省略；之后用 after=返回的 nextAfter 增量拉；本 turn 出现 ended 即结束。有 waitSec 时这一次调用会阻塞到有可投影的匹配事件或超时，不必自己短间隔空转。\n' +
+      'waitSec 与 sinceTurn / after 一起用时：只在还没有可投影且符合过滤条件的事件时才等待（会话启动留下的 prompt / thinking / 无 turn 旧事件不会让它立刻空返回，也不会把 nextAfter 卡在 0）。\n' +
       '下一步：把 after 设为 nextAfter 继续轮；工具细节与思考过程不对开放 API 暴露。\n' +
       '错误：404 会话不存在或看不见。',
     request: {
