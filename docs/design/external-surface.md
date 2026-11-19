@@ -239,6 +239,8 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 - `session_model` 与界面「模型」下拉走同一条路：同提供商只改选项（下一轮生效）；换到 hub 提供商
   或反向回原生模型会停掉会话进程、按新模型重新托管，靠 `resume{agentSessionRef, cursor}` 接回历史，
   正在跑的回合会中断。权限是 `session.prompt`，模型本身还要过调用方可见的提供商/运行时名单。
+- `list_workers` 返回的 `agentModels` 是机器本地模型目录，不包含 hub 托管模型 id；开会话时模型写成
+  `hub-<slug>/<modelId>`（例如 `hub-cn-glm-flash/glm-5.3-flash`），已配置的提供商用 `provider_list` 查看。
 - 已知欠缺：资产还没有协议级 digest 冻结（E4c），所以委派出去的会话在别人同步资产新版后
   可能换内容；这一步完成前，「对外委派」适合内部可信调用方。
 
