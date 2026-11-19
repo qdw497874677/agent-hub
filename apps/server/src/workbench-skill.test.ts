@@ -8,6 +8,7 @@ import {
   workbenchSkillUri,
   workbenchSkillZip
 } from './workbench-skill.ts';
+import { mcpToolsFor } from './openapi/mcp.ts';
 
 /** 只解不压缩的 zip（本仓库打包器用 store）。 */
 const unzipStore = (bytes: Uint8Array): Record<string, string> => {
@@ -53,4 +54,41 @@ test('workbench skill：按 uri 读文件；未知 uri 为空', () => {
   assert.match(found.text, /session_start/);
   assert.equal(workbenchSkillFileByUri('skill://other/SKILL.md'), undefined);
   assert.equal(workbenchSkillFileByUri(workbenchSkillUri('../secret')), undefined);
+});
+
+test('workbench skill：清单 / zip / 源文件与已注册 MCP 工具一致，含提供商管理', () => {
+  const tools = mcpToolsFor(undefined, { writes: true });
+  const files = Object.fromEntries(workbenchSkillFiles().map((file) => [file.path, file.text]));
+  const skill = files['SKILL.md'] ?? '';
+  const list = files['references/tools.md'] ?? '';
+  const workflows = files['references/workflows.md'] ?? '';
+  assert.match(skill, /providers:manage/);
+  assert.match(skill, /不能给只限项目的令牌/);
+  assert.match(workflows, /## 8\. 配置模型提供商（要 `providers:manage`）/);
+  assert.match(workflows, /provider_delete \{ providerId, confirm: true/);
+  assert.match(workflows, /provider_routing_set/);
+  const readOnly = tools.filter((tool) => tool.readOnly).length;
+  assert.match(list, new RegExp(`当前 ${tools.length} 个：只读 ${readOnly}，写 ${tools.length - readOnly}。`));
+  const missing = tools.filter((tool) => !list.includes('`' + tool.name + '`')).map((tool) => tool.name);
+  assert.deepEqual(missing, [], 'tools.md 缺工具，跑 npm run skill:tools');
+  for (const tool of tools) {
+    const row = list.split('\n').find((line) => line.includes('`' + tool.name + '`'));
+    assert.ok(row, tool.name);
+    const kind = tool.readOnly ? '| 读 |' : '| 写 |';
+    assert.ok(row.includes(kind), `${tool.name} 的读/写标注不对：${row}`);
+  }
+  for (const name of ['provider_list', 'provider_create', 'provider_update', 'provider_set_key', 'provider_probe', 'provider_test', 'provider_delete', 'provider_routing_set']) {
+    assert.ok(list.includes('`' + name + '`'), name);
+  }
+  assert.match(list, /`provider_list` \| 读 \| `provider\.read`/);
+  assert.match(list, /`provider_delete` \| 写 \| `provider\.manage`/);
+  const unpacked = unzipStore(workbenchSkillZip());
+  const prefix = `${WORKBENCH_SKILL_NAME}/`;
+  assert.equal(unpacked[`${prefix}references/tools.md`], list);
+  assert.equal(unpacked[`${prefix}SKILL.md`], skill);
+  assert.equal(unpacked[`${prefix}references/workflows.md`], workflows);
+  const manifest = workbenchSkillManifest();
+  const byPath = Object.fromEntries(manifest.files.map((file) => [file.path, file.content]));
+  assert.equal(byPath['references/tools.md'], list);
+  assert.equal(byPath['SKILL.md'], skill);
 });
