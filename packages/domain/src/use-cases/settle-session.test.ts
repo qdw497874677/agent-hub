@@ -59,6 +59,7 @@ test('收起自己的会话：只写 settledAt，状态和更新时间不变，�
   );
   assert.ok(result.ok);
   assert.equal(result.value.settledAt, 1000);
+  assert.deepEqual(result.value.cleanup.items, []);
   const after = (await w.deps.sessions.byId(w.session.id))!;
   assert.deepEqual(
     { ...after, title: undefined },
@@ -208,6 +209,9 @@ test('收起会话：干净的独占 worktree 会摘掉；恢复时按原分支�
   assert.ok(settled.ok, settled.ok ? '' : settled.error.message);
   assert.ok(w.git.calls.some((call) => call === 'w1:remove:worktree:/srv/work/.worktrees/demo/sess'));
   assert.equal((await w.deps.workspaces.byId(tree.value.id))?.state, 'removed');
+  assert.equal(settled.value.cleanup.items.length, 1);
+  assert.equal(settled.value.cleanup.items[0]?.action, 'removed');
+  assert.equal(settled.value.cleanup.items[0]?.workspaceId, tree.value.id);
 
   const restored = await settleSessionUseCase(w.deps, {
     sessionId: session.value.id,
@@ -278,4 +282,6 @@ test('收起会话：有未提交改动的 worktree 不 force 删除，目录留
   const leftover = await w.deps.workspaces.byId(tree.value.id);
   assert.equal(leftover?.state, 'kept');
   assert.match(leftover?.keptReason ?? '', /未保存/);
+  assert.equal(settled.value.cleanup.items[0]?.action, 'kept');
+  assert.match(settled.value.cleanup.items[0]?.reason ?? '', /未保存|未提交|未跟踪/);
 });

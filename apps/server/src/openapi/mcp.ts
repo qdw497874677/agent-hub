@@ -30,7 +30,7 @@ export interface McpPolicy {
   readonly writes?: boolean;
 }
 
-const ALL_MODULES: readonly McpModuleName[] = ['tasks', 'projects', 'sessions', 'assets', 'workers', 'workspaces', 'providers'];
+const ALL_MODULES: readonly McpModuleName[] = ['tasks', 'projects', 'sessions', 'assets', 'workers', 'workspaces', 'providers', 'tokens'];
 
 interface ToolDef {
   readonly name: string;

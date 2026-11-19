@@ -170,9 +170,10 @@ async function waitText(bot: APIRequestContext, sessionId: string, turn: number,
       continue;
     }
     expect(res.status(), text.slice(0, 300)).toBe(200);
-    const entries = JSON.parse(text) as { seq?: number; turn?: number; event?: { kind?: string; text?: string; delta?: string; outcome?: string; reason?: string } }[];
-    if (!Array.isArray(entries)) throw new Error(`events 返回不是列表：${text.slice(0, 200)}`);
-    for (const entry of entries) {
+    const payload = JSON.parse(text) as { events?: { seq?: number; turn?: number; event?: { kind?: string; text?: string; delta?: string; outcome?: string; reason?: string } }[]; nextAfter?: number };
+    if (!Array.isArray(payload.events)) throw new Error(`events 返回不是 { events, nextAfter }：${text.slice(0, 200)}`);
+    if (typeof payload.nextAfter === 'number') after = Math.max(after, payload.nextAfter);
+    for (const entry of payload.events) {
       after = Math.max(after, entry.seq ?? 0);
       const event = entry.event ?? {};
       const piece = typeof event.text === 'string' && event.text

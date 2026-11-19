@@ -1,7 +1,7 @@
 # 工具清单（自动生成）
 
 由 `npm run skill:tools` 从 `apps/server/src/openapi/routes.ts` 的 MCP 元数据生成，等于 `tools/list` 的结果。
-当前 59 个：只读 20，写 39。
+当前 63 个：只读 21，写 42。
 
 「参数」只列名字，`?` 表示可选；具体类型和必填组合见 `SKILL.md` 与 `<hub>/openapi/v1/openapi.json`。
 
@@ -66,6 +66,10 @@
 | `provider_test` | 写 | `provider.manage` | `/providers/{providerId}/test` | providerId, workerId | 从机器测试提供商连通 |
 | `provider_delete` | 写 | `provider.manage` | `/providers/{providerId}` | providerId, confirm? | 删除模型提供商（写工具，要 `clientRequestId`） |
 | `provider_routing_set` | 写 | `provider.manage` | `/providers/routing/{workerId}` | workerId, routing, confirm? | 设置机器的提供商路由（写工具，要 `clientRequestId`） |
+| `token_list` | 读 | `token.manage` | `/tokens` | — | 列出可管理的访问令牌 |
+| `token_create` | 写 | `token.manage` | `/tokens` | name, scopes, expiresAt, projectIds? | 签发访问令牌（明文只返回一次）（写工具，要 `clientRequestId`） |
+| `token_rotate` | 写 | `token.manage` | `/tokens/{tokenId}/rotate` | tokenId | 轮换访问令牌（明文只返回一次）（写工具，要 `clientRequestId`） |
+| `token_revoke` | 写 | `token.manage` | `/tokens/{tokenId}/revoke` | tokenId | 吊销访问令牌（写工具，要 `clientRequestId`） |
 
 ## 写工具的重试约定
 

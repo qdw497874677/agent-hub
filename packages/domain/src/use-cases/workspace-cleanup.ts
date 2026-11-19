@@ -54,6 +54,13 @@ export interface SweepReport {
   readonly skipped: readonly string[];
   readonly failed?: readonly string[];
   readonly runId?: string | null;
+  /**
+   * 这一轮没有可清的东西时给人看的说明。
+   * 常见原因：干净的临时 worktree 已在 session_settle 时拆除。
+   */
+  readonly message?: string;
+  /** 项目里已经是 removed 状态的临时 worktree（多半是收起时拆掉的）。 */
+  readonly alreadyRemoved?: readonly string[];
 }
 
 /** 项目规则 → 团队默认 → 内置默认（D6）。 */
@@ -171,7 +178,20 @@ async function sweepOnce(
       items
     );
   }
-  return { removed, kept, skipped, failed, runId: store && (items.length > 0 || manual) ? runId : null };
+  const run = store && (items.length > 0 || manual) ? runId : null;
+  let alreadyRemoved: string[] = [];
+  if (scope.projectId && deps.workspaces.byProject) {
+    alreadyRemoved = (await deps.workspaces.byProject(asProjectId(scope.projectId)))
+      .filter((workspace) => workspace.kind === 'temporary' && workspace.state === 'removed')
+      .map((workspace) => workspace.id);
+  }
+  const empty = removed.length === 0 && kept.length === 0 && skipped.length === 0 && failed.length === 0;
+  const message = empty
+    ? alreadyRemoved.length > 0
+      ? `没有待清理的工作空间。已有 ${alreadyRemoved.length} 个临时 worktree 在收起时拆除。`
+      : '没有待清理的工作空间。若刚刚收起过会话，干净的临时 worktree 可能已在收起时拆除。'
+    : undefined;
+  return { removed, kept, skipped, failed, runId: run, ...(message ? { message } : {}), ...(alreadyRemoved.length ? { alreadyRemoved } : {}) };
 }
 
 type SweepSink = {

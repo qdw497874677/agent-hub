@@ -23,7 +23,8 @@ export type ApiScope =
   | 'groups:write'
   | 'files:read'
   | 'memory:read'
-  | 'memory:write';
+  | 'memory:write'
+  | 'tokens:manage';
 export const API_SCOPES: readonly ApiScope[] = [
   'projects:read',
   'projects:write',
@@ -40,7 +41,8 @@ export const API_SCOPES: readonly ApiScope[] = [
   'groups:write',
   'files:read',
   'memory:read',
-  'memory:write'
+  'memory:write',
+  'tokens:manage'
 ];
 
 /** scope → 权限点。这里永远不出现 hub.*；本机 Worker 在 can() 里对令牌一律拒绝。 */
@@ -62,6 +64,8 @@ export const SCOPE_PERMISSIONS: Readonly<Record<ApiScope, readonly Permission[]>
   // 记忆：读 / 写分成两个 scope，读不给写
   'memory:read': ['project.read', 'memory.read'],
   'memory:write': ['project.read', 'memory.read', 'memory.write'],
+  // 管理访问令牌：只由管理员在界面授予；项目级令牌和 bot 凭据一律不给。不能再签发带这个 scope 的令牌。
+  'tokens:manage': ['token.manage'],
   // ADR 0016：令牌默认只能提交资产版本（进审核队列），审核 / 发布 / 分配 / 下架 / 用密钥都不行。
   // 要自动化发布与分配，得显式给 assets:publish（见下）——仍然是令牌，审计里留痕。
   // 能交版本就得能看见自己在交哪一份（否则拿不到 assetId）
@@ -115,6 +119,8 @@ export interface ApiToken {
 /** 令牌明文前缀：便于泄露扫描、也让鉴权一眼分得清。 */
 /** 用户自建令牌（个人 / 服务账号）的默认有效期：30 天。永不过期要显式选（GitHub / Cursor 也是默认带期限）。bot 凭据不适用。 */
 export const DEFAULT_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** 经令牌（tokens:manage）签发 / 轮换时的最长有效期。 */
+export const MCP_TOKEN_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export const API_TOKEN_PREFIX = 'ahp_';
 /** bot 凭据的独立前缀：鉴权看一眼就知道这是项目内收窄的身份（C1）。 */
@@ -147,6 +153,8 @@ export interface TokenVia {
   readonly name: string;
   readonly kind: ApiTokenKind;
   readonly permissions: readonly Permission[];
+  /** 这张令牌自己的 scopes（签发子集令牌时用来做范围校验）。认证时会带上。 */
+  readonly scopes?: readonly ApiScope[];
   /** bot 令牌的项目归属：can() 用它把权限收窄到这一个项目（C1）。 */
   readonly bot?: { readonly projectId: string; readonly name: string };
   /** 限定项目的令牌：can() 只放行这些项目里的资源（见 ApiToken.projectIds）。 */

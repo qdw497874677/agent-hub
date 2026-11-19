@@ -74,6 +74,10 @@ import {
   scopedTokenCreateDenied,
   listProviders,
   createProvider,
+  listApiTokens,
+  createApiToken,
+  rotateApiToken,
+  revokeApiToken,
   setWorkerProviderRouting,
   hubModelId,
   canManageProvider,
@@ -100,6 +104,7 @@ import { createAssetVisibility } from '../asset-visibility.ts';
 import { effectiveWrites, handleMcp, INTERNAL } from './mcp.ts';
 import { workspaceForApiStart } from '../session-workspace.ts';
 import { projectDto } from '../project-dto.ts';
+import { projectEvents } from './projection.ts';
 
 export interface OpenApiOptions {
   readonly tokens: Pick<ApiTokenDeps, 'apiTokens' | 'users' | 'tokens' | 'now'> & Partial<Pick<ApiTokenDeps, 'projects'>>;
@@ -740,7 +745,9 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       actor,
       now: deps.now()
     });
-    return result.ok ? c.json(sessionSchema.parse(result.value)) : fail(c, result.error);
+    if (!result.ok) return fail(c, result.error);
+    const { cleanup, ...session } = result.value;
+    return c.json({ ...sessionSchema.parse(session), cleanup: cleanup ?? { items: [] } });
   });
   on(routes.workspaceSweep, async (c) => {
     const actor = principal(c);
@@ -855,20 +862,22 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     await ctx.waitOptions?.(sessionId);
     return c.json((await deps.sessions.byId(asSessionId(sessionId))) ?? changed.value);
   });
+  const keepEvents = (entries: Awaited<ReturnType<typeof deps.sessions.eventsAfter>>, sinceTurn: number | undefined) =>
+    sinceTurn === undefined ? entries : entries.filter((entry) => entry.turn !== undefined && entry.turn >= sinceTurn);
   on(routes.events, async (c) => {
     const sessionId = asSessionId(c.req.param('sessionId') ?? '');
     if (!(await deps.sessions.byId(sessionId))) return fail(c, notFound('会话不存在'));
     const query = valid<{ after?: number; sinceTurn?: number; waitSec?: number }>(c, 'query');
-    let entries = await deps.sessions.eventsAfter(sessionId, query.after ?? 0);
+    const after = query.after ?? 0;
+    let entries = keepEvents(await deps.sessions.eventsAfter(sessionId, after), query.sinceTurn);
+    // 长轮询要等「过滤之后」的新事件：会话启动留下的无 turn 旧事件不能让 sinceTurn 立刻空返回。
     if (entries.length === 0 && query.waitSec) {
-      await waitUntil(query.waitSec, async () => (await deps.sessions.eventsAfter(sessionId, query.after ?? 0)).length > 0);
-      entries = await deps.sessions.eventsAfter(sessionId, query.after ?? 0);
+      await waitUntil(query.waitSec, async () => keepEvents(await deps.sessions.eventsAfter(sessionId, after), query.sinceTurn).length > 0);
+      entries = keepEvents(await deps.sessions.eventsAfter(sessionId, after), query.sinceTurn);
     }
-    // sinceTurn 是按轮次补读：没有 turn 的老事件不属于任何轮次，不返回（只有在不带 sinceTurn 时给全量）。
-    const kept = query.sinceTurn === undefined
-      ? entries
-      : entries.filter((entry) => entry.turn !== undefined && entry.turn >= query.sinceTurn!);
-    return c.json(await refreshAuthors(ctx.activity, kept));
+    const kept = await refreshAuthors(ctx.activity, entries);
+    const payload = projectEvents(kept, after);
+    return c.json(payload);
   });
   // ── 会话通信 P1d：连线、同伴、外部消息、收件箱 ──
   const noMessaging = (c: Context) => fail(c, { code: 'not_implemented', message: '这台 hub 没装消息总线' });
@@ -1081,6 +1090,46 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (input.confirm !== true) return c.json({ confirmRequired: true, ...impact });
     const result = await setWorkerProviderRouting(ctx.providers.deps, actor, workerId, routing);
     return result.ok ? c.json({ confirmed: true, ...impact }) : fail(c, result.error);
+  });
+
+  const tokenManageDeps = {
+    apiTokens: options.tokens.apiTokens,
+    users: options.tokens.users,
+    tokens: options.tokens.tokens,
+    now: options.tokens.now,
+    projects: options.tokens.projects ?? deps.projects,
+    // OpenApiOptions.audit 只保证 append；创建/轮换/吊销只用 append。
+    audit: options.audit as import('@agent-hub/domain').ApiTokenDeps['audit']
+  };
+  on(routes.tokenList, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'token.manage')) return fail(c, forbidden('令牌没有 tokens:manage'));
+    return c.json({ tokens: await listApiTokens(tokenManageDeps, actor) });
+  });
+  on(routes.tokenCreate, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'token.manage')) return fail(c, forbidden('令牌没有 tokens:manage'));
+    const input = valid<{ name: string; scopes: import('@agent-hub/domain').ApiScope[]; expiresAt: number; projectIds?: string[] | null }>(c, 'json');
+    const result = await createApiToken(tokenManageDeps, actor, {
+      name: input.name,
+      kind: 'personal',
+      scopes: input.scopes,
+      expiresAt: input.expiresAt,
+      projectIds: input.projectIds
+    });
+    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+  on(routes.tokenRotate, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'token.manage')) return fail(c, forbidden('令牌没有 tokens:manage'));
+    const result = await rotateApiToken(tokenManageDeps, actor, c.req.param('tokenId') ?? '');
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  on(routes.tokenRevoke, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'token.manage')) return fail(c, forbidden('令牌没有 tokens:manage'));
+    const result = await revokeApiToken(tokenManageDeps, actor, c.req.param('tokenId') ?? '');
+    return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
   on(routes.activity, async (c) => {

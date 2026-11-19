@@ -184,9 +184,9 @@ function CreateForm({ onCreated }: { onCreated: (token: string) => void }) {
                   {scope.risky ? <span className="rounded-sm bg-rust/15 px-1.5 py-0.5 text-[11px] text-rust">高风险</span> : null}
                 </span>
                 <span className="block text-[11px] text-tertiary">
-                  {scope.id === 'providers:manage' && !canGrantManage
+                  {(scope.id === 'providers:manage' || scope.id === 'tokens:manage') && !canGrantManage
                     ? '管理员可开'
-                    : scope.id === 'providers:manage' && limit
+                    : (scope.id === 'providers:manage' || scope.id === 'tokens:manage') && limit
                       ? '只限项目的令牌不能开'
                       : `${scope.hint}${scope.detail ? `；${scope.detail}` : ''}`}
                 </span>
@@ -201,8 +201,8 @@ function CreateForm({ onCreated }: { onCreated: (token: string) => void }) {
           <input type="checkbox" data-testid="token-limit-projects" className="accent-[var(--color-fg)]" checked={limit} onChange={(e) => {
             const on = e.target.checked;
             setLimit(on);
-            if (on && scopes.includes('providers:manage')) {
-              const next = scopes.filter((s) => s !== 'providers:manage');
+            if (on && (scopes.includes('providers:manage') || scopes.includes('tokens:manage'))) {
+              const next = scopes.filter((s) => s !== 'providers:manage' && s !== 'tokens:manage');
               setScopes(next);
               setPreset(presetOf(next) === 'custom' ? 'custom' : presetOf(next));
             }

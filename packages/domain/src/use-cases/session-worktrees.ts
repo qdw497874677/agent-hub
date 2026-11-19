@@ -10,24 +10,51 @@ export type SessionWorktreeDeps = Pick<Deps, 'gateway' | 'git' | 'now' | 'sessio
 
 const active = (session: Session): boolean => session.settledAt == null;
 
+/** 收起 / 删除会话时，每个 worktree / 成员仓的清理结果。 */
+export type WorktreeCleanupAction = 'removed' | 'kept' | 'deferred';
+export interface WorktreeCleanupItem {
+  readonly workspaceId: string;
+  /** 组合组里的成员仓库名；单仓会话没有这一项。 */
+  readonly member?: string;
+  readonly action: WorktreeCleanupAction;
+  readonly reason: string;
+}
+
+
 /** 会话还在用这个工作空间（自己除外）。长期目录有别人在用就不拆 worktree。 */
 async function othersUsing(deps: SessionWorktreeDeps, workspaceId: string, selfId: string): Promise<boolean> {
   const sessions = await deps.sessions.listByWorkspace(workspaceId as never);
   return sessions.some((session) => session.id !== selfId && active(session));
 }
 
-async function detachOne(deps: SessionWorktreeDeps, workspace: Workspace, force: boolean): Promise<void> {
-  if (workspace.source !== 'worktree' || workspace.state === 'removed') return;
+async function detachOne(
+  deps: SessionWorktreeDeps,
+  workspace: Workspace,
+  force: boolean,
+  member?: string
+): Promise<WorktreeCleanupItem> {
+  const base = { workspaceId: workspace.id, ...(member ? { member } : {}) };
+  if (workspace.source !== 'worktree') {
+    return { ...base, action: 'deferred', reason: '不是可拆除的 worktree，留给 workspace_sweep' };
+  }
+  if (workspace.state === 'removed') {
+    return { ...base, action: 'removed', reason: '已经拆除' };
+  }
   const git = await gitFor(deps, workspace.workerId);
   const outcome = await git.remove(workspace.path, 'worktree', { force });
-  if (!outcome.ok) return;
+  if (!outcome.ok) {
+    const message = 'message' in outcome.error ? String(outcome.error.message) : '拆除失败';
+    return { ...base, action: 'deferred', reason: `拆除失败，留给 workspace_sweep：${message}` };
+  }
   if (outcome.value.removed) {
     const gone = markRemoved(workspace, deps.now());
     if (gone.ok) await deps.workspaces.save(gone.value);
-    return;
+    return { ...base, action: 'removed', reason: '干净的临时 worktree 已拆除' };
   }
   // 收起且有未提交改动：目录留下，标成 kept，恢复会话时还在原路径。
-  if (!force) await deps.workspaces.save(markKept(workspace, outcome.value.reason, deps.now()));
+  const reason = outcome.value.reason || '有未提交改动，留给 workspace_sweep';
+  if (!force) await deps.workspaces.save(markKept(workspace, reason, deps.now()));
+  return { ...base, action: 'kept', reason };
 }
 
 /**
@@ -40,23 +67,40 @@ export async function releaseSessionWorktrees(
   deps: SessionWorktreeDeps,
   session: Session,
   options: { readonly force: boolean }
-): Promise<void> {
+): Promise<readonly WorktreeCleanupItem[]> {
+  const items: WorktreeCleanupItem[] = [];
   if (session.groupId && deps.workspaceGroups) {
     const group = await deps.workspaceGroups.byId(session.groupId);
-    if (!group) return;
+    if (!group) return items;
     const siblings = await deps.sessions.listByProject(group.projectId);
-    if (siblings.some((other) => other.id !== session.id && other.groupId === group.id && active(other))) return;
+    if (siblings.some((other) => other.id !== session.id && other.groupId === group.id && active(other))) {
+      for (const member of group.members) {
+        items.push({
+          workspaceId: member.workspaceId,
+          member: member.name,
+          action: 'deferred',
+          reason: '组里还有活跃会话，留给 workspace_sweep'
+        });
+      }
+      return items;
+    }
     for (const member of group.members) {
       const workspace = await deps.workspaces.byId(member.workspaceId);
-      if (workspace) await detachOne(deps, workspace, options.force);
+      if (workspace) items.push(await detachOne(deps, workspace, options.force, member.name));
     }
-    return;
+    return items;
   }
-  if (!session.workspaceId) return;
+  if (!session.workspaceId) return items;
   const workspace = await deps.workspaces.byId(session.workspaceId);
-  if (!workspace || workspace.kind !== 'temporary' || workspace.source !== 'worktree') return;
-  if (await othersUsing(deps, workspace.id, session.id)) return;
-  await detachOne(deps, workspace, options.force);
+  if (!workspace) return items;
+  if (workspace.kind !== 'temporary' || workspace.source !== 'worktree') {
+    return [{ workspaceId: workspace.id, action: 'deferred', reason: '长期工作空间不在收起时拆除' }];
+  }
+  if (await othersUsing(deps, workspace.id, session.id)) {
+    return [{ workspaceId: workspace.id, action: 'deferred', reason: '还有别的会话在用，留给 workspace_sweep' }];
+  }
+  items.push(await detachOne(deps, workspace, options.force));
+  return items;
 }
 
 /**

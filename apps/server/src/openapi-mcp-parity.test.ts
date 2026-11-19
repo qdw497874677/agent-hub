@@ -15,10 +15,10 @@ const entries = Object.entries(routes) as unknown as [string, Entry][];
 
 /** 期望暴露面：改接口 / 改登记时这组数字必须一起改（提醒别顺手扩大对外面积）。 */
 const EXPECTED = {
-  routes: 66,
-  tools: 59,
-  readOnly: 20,
-  writes: 39,
+  routes: 70,
+  tools: 63,
+  readOnly: 21,
+  writes: 42,
   skips: ['health', 'me', 'setProjectDescription', 'setProjectRepo', 'stream', 'submitAssetRevision', 'workbenchSkill']
 };
 
@@ -75,6 +75,10 @@ const TOOL_NAMES = [
   'sync_workspace',
   'task_create',
   'task_pull_requests',
+  'token_create',
+  'token_list',
+  'token_revoke',
+  'token_rotate',
   'workspace_changes',
   'workspace_group_add_member',
   'workspace_group_create',
@@ -98,7 +102,7 @@ test('MCP 元数据：每条路由都有归属（meta / auto / 非空 skip），
       assert.equal(resolveMcp(key, route), null, `${key}: skip 的路由不该产出工具`);
       continue;
     }
-    assert.ok(['tasks', 'projects', 'sessions', 'assets', 'workers', 'workspaces', 'providers'].includes(mcp.module), `${key}: module 不合法`);
+    assert.ok(['tasks', 'projects', 'sessions', 'assets', 'workers', 'workspaces', 'providers', 'tokens'].includes(mcp.module), `${key}: module 不合法`);
     assert.ok(typeof mcp.need === 'string' && mcp.need.includes('.'), `${key}: 缺 need 权限点`);
     assert.ok(mcp.readOnly !== true || route.method === 'get', `${key}: GET 之外不该标只读`);
   }
@@ -129,7 +133,7 @@ test('skill 文档：references/tools.md 覆盖全部工具（改了工具要跑
 
 test('MCP 元数据：每个暴露的模块都能按模块筛出来', () => {
   const all = mcpToolsFor(undefined, { writes: true });
-  for (const module of ['tasks', 'projects', 'sessions', 'assets', 'workers', 'workspaces', 'providers'] as const) {
+  for (const module of ['tasks', 'projects', 'sessions', 'assets', 'workers', 'workspaces', 'providers', 'tokens'] as const) {
     const subset = mcpToolsFor(undefined, { writes: true, modules: new Set([module]) });
     assert.ok(subset.length > 0, `${module}: 一个工具都没有`);
     assert.ok(subset.every((t) => t.module === module));
