@@ -17,7 +17,9 @@ export type ApiScope =
   | 'assets:read'
   | 'assets:write'
   | 'assets:publish'
+  | 'providers:read'
   | 'providers:use'
+  | 'providers:manage'
   | 'groups:write'
   | 'files:read'
   | 'memory:read'
@@ -32,7 +34,9 @@ export const API_SCOPES: readonly ApiScope[] = [
   'assets:read',
   'assets:write',
   'assets:publish',
+  'providers:read',
   'providers:use',
+  'providers:manage',
   'groups:write',
   'files:read',
   'memory:read',
@@ -46,7 +50,10 @@ export const SCOPE_PERMISSIONS: Readonly<Record<ApiScope, readonly Permission[]>
   'sessions:read': ['session.read', 'task.read'],
   'sessions:write': ['session.read', 'task.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.fork', 'session.continue', 'session.settle', 'git.push', 'worker.use', 'worker.read'],
   // 不并进 sessions:write。用之前先要看得见，所以带上 provider.read，不含管理。
+  'providers:read': ['provider.read'],
   'providers:use': ['provider.read', 'provider.use'],
+  // 管理：同时能看、能用。全站提供商和机器路由仍要账号本身是集群管理员（令牌拿不到 hub.providers）。
+  'providers:manage': ['provider.read', 'provider.use', 'provider.manage'],
   'workers:read': ['worker.read'],
   // 群里说话：先得看得见项目（bot 只在自己项目里发言）
   'groups:write': ['project.read', 'group.post'],

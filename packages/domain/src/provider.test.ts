@@ -96,3 +96,18 @@ test('validateProviderInput：extra 透传、非法值拒绝', () => {
   assert.match(bad.ok ? '' : bad.error.message, /模型 id「m」的额外参数不能包含「messages」/);
   assert.equal(validateProviderInput({ ...input, models: [{ id: 'm', extra: 'nope' as never }] }).ok, false);
 });
+
+test('令牌：providers:manage 才能管；集群管理员令牌可管全站；限定项目拿不到管理', () => {
+  const hub = { scope: 'hub' as const, ownerId: null };
+  assert.equal(canManageProvider(token('owner', ['providers:use']), hub), false);
+  assert.equal(canManageProvider(token('owner', ['providers:manage']), hub), true);
+  assert.equal(canManageProvider(token('member', ['providers:manage']), hub), false);
+  assert.equal(canManageProvider(token('owner', ['providers:manage']), base), true);
+  assert.equal(canManageProvider(token('member', ['providers:manage']), base), false);
+  const scoped = {
+    ...token('owner', ['providers:manage']),
+    via: { tokenId: 'tok', name: 'bot', kind: 'personal' as const, permissions: permissionsOf(['providers:manage']), projectIds: ['p1'] }
+  } as ProviderActor;
+  assert.equal(canManageProvider(scoped, hub), false);
+  assert.equal(canManageProvider(scoped, base), false);
+});

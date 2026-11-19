@@ -485,7 +485,7 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   // 默认不强制只读：有写工具就一起列出来（能不能调由令牌权限和只读模式决定）
   assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create', 'task_pull_requests']);
   assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name), ['list_projects', 'get_project', 'workspace_changes']);
-  assert.equal(mcpTools({ readOnly: true }).length, 19);
+  assert.equal(mcpTools({ readOnly: true }).length, 20);
   const workspaceTools = mcpTools({ modules: new Set(['workspaces']), writes: true });
   const workspaceNames = workspaceTools.map((t) => t.name).sort();
   for (const name of [

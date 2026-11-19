@@ -71,8 +71,16 @@ import {
   redactInventory,
   workspaceChangesUseCase,
   assetViewOf,
-  scopedTokenCreateDenied
+  scopedTokenCreateDenied,
+  listProviders,
+  createProvider,
+  setWorkerProviderRouting,
+  hubModelId,
+  canManageProvider,
+  canSeeProvider,
+  providerActor
 } from '@agent-hub/domain';
+
 import type { AssetReviewDeps, DeleteProjectDeps, MessageBus, MessageStore } from '@agent-hub/domain';
 import { linkSessionsUseCase, unlinkSessionsUseCase, messageView } from '@agent-hub/domain';
 import type { z } from 'zod';
@@ -85,7 +93,7 @@ import { createRateLimiter } from '../rate-limit.ts';
 import { noteProvenance, recordSessionAction, refreshAuthors, sessionActivity } from '../session-activity.ts';
 import type { SessionActivityOptions } from '../session-activity.ts';
 import type { StreamHub } from '../stream-hub.ts';
-import type { ProviderWiringApi } from '../providers.ts';
+import { publicProvider, type ProviderWiringApi } from '../providers.ts';
 import { V1, routes } from './routes.ts';
 import { workbenchSkillManifest, workbenchSkillZip } from '../workbench-skill.ts';
 import { createAssetVisibility } from '../asset-visibility.ts';
@@ -952,6 +960,127 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const after = query.after ?? 0;
     const list = await ctx.messaging.bus.externalInbox(principal(c).via!.tokenId, after, query.limit ?? 50);
     return c.json({ messages: list.map(messageView), next: list.at(-1)?.createdAt ?? after });
+  });
+
+
+  const noProviders = (c: Context) => fail(c, { code: 'not_implemented', message: '这台 hub 没装模型提供商' });
+  const providerImpact = async (providerId: string) => {
+    const api = ctx.providers;
+    if (!api) return null;
+    const provider = await api.deps.providers.byId(providerId);
+    if (!provider) return null;
+    const usage = await api.deps.providers.usage(provider.id);
+    const models = provider.models.map((model) => hubModelId(provider.slug, model.id));
+    return {
+      action: 'delete',
+      provider: publicProvider({
+        id: provider.id,
+        slug: provider.slug,
+        name: provider.name,
+        scope: provider.scope,
+        hasKey: provider.hasKey,
+        enabled: provider.enabled
+      }),
+      models,
+      usage: { sessions: usage.sessions, requests: usage.requests, lastUsedAt: usage.lastUsedAt },
+      message:
+        usage.sessions > 0
+          ? `删除后 ${models.length} 个模型将不可用，有 ${usage.sessions} 个会话用过这个提供商。`
+          : `删除后 ${models.length} 个模型将不可用。`
+    };
+  };
+  on(routes.providerList, async (c) => {
+    if (!ctx.providers) return noProviders(c);
+    const actor = principal(c);
+    if (!can(actor, 'provider.read')) return fail(c, forbidden('令牌没有 providers:read'));
+    const listed = await listProviders(ctx.providers.deps, actor);
+    return c.json({ providers: listed.map(publicProvider), workerRouting: await ctx.providers.deps.providers.workerRouting() });
+  });
+  on(routes.providerCreate, async (c) => {
+    if (!ctx.providers) return noProviders(c);
+    const actor = principal(c);
+    if (!can(actor, 'provider.manage')) return fail(c, forbidden('令牌没有 providers:manage'));
+    const input = valid<{
+      slug: string;
+      name: string;
+      protocol: 'openai-chat' | 'openai-responses' | 'anthropic';
+      baseUrl: string;
+      models: unknown[];
+      routing: 'direct' | 'hub';
+      enabled?: boolean;
+      scope?: 'personal' | 'team' | 'hub';
+      apiKey?: string;
+    }>(c, 'json');
+    const result = await createProvider(ctx.providers.deps, actor, {
+      ...ctx.providers.asInput(input as unknown as Record<string, unknown>),
+      scope: input.scope ?? 'personal',
+      ...(input.apiKey ? { apiKey: input.apiKey } : {})
+    });
+    return result.ok ? c.json(publicProvider(result.value), 201) : fail(c, result.error);
+  });
+  on(routes.providerUpdate, async (c) => {
+    if (!ctx.providers) return noProviders(c);
+    const actor = principal(c);
+    if (!can(actor, 'provider.manage')) return fail(c, forbidden('令牌没有 providers:manage'));
+    const input = valid<Record<string, unknown>>(c, 'json');
+    const result = await ctx.providers.updateManaged(actor, c.req.param('providerId') ?? '', ctx.providers.asInput(input));
+    return result.ok ? c.json(publicProvider(result.value)) : fail(c, result.error);
+  });
+  on(routes.providerSetKey, async (c) => {
+    if (!ctx.providers) return noProviders(c);
+    const actor = principal(c);
+    if (!can(actor, 'provider.manage')) return fail(c, forbidden('令牌没有 providers:manage'));
+    const input = valid<{ apiKey: string }>(c, 'json');
+    const result = await ctx.providers.setKeyManaged(actor, c.req.param('providerId') ?? '', input.apiKey);
+    return result.ok ? c.json({ ok: true as const }) : fail(c, result.error);
+  });
+  on(routes.providerProbe, async (c) => {
+    if (!ctx.providers) return noProviders(c);
+    const actor = principal(c);
+    if (!can(actor, 'provider.manage')) return fail(c, forbidden('令牌没有 providers:manage'));
+    const input = valid<Record<string, unknown>>(c, 'json');
+    const result = await ctx.providers.probe(actor, input);
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  on(routes.providerTest, async (c) => {
+    if (!ctx.providers) return noProviders(c);
+    const actor = principal(c);
+    if (!can(actor, 'provider.manage')) return fail(c, forbidden('令牌没有 providers:manage'));
+    const input = valid<{ workerId: string }>(c, 'json');
+    const result = await ctx.providers.testProvider(actor, c.req.param('providerId') ?? '', input.workerId);
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  on(routes.providerDelete, async (c) => {
+    if (!ctx.providers) return noProviders(c);
+    const actor = principal(c);
+    if (!can(actor, 'provider.manage')) return fail(c, forbidden('令牌没有 providers:manage'));
+    const providerId = c.req.param('providerId') ?? '';
+    const confirm = valid<{ confirm?: boolean }>(c, 'json').confirm === true;
+    const current = await ctx.providers.deps.providers.byId(providerId);
+    const view = providerActor(actor);
+    if (!current || !canSeeProvider(view, current)) return fail(c, notFound('没有这个模型提供商'));
+    if (!canManageProvider(view, current)) return fail(c, forbidden('无权管理这个模型提供商'));
+    const impact = await providerImpact(providerId);
+    if (!impact) return fail(c, notFound('没有这个模型提供商'));
+    if (!confirm) return c.json({ confirmRequired: true, ...impact });
+    const result = await ctx.providers.removeProvider(actor, providerId);
+    return result.ok ? c.json({ confirmed: true, ...impact }) : fail(c, result.error);
+  });
+  on(routes.providerRoutingSet, async (c) => {
+    if (!ctx.providers) return noProviders(c);
+    const actor = principal(c);
+    if (!can(actor, 'provider.manage')) return fail(c, forbidden('令牌没有 providers:manage'));
+    const workerId = c.req.param('workerId') ?? '';
+    const input = valid<{ routing: 'direct' | 'hub' | null; confirm?: boolean }>(c, 'json');
+    const routing = input.routing;
+    const message =
+      routing === null
+        ? `将清除机器 ${workerId} 的路由覆盖，之后跟随提供商设置。已有会话保持当前路径，直到重启。`
+        : `将把机器 ${workerId} 的路由改为${routing === 'hub' ? '经 hub 中转' : '直连'}。已有会话保持当前路径，直到重启。`;
+    const impact = { action: 'routing_set', workerId, routing, message };
+    if (input.confirm !== true) return c.json({ confirmRequired: true, ...impact });
+    const result = await setWorkerProviderRouting(ctx.providers.deps, actor, workerId, routing);
+    return result.ok ? c.json({ confirmed: true, ...impact }) : fail(c, result.error);
   });
 
   on(routes.activity, async (c) => {

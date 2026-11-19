@@ -168,8 +168,23 @@ export function providerAsResource(provider: Pick<ModelProvider, 'scope' | 'owne
 }
 
 export function canManageProvider(actor: ProviderActor, provider: Pick<ModelProvider, 'scope' | 'ownerId'>): boolean {
-  if (provider.scope === 'hub') return can(actor, 'hub.providers');
+  const principal = principalOfSubject(actor);
+  // 全站提供商：无令牌时仍走 hub.providers（集群管理员 / 系统主体）。
+  // 令牌拿不到 hub.providers，因此集群管理员持有 provider.manage 即可。
+  if (provider.scope === 'hub') {
+    if (principal?.via) return Boolean(principal.user.clusterAdmin && can(actor, 'provider.manage'));
+    return can(actor, 'hub.providers');
+  }
   if (provider.ownerId === null) return isSystem(actor);
+  // 服务账号角色固定是 member，对团队提供商过不了 'own'；管理员授予 providers:manage 后允许管本团队的。
+  if (
+    provider.scope === 'team' &&
+    principal?.via?.kind === 'service' &&
+    principal.user.teamId === provider.ownerId &&
+    can(actor, 'provider.manage')
+  ) {
+    return true;
+  }
   return can(actor, 'provider.manage', providerAsResource(provider));
 }
 

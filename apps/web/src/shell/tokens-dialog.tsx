@@ -16,7 +16,9 @@ export const SCOPES: readonly { id: ApiScopeDto; label: string; hint: string; de
   { id: 'sessions:read', label: '读会话', hint: '会话详情、事件、实时流' },
   { id: 'sessions:write', label: '发起会话', hint: '开会话、发消息、打断、分叉', detail: '同时可以看和使用远程机器' },
   { id: 'workers:read', label: '看机器', hint: '可用的远程机器', detail: '本机永远不开放' },
+  { id: 'providers:read', label: '查看模型提供商', hint: '已配置的提供商、模型和路由' },
   { id: 'providers:use', label: '使用模型提供商', hint: '看见并选用已配置的模型', detail: '不能管理提供商' },
+  { id: 'providers:manage', label: '管理模型提供商', hint: '新建、改密钥、测连通、删除', detail: '不能给只限项目的令牌；记入审计', risky: true },
   { id: 'assets:read', label: '读资产', hint: '资产列表和内容（按你能看到的范围）' },
   { id: 'assets:write', label: '新建和更新资产', hint: '新建资产、交新版本', detail: '进审核队列，审核通过才可用' },
   { id: 'assets:publish', label: '自动发布与分配资产', hint: '跳过审核直接生效，并装到机器', detail: '同时可以看和使用机器、读项目；记入审计', risky: true },
@@ -42,6 +44,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
   const queryClient = useQueryClient();
   const list = useQuery({ queryKey: ['api-tokens'], queryFn: tokensApi.list });
   const canService = me.role === 'owner' || me.clusterAdmin;
+  const canGrantManage = me.clusterAdmin || me.role === 'owner' || me.role === 'admin';
   const [name, setName] = useState('');
   const [kind, setKind] = useState<'personal' | 'service'>('personal');
   const [scopes, setScopes] = useState<ApiScopeDto[]>(['projects:read', 'sessions:read']);
@@ -62,7 +65,10 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
     }
   });
   const revoke = useMutation({ mutationFn: tokensApi.revoke, onSuccess: refresh });
-  const toggle = (id: ApiScopeDto) => setScopes((old) => (old.includes(id) ? old.filter((s) => s !== id) : [...old, id]));
+  const toggle = (id: ApiScopeDto) => {
+    if (id === 'providers:manage' && !canGrantManage) return;
+    setScopes((old) => (old.includes(id) ? old.filter((s) => s !== id) : [...old, id]));
+  };
   const tokens: ApiTokenDto[] = list.data ?? [];
   const active = tokens.filter((t) => t.revokedAt === null);
   return (
@@ -136,21 +142,23 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
           {kind === 'service' && <p className="-mt-1 text-[11px] text-tertiary">团队级令牌，不随个人离职失效。</p>}
           <fieldset className="flex flex-col gap-1.5">
             <legend className="mb-1 text-meta text-secondary">权限</legend>
-            {SCOPES.map((scope) => (
-              <label key={scope.id} data-scope={scope.id} className="flex cursor-pointer items-start gap-2 rounded-sm px-1 py-1 hover:bg-panel">
-                <input type="checkbox" className="mt-1 accent-[var(--color-fg)]" checked={scopes.includes(scope.id)} onChange={() => toggle(scope.id)} />
+            {SCOPES.map((scope) => {
+              const manageLocked = scope.id === 'providers:manage' && !canGrantManage;
+              return (
+              <label key={scope.id} data-scope={scope.id} className={`flex items-start gap-2 rounded-sm px-1 py-1 ${manageLocked ? 'opacity-50' : 'cursor-pointer hover:bg-panel'}`}>
+                <input type="checkbox" className="mt-1 accent-[var(--color-fg)]" checked={scopes.includes(scope.id)} disabled={manageLocked} onChange={() => toggle(scope.id)} />
                 <span className="min-w-0">
                   <span className="flex items-center gap-1.5">
                     <span className="text-meta text-primary">{scope.label}</span>
                     {scope.risky && <span className="rounded-sm bg-rust/15 px-1.5 py-0.5 text-[11px] text-rust">高风险</span>}
                   </span>
                   <span className="block text-[11px] text-tertiary">
-                    {scope.hint}
-                    {scope.detail ? `；${scope.detail}` : ''}
+                    {manageLocked ? '管理员可开' : `${scope.hint}${scope.detail ? `；${scope.detail}` : ''}`}
                   </span>
                 </span>
               </label>
-            ))}
+              );
+            })}
           </fieldset>
           <label className="flex items-center gap-2 text-meta text-secondary">
             有效期

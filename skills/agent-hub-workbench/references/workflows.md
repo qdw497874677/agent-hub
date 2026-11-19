@@ -158,6 +158,22 @@ message_inbox / events { waitSec }           # 跟进；验证结果在 dev 的�
 
 不再需要的连线用 `session_unlink` 断开；做完 `session_settle` 收起（收起后不再收消息）。
 
+## 8. 配置模型提供商（要 `providers:manage`）
+
+默认令牌没有这个权限；只有管理员授予、且不能是只限项目的令牌。密钥只写不回，响应里不会出现。
+
+```
+provider_list
+provider_create { slug, name, protocol, baseUrl, models, routing, scope?, apiKey?, clientRequestId }
+provider_probe { providerId }                  # 或临时 baseUrl / apiKey（不会入库）
+provider_test { providerId, workerId, clientRequestId }
+# 开会话时模型写 hub-<slug>/<modelId>，例如 hub-cn-glm-flash/glm-5.3-flash
+provider_delete { providerId }                 # 先看影响
+provider_delete { providerId, confirm: true, clientRequestId }
+```
+
+改机器路由同样先看影响，再 `provider_routing_set { workerId, routing, confirm: true, clientRequestId }`（只有集群管理员的管理令牌能改）。
+
 ## 反模式
 
 - ❌ 每次重试换新的 `clientRequestId` → 重复建任务、重复开会话。
@@ -170,3 +186,5 @@ message_inbox / events { waitSec }           # 跟进；验证结果在 dev 的�
 - ❌ 会话报 `blocked`/`failed` 就直接重开一条 → 先读 `get_session` 的 `ended.reason` 和 `diagnostic`。
 - ❌ 用 `session_message` 一条一条刷进度 → 被限速（每分钟 6 条）；合并成一条，或用 `wake:false` 只留言。
 - ❌ 拿到 `message_get` 没回复就 1 秒一次地问 → 用 `waitSec`（≤50）长轮询。
+- ❌ 把提供商 API 密钥写进 session_reply 或日志 → 只用 `provider_create` / `provider_set_key`，且不要把返回值整段贴出去。
+- ❌ 不带 `confirm: true` 就以为已经删除了提供商 → 那只是影响预览。

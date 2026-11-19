@@ -15,6 +15,7 @@ Agent Hub 是一台"会话服务器"：项目 → 任务 → 会话（agent 进�
 - 端点：`POST <hub>/openapi/v1/mcp`（无状态 streamable HTTP，JSON-RPC 单独一次请求即可）
 - 认证：`Authorization: Bearer ahp_…`（外部接入页签发，明文只出现一次）
 - 写工具要令牌带对应 scope（`project.create`、`task.create`、`session.prompt`…）。缺权限时工具**不会出现在 tools/list 里**；这不是你没找对，是该令牌没有。
+- 配置模型提供商要另开 `providers:manage`（管理员授予，不能给只限项目的令牌）。配方见 `references/workflows.md` §8。
 - 服务器可能开了「只读模式」：写工具会整体消失。此时只能读，告诉用户去关掉只读模式或换令牌。
 - REST 与 MCP 是同一套能力：需要 SSE 长流、文件上传、`Idempotency-Key` 重试时走 REST（`<hub>/openapi/v1/...`），其余优先 MCP。
 

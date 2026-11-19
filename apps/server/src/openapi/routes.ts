@@ -101,6 +101,8 @@ const taskId = z.object({ taskId: z.string().openapi({ param: { name: 'taskId', 
 const sessionId = z.object({ sessionId: z.string().openapi({ param: { name: 'sessionId', in: 'path' } }) });
 const workspaceId = z.object({ workspaceId: z.string().openapi({ param: { name: 'workspaceId', in: 'path' } }) });
 const groupId = z.object({ groupId: z.string().openapi({ param: { name: 'groupId', in: 'path' } }) });
+const providerId = z.object({ providerId: z.string().openapi({ param: { name: 'providerId', in: 'path' } }) });
+const workerIdParam = z.object({ workerId: z.string().openapi({ param: { name: 'workerId', in: 'path' } }) });
 
 /** 每条路由要的权限范围（文档里写清楚；真正的判断在 can()）。 */
 export type ScopeNote =
@@ -113,9 +115,12 @@ export type ScopeNote =
   | 'assets:read'
   | 'assets:write'
   | 'assets:publish'
+  | 'providers:read'
+  | 'providers:use'
+  | 'providers:manage'
   | null;
 
-export type McpModule = 'tasks' | 'projects' | 'sessions' | 'assets' | 'workers' | 'workspaces';
+export type McpModule = 'tasks' | 'projects' | 'sessions' | 'assets' | 'workers' | 'workspaces' | 'providers';
 
 /**
  * 路由上的 MCP 元数据 —— 对外工具清单的**唯一来源**（mcp.ts 只读这里，不再另有一张平行表）。
@@ -130,6 +135,8 @@ export interface McpRouteMeta {
   /** 工具名；缺省 = handle 的 snake_case。 */
   readonly expose?: string;
   readonly idempotent?: boolean;
+  /** 会删除或改路由这类不可逆操作。缺省 = 非只读即视为破坏性（兼容已有写工具）。 */
+  readonly destructive?: boolean;
   readonly project?: (value: unknown) => unknown;
 }
 
@@ -145,7 +152,8 @@ const MODULE_OF_TAG: Readonly<Record<string, McpModule>> = {
   sessions: 'sessions',
   assets: 'assets',
   workers: 'workers',
-  workspaces: 'workspaces'
+  workspaces: 'workspaces',
+  providers: 'providers'
 };
 
 /** 模块的默认读权限点：`auto` 的只读路由用它（写操作必须显式写 need）。 */
@@ -155,7 +163,8 @@ const NEED_OF_TAG: Readonly<Record<McpModule, Permission>> = {
   sessions: 'session.read',
   assets: 'asset.read',
   workers: 'worker.read',
-  workspaces: 'project.read'
+  workspaces: 'project.read',
+  providers: 'provider.read'
 };
 
 /** 解析后的元数据：mcp.ts 用这个建工具，routes.ts 用它写「MCP 工具：`x`」。 */
@@ -166,6 +175,7 @@ export interface ResolvedMcp {
   readonly name: string;
   readonly readOnly: boolean;
   readonly idempotent: boolean;
+  readonly destructive: boolean;
   readonly project?: (value: unknown) => unknown;
 }
 
@@ -185,15 +195,17 @@ export function resolveMcp(key: string, route: McpRouteLike): ResolvedMcp | null
   if (exposure === 'auto') {
     const module = MODULE_OF_TAG[route.tags?.[0] ?? ''];
     if (route.method !== 'get' || module === undefined) return null;
-    return { key, module, need: NEED_OF_TAG[module], name: snake(key), readOnly: true, idempotent: false };
+    return { key, module, need: NEED_OF_TAG[module], name: snake(key), readOnly: true, idempotent: false, destructive: false };
   }
+  const readOnly = exposure.readOnly ?? route.method === 'get';
   return {
     key,
     module: exposure.module,
     need: exposure.need,
     name: exposure.expose ?? snake(key),
-    readOnly: exposure.readOnly ?? route.method === 'get',
+    readOnly,
     idempotent: exposure.idempotent === true,
+    destructive: exposure.destructive ?? !readOnly,
     ...(exposure.project === undefined ? {} : { project: exposure.project })
   };
 }
@@ -307,6 +319,98 @@ const cleanupRecordsSchema = z.object({
   items: z.array(sweepItemSchema),
   orphans: z.array(z.object({ path: z.string(), workerId: z.string().nullable() }))
 });
+
+
+const providerModelInput = z.union([
+  z.string().min(1).max(120),
+  z.object({
+    id: z.string().min(1).max(120),
+    name: z.string().max(80).optional(),
+    contextWindow: z.number().int().positive().optional(),
+    maxTokens: z.number().int().positive().optional(),
+    extra: z.record(z.string(), z.unknown()).optional()
+  })
+]);
+const providerProtocol = z.enum(['openai-chat', 'openai-responses', 'anthropic']);
+const providerRouting = z.enum(['direct', 'hub']);
+const providerInputFields = {
+  slug: z.string().min(1).max(31),
+  name: z.string().min(1).max(80),
+  protocol: providerProtocol,
+  baseUrl: z.string().min(1).max(500),
+  models: z.array(providerModelInput).min(1).max(100),
+  routing: providerRouting,
+  enabled: z.boolean().optional()
+};
+const providerCreateRequest = z.object({
+  ...providerInputFields,
+  scope: z.enum(['personal', 'team', 'hub']).default('personal'),
+  apiKey: z.string().min(1).max(4096).optional()
+}).openapi('ProviderCreateRequest');
+const providerUpdateRequest = z.object(providerInputFields).openapi('ProviderUpdateRequest');
+const providerKeyRequest = z.object({ apiKey: z.string().min(1).max(4096) }).openapi('ProviderKeyRequest');
+const providerProbeRequest = z.object({
+  providerId: z.string().min(1).optional(),
+  protocol: providerProtocol.optional(),
+  baseUrl: z.string().min(1).max(500).optional(),
+  apiKey: z.string().max(4096).optional(),
+  workerId: z.string().min(1).max(120).optional()
+}).openapi('ProviderProbeRequest');
+const providerTestRequest = z.object({ workerId: z.string().min(1).max(120) }).openapi('ProviderTestRequest');
+const providerConfirmRequest = z.object({ confirm: z.boolean().optional() }).openapi('ProviderConfirmRequest');
+const providerRoutingRequest = z.object({
+  routing: providerRouting.nullable(),
+  confirm: z.boolean().optional()
+}).openapi('ProviderRoutingRequest');
+const providerUsageSchema = z.object({
+  requests: z.number(),
+  errors: z.number(),
+  bytesIn: z.number(),
+  bytesOut: z.number(),
+  sessions: z.number(),
+  lastUsedAt: z.number().nullable()
+});
+const providerViewSchema = z.object({
+  id: z.string(),
+  scope: z.enum(['personal', 'team', 'hub']),
+  ownerId: z.string().nullable(),
+  slug: z.string(),
+  name: z.string(),
+  protocol: providerProtocol,
+  baseUrl: z.string(),
+  models: z.array(z.object({ id: z.string(), name: z.string().optional(), contextWindow: z.number().optional(), maxTokens: z.number().optional(), extra: z.record(z.string(), z.unknown()).optional() })),
+  routing: providerRouting,
+  enabled: z.boolean(),
+  hasKey: z.boolean(),
+  lastCheck: z.unknown().nullable(),
+  createdBy: z.string(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  canManage: z.boolean().optional(),
+  usage: providerUsageSchema.optional()
+}).passthrough().openapi('Provider');
+const providerListSchema = z.object({
+  providers: z.array(providerViewSchema),
+  workerRouting: z.record(z.string(), providerRouting)
+}).openapi('ProviderList');
+const providerProbeResultSchema = z.object({
+  ok: z.boolean(),
+  status: z.number().optional(),
+  message: z.string(),
+  via: z.string().optional(),
+  models: z.array(z.unknown())
+}).passthrough().openapi('ProviderProbeResult');
+const providerImpactSchema = z.object({
+  confirmRequired: z.boolean().optional(),
+  confirmed: z.boolean().optional(),
+  action: z.string(),
+  message: z.string(),
+  provider: z.unknown().optional(),
+  models: z.array(z.string()).optional(),
+  usage: z.unknown().optional(),
+  workerId: z.string().optional(),
+  routing: z.string().nullable().optional()
+}).passthrough().openapi('ProviderImpact');
 
 export const routes = {
   health: route(null, {
@@ -936,7 +1040,104 @@ export const routes = {
       '返回最近的清理记录（含 kept 原因）以及登记对不上的孤儿目录。参数：projectId。错误：403 / 404。',
     request: { params: projectId },
     responses: { 200: json(cleanupRecordsSchema) }
-  }, { module: 'workspaces', need: 'project.read', expose: 'workspace_sweep_records' })
+  }, { module: 'workspaces', need: 'project.read', expose: 'workspace_sweep_records' }),
+
+  providerList: route('providers:read', {
+    method: 'get', path: `${V1}/providers`, tags: ['providers'], summary: '列出模型提供商、模型和机器路由',
+    description:
+      '返回当前令牌能看见的提供商（含模型、用量、是否可管理）以及机器级路由覆盖。响应和日志里永远不含 API 密钥。\n' +
+      '权限：`providers:read` / `providers:use` / `providers:manage` 均可（都带 provider.read）。\n' +
+      '错误：403 无 providers:read。',
+    responses: { 200: json(providerListSchema) }
+  }, { module: 'providers', need: 'provider.read', expose: 'provider_list' }),
+  providerCreate: route(
+    'providers:manage',
+    {
+      method: 'post', path: `${V1}/providers`, tags: ['providers'], summary: '新建模型提供商',
+      description:
+        '新建个人 / 团队 / 全站提供商。apiKey 只写不回；不传则 hasKey=false，稍后用 provider_set_key。\n' +
+        '全站（scope=hub）和团队提供商还要账号本身是集群管理员 / 团队管理员。密钥不会出现在响应、日志或审计里。\n' +
+        '参数：slug、name、protocol、baseUrl、models、routing、enabled?、scope?、apiKey?。\n' +
+        '错误：400 / 403 无 providers:manage，或只限项目的令牌 / 409 标识占用。',
+      request: body(providerCreateRequest),
+      responses: { 201: json(providerViewSchema) }
+    },
+    { module: 'providers', need: 'provider.manage', readOnly: false, destructive: false, expose: 'provider_create', idempotent: true }
+  ),
+  providerUpdate: route(
+    'providers:manage',
+    {
+      method: 'put', path: `${V1}/providers/{providerId}`, tags: ['providers'], summary: '更新模型提供商',
+      description:
+        '改名称、地址、模型、路由或启停。不能用这个接口改密钥（用 provider_set_key）。响应不含密钥。\n' +
+        '参数：providerId；body 同新建（无 scope / apiKey）。错误：400 / 403 / 404 / 409。',
+      request: { params: providerId, ...body(providerUpdateRequest) },
+      responses: { 200: json(providerViewSchema) }
+    },
+    { module: 'providers', need: 'provider.manage', readOnly: false, destructive: false, expose: 'provider_update', idempotent: true }
+  ),
+  providerSetKey: route(
+    'providers:manage',
+    {
+      method: 'put', path: `${V1}/providers/{providerId}/key`, tags: ['providers'], summary: '设置或轮换提供商密钥',
+      description:
+        '写入新的 API 密钥。密钥只写不回，审计只记「已更新」。\n' +
+        '参数：providerId；body.apiKey。返回 { ok: true }。错误：400 空密钥 / 403 / 404。',
+      request: { params: providerId, ...body(providerKeyRequest) },
+      responses: { 200: json(okSchema) }
+    },
+    { module: 'providers', need: 'provider.manage', readOnly: false, destructive: false, expose: 'provider_set_key', idempotent: true }
+  ),
+  providerProbe: route(
+    'providers:manage',
+    {
+      method: 'post', path: `${V1}/providers/probe`, tags: ['providers'], summary: '探测上游模型列表',
+      description:
+        '给 providerId 就用已存密钥（要能管理它）；否则传临时 baseUrl / apiKey（明文只用于这次探测，不会回显、不会入库，除非随后新建）。\n' +
+        '指定在线 worker 时从那台机器发起；否则 hub 直连。上游 4xx/5xx 也返回 200 + ok:false。\n' +
+        '参数：providerId?、protocol?、baseUrl?、apiKey?、workerId?。错误：400 / 403 / 404。',
+      request: body(providerProbeRequest),
+      responses: { 200: json(providerProbeResultSchema) }
+    },
+    { module: 'providers', need: 'provider.manage', readOnly: false, destructive: false, expose: 'provider_probe' }
+  ),
+  providerTest: route(
+    'providers:manage',
+    {
+      method: 'post', path: `${V1}/providers/{providerId}/test`, tags: ['providers'], summary: '从机器测试提供商连通',
+      description:
+        '选一台 worker，按生效路由实测：直连是 worker→提供商，经 hub 是 worker→hub→提供商。真密钥不返回。\n' +
+        '参数：providerId；body.workerId。返回 ok、message、via、models。错误：400 没选机器或没密钥 / 403 / 404。',
+      request: { params: providerId, ...body(providerTestRequest) },
+      responses: { 200: json(providerProbeResultSchema) }
+    },
+    { module: 'providers', need: 'provider.manage', readOnly: false, destructive: false, expose: 'provider_test' }
+  ),
+  providerDelete: route(
+    'providers:manage',
+    {
+      method: 'delete', path: `${V1}/providers/{providerId}`, tags: ['providers'], summary: '删除模型提供商',
+      description:
+        '破坏性操作：不带 confirm=true 时不删除，只返回将受影响的模型和会话用量。确认后再删。\n' +
+        '参数：providerId；body.confirm。错误：403 / 404。',
+      request: { params: providerId, ...body(providerConfirmRequest) },
+      responses: { 200: json(providerImpactSchema) }
+    },
+    { module: 'providers', need: 'provider.manage', readOnly: false, destructive: true, expose: 'provider_delete', idempotent: true }
+  ),
+  providerRoutingSet: route(
+    'providers:manage',
+    {
+      method: 'put', path: `${V1}/providers/routing/{workerId}`, tags: ['providers'], summary: '设置机器的提供商路由',
+      description:
+        '给一台机器覆盖路由（direct / hub），或 routing=null 取消覆盖、跟随提供商。只有集群管理员的管理令牌能改。\n' +
+        '破坏性操作：不带 confirm=true 时只返回影响说明。已有会话保持当前路径，直到重启。\n' +
+        '参数：workerId；body.routing、confirm?。错误：403 / 404。',
+      request: { params: workerIdParam, ...body(providerRoutingRequest) },
+      responses: { 200: json(providerImpactSchema) }
+    },
+    { module: 'providers', need: 'provider.manage', readOnly: false, destructive: true, expose: 'provider_routing_set', idempotent: true }
+  )
 
 } as const;
 

@@ -89,6 +89,20 @@ async function botAdmin(deps: Pick<ApiTokenDeps, 'projects'>, actor: Principal, 
   return project !== null && project.deletedAt === null && can(actor, 'project.share', projectResource(project));
 }
 
+/** providers:manage 只能由管理员授予；项目级令牌和 bot 凭据一律不给。 */
+export function providerManageGrantDenied(
+  actor: Principal,
+  input: { readonly kind: ApiTokenKind; readonly scopes: readonly ApiScope[]; readonly projectIds?: readonly string[] | null }
+): string | null {
+  if (!input.scopes.includes('providers:manage')) return null;
+  if (input.kind === 'bot') return 'bot 凭据不能管理模型提供商';
+  if (input.projectIds && input.projectIds.length > 0) return '只限项目的令牌不能管理模型提供商';
+  if (!actor.user.clusterAdmin && actor.user.role !== 'owner' && actor.user.role !== 'admin') {
+    return '只有管理员能授予「管理模型提供商」';
+  }
+  return null;
+}
+
 export async function createApiToken(
   deps: ApiTokenDeps,
   actor: Principal,
@@ -160,6 +174,9 @@ export async function createApiToken(
     }
     projectIds = wanted;
   }
+
+  const manageDenied = providerManageGrantDenied(actor, { kind: input.kind, scopes, projectIds });
+  if (manageDenied) return err(forbidden(manageDenied));
 
   const issued = deps.tokens.issue();
   const prefix = input.kind === 'bot' ? BOT_TOKEN_PREFIX : API_TOKEN_PREFIX;
