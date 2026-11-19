@@ -19,6 +19,7 @@ export const SCOPES: readonly { id: ApiScopeDto; label: string; hint: string; de
   { id: 'providers:read', label: '查看模型提供商', hint: '已配置的提供商、模型和路由' },
   { id: 'providers:use', label: '使用模型提供商', hint: '看见并选用已配置的模型', detail: '不能管理提供商' },
   { id: 'providers:manage', label: '管理模型提供商', hint: '新建、改密钥、测连通、删除', detail: '不能给只限项目的令牌；记入审计', risky: true },
+  { id: 'tokens:manage', label: '管理访问令牌', hint: '用 MCP / 开放 API 列出、签发、轮换、吊销令牌', detail: '不能给只限项目的令牌或 bot；签发的令牌不能再带 tokens:manage / providers:manage；记入审计', risky: true },
   { id: 'assets:read', label: '读资产', hint: '资产列表和内容（按你能看到的范围）' },
   { id: 'assets:write', label: '新建和更新资产', hint: '新建资产、交新版本', detail: '进审核队列，审核通过才可用' },
   { id: 'assets:publish', label: '自动发布与分配资产', hint: '跳过审核直接生效，并装到机器', detail: '同时可以看和使用机器、读项目；记入审计', risky: true },
@@ -66,7 +67,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
   });
   const revoke = useMutation({ mutationFn: tokensApi.revoke, onSuccess: refresh });
   const toggle = (id: ApiScopeDto) => {
-    if (id === 'providers:manage' && !canGrantManage) return;
+    if ((id === 'providers:manage' || id === 'tokens:manage') && !canGrantManage) return;
     setScopes((old) => (old.includes(id) ? old.filter((s) => s !== id) : [...old, id]));
   };
   const tokens: ApiTokenDto[] = list.data ?? [];
@@ -143,7 +144,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
           <fieldset className="flex flex-col gap-1.5">
             <legend className="mb-1 text-meta text-secondary">权限</legend>
             {SCOPES.map((scope) => {
-              const manageLocked = scope.id === 'providers:manage' && !canGrantManage;
+              const manageLocked = (scope.id === 'providers:manage' || scope.id === 'tokens:manage') && !canGrantManage;
               return (
               <label key={scope.id} data-scope={scope.id} className={`flex items-start gap-2 rounded-sm px-1 py-1 ${manageLocked ? 'opacity-50' : 'cursor-pointer hover:bg-panel'}`}>
                 <input type="checkbox" className="mt-1 accent-[var(--color-fg)]" checked={scopes.includes(scope.id)} disabled={manageLocked} onChange={() => toggle(scope.id)} />

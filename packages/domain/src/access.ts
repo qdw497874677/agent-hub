@@ -20,7 +20,7 @@ export const PERMISSION_CATALOG = {
   // session.settle：把做完的会话移出活跃列表（可恢复），不改会话状态、不影响进程
   session: ['session.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.delete', 'session.fork', 'session.continue', 'session.settle'],
   provider: ['provider.read', 'provider.use', 'provider.manage'],
-  token: ['token.service'],
+  token: ['token.service', 'token.manage'],
   audit: ['audit.read'],
   // workspace.manage（ADR 0026）：团队工作空间页里新建 / 删除 / 关联到任意项目
   team: ['team.invite', 'team.manage', 'team.roles', 'team.grants', 'workspace.manage'],

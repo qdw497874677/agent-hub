@@ -196,7 +196,8 @@ annotations: {
 | `ended` | ended | `outcome`, `reason` |
 | `diagnostic` | diagnostic | 只保留 `level` 与「已脱敏」的通用文案 |
 
-`?after=seq` 的分页保持现有语义；投影在 MCP 层做，HTTP v1 保持不变。
+`GET /openapi/v1/sessions/:id/events` 与 MCP `events` 返回同一形状 `{ events, nextAfter }`，其中 `events` 已经过投影（不含 prompt / thinking / 工具输入输出）。内部 `GET /api/sessions/:id/events` 仍是原样 journal，给网页用。
+`waitSec`（0–50）在**过滤之后**没有匹配事件时才阻塞：`sinceTurn` 会忽略没有 turn 的旧事件，这些旧事件不会让长轮询立刻空返回。下一次轮询把 `after` 设为 `nextAfter`。
 
 ### 5.5 运行感知：只报告，不自动杀
 
@@ -249,7 +250,7 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 
 - `repos[]`：`url`、`name`（可选）、`defaultBranch`（可选，`null` = 远端默认），最多 8 个，第 0 个是主仓库。
 - `credential` **只写不读**：非空存进密钥箱（`repo-git:<repoId>`）、空串清掉、省略不动。
-  响应只给 `hasToken: true|false`，明文永不回显、不进审计 detail、不进日志。
+  响应给 `hasToken: true|false`；`hasToken=false` 时还有 `tokenHint` 与项目级 `gitTokenHint`，提示用本工具写入 `credential`。明文永不回显、不进审计 detail、不进日志。
 - 存下之后，这条仓库的 clone / worktree / push 都由 hub 按 URL 或目录前缀自动取令牌下发，
   worker 端只拿到一次性的 `http.extraHeader`。
 - 要确认机器能不能拉到：先 `POST /api/projects/{id}/repos/check`（界面入口；开放 API 暂未开）。

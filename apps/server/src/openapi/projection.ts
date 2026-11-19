@@ -1,7 +1,15 @@
 /** 会话事件投影：工具输入/输出、思考、提示词原文都不出去（只留工具名与成败）。 */
-export function projectEvents(value: unknown): unknown {
-  if (!Array.isArray(value)) return value;
-  const out: Record<string, unknown>[] = [];
+
+export type ProjectedEvent = Record<string, unknown>;
+
+export interface EventList {
+  readonly events: ProjectedEvent[];
+  /** 下一次轮询应传的 after（最后一条 seq；没有事件时沿用入参 after 或 0）。 */
+  readonly nextAfter: number;
+}
+
+function projectEventList(value: unknown[]): ProjectedEvent[] {
+  const out: ProjectedEvent[] = [];
   for (const raw of value) {
     const entry = raw as { seq?: number; at?: number; turn?: number; event?: Record<string, unknown> };
     const event = entry.event ?? {};
@@ -24,4 +32,21 @@ export function projectEvents(value: unknown): unknown {
     // 其余（thinking / prompt / commands / approval / artifact…）一律不出。
   }
   return out;
+}
+
+/**
+ * MCP / OpenAPI 的对外形状：`{ events, nextAfter }`。
+ * 入参可以是事件数组，也可以已经是这份对象（再投影一次 events）。
+ */
+export function projectEvents(value: unknown, fallbackAfter = 0): EventList | unknown {
+  const rawList = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object' && Array.isArray((value as { events?: unknown }).events)
+      ? ((value as { events: unknown[] }).events)
+      : null;
+  if (rawList === null) return value;
+  const events = projectEventList(rawList);
+  const given = value && typeof value === 'object' && !Array.isArray(value) ? (value as { nextAfter?: unknown }).nextAfter : undefined;
+  const nextAfter = typeof given === 'number' ? given : events.length > 0 ? Number(events[events.length - 1]!.seq ?? fallbackAfter) : fallbackAfter;
+  return { events, nextAfter };
 }
