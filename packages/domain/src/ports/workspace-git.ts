@@ -107,12 +107,14 @@ export interface PushOutcome {
   readonly reason: string | null;
 }
 
-/** Worker 上 gh CLI 建 / 查 PR（ADR 0027 D3）。gh 没装 / 没登录不是错误：ok=false + 原因。 */
+/** Worker 上 gh CLI 建 / 查 / 按分支列 PR（ADR 0027 D3）。gh 没装 / 没登录不是错误：ok=false + 原因。 */
 export type GhRequest =
   | { readonly action: 'create'; readonly base: string; readonly head: string; readonly title: string; readonly body: string }
-  | { readonly action: 'view'; readonly number: number };
+  | { readonly action: 'view'; readonly number: number }
+  | { readonly action: 'list'; readonly head: string };
 export type GhOutcome =
   | { readonly ok: true; readonly pr: RemotePullRequest }
+  | { readonly ok: true; readonly prs: readonly RemotePullRequest[] }
   | { readonly ok: false; readonly reason: string };
 
 /** 托管平台上一个 PR 的状态（gh / REST 都翻成这个）。 */
@@ -122,6 +124,8 @@ export interface RemotePullRequest {
   readonly state: 'open' | 'closed' | 'merged';
   readonly headSha: string | null;
   readonly mergedAt: number | null;
+  /** PR 的目标分支；按分支列出 / 查详情都能带，拿不到（老 Worker）= undefined。 */
+  readonly base?: string | null;
 }
 
 export type RemoveKind = 'worktree' | 'directory';
