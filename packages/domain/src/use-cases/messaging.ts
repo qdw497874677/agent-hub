@@ -263,7 +263,11 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       };
       const now = deps.now();
       const delivering: AgentMessage = { ...next, status: 'delivered', deliveredAt: now, readAt: now, updatedAt: now };
-      await deps.messages.save(delivering);
+      // 先条件认领再投递：另一个入口（另一个 pump / 进程）已经抢走时就别再投第二次。
+      const claimed = deps.messages.claimDelivered
+        ? await deps.messages.claimDelivered(next.id, now)
+        : (await deps.messages.save(delivering), true);
+      if (!claimed) return;
       const sent = await deps.deliver(targetId, text, author);
       if (!sent.ok) {
         // 派发失败时 prompt 用例自己也会记一个 ended(failed)，turnEnded 可能已经把它判了失败：只判一次。

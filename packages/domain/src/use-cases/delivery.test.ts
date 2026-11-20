@@ -241,3 +241,18 @@ test('送出去就没有下文的那一轮：按失败收尾，并立刻放行�
   assert.equal(second, undefined, '排在后面的那条已经被放出去了');
   assert.equal(await recoverOrphanedTurns(w.deps), 0, '同一条不会反复收尾');
 });
+
+test('同一会话两个入口同时触发：只投递一次', async () => {
+  const w = await world();
+  w.online();
+  // 一条已经排队的消息：定时泵和「回合结束放行」会同时看见它。
+  await w.deliveries.save({
+    id: 'race-1', sessionId: w.sid, seq: 1, kind: 'prompt', payload: { text: '并发', parts: [] },
+    state: 'queued', attempt: 0, nextAt: 0, lastError: null, createdAt: 1_000, updatedAt: 1_000
+  });
+  // 两个入口在同一 tick 启动，谁都还没把状态写成 sending。
+  await Promise.all([pumpDeliveries(w.deps), releaseAfterTurn(w.deps, w.sid)]);
+  assert.equal(w.sent.length, 1, '两个入口只能派发一次');
+  const again = await releaseAfterTurn(w.deps, w.sid);
+  assert.equal(again, false, '已经送出去的不该再被放行');
+});

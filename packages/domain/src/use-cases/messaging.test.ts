@@ -26,6 +26,12 @@ function memoryMessages(): MessageStore & { all: Map<string, AgentMessage>; audi
     all,
     audits,
     save: async (m) => void all.set(m.id, m),
+    claimDelivered: async (id, at) => {
+      const m = all.get(id);
+      if (!m || m.status !== 'queued') return false;
+      all.set(id, { ...m, status: 'delivered', deliveredAt: at, readAt: at, updatedAt: at });
+      return true;
+    },
     byId: async (id) => all.get(id) ?? null,
     byIdempotencyKey: async (from, key) => list().find((m) => m.fromSessionId === from && m.idempotencyKey === key) ?? null,
     queuedFor: async (s) => list().filter((m) => m.targetSessionId === s && m.status === 'queued'),

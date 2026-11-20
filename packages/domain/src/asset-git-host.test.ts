@@ -54,6 +54,7 @@ test('git 主机策略：解析主机名与主机列表', () => {
   assert.equal(gitUrlHost('ssh://git@github.com:22/x/y.git'), 'github.com');
   assert.equal(gitUrlHost('git@github.com:x/y.git'), 'github.com');
   assert.equal(gitUrlHost('git@github.com:org/repo.git'), 'github.com');
+  assert.equal(gitUrlHost('git@[::1]:org/repo.git'), '::1');
   assert.equal(gitUrlHost('/etc'), null);
   assert.deepEqual(parseGitAllowedHosts(' a, ,b '), ['a', 'b']);
   assert.deepEqual(parseGitAllowedHosts(undefined), []);
@@ -61,4 +62,36 @@ test('git 主机策略：解析主机名与主机列表', () => {
   assert.equal(isBlockedGitHost('::1'), true);
   assert.equal(isBlockedGitHost('github.com'), false);
   assert.equal(isBlockedGitHost('localhost.'), true);
+});
+
+test('git 主机策略：非规范回环 / 简写 IP 不会被绕过（#224 补）', () => {
+  const blocked = [
+    'git@127.1:r.git',
+    'git@0x7f.1:r.git',
+    'git@0177.0.0.1:r.git',
+    'git@[::1]:r.git',
+    'ssh://git@0177.0.0.1/r.git',
+    'ssh://git@127.1/r.git',
+    'https://[::ffff:127.0.0.1]/x',
+    'https://[::ffff:7f00:1]/x',
+    'https://0x7f.1/x',
+    'https://127.1/x',
+    'https://10.0.0.5/x',
+    'https://[fe80::1]/x',
+    'https://[fd00::1]/x',
+    'https://169.254.1.1/x'
+  ];
+  for (const url of blocked) {
+    assert.equal(checkGitSourceUrl(url, DEFAULT_GIT_HOST_POLICY).ok, false, url);
+  }
+  // WHATWG URL 会把 https://127.1/ 与 https://0x7f.1/ 规范化成 127.0.0.1，
+  // 所以这两条在旧版里本来就拦得住；scp 形式与 IPv4-mapped 靠本次的规范化才拦住。
+  assert.equal(gitUrlHost('https://127.1/x'), '127.0.0.1');
+  assert.equal(checkGitSourceUrl('https://gitlab.example.com/x/y.git', DEFAULT_GIT_HOST_POLICY).ok, true);
+  assert.equal(checkGitSourceUrl('git@github.com:x/y.git', DEFAULT_GIT_HOST_POLICY).ok, true);
+  assert.equal(checkGitSourceUrl('https://[2001:db8::1]/x.git', DEFAULT_GIT_HOST_POLICY).ok, true, '公网 IPv6 仍放行');
+  assert.equal(isBlockedGitHost('::ffff:8.8.8.8'), false);
+  assert.equal(isBlockedGitHost('fe80::1'), true);
+  assert.equal(isBlockedGitHost('fd12::1'), true);
+  assert.equal(isBlockedGitHost('172.15.0.1'), false);
 });

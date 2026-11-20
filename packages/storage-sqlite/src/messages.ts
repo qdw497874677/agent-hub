@@ -233,6 +233,8 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
   const handleOf = db.prepare('SELECT handle FROM agent_session_handles WHERE session_id = ?');
   const byHandle = db.prepare('SELECT session_id FROM agent_session_handles WHERE task_id = ? AND handle = ?');
   const byId = db.prepare('SELECT * FROM agent_messages WHERE id = ?');
+  const claimDelivered = db.prepare(`UPDATE agent_messages SET status = 'delivered', delivered_at = ?, read_at = ?, updated_at = ?
+    WHERE id = ? AND status = 'queued'`);
   const byIdem = db.prepare('SELECT * FROM agent_messages WHERE from_session_id = ? AND idempotency_key = ?');
   const queued = db.prepare("SELECT * FROM agent_messages WHERE target_session_id = ? AND status = 'queued' ORDER BY created_at, rowid");
   const delivered = db.prepare("SELECT * FROM agent_messages WHERE target_session_id = ? AND status = 'delivered' ORDER BY delivered_at, rowid");
@@ -262,6 +264,10 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
         m.replyParts && m.replyParts.length > 0 ? JSON.stringify(m.replyParts) : null, m.readAt ?? null, m.holdReason ?? null,
         m.fromLabel ?? null
       );
+    },
+    async claimDelivered(id, at) {
+      // 单条 UPDATE 原子：并发两个投递入口只有一个能把它从 queued 翻过去。
+      return Number(claimDelivered.run(at, at, at, id).changes) > 0;
     },
     async byId(id) {
       const row = byId.get(id) as Row | undefined;

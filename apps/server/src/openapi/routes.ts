@@ -1411,7 +1411,7 @@ export const routes = {
       request: { params: providerId, ...body(providerConfirmRequest) },
       responses: { 200: json(providerImpactSchema) }
     },
-    { module: 'providers', need: 'provider.manage', readOnly: false, destructive: true, expose: 'provider_delete', idempotent: true }
+    { module: 'providers', need: 'provider.manage', readOnly: false, destructive: true, expose: 'provider_delete' }
   ),
   providerRoutingSet: route(
     'providers:manage',
@@ -1424,7 +1424,7 @@ export const routes = {
       request: { params: workerIdParam, ...body(providerRoutingRequest) },
       responses: { 200: json(providerImpactSchema) }
     },
-    { module: 'providers', need: 'provider.manage', readOnly: false, destructive: true, expose: 'provider_routing_set', idempotent: true }
+    { module: 'providers', need: 'provider.manage', readOnly: false, destructive: true, expose: 'provider_routing_set' }
   ),
 
   tokenList: route('tokens:manage', {
@@ -1458,7 +1458,7 @@ export const routes = {
       request: { params: tokenIdParam },
       responses: { 200: json(rotateApiTokenResponse) }
     },
-    { module: 'tokens', need: 'token.manage', readOnly: false, destructive: true, expose: 'token_rotate', idempotent: true }
+    { module: 'tokens', need: 'token.manage', readOnly: false, destructive: true, expose: 'token_rotate' }
   ),
   tokenRevoke: route(
     'tokens:manage',
@@ -1469,7 +1469,7 @@ export const routes = {
       request: { params: tokenIdParam },
       responses: { 200: json(apiTokenInfoSchema) }
     },
-    { module: 'tokens', need: 'token.manage', readOnly: false, destructive: true, expose: 'token_revoke', idempotent: true }
+    { module: 'tokens', need: 'token.manage', readOnly: false, destructive: true, expose: 'token_revoke' }
   )
 
 } as const;

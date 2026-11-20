@@ -57,8 +57,18 @@ export function setupEnv(
     const value = base[name];
     if (typeof value === 'string') env[name] = value;
   }
-  if (extras) for (const [name, value] of Object.entries(extras)) if (typeof value === 'string') env[name] = value;
-  for (const name of SETUP_ENV_DENIED) delete env[name];
+  if (extras) {
+    for (const [name, value] of Object.entries(extras)) {
+      if (typeof value !== 'string') continue;
+      // 白名单里的值只有 PATH 允许上游追加；SHELL/LANG/TERM 不能被 extras 改掉。
+      if (name !== 'PATH' && (SETUP_ENV_ALLOWLIST as readonly string[]).includes(name)) continue;
+      env[name] = value;
+    }
+  }
+  // 兜底：hub 的凭据类变量整族（HUB_*）一律不许出现，大小写也不放过。
+  for (const name of Object.keys(env)) {
+    if (/^hub_/i.test(name) || (SETUP_ENV_DENIED as readonly string[]).includes(name.toUpperCase())) delete env[name];
+  }
   return env;
 }
 

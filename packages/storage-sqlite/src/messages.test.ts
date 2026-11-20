@@ -111,3 +111,15 @@ test('会话通信 P1a：parts / wake / reply status / 已读 / 拦下原因往�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('claimDelivered：只有 queued 能被认领一次，第二次返回 false', async () => {
+  const store = openSqliteStore(join(mkdtempSync(join(tmpdir(), 'hub-msg-')), 'hub.db'));
+  await store.messages.save(base({ id: 'once' }));
+  assert.equal(await store.messages.claimDelivered!('once', 7), true);
+  assert.equal(await store.messages.claimDelivered!('once', 8), false);
+  const row = await store.messages.byId('once');
+  assert.equal(row?.status, 'delivered');
+  assert.equal(row?.deliveredAt, 7);
+  assert.equal(row?.readAt, 7);
+  assert.equal(await store.messages.claimDelivered!('missing', 9), false);
+});

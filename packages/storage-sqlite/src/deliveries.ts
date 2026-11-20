@@ -33,12 +33,23 @@ export function createSqliteDeliveries(db: DatabaseSync): DeliveryQueue {
     AND updated_at <= ? ORDER BY updated_at LIMIT ?`);
   const wake = db.prepare(`UPDATE message_delivery SET next_at = ? WHERE kind = 'prompt' AND state = 'queued' AND COALESCE(next_at, 0) > ?`);
   const recover = db.prepare(`UPDATE message_delivery SET state = 'queued', next_at = ?, updated_at = ? WHERE state = 'sending'`);
+  const claimSend = db.prepare(`UPDATE message_delivery SET state = 'sending', updated_at = ?
+    WHERE id = ? AND state IN ('queued','undelivered')`);
+  const reschedule = db.prepare(`UPDATE message_delivery SET state = 'queued', next_at = ?, last_error = NULL, updated_at = ?
+    WHERE id = ? AND state IN ('queued','undelivered')`);
   const write = (d: Delivery) => {
     upsert.run(d.id, d.sessionId, d.seq, d.kind, JSON.stringify(d.payload), d.state, d.attempt, d.nextAt, d.lastError, d.createdAt, d.updatedAt);
   };
   return {
     async save(d) {
       write(d);
+    },
+    async claimSend(id, now) {
+      // 单条 UPDATE 是原子的：并发两个入口只有一个能把状态翻成 sending。
+      return Number(claimSend.run(now, id).changes) > 0;
+    },
+    async reschedule(id, now, nextAt) {
+      return Number(reschedule.run(nextAt, now, id).changes) > 0;
     },
     async claimPrompt(incoming) {
       // 读和写之间不能让出事件循环：否则两条 prompt 都会看见空队列，各派一次。

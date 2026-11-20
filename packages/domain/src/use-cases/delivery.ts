@@ -55,10 +55,12 @@ export async function attemptDelivery(deps: DeliveryDeps, delivery: Delivery): P
   const sessionId = delivery.sessionId as SessionId;
   if (delivery.kind === 'prompt' && (await turnInProgress(deps, sessionId))) {
     const now = deps.now();
-    await deps.deliveries.save({ ...delivery, state: 'queued', nextAt: now + TURN_WAIT_MS, lastError: null, updatedAt: now });
+    await deps.deliveries.reschedule(delivery.id, now, now + TURN_WAIT_MS);
     return ok(undefined);
   }
-  await deps.deliveries.save({ ...delivery, state: 'sending', updatedAt: deps.now() });
+  // 条件认领：定时泵、回合结束放行、立即重试可能同时看见这条，
+  // 只有把状态原子翻成 sending 的那一个才派发，避免同一句话投递两次。
+  if (!(await deps.deliveries.claimSend(delivery.id, deps.now()))) return ok(undefined);
   const session = await deps.sessions.byId(sessionId);
   let failure: DomainError | null = null;
   if (!session) failure = notFound('会话不存在');

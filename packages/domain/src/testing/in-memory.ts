@@ -1347,6 +1347,18 @@ export function inMemoryDeliveries(): import('../ports/delivery-queue.ts').Deliv
   return {
     rows,
     async save(d) { rows.set(d.id, d); },
+    async claimSend(id, now) {
+      const d = rows.get(id);
+      if (!d || (d.state !== 'queued' && d.state !== 'undelivered')) return false;
+      rows.set(id, { ...d, state: 'sending', updatedAt: now });
+      return true;
+    },
+    async reschedule(id, now, nextAt) {
+      const d = rows.get(id);
+      if (!d || (d.state !== 'queued' && d.state !== 'undelivered')) return false;
+      rows.set(id, { ...d, state: 'queued', nextAt, lastError: null, updatedAt: now });
+      return true;
+    },
     async claimPrompt(incoming) {
       const open = pendingFor(incoming.sessionId);
       const head = open[0];

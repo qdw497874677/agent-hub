@@ -4,6 +4,11 @@ import type { AgentMessage, MessageAuditEntry, MessagingConfig, SpawnRecord } fr
 /** agent 间通信的持久化（ADR 0018）：消息（含排队状态）、派生记录、项目配置、按 traceId 的审计。 */
 export interface MessageStore {
   save(message: AgentMessage): Promise<void>;
+  /**
+   * 条件认领：只有还在 queued 时才翻成 delivered（同时写 deliveredAt/readAt）。
+   * 返回 false 说明另一个入口已经投过，调用方不能再投第二次。
+   */
+  claimDelivered?(id: string, at: number): Promise<boolean>;
   byId(id: string): Promise<AgentMessage | null>;
   byIdempotencyKey(fromSessionId: SessionId, key: string): Promise<AgentMessage | null>;
   /** 投给这个会话、还在排队的（先来先投）。 */

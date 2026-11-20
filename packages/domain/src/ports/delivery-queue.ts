@@ -11,6 +11,16 @@ export interface PromptClaim {
 export interface DeliveryQueue {
   save(delivery: Delivery): Promise<void>;
   /**
+   * 条件认领：只有这条还在 queued/undelivered 时才改成 sending。
+   * 返回 false 说明另一个入口（定时泵 / 回合结束 / 立即重试）已经抢走了，调用方不能再派发。
+   */
+  claimSend(id: string, now: number): Promise<boolean>;
+  /**
+   * 上一轮还在跑：把这条按条件改回 queued 并定下一次检查时间。
+   * 只有它还在 queued/undelivered 时才写，返回 false 说明别的入口已经接管，调用方不能再动它。
+   */
+  reschedule(id: string, now: number, nextAt: number): Promise<boolean>;
+  /**
    * 把一条 prompt 放进队列，并在同一次写入里决定它是不是队首。
    * 两条同时进来时只有一条 send 为真；另一条停在 queued，不派给 worker。
    * 若队首是「未送达」，先把它改回 queued 并给满重试，新的这一条排在后面。

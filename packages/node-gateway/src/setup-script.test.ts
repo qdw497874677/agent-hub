@@ -116,3 +116,33 @@ test('runSetupScript：HOME 是一次性空目录，缓存也在里面，跑完�
   assert.equal(existsSync(home), false, '跑完要删掉一次性 HOME');
   await rm(dir, { recursive: true, force: true });
 });
+
+test('setupEnv：extras 只能改 PATH，HUB_ 秘密一个都带不进去（大小写也不放过）', () => {
+  const env = setupEnv(
+    {
+      PATH: '/custom/bin:/bin',
+      LANG: 'en_US.UTF-8',
+      TERM: 'xterm-256color',
+      AGENT_HUB_BRANCH: 'main',
+      HUB_TOKEN: 'leak-1',
+      HUB_URL: 'ws://leak',
+      hub_local_secret: 'leak-2',
+      Hub_Worker_Credential: 'leak-3'
+    },
+    { PATH: '/usr/bin', SHELL: '/bin/sh', LANG: 'C.UTF-8', TERM: 'dumb' }
+  );
+  assert.equal(env.PATH, '/custom/bin:/bin', 'PATH 可以由上游追加');
+  assert.equal(env.SHELL, '/bin/sh', 'SHELL 不许被覆盖');
+  assert.equal(env.LANG, 'C.UTF-8', 'LANG 不许被覆盖');
+  assert.equal(env.TERM, 'dumb', 'TERM 不许被覆盖');
+  assert.equal(env.AGENT_HUB_BRANCH, 'main');
+  for (const name of Object.keys(env)) assert.doesNotMatch(name, /^hub_/i, `不该出现 ${name}`);
+  assert.ok(!Object.values(env).some((value) => value.startsWith('leak-')), '不该带进秘密值');
+});
+
+test('scrubCredentials：glpat、短 bearer、数字开头的 user:pass@', () => {
+  assert.equal(scrubCredentials('token glpat-abcdefghij1234567890 in log'), 'token glpat-*** in log');
+  assert.equal(scrubCredentials('authorization: Bearer abc12345'), 'authorization: Bearer ***');
+  assert.equal(scrubCredentials('https://9alice:s3cr3t@gitlab.example.com/x'), 'https://9alice:***@gitlab.example.com/x');
+  assert.equal(scrubCredentials('git@127.1:repo.git'), 'git@127.1:repo.git', '正常内容不要误伤');
+});
