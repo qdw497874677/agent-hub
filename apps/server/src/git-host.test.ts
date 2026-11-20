@@ -18,7 +18,7 @@ test('GitHub REST：开 PR 带 token 头；合并状态；报错不回显 token'
     }) as typeof fetch
   });
   const created = await api.createPullRequest({ token: TOKEN, repo: 'o/r', base: 'main', head: 'feat/x', title: 'T', body: 'B' });
-  assert.deepEqual(created, { ok: true, pr: { number: 12, url: 'https://github.com/o/r/pull/12', state: 'open', headSha: 'abc', mergedAt: null } });
+  assert.deepEqual(created, { ok: true, pr: { number: 12, url: 'https://github.com/o/r/pull/12', state: 'open', headSha: 'abc', mergedAt: null, base: null } });
   assert.equal(calls[0]!.url, 'https://gh.example/repos/o/r/pulls');
   assert.equal((calls[0]!.init.headers as Record<string, string>)['authorization'], `Bearer ${TOKEN}`);
   assert.deepEqual(JSON.parse(String(calls[0]!.init.body)), { title: 'T', body: 'B', head: 'feat/x', base: 'main' });
@@ -28,6 +28,30 @@ test('GitHub REST：开 PR 带 token 头；合并状态；报错不回显 token'
   assert.ok(!bad.ok);
   assert.match(bad.reason, /401/);
   assert.ok(!bad.reason.includes(TOKEN));
+});
+
+test('GitHub REST：按分支列 PR（认领没走会话开的，#262）', async () => {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const api = createGitHubApi({
+    base: 'https://gh.example',
+    fetch: (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Response.json([
+        { number: 21, html_url: 'https://github.com/o/r/pull/21', state: 'open', head: { sha: 'h1' }, merged_at: null, base: { ref: 'main' } },
+        { number: 9, html_url: 'https://github.com/o/r/pull/9', state: 'closed', head: { sha: 'h0' }, merged_at: '2026-11-02T00:00:00Z' }
+      ]);
+    }) as typeof fetch
+  });
+  const listed = await api.listPullRequestsByHead({ token: TOKEN, repo: 'o/r', head: 'feat/x' });
+  assert.deepEqual(listed, {
+    ok: true,
+    prs: [
+      { number: 21, url: 'https://github.com/o/r/pull/21', state: 'open', headSha: 'h1', mergedAt: null, base: 'main' },
+      { number: 9, url: 'https://github.com/o/r/pull/9', state: 'merged', headSha: 'h0', mergedAt: Date.parse('2026-11-02T00:00:00Z'), base: null }
+    ]
+  });
+  assert.equal(calls[0]!.url, `https://gh.example/repos/o/r/pulls?head=${encodeURIComponent('o:feat/x')}&state=all&sort=created&direction=desc&per_page=20`);
+  assert.equal((calls[0]!.init.headers as Record<string, string>)['authorization'], `Bearer ${TOKEN}`);
 });
 
 const provider: ModelProvider = {

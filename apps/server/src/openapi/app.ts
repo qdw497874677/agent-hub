@@ -1,5 +1,6 @@
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { applyStartExtras, checkStartExtras } from '../session-start-extras.ts';
+import { visibleWorkerRouting } from '../visible-worker-routing.ts';
 import type { Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { homedir } from 'node:os';
@@ -1163,27 +1164,14 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
           : `删除后 ${models.length} 个模型将不可用。`
     };
   };
-  /** LOW6：机器维度的路由覆盖只给能看见这台机器的令牌——按 worker.read 逐台过滤；没有 workers:read 就整个字段省略。 */
-  const visibleWorkerRouting = async (
-    deps: Deps,
-    actor: Principal,
-    providers: { workerRouting: () => Promise<Record<string, unknown>> }
-  ): Promise<Record<string, unknown> | undefined> => {
-    if (!can(actor, 'worker.read')) return undefined;
-    const readable = await workerReader(deps.access, actor);
-    const visible: Record<string, unknown> = {};
-    for (const [workerId, routing] of Object.entries(await providers.workerRouting())) {
-      if (await readable(workerId)) visible[workerId] = routing;
-    }
-    return visible;
-  };
+  /** LOW6：机器维度的路由覆盖只给能看见这台机器的令牌——按 worker.read 逐台过滤；没有 workers:read 就整个字段省略。逻辑见 apps/server/src/visible-worker-routing.ts（Web 路由共用）。 */
   on(routes.providerList, async (c) => {
     if (!ctx.providers) return noProviders(c);
     const actor = principal(c);
     if (!can(actor, 'provider.read')) return fail(c, forbidden('令牌没有 providers:read'));
     const listed = await listProviders(ctx.providers.deps, actor);
     // LOW6：workerRouting 只含调用方能看见的机器；没有 workers:read 的令牌整个字段省略。
-    const workerRouting = await visibleWorkerRouting(deps, actor, ctx.providers.deps.providers);
+    const workerRouting = await visibleWorkerRouting(deps.access, actor, ctx.providers.deps.providers.workerRouting);
     return workerRouting === undefined ? c.json({ providers: listed.map(publicProvider) }) : c.json({ providers: listed.map(publicProvider), workerRouting });
   });
   on(routes.providerCreate, async (c) => {

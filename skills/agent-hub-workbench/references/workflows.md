@@ -113,6 +113,7 @@ task_pull_requests { taskId, refresh: "1" }
 - 准备失败用 `workspace_group_retry { groupId }`；状态用 `workspace_group_get { groupId }`。
 - 不要对组合组调用 `sync_workspace` 来加仓。
 - 也可以让会话里的 agent 自己跑 git，但仍应再用 `session_git_run action=pr` 或确认 `task_pull_requests` 里能看到链接。
+- 只有同步到的 PR 才会列在 `task_pull_requests` 里。在会话分支上用 `gh` 等外部开的 PR 会在打开任务 / `refresh: "1"` 时按分支自动认领；认领需要项目 git token 或机器上的 `gh`，都没有就认领不到——这种环境请改用 `session_git_run action=pr`。
 
 ## 7. 把验证交给另一台机器
 

@@ -558,8 +558,8 @@ export interface FakeGit {
   failNext: string | null;
   /** 路径 → 提交预览（ADR 0027 §2）；没登记的 = 干净、无 origin。commit 会清空 files、ahead+1。 */
   readonly previews: Map<string, CommitPreview>;
-  /** gh 的行为：null = 没装；否则建出来的 PR 编号从这里递增。 */
-  gh: { next: number; state: RemotePullRequest['state'] } | null;
+  /** gh 的行为：null = 没装；否则建出来的 PR 编号从这里递增；listed = 按分支 list 返回的已有 PR。 */
+  gh: { next: number; state: RemotePullRequest['state']; listed?: readonly RemotePullRequest[] } | null;
   /** 准备命令的结果；没登记 = 成功（exit 0、无输出），'*' = 所有路径的默认值。 */
   readonly setups: Map<string, { exitCode: number; output: string; timedOut: boolean }>;
   /** 仓库检查：键是 `url@branch`（branch 为空时是 `url@`）；没登记 = 可达、默认分支 main、分支必须叫 main。 */
@@ -676,8 +676,9 @@ export function fakeGit(): FakeGit {
         gh: async (path, request) => {
           calls.push(`${machine}:gh:${request.action}:${path}`);
           if (!state.gh) return ok({ ok: false as const, reason: 'gh 没装' });
+          if (request.action === 'list') return ok({ ok: true as const, prs: state.gh.listed ?? [] });
           const number = request.action === 'create' ? state.gh.next++ : request.number;
-          return ok({ ok: true as const, pr: { number, url: `https://github.com/o/r/pull/${number}`, state: request.action === 'create' ? 'open' : state.gh.state, headSha: null, mergedAt: state.gh.state === 'merged' && request.action === 'view' ? 1 : null } });
+          return ok({ ok: true as const, pr: { number, url: `https://github.com/o/r/pull/${number}`, state: request.action === 'create' ? 'open' as const : state.gh.state, headSha: null, mergedAt: state.gh.state === 'merged' && request.action === 'view' ? 1 : null } });
         },
         remove: async (path, kind, options) => {
           calls.push(`${machine}:remove:${kind}:${path}${options?.force ? ':force' : ''}`);

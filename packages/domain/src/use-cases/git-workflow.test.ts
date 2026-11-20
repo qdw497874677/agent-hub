@@ -6,6 +6,7 @@ import { asAgentId } from '../ids.ts';
 import { capabilityMatrix, available } from '../capability.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
 import type { GitHostApi, PullRequestLink, PullRequestRepository, GitHostTokenStore } from '../ports/pull-requests.ts';
+import type { RemotePullRequest } from '../ports/workspace-git.ts';
 import { cleanBranchName, compareUrl, githubRepoOf, parseGitText, templateGitText } from '../git-workflow.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
@@ -61,6 +62,7 @@ async function world(opts: { token?: boolean; host?: Partial<GitHostApi>; writer
   const tokens = memoryTokens();
   if (opts.token) tokens.map.set('team-1', 'ghp_secretsecretsecret1234');
   const hostCalls: string[] = [];
+  const listedPrs: { repo: string; head: string; pr: RemotePullRequest }[] = [];
   let clock = 1000;
   const svc = createGitWorkflowService({
     ...w.deps,
@@ -72,6 +74,10 @@ async function world(opts: { token?: boolean; host?: Partial<GitHostApi>; writer
     host: {
       createPullRequest: async (input) => (hostCalls.push(`create:${input.repo}:${input.head}->${input.base}:${input.token.slice(-4)}`), { ok: true, pr: { number: 7, url: `https://github.com/${input.repo}/pull/7`, state: 'open', headSha: 'abc', mergedAt: null } }),
       getPullRequest: async (input) => (hostCalls.push(`get:${input.number}`), { ok: true, pr: { number: input.number, url: `https://github.com/${input.repo}/pull/${input.number}`, state: 'merged', headSha: 'abc', mergedAt: 5 } }),
+      listPullRequestsByHead: async (input) => {
+        hostCalls.push(`list:${input.repo}:${input.head}:${input.token.slice(-4)}`);
+        return { ok: true, prs: listedPrs.filter((e) => e.repo === input.repo && e.head === input.head).map((e) => e.pr) };
+      },
       ...opts.host
     },
     ...(opts.writer ? { writer: { write: async () => ({ message: 'feat: 模型写的', title: '模型标题', body: '模型描述', branch: 'feat/model' }) } } : {}),
@@ -79,7 +85,7 @@ async function world(opts: { token?: boolean; host?: Partial<GitHostApi>; writer
     now: () => clock
   });
   const root = '/tmp/demo';
-  return { ...w, svc, audits, prs, tokens, hostCalls, session: session.value, task: task.value, root, tick: (ms: number) => (clock += ms) };
+  return { ...w, svc, audits, prs, tokens, hostCalls, listedPrs, session: session.value, task: task.value, root, tick: (ms: number) => (clock += ms) };
 }
 
 const dirty = (branch: string, remoteUrl: string | null) => ({
@@ -213,6 +219,66 @@ test('开 PR：token 失败 → gh；gh 也没有 → 只推送 + 链接', async
   assert.equal(out.value.pushed, true);
   assert.equal(out.value.pullRequest, null);
   assert.equal(out.value.compareUrl, 'https://github.com/o/r/compare/main...feat%2Fy?expand=1');
+});
+
+test('按分支认领：只在 GitHub 上、head 是会话分支的 PR，打开任务后进列表（token 路径，#262）', async () => {
+  const w = await world({ token: true });
+  w.git.previews.set(w.root, dirty('feat/x', 'https://github.com/o/r.git'));
+  w.listedPrs.push({ repo: 'o/r', head: 'feat/x', pr: { number: 42, url: 'https://github.com/o/r/pull/42', state: 'open', headSha: 'abc', mergedAt: null, base: 'main' } });
+  const r = await w.svc.syncTask(null, w.task.id);
+  assert.ok(r.ok);
+  assert.equal(r.value.length, 1);
+  const link = r.value[0]!;
+  assert.equal(link.number, 42);
+  assert.equal(link.via, 'token');
+  assert.equal(link.branch, 'feat/x');
+  assert.equal(link.base, 'main');
+  assert.equal(link.sessionId, w.session.id);
+  // 只查了分支；刚认领的不再同步一遍本体（lastSyncedAt 刚打上新）
+  assert.deepEqual(w.hostCalls, ['list:o/r:feat/x:1234']);
+  const log = await w.deps.workLog.list(w.task.id, { limit: 50 });
+  assert.ok(log.some((e) => e.body.includes('o/r#42')));
+
+  // 再开一次：1 分钟节流，不重复查；repo#number 也不重复认
+  const again = await w.svc.syncTask(null, w.task.id);
+  assert.ok(again.ok);
+  assert.deepEqual(w.hostCalls, ['list:o/r:feat/x:1234']);
+  assert.equal((await w.prs.byTask(w.task.id)).length, 1);
+
+  // refresh：认领不重复（分支已落库），本体刷新拿到合并态并收起会话
+  w.tick(1000);
+  const live = await w.deps.sessions.byId(w.session.id);
+  assert.ok(live);
+  await w.deps.sessions.save({ ...live, status: 'stopped' });
+  const refreshed = await w.svc.syncTask(null, w.task.id, { refresh: true });
+  assert.ok(refreshed.ok);
+  assert.equal(refreshed.value[0]?.state, 'merged');
+  assert.equal((await w.prs.byTask(w.task.id)).length, 1);
+  assert.ok(w.hostCalls.includes('get:42'));
+});
+
+test('按分支认领：没 token 用 gh；查不到不把列表打挂，原因进工作日志', async () => {
+  // gh 可用：认领 gh 查到的 PR（列表没带 base，回落 main）
+  const w = await world();
+  w.git.gh = { next: 3, state: 'open', listed: [{ number: 5, url: 'https://github.com/o/r/pull/5', state: 'open', headSha: 'abc', mergedAt: null }] };
+  w.git.previews.set(w.root, dirty('feat/y', 'https://github.com/o/r.git'));
+  const r = await w.svc.syncTask(null, w.task.id);
+  assert.ok(r.ok);
+  assert.equal(r.value.length, 1);
+  assert.equal(r.value[0]?.number, 5);
+  assert.equal(r.value[0]?.via, 'gh');
+  assert.equal(r.value[0]?.base, 'main');
+
+  // token 和 gh 都没有：已有链接保留，失败原因写进工作日志
+  const v = await world();
+  v.git.previews.set(v.root, dirty('feat/x', 'https://github.com/o/r.git'));
+  await v.prs.save({ id: 'p0', taskId: v.task.id, workspaceId: null, sessionId: v.session.id, provider: 'github', via: 'gh', repo: 'o/r', number: 1, url: 'https://github.com/o/r/pull/1', branch: 'feat/old', base: 'main', state: 'open', headSha: 'abc', mergedAt: null, createdBy: 'u', createdAt: 1, lastSyncedAt: 1000 });
+  const listed = await v.svc.syncTask(null, v.task.id);
+  assert.ok(listed.ok);
+  assert.equal(listed.value.length, 1);
+  assert.equal(listed.value[0]?.number, 1);
+  const log = await v.deps.workLog.list(v.task.id, { limit: 50 });
+  assert.ok(log.some((e) => e.body.includes('按分支找已有 PR')));
 });
 
 test('推送：默认分支直接拒绝（#217 / #221 步骤 0）', async () => {

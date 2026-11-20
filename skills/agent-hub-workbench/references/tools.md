@@ -59,7 +59,7 @@
 | `workspace_group_retry` | 写 | `project.update` | `/workspace-groups/{groupId}/retry` | groupId | 重试失败的组合组成员（写工具，要 `clientRequestId`） |
 | `session_git_state` | 读 | `session.read` | `/sessions/{sessionId}/git/state` | sessionId, member? | 按仓看 git 状态和未提交改动 |
 | `session_git_run` | 写 | `session.prompt` | `/sessions/{sessionId}/git/run` | sessionId, action, message?, title?, body?, member? | 按仓提交、推送或开 PR（写工具，要 `clientRequestId`） |
-| `task_pull_requests` | 读 | `task.read` | `/tasks/{taskId}/pull-requests` | taskId, refresh? | 同步并列出任务上的 PR |
+| `task_pull_requests` | 读 | `task.read` | `/tasks/{taskId}/pull-requests` | taskId, refresh? | 同步并列出任务上的 PR；打开任务时会按会话分支自动认领（head 是该分支、还没登记的 PR 也会进来） |
 | `session_settle` | 写 | `session.settle` | `/sessions/{sessionId}/settle` | sessionId, settled | 收起或恢复会话（写工具，要 `clientRequestId`） |
 | `workspace_sweep` | 写 | `project.update` | `/projects/{projectId}/cleanup/sweep` | projectId | 按项目规则清理临时工作空间（写工具，要 `clientRequestId`） |
 | `workspace_sweep_records` | 读 | `project.read` | `/projects/{projectId}/cleanup/records` | projectId | 查看项目的清理记录 |

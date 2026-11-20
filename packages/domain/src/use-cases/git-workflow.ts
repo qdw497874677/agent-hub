@@ -33,7 +33,7 @@ import { locationsOf, projectOfSession } from './workspaces.ts';
 export interface GitWorkflowDeps {
   readonly projects: Pick<ProjectRepository, 'byId'>;
   readonly tasks: Pick<TaskRepository, 'byId'>;
-  readonly sessions: Pick<SessionRepository, 'byId' | 'save' | 'listByWorkspace' | 'listByProject'>;
+  readonly sessions: Pick<SessionRepository, 'byId' | 'save' | 'listByWorkspace' | 'listByProject' | 'listByTask'>;
   readonly workspaces: WorkspaceRepository;
   /** 组合工作空间（多仓库）；容器会话按它 / 工作空间反推项目（#221 步骤 7）。 */
   readonly workspaceGroups: WorkspaceGroupRepository;
@@ -262,7 +262,7 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
       }
       if (!created) {
         const r = await git.gh(root, { action: 'create', base, head: branch, title, body });
-        if (r.ok && r.value.ok) created = { pr: r.value.pr, via: 'gh' };
+        if (r.ok && r.value.ok && 'pr' in r.value) created = { pr: r.value.pr, via: 'gh' };
         else notes.push(`Worker 上的 gh 不可用：${r.ok ? (r.value as { reason: string }).reason : r.error.message}`);
       }
       if (created) {
@@ -336,7 +336,7 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
       if (where) {
         const git = await gitFor(deps, where.workerId);
         const r = await git.gh(where.root, { action: 'view', number: link.number }).catch(() => null);
-        if (r?.ok && r.value.ok) remote = r.value.pr;
+        if (r?.ok && r.value.ok && 'pr' in r.value) remote = r.value.pr;
       }
     }
     const next: PullRequestLink = remote
@@ -356,6 +356,146 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     return due.length;
   }
 
+  /** 按分支认领的候选：仓库 + 分支 + 用 gh 兴的地方（token 路径不需要 root）。 */
+  interface BranchCandidate {
+    readonly repo: string;
+    readonly branch: string;
+    readonly workerId: string | null;
+    readonly root: string | null;
+    readonly workspaceId: string | null;
+    readonly sessionId: string | null;
+  }
+
+  /** 打开任务时的按分支发现节流：和普通同步一样最多 1 分钟一次，避免连点打爆 GitHub；refresh 立刻来。 */
+  const lastBranchScanAt = new Map<string, number>();
+
+  /** 任务下有哪些会话分支可能在 GitHub 上有 PR：临时工作空间记的分支 + 会话工作区实时分支（agent 可能切过）。 */
+  async function branchCandidates(subject: Subject | null, taskId: string, project: Project, knownBranches: ReadonlySet<string>): Promise<BranchCandidate[]> {
+    const found: BranchCandidate[] = [];
+    const seen = new Set<string>();
+    const add = (candidate: BranchCandidate | null): void => {
+      // 默认分支上的 PR 不会是这条任务的（也不该被自动认领）
+      if (!candidate || candidate.branch === 'main' || candidate.branch === 'master') return;
+      const key = `${candidate.repo}#${candidate.branch}`;
+      if (knownBranches.has(key) || seen.has(key)) return; // 已落库的分支：普通同步会去管它
+      seen.add(key);
+      found.push(candidate);
+    };
+    // 临时工作空间记着分支：最可靠的来源
+    for (const workspace of await deps.workspaces.byTask(asTaskId(taskId))) {
+      if (workspace.state === 'removed' || workspace.branch === null) continue;
+      const repo = githubRepoOf(workspace.repoUrl);
+      if (repo) add({ repo, branch: workspace.branch, workerId: workspace.workerId, root: workspace.path, workspaceId: workspace.id, sessionId: null });
+    }
+    // 会话：工作空间记的分支 + 机器上现在的分支（同一目录只问一次）
+    for (const session of await deps.sessions.listByTask(asTaskId(taskId))) {
+      if (!(await authorizeSession(deps.access, subject, project, session, 'session.read')).ok) continue;
+      const spots = new Map<string, { workerId: string | null; root: string; workspaceId: string | null }>();
+      const workspace = session.workspaceId ? await deps.workspaces.byId(session.workspaceId) : null;
+      if (workspace && workspace.state !== 'removed') {
+        const repo = githubRepoOf(workspace.repoUrl);
+        if (repo && workspace.branch !== null) add({ repo, branch: workspace.branch, workerId: workspace.workerId, root: workspace.path, workspaceId: workspace.id, sessionId: session.id });
+        spots.set(`${workspace.workerId ?? ''}:${workspace.path}`, { workerId: workspace.workerId, root: workspace.path, workspaceId: workspace.id });
+      }
+      const location = await locationsOf(deps, project, session).catch(() => null);
+      if (location?.group) {
+        // 组合工作空间：git 在成员仓库里，逐个成员看当前分支
+        for (const member of location.members) spots.set(`${location.workerId ?? ''}:${member.root}`, { workerId: location.workerId, root: member.root, workspaceId: member.workspaceId });
+      } else if (location && location.root !== '') {
+        spots.set(`${location.workerId ?? ''}:${location.root}`, { workerId: location.workerId, root: location.root, workspaceId: session.workspaceId ?? null });
+      }
+      for (const spot of spots.values()) {
+        const preview = await (await gitFor(deps, spot.workerId)).preview(spot.root, 0).catch(() => null);
+        if (!preview?.ok || !preview.value.isGit) continue;
+        const repo = githubRepoOf(preview.value.remoteUrl);
+        if (repo && preview.value.branch) add({ repo, branch: preview.value.branch, workerId: spot.workerId, root: spot.root, workspaceId: spot.workspaceId, sessionId: session.id });
+      }
+    }
+    return found;
+  }
+
+  /** 查一个分支在 GitHub 上的 PR：token 优先（hub 直调 REST），不行再用分支所在机器的 gh。 */
+  async function fetchByBranch(candidate: BranchCandidate, token: string | null): Promise<{ ok: true; prs: readonly RemotePullRequest[]; via: 'token' | 'gh' } | { ok: false; reason: string }> {
+    if (token) {
+      const r = await deps.host.listPullRequestsByHead({ token, repo: candidate.repo, head: candidate.branch }).catch(() => ({ ok: false as const, reason: '连不上 GitHub' }));
+      if (r.ok) return { ok: true, prs: r.prs, via: 'token' };
+    }
+    if (candidate.root !== null) {
+      const git = await gitFor(deps, candidate.workerId);
+      const r = await git.gh(candidate.root, { action: 'list', head: candidate.branch }).catch(() => null);
+      if (r?.ok && r.value.ok && 'prs' in r.value) return { ok: true, prs: r.value.prs, via: 'gh' };
+      if (r?.ok && !r.value.ok) return r.value;
+      if (r && !r.ok) return { ok: false, reason: r.error.message };
+    }
+    return { ok: false, reason: token ? 'GitHub API 和 gh 都不可用' : '没有 token，gh 也不可用' };
+  }
+
+  /**
+   * 按分支认领：GitHub 上已有、但没走 session_git_run 的 PR（#262：agent 用 gh pr create 在会话分支上开的）。
+   * 认进任务后走普通同步。失败不打断已有列表：原因写进工作日志。
+   */
+  async function adoptByBranch(
+    subject: Subject | null,
+    taskId: string,
+    project: Project,
+    listed: readonly PullRequestLink[],
+    options?: { readonly refresh?: boolean }
+  ): Promise<readonly PullRequestLink[]> {
+    const now = deps.now();
+    const lastScanAt = lastBranchScanAt.get(taskId);
+    // 只有扫过一次之后才节流（fake 时钟的 now 可能远小于 60_000，不能用 0 当「没扫过」）
+    if (!options?.refresh && lastScanAt !== undefined && now - lastScanAt < 60_000) return [];
+    lastBranchScanAt.set(taskId, now);
+    const knownBranches = new Set(listed.map((link) => `${link.repo}#${link.branch}`));
+    const knownNumbers = new Set(listed.map((link) => `${link.repo}#${link.number}`));
+    const candidates = await branchCandidates(subject, taskId, project, knownBranches);
+    if (candidates.length === 0) return [];
+    const team = await teamOf(project);
+    const token = team ? await deps.tokens.reveal(team) : null;
+    const failures: string[] = [];
+    const adopted: PullRequestLink[] = [];
+    for (const candidate of candidates) {
+      const remote = await fetchByBranch(candidate, token).catch(() => ({ ok: false as const, reason: '查 PR 失败' }));
+      if (!remote.ok) {
+        failures.push(`${candidate.repo}#${candidate.branch}：${remote.reason}`);
+        continue;
+      }
+      for (const pr of remote.prs) {
+        // 同一 repo#number 只认一次（库里已有 / 同一轮已认的都跳过）
+        if (knownNumbers.has(`${candidate.repo}#${pr.number}`)) continue;
+        knownNumbers.add(`${candidate.repo}#${pr.number}`);
+        const link: PullRequestLink = {
+          id: newId(),
+          taskId,
+          workspaceId: candidate.workspaceId,
+          sessionId: candidate.sessionId,
+          provider: 'github',
+          via: remote.via,
+          repo: candidate.repo,
+          number: pr.number,
+          url: pr.url,
+          branch: candidate.branch,
+          base: pr.base ?? 'main',
+          state: pr.state,
+          headSha: pr.headSha,
+          mergedAt: pr.mergedAt,
+          createdBy: principalOfSubject(subject)?.user.id ?? 'system',
+          createdAt: now,
+          lastSyncedAt: now
+        };
+        await deps.pullRequests.save(link).catch(() => undefined);
+        adopted.push(link);
+        const entry = draftLogEntry({ id: newId(), taskId: asTaskId(taskId), author: { kind: 'system' }, body: `认领已有 PR [${link.repo}#${link.number}](${link.url})（head 是分支 ${link.branch}，不是从会话里开的）`, links: [{ kind: 'pr', ref: link.url, label: `#${link.number}` }], sessionId: link.sessionId ? asSessionId(link.sessionId) : null, now });
+        if (entry.ok) await deps.workLog.append(entry.value).catch(() => undefined);
+      }
+    }
+    if (adopted.length === 0 && failures.length > 0) {
+      const entry = draftLogEntry({ id: newId(), taskId: asTaskId(taskId), author: { kind: 'system' }, body: `按分支找已有 PR 没成功：${failures.join('；').slice(0, 300)}`, links: [], sessionId: null, now });
+      if (entry.ok) await deps.workLog.append(entry.value).catch(() => undefined);
+    }
+    return adopted;
+  }
+
   /**
    * 打开任务时：看得见就同步一遍这个任务开着的 PR（默认最多 1 分钟一次，避免连点刷新打爆 GitHub）。
    * `refresh: true` 时立刻再拉一次（人刚在外面合并、要马上收起会话）。
@@ -367,9 +507,13 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
   ): Promise<Result<readonly PullRequestLink[], DomainError>> {
     const listed = await listForTask(subject, taskId);
     if (!listed.ok) return listed;
+    const task = await deps.tasks.byId(asTaskId(taskId));
+    const project = task ? await deps.projects.byId(task.projectId) : null;
+    // 先认领没走 session_git_run 的（#262）：head 是任务下会话分支、GitHub 上已有但没落库的 PR
+    const adopted = project ? await adoptByBranch(subject, taskId, project, listed.value, options).catch(() => [] as readonly PullRequestLink[]) : [];
     const minAgeMs = options?.refresh ? 0 : 60_000;
     const out: PullRequestLink[] = [];
-    for (const link of listed.value) {
+    for (const link of [...listed.value, ...adopted]) {
       out.push(link.state === 'open' && deps.now() - link.lastSyncedAt >= minAgeMs ? await syncOne(link).catch(() => link) : link);
     }
     return ok(out);
