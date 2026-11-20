@@ -60,6 +60,7 @@ workspace_changes { workspaceId }                                        # 分�
 - 两条会话各自在自己的分支上；不要把同一个目录给两条会话同时写（会抢 `.git/index.lock`）。
 - `workspaceMode: isolated` **只会建单仓临时空间**，即使 `get_project.repos` 有多项也不会自动变成组合组。组合会话见配方 6。
 - `workspace_changes` 没有 `member` 参数。收尾时让用户决定怎么合；你不要替它们 merge，也不要删工作目录。
+- 想看每条会话未提交的改动可以用 `workspace_diff { sessionId }`；要读某个文件用 `workspace_read_file { sessionId, path }`。
 
 ## 4. 换模型 / 换提供商
 

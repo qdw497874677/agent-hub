@@ -46,7 +46,7 @@ function projectEventList(value: unknown[]): ProjectedEvent[] {
     } else if (kind === 'tool_call') {
       out.push({ ...base, event: { kind: 'tool', name: String(event['name'] ?? 'tool') } });
     } else if (kind === 'tool_result') {
-      out.push({ ...base, event: { kind: 'tool_result', ok: event['ok'] === true } });
+      out.push({ ...base, event: { kind: 'tool_result', name: String(event['name'] ?? 'tool'), ok: event['ok'] === true } });
     } else if (kind === 'ended') {
       out.push({ ...base, event: { kind: 'ended', outcome: String(event['outcome'] ?? 'done'), ...(typeof event['reason'] === 'string' ? { reason: event['reason'] } : {}) } });
     } else if (kind === 'diagnostic') {

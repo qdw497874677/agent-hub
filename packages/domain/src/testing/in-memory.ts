@@ -653,9 +653,11 @@ export function fakeGit(): FakeGit {
           statuses.set(path, { ...status, dirty: false, untracked: 0, unpushed: 0, upstream: `origin/${status.branch}` });
           return ok({ committed, pushed: true, branch: status.branch, reason: null });
         },
-        preview: async (path) => {
+        preview: async (path, maxPatchBytes) => {
           calls.push(`${machine}:preview:${path}`);
-          return ok(previews.get(path) ?? { isGit: true, branch: 'main', defaultBranch: 'main', remoteUrl: null, upstream: null, ahead: 0, head: 'h0', files: [], patch: '', truncated: false });
+          const found = previews.get(path) ?? { isGit: true, branch: 'main', defaultBranch: 'main', remoteUrl: null, upstream: null, ahead: 0, head: 'h0', files: [], patch: '', truncated: false };
+          if (found.patch.length > maxPatchBytes) return ok({ ...found, patch: found.patch.slice(0, maxPatchBytes), truncated: true });
+          return ok(found);
         },
         commit: async (path, input) => {
           calls.push(`${machine}:commit:${path}:${input.authorName}<${input.authorEmail}>:${input.message.split('\n')[0]}`);
