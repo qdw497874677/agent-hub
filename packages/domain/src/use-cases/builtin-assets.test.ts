@@ -264,7 +264,7 @@ test('bootstrap：会话要浏览器时自动启用未配置的项目内置项�
   assert.equal(reviewed.ok ? reviewed.value.status : '', 'approved');
   const out = await bootstrapBuiltinBrowserForSession(w.deps, w.deps, w.p('M'), { projectId: 'p1', requires: ['browser:chromium', 'tool:demo'] });
   assert.deepEqual([...out.enabled].sort(), ['playwright', 'web-testing']);
-  assert.deepEqual(out.install, { workerId: 'w1', jobId: 'job-1' });
+  assert.deepEqual(out.install, { workerId: 'w1', jobId: 'job-1', capability: 'browser:chromium' });
   const effective = resolveProjectAssets(await w.deps.assets.list(), 'p1', await w.deps.assets.projectSettings('p1')).effective;
   assert.ok(effective.some((a) => a.source.type === 'builtin' && a.source.id === 'playwright'));
   assert.ok(effective.some((a) => a.source.type === 'builtin' && a.source.id === 'web-testing'));
@@ -305,7 +305,7 @@ test('bootstrap：显式关掉的不强开；已经有就绪 / 在装机器时�
   // 没有任何机器能装（太旧 / 没有 pi / 不在线）：只给提示，不抛错
   w.deploy(machine('old', { inventory: { runtimes: [], components: [], capabilities: [], collectedAt: 1, componentInstall: false } }));
   const blocked = await bootstrapBuiltinBrowserForSession(w.deps, w.deps, w.p('M'), { projectId: 'p1', requires: ['browser:chromium'] });
-  assert.match(blocked.skipped ?? '', /没有能装 Chromium 的在线机器/);
+  assert.match(blocked.skipped ?? '', /没有能装「browser:chromium」的在线机器/);
 });
 
 test('bootstrap：会话不要求浏览器就什么都不做；浏览器状态视图带最近安装任务', async () => {
@@ -334,4 +334,21 @@ test('bootstrap：会话不要求浏览器就什么都不做；浏览器状态�
   const status = browserStatus(w.workers).find((row) => row.workerId === 'w1');
   assert.deepEqual(status?.installJob, { jobId: 'j9', state: 'failed', message: '缺系统库' }, '失败的任务也要露出来');
   assert.equal(status?.blocker, null);
+  assert.equal(status?.acquisition, null);
+  w.deploy(
+    machine('w2', {
+      inventory: {
+        runtimes: [{ agentId: 'pi', version: '0.1.0', source: 'machine' }],
+        components: [],
+        capabilities: [{ capability: 'browser:chromium', via: 'chromium' }],
+        collectedAt: 1,
+        componentInstall: true,
+        acquisitions: [{ strategy: 'system', type: 'detect-system-binary', path: '/usr/bin/chromium', capability: 'browser:chromium', componentId: 'chromium' }]
+      },
+      drift: { items: [], trusted: [{ capability: 'browser:chromium', via: 'chromium' }], untrusted: [] }
+    })
+  );
+  const ready = browserStatus(w.workers).find((row) => row.workerId === 'w2');
+  assert.deepEqual(ready?.acquisition, { strategy: 'system', type: 'detect-system-binary', path: '/usr/bin/chromium', capability: 'browser:chromium', componentId: 'chromium' });
+  assert.equal(ready?.ready, true);
 });

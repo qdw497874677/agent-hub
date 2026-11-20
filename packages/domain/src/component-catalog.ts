@@ -1,5 +1,7 @@
 import { conflict, invalid, notFound, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
+import type { AcquisitionResolution, AcquisitionStrategy } from './acquisition.ts';
+import { validateAcquisitionStrategies } from './acquisition.ts';
 import type { ComponentPin, ComponentProvides } from './runtime-bundle.ts';
 import type { WorkerStatus } from './worker.ts';
 
@@ -42,6 +44,8 @@ export interface CatalogComponent {
   readonly resolved: string;
   readonly integrity: string;
   readonly provides: readonly ComponentProvides[];
+  /** 有序的能力获取策略；没有则只装 npm 包，不再跑后置步骤。 */
+  readonly strategies?: readonly AcquisitionStrategy[];
   /** 顶层包的安装脚本原文（审核依据）；空对象 = 没有。 */
   readonly scripts: Readonly<Record<string, string>>;
   /** 依赖个数（提示审核人：传递依赖的脚本也会跑）。 */
@@ -91,6 +95,7 @@ export interface ComponentSubmission {
   provides: readonly ComponentProvides[];
   runtime?: ComponentRuntime;
   git?: { url: string; commit: string };
+  strategies?: readonly AcquisitionStrategy[];
 }
 
 export function validateSubmission(input: ComponentSubmission): Result<void, DomainError> {
@@ -104,6 +109,8 @@ export function validateSubmission(input: ComponentSubmission): Result<void, Dom
   if (!EXACT_VERSION.test(input.version)) return err(invalid('版本必须是确切版本（X.Y.Z），不收范围、tag 或 latest'));
   if (input.provides.length > 16) return err(invalid('provides 最多 16 项'));
   for (const p of input.provides) if (!CAPABILITY.test(p.capability)) return err(invalid(`能力名不对：${p.capability}`));
+  const strategies = validateAcquisitionStrategies(input.strategies);
+  if (!strategies.ok) return strategies;
   return ok(undefined);
 }
 
@@ -142,6 +149,8 @@ export interface ComponentJobSpec {
   readonly ignoreScripts: true;
   /** 期望当前装着的版本（借鉴 paseo 的 compare-and-swap）：和 Worker 上的对不上就拒绝，防止审核后状态变了。null = 应该没装。 */
   readonly expectedCurrent: string | null;
+  /** 目录项声明的有序获取策略；没有则只装包。 */
+  readonly strategies?: readonly AcquisitionStrategy[];
 }
 
 /**
@@ -191,8 +200,10 @@ export interface ComponentJobResult {
   readonly integrityMismatch?: boolean;
   readonly ignoredScripts?: boolean;
   readonly scripts?: { package: string; script: string }[];
-  /** 内置浏览器：下载完成但缺系统库（要 root 装系统包），浏览器起不来——列缺哪些。 */
-  readonly missingDeps?: readonly string[];
+  /** 获取策略因缺系统库失败时列出缺哪些（要 root 装系统包）。 */
+  readonly missingDeps?: string[];
+  /** 这次选定的策略和可执行文件路径。失败时省略。 */
+  readonly acquisition?: AcquisitionResolution;
   readonly exitCode?: number | null;
   readonly durationMs?: number;
 }

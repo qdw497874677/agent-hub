@@ -111,3 +111,24 @@ test('清单经长连接上报，hub 算漂移：版本不一致的能力不可�
     rmSync(f.dir, { recursive: true, force: true });
   }
 });
+
+test('组件获取结果出现在清单 acquisitions 字段（只读 .component.json，不跑命令）', () => {
+  const f = fixture();
+  try {
+    const dir = join(f.root, 'pi', 'chromium', 'v-00000000-0000-4000-8000-000000000001');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '.component.json'), JSON.stringify({
+      version: '1.66.0-alpha-2026-11-09',
+      integrity: SHA,
+      enabled: true,
+      provides: [{ capability: 'browser:chromium', mode: 'machine-tool', mcp: { name: 'playwright', executableArg: '--executable-path' } }],
+      acquisition: { strategy: 'system', type: 'detect-system-binary', path: '/usr/bin/chromium', capability: 'browser:chromium', componentId: 'chromium' }
+    }));
+    symlinkSync('v-00000000-0000-4000-8000-000000000001', join(f.root, 'pi', 'chromium', 'current'));
+    const inv = collectInventory({ provisions: f.provisions, componentsRoot: f.root, piAgentDir: f.pi, now: () => 5 });
+    assert.deepEqual(inv.acquisitions, [{ strategy: 'system', type: 'detect-system-binary', path: '/usr/bin/chromium', capability: 'browser:chromium', componentId: 'chromium' }]);
+    assert.ok(inv.capabilities.some((c) => c.capability === 'browser:chromium' && c.via === 'chromium' && c.mcp?.name === 'playwright'));
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});

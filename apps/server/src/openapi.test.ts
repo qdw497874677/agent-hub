@@ -330,6 +330,13 @@ test('内置浏览器面：列 / 启用内置资产；机器浏览器状态；�
   assert.equal(started.body.action, 'install_component');
   // 404：没这台机器
   assert.equal((await full('/workers/nope/builtin-browser', post({}))).status, 404);
+  // 通用能力状态 / 组件安装（别名之外的主接口）
+  const caps = await full('/workers/capability-status?capability=browser:chromium');
+  assert.equal(caps.status, 200);
+  assert.equal(caps.body[0]?.capability, 'browser:chromium');
+  const generic = await full('/workers/w1/components', post({ capability: 'browser:chromium' }));
+  // 第一次已经把任务发出去了：再装同一版本是冲突或又一次 202（幂等由用例决定），这里至少不是 404/401
+  assert.ok([202, 409].includes(generic.status), JSON.stringify(generic.body));
   // 浏览器状态露出进行中的安装任务（workerControl 会把运行中的任务合到机器状态上）
   Object.assign(componentWorkers[0] as WorkerStatus, { runtimeJob: {
     jobId: 'job-t',
@@ -358,6 +365,8 @@ test('内置浏览器面：列 / 启用内置资产；机器浏览器状态；�
   const w1 = after.body.find((row: { workerId: string }) => row.workerId === 'w1');
   assert.equal(w1.installing, true);
   assert.deepEqual(w1.installJob, { jobId: 'job-t', state: 'running', message: '正在安装组件 chromium 1.66.0-alpha-2026-11-09' });
+  assert.equal(w1.acquisition, null);
+  assert.equal(w1.capability, 'browser:chromium');
   // 审计带令牌名
   const davidUser = await accounts.users.byEmail('david@b.co');
   assert.ok(davidUser);
@@ -713,7 +722,7 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   // 默认不强制只读：有写工具就一起列出来（能不能调由令牌权限和只读模式决定）
   assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create', 'task_default_agent', 'task_pull_requests']);
   assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name).sort(), ['get_project', 'list_projects', 'resolve_default_agent', 'team_agent_defaults', 'workspace_changes']);
-  assert.equal(mcpTools({ readOnly: true }).length, 26);
+  assert.equal(mcpTools({ readOnly: true }).length, 27);
   const workspaceTools = mcpTools({ modules: new Set(['workspaces']), writes: true });
   const workspaceNames = workspaceTools.map((t) => t.name).sort();
   for (const name of [

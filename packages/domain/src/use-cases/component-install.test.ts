@@ -284,7 +284,8 @@ test('内置浏览器：一键装 = 按清单提交（哈希必须对得上）�
   assert.equal(job.value.component?.packageName, 'playwright-core');
   const item = good.catalog.get(`${BUILTIN_CHROMIUM.componentId}@${BUILTIN_CHROMIUM.version}`);
   assert.equal(item?.status, 'approved');
-  assert.deepEqual(item?.provides, [{ capability: 'browser:chromium', mode: 'machine-tool' }]);
+  assert.deepEqual(item?.provides, [{ capability: 'browser:chromium', mode: 'machine-tool', mcp: { name: 'playwright', executableArg: '--executable-path' } }]);
+  assert.equal(item?.strategies?.length, BUILTIN_CHROMIUM.strategies.length);
   assert.deepEqual(good.entries.map((e) => e.action).reverse(), ['bundle.submit', 'bundle.review', 'runtime.component.install']);
 
   // registry 给的哈希和清单不一致：停下，不装

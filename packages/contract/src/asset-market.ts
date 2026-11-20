@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { assetSourcePolicySchema, assetUploadFileSchema } from './admin.ts';
+import { acquisitionResolutionSchema } from './wire/worker.ts';
 
 /** 资产市场 / 审核（ADR 0016）的请求体。响应是领域 DTO 原样 JSON（见 apps/web/src/api.ts 的类型）。 */
 export const assetScopeSchema = z.enum(['personal', 'project', 'team', 'global']);
@@ -77,7 +78,15 @@ export const browserStatusSchema = z.object({
   online: z.boolean(),
   ready: z.boolean(),
   installing: z.boolean(),
-  blocker: z.string().nullable()
+  blocker: z.string().nullable(),
+  capability: z.string().optional(),
+  installJob: z.object({
+    jobId: z.string(),
+    state: z.string(),
+    message: z.string(),
+    acquisition: acquisitionResolutionSchema.optional()
+  }).nullable().optional(),
+  acquisition: acquisitionResolutionSchema.nullable()
 });
 
 export type BuiltinEnableRequest = z.input<typeof builtinEnableRequest>;

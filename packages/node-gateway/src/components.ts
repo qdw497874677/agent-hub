@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { BUILTIN_CHROMIUM, type ComponentJobResult, type ComponentJobSpec } from '@agent-hub/domain';
+import { BUILTIN_CHROMIUM, type AcquisitionResolution, type ComponentJobResult, type ComponentJobSpec } from '@agent-hub/domain';
+import { acquisitionJobResult, runAcquisitionStrategies, type AcquireHooks } from './acquire.ts';
 
 /**
  * hub 管理的组件安装（ADR 0021 P2）。目录布局（inventory.ts 读同一份）：
@@ -25,6 +26,11 @@ export interface ComponentInstallOptions {
   readonly env: Record<string, string>;
   readonly log: (line: string) => void;
   readonly now?: () => number;
+  /**
+   * 获取策略钩子：测试注入假路径 / 关掉策略里的默认系统路径，避免碰到真实二进制或用户缓存。
+   * 生产不传：按目录项声明的 names/paths + PATH 探测，缓存目录按策略 locate。
+   */
+  readonly acquire?: Omit<AcquireHooks, 'env' | 'run' | 'log'>;
 }
 
 export interface ComponentOutcome {
@@ -88,52 +94,10 @@ interface Staged {
   readonly staging: string;
   readonly previous: string | null;
   readonly scripts: { package: string; script: string }[];
+  readonly acquisition?: AcquisitionResolution;
 }
 
 type StageResult = { ok: true; staged: Staged } | { ok: false; outcome: ComponentOutcome };
-
-/**
- * 装完 Chromium 后核对动态库（Linux）：headless chrome 起不来多半是缺系统库（libnss3 之类），
- * ldd 一查就知道（playwright 自己只在启动时报错）。返回缺的库名（去重排序）；
- * 非 Linux / 找不到下载目录或二进制 / ldd 不可用时返回空数组（不拦安装）。
- */
-async function missingBrowserLibraries(options: ComponentInstallOptions, staging: string): Promise<string[]> {
-  if (process.platform !== 'linux') return [];
-  const browsersRoot =
-    options.env['PLAYWRIGHT_BROWSERS_PATH'] && options.env['PLAYWRIGHT_BROWSERS_PATH'] !== '0'
-      ? options.env['PLAYWRIGHT_BROWSERS_PATH']
-      : options.env['HOME']
-        ? join(options.env['HOME'], '.cache', 'ms-playwright')
-        : null;
-  if (!browsersRoot || !existsSync(browsersRoot)) {
-    options.log('提示：没找到 Chromium 的下载目录，跳过系统库核对');
-    return [];
-  }
-  const binaries: string[] = [];
-  for (const entry of readdirSync(browsersRoot)) {
-    if (!entry.startsWith('chromium')) continue;
-    for (const bin of ['chrome-linux/chrome', 'chrome-linux/headless_shell']) {
-      const path = join(browsersRoot, entry, bin);
-      if (existsSync(path)) binaries.push(path);
-    }
-  }
-  if (!binaries.length) {
-    options.log('提示：下载目录里没有 chromium 二进制，跳过系统库核对');
-    return [];
-  }
-  // ldd 每个二进制，收集 not found；脚本永远退出码 0，输出交给这里解析（run 返回完整输出）
-  const script = `for f in "$@"; do [ -f "$f" ] || continue; ldd "$f" 2>/dev/null | grep 'not found' || true; done | sort -u`;
-  const output = await options.run('/bin/sh', ['-c', script, 'verify-browser-deps', ...binaries], { cwd: staging, env: options.env });
-  return [...new Set(
-    output
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.includes('not found'))
-      .map((line) => line.split(/\s+/)[0] ?? '')
-  )]
-    .filter(Boolean)
-    .sort();
-}
 
 /** 装进暂存目录并核对（不切换）。失败时暂存已删。 */
 async function stageComponent(options: ComponentInstallOptions, spec: ComponentJobSpec, elapsed: () => number): Promise<StageResult> {
@@ -188,32 +152,47 @@ async function stageComponent(options: ComponentInstallOptions, spec: ComponentJ
     // 没执行的安装脚本：只是列出来（hub 记审计、提示可能用不了）
     scripts = scriptsInTree(staging, lock);
     if (scripts.length) options.log(`提示：${scripts.map((s) => `${s.package} ${s.script}`).join('、')} 声明了安装脚本，没有执行；依赖它的组件可能用不了`);
-    // 内置浏览器（builtin-assets.ts）：只认 playwright-core + browser:chromium 这一种，用它自带的命令把 Chromium 下到默认位置。
-    // 不是包的安装脚本（那些一律不跑），是这里写死的一条命令；HOME 用 Worker 用户自己的，npx 起的 Playwright MCP 才找得到。
-    if (installsBrowser(spec)) {
-      options.log('$ playwright-core install chromium（下载到 ~/.cache/ms-playwright）');
-      await options.run(options.node, [join(pkgDir, 'cli.js'), 'install', 'chromium'], { cwd: staging, env: { ...options.env } });
-      // 下载完成 ≠ 能用：缺系统库（要 root 装系统包）时浏览器起不来。明说缺哪些，不静默失败、不假装装好。
-      const missingDeps = await missingBrowserLibraries(options, staging);
-      if (missingDeps.length) {
+    // 目录项如果声明了获取策略：在已核对的包上按顺序执行（系统二进制 / 用户空间安装 / 轻量退路 / 要 root）。
+    let acquisition: AcquisitionResolution | undefined;
+    if (spec.strategies?.length) {
+      const hooks: AcquireHooks = {
+        env: { ...options.env },
+        run: options.run,
+        log: options.log,
+        ...(options.acquire ?? {})
+      };
+      const capability = spec.provides[0]?.capability;
+      const resolved = await runAcquisitionStrategies({
+        hooks,
+        strategies: spec.strategies,
+        componentId: spec.componentId,
+        capability,
+        cwd: staging,
+        install: async (args) => {
+          await options.run(options.node, [join(pkgDir, 'cli.js'), ...args], { cwd: staging, env: { ...options.env } });
+        }
+      });
+      if (!resolved.ok) {
         rmSync(staging, { recursive: true, force: true });
-        options.log(`缺系统库：${missingDeps.join('、')}`);
+        options.log(resolved.message);
         return {
           ok: false,
           outcome: {
             ok: false,
-            message: `${spec.componentId}：Chromium 下载完成，但机器缺系统库（${missingDeps.slice(0, 8).join('、')}）：浏览器起不来。缺的要 root 装系统包——root 下跑 npx playwright install-deps chromium（或 apt / dnf 装对应的包）；装好后重新发起安装任务。`,
-            result: { missingDeps, exitCode: 0, durationMs: elapsed() }
+            message: resolved.message,
+            result: acquisitionJobResult(resolved, { exitCode: 0, durationMs: elapsed() })
           }
         };
       }
+      acquisition = resolved.acquisition;
+      options.log(resolved.message);
     }
     rmSync(join(staging, '.npm-cache'), { recursive: true, force: true });
     writeFileSync(
       join(staging, '.component.json'),
-      `${JSON.stringify({ id: spec.componentId, version: spec.version, packageName: spec.packageName, integrity: spec.integrity, enabled: true, provides: spec.provides, ...(spec.git ? { source: `git:${spec.git.url}` } : {}), installedAt: Date.now() }, null, 2)}\n`
+      `${JSON.stringify({ id: spec.componentId, version: spec.version, packageName: spec.packageName, integrity: spec.integrity, enabled: true, provides: spec.provides, ...(acquisition ? { acquisition } : {}), ...(spec.git ? { source: `git:${spec.git.url}` } : {}), installedAt: Date.now() }, null, 2)}\n`
     );
-    return { ok: true, staged: { spec, base, staging, previous, scripts } };
+    return { ok: true, staged: { spec, base, staging, previous, scripts, ...(acquisition ? { acquisition } : {}) } };
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });
     const message = error instanceof Error ? error.message : String(error);
@@ -241,10 +220,12 @@ export async function installComponent(options: ComponentInstallOptions, spec: C
   const stage = await stageComponent(options, spec, elapsed);
   if (!stage.ok) return stage.outcome;
   commitStaged(stage.staged);
+  const acquisition = stage.staged.acquisition;
+  const used = acquisition?.path ? `（策略 ${acquisition.strategy}：${acquisition.path}）` : acquisition ? `（策略 ${acquisition.strategy}）` : '';
   return {
     ok: true,
-    message: `已安装组件 ${spec.componentId} ${spec.version}`,
-    result: { integrity: spec.integrity, ignoredScripts: true, scripts: stage.staged.scripts, exitCode: 0, durationMs: elapsed() }
+    message: `已安装组件 ${spec.componentId} ${spec.version}${used}`,
+    result: { integrity: spec.integrity, ignoredScripts: true, scripts: stage.staged.scripts, exitCode: 0, durationMs: elapsed(), ...(acquisition ? { acquisition } : {}) }
   };
 }
 
@@ -266,10 +247,11 @@ export async function installBundle(options: ComponentInstallOptions, specs: rea
     staged.push(stage.staged);
   }
   for (const done of staged) commitStaged(done);
+  const acquisition = staged.map((s) => s.acquisition).find((item) => item);
   return {
     ok: true,
     message: `已整套安装 ${specs.length} 个组件：${specs.map((s) => `${s.componentId} ${s.version}`).join('、')}`,
-    result: { ignoredScripts: true, scripts: staged.flatMap((s) => s.scripts).slice(0, 200), exitCode: 0, durationMs: elapsed() }
+    result: { ignoredScripts: true, scripts: staged.flatMap((s) => s.scripts).slice(0, 200), exitCode: 0, durationMs: elapsed(), ...(acquisition ? { acquisition } : {}) }
   };
 }
 
@@ -304,12 +286,13 @@ export function hubComponentDirs(root: string, runtime: string): string[] {
   return out;
 }
 
-/** 内置浏览器组件：装完要再下载 Chromium。 */
-export function installsBrowser(spec: Pick<ComponentJobSpec, 'packageName' | 'provides'>): boolean {
+/** 这条组件任务是否要跑获取策略（目录声明或内置清单补上的）。 */
+export function installsBrowser(spec: Pick<ComponentJobSpec, 'packageName' | 'provides' | 'strategies'>): boolean {
+  if (spec.strategies && spec.strategies.length > 0) return true;
   return spec.packageName === BUILTIN_CHROMIUM.packageName && spec.provides.some((p) => p.capability === BUILTIN_CHROMIUM.capability);
 }
 
 /** 只提供机器工具（mode = machine-tool）的组件不是运行时插件。 */
 export function machineToolOnly(provides: unknown): boolean {
-  return Array.isArray(provides) && provides.length > 0 && provides.every((p) => (p as { mode?: unknown } | null)?.mode === BUILTIN_CHROMIUM.mode);
+  return Array.isArray(provides) && provides.length > 0 && provides.every((p) => (p as { mode?: unknown } | null)?.mode === 'machine-tool');
 }

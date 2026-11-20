@@ -1,7 +1,7 @@
 # 工具清单（自动生成）
 
 由 `npm run skill:tools` 从 `apps/server/src/openapi/routes.ts` 的 MCP 元数据生成，等于 `tools/list` 的结果。
-当前 72 个：只读 26，写 46。
+当前 74 个：只读 27，写 47。
 
 「参数」只列名字，`?` 表示可选；具体类型和必填组合见 `SKILL.md` 与 `<hub>/openapi/v1/openapi.json`。
 
@@ -9,8 +9,10 @@
 | --- | --- | --- | --- | --- | --- |
 | `list_workers` | 读 | `worker.read` | `/workers` | — | 能用的机器 |
 | `list_models` | 读 | `worker.read` | `/models` | workerId?, agentId? | 开会话能用的模型 |
-| `worker_component_status` | 读 | `worker.read` | `/workers/browser-status` | — | 各机器的内置浏览器（Chromium）就绪状态 |
-| `install_builtin_browser` | 写 | `worker.read` | `/workers/{workerId}/builtin-browser` | workerId | 给机器装内置 Chromium（Playwright）（写工具，要 `clientRequestId`） |
+| `worker_component_status` | 读 | `worker.read` | `/workers/browser-status` | — | 各机器的 browser:chromium 就绪状态（capability_status 的别名） |
+| `capability_status` | 读 | `worker.read` | `/workers/capability-status` | capability?, workerId? | 各机器某项能力的就绪状态 |
+| `install_builtin_browser` | 写 | `worker.read` | `/workers/{workerId}/builtin-browser` | workerId | 给机器安装内置浏览器（component_install 的别名）（写工具，要 `clientRequestId`） |
+| `component_install` | 写 | `worker.read` | `/workers/{workerId}/components` | workerId, componentId?, version?, capability? | 给机器安装组件（按 componentId 或 capability）（写工具，要 `clientRequestId`） |
 | `list_projects` | 读 | `project.read` | `/projects` | — | 我可见的项目 |
 | `project_create` | 写 | `project.create` | `/projects` | name, rootPath?, workerId?, repoUrl?, defaultBranch?, description? | 新建项目（写工具，要 `clientRequestId`） |
 | `get_project` | 读 | `project.read` | `/projects/{projectId}` | projectId | 看一个项目 |

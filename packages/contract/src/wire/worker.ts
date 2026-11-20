@@ -157,7 +157,57 @@ export const runtimeAgentIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/);
 export const runtimeActionSchema = z.enum(['install', 'uninstall', 'switch']);
 /** 组件任务（ADR 0021 P2）：复用 runtime_job，多两个 action。只发给清单里报了 componentInstall 的 Worker。 */
 export const runtimeJobActionSchema = z.enum(['install', 'uninstall', 'switch', 'install_component', 'uninstall_component']);
-const capabilityEntry = z.object({ capability: z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128), mode: z.string().max(64).optional() });
+const capabilityEntry = z.object({
+  capability: z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128),
+  mode: z.string().max(64).optional(),
+  mcp: z.object({ name: z.string().max(64), executableArg: z.string().max(64) }).optional()
+});
+const strategyId = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
+const strategyArg = z.string().min(1).max(256);
+const binaryLocateSchema = z.object({
+  envRoot: z.string().max(128).optional(),
+  homeSubdir: z.string().max(256).optional(),
+  directoryPrefixes: z.array(z.string().min(1).max(256)).min(1).max(16).readonly(),
+  excludeDirectoryPrefixes: z.array(z.string().min(1).max(256)).max(16).readonly().optional(),
+  binaries: z.array(z.string().min(1).max(256)).min(1).max(16).readonly()
+});
+export const acquisitionStrategySchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('detect-system-binary'),
+    id: strategyId,
+    names: z.array(z.string().min(1).max(128)).max(32).readonly().optional(),
+    paths: z.array(z.string().min(1).max(512)).max(32).readonly().optional(),
+    verify: z.object({ args: z.array(strategyArg).max(16).readonly() }).optional()
+  }),
+  z.object({
+    type: z.literal('user-space-install'),
+    id: strategyId,
+    args: z.array(strategyArg).min(1).max(16).readonly(),
+    locate: binaryLocateSchema,
+    checkLibs: z.boolean().optional()
+  }),
+  z.object({
+    type: z.literal('lighter-variant'),
+    id: strategyId,
+    args: z.array(strategyArg).min(1).max(16).readonly(),
+    fallbackArgs: z.array(strategyArg).max(16).readonly().optional(),
+    locate: binaryLocateSchema,
+    checkLibs: z.boolean().optional()
+  }),
+  z.object({
+    type: z.literal('requires-root'),
+    id: strategyId,
+    command: z.string().min(1).max(128),
+    args: z.array(strategyArg).max(16).readonly().optional()
+  })
+]);
+export const acquisitionResolutionSchema = z.object({
+  strategy: z.string().min(1).max(64),
+  type: z.enum(['detect-system-binary', 'user-space-install', 'lighter-variant', 'requires-root']),
+  path: z.string().min(1).max(512).optional(),
+  capability: z.string().max(128).optional(),
+  componentId: z.string().max(64).optional()
+});
 /** 组件任务的规格：全是固定形状，没有可拼进命令的自由文本。 */
 export const componentJobSpecSchema = z.object({
   componentId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
@@ -173,7 +223,8 @@ export const componentJobSpecSchema = z.object({
   provides: z.array(capabilityEntry).max(16),
   /** 恒为 true（ADR 0021 决定 8：安装脚本一律不执行）。保留字段是为了让旧版 Worker 也加 --ignore-scripts。 */
   ignoreScripts: z.literal(true),
-  expectedCurrent: runtimeVersionSchema.nullable()
+  expectedCurrent: runtimeVersionSchema.nullable(),
+  strategies: z.array(acquisitionStrategySchema).max(8).readonly().optional()
 });
 /** 组件任务结束时的结构化结果：hub 据此写审计（bundle.script_skipped / bundle.integrity_mismatch）。 */
 export const componentJobResultSchema = z.object({
@@ -181,6 +232,8 @@ export const componentJobResultSchema = z.object({
   integrityMismatch: z.boolean().optional(),
   ignoredScripts: z.boolean().optional(),
   scripts: z.array(z.object({ package: z.string().max(214), script: z.string().max(32) })).max(200).optional(),
+  missingDeps: z.array(z.string().max(128)).max(64).optional(),
+  acquisition: acquisitionResolutionSchema.optional(),
   exitCode: z.number().int().nullable().optional(),
   durationMs: z.number().int().nonnegative().optional()
 });
@@ -216,12 +269,14 @@ export const workerInventorySchema = z.object({
       })
     )
     .max(200),
-  capabilities: z.array(z.object({ capability: z.string().max(128), mode: z.string().max(64).optional(), via: z.string().max(214) })).max(200),
+  capabilities: z.array(z.object({ capability: z.string().max(128), mode: z.string().max(64).optional(), via: z.string().max(214), mcp: z.object({ name: z.string().max(64), executableArg: z.string().max(64) }).optional() })).max(200),
   collectedAt: z.number().int().nonnegative(),
   /** 这台 Worker 能接组件任务（P2）。P1 的 Worker 不报 = hub 不给它发。 */
   componentInstall: z.boolean().optional(),
   /** 能接整套安装（P3）。 */
-  bundleInstall: z.boolean().optional()
+  bundleInstall: z.boolean().optional(),
+  /** 已选定的能力获取结果。 */
+  acquisitions: z.array(acquisitionResolutionSchema).max(32).optional()
 });
 export const workerInventoryFrameSchema = z.object({ type: z.literal('inventory'), inventory: workerInventorySchema });
 

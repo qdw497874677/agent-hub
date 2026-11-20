@@ -24,6 +24,7 @@ import {
   gitIntegrity,
   gitSpec
 } from '../component-catalog.ts';
+import { builtinStrategiesFor } from '../builtin-assets.ts';
 import type { WorkerComponentPin } from '../component-catalog.ts';
 
 export interface ComponentDeps {
@@ -128,7 +129,8 @@ export async function submitComponent(
     version: input.version,
     resolved: info.resolved,
     integrity: info.integrity,
-    provides: input.provides.map((p) => ({ capability: p.capability, ...(p.mode ? { mode: p.mode } : {}) })),
+    provides: input.provides.map((p) => ({ capability: p.capability, ...(p.mode ? { mode: p.mode } : {}), ...(p.mcp ? { mcp: p.mcp } : {}) })),
+    ...(input.strategies && input.strategies.length ? { strategies: input.strategies } : {}),
     scripts: info.scripts,
     dependencyCount: info.dependencyCount,
     status: 'pending',
@@ -182,6 +184,7 @@ export async function reviewComponent(
 }
 
 function specOf(item: CatalogComponent, from: string | null): ComponentJobSpec {
+  const strategies = item.strategies ?? builtinStrategiesFor(item.id, item.version);
   return {
     componentId: item.id,
     runtime: item.runtime,
@@ -192,7 +195,8 @@ function specOf(item: CatalogComponent, from: string | null): ComponentJobSpec {
     integrity: item.integrity,
     provides: item.provides,
     ignoreScripts: true,
-    expectedCurrent: from
+    expectedCurrent: from,
+    ...(strategies && strategies.length ? { strategies } : {})
   };
 }
 

@@ -1,4 +1,7 @@
 import type { Asset, AssetKind } from './asset.ts';
+import type { AcquisitionStrategy } from './acquisition.ts';
+import { withExecutableArg } from './acquisition.ts';
+import type { ComponentProvides } from './runtime-bundle.ts';
 
 /**
  * Hub 内置资产清单（随代码发版）。每一项写死来源和钉住的版本：
@@ -37,7 +40,8 @@ export interface BuiltinAsset {
   readonly files: readonly { readonly path: string; readonly text: string }[];
   readonly secrets: readonly BuiltinSecret[];
   /** 机器上要有的东西（hub 能管的只有浏览器）。 */
-  readonly requires?: { readonly browser?: 'chromium' };
+  /** 这个资产要用的能力：browser 是 browser:chromium 的简写；也可以直接写 capabilities。 */
+  readonly requires?: { readonly browser?: 'chromium'; readonly capabilities?: readonly string[] };
   /** hub 管不了、只能提示的前提（例如机器上要有 uv）。 */
   readonly note?: string;
   /** 配套的其他内置项（只做提示）。 */
@@ -45,20 +49,167 @@ export interface BuiltinAsset {
 }
 
 /**
- * 浏览器组件：走组件目录装 playwright-core（和 @playwright/mcp 依赖的同一个版本，浏览器修订号才对得上），
- * 装完 Worker 再用它自己的命令下载 Chromium 到默认位置（~/.cache/ms-playwright），npx 起的 Playwright MCP 就能找到。
- * 组件安装一律不跑包里的安装脚本；下载浏览器这一步是 Worker 代码里写死的（只认这个包 + 这个能力）。
+ * 内置组件：目录数据（包 + 能力 + 有序获取策略）。Worker 只跑泛型策略类型，不写死某个组件。
  */
+export interface BuiltinComponent {
+  readonly componentId: string;
+  readonly packageName: string;
+  readonly version: string;
+  readonly integrity: string;
+  readonly license: string;
+  readonly runtime: 'pi' | 'opencode';
+  readonly provides: readonly ComponentProvides[];
+  readonly strategies: readonly AcquisitionStrategy[];
+}
+
+const PLAYWRIGHT_CHROMIUM_LOCATE = {
+  envRoot: 'PLAYWRIGHT_BROWSERS_PATH',
+  homeSubdir: '.cache/ms-playwright',
+  directoryPrefixes: ['chromium'],
+  excludeDirectoryPrefixes: ['chromium_headless_shell', 'chromium-headless-shell'],
+  binaries: [
+    'chrome-linux/chrome',
+    'chrome-linux64/chrome',
+    'chrome-mac/Chromium',
+    'chrome-mac-arm64/Chromium',
+    'chrome-win64/chrome.exe',
+    'chrome-win/chrome.exe'
+  ]
+} as const;
+
+const PLAYWRIGHT_SHELL_LOCATE = {
+  envRoot: 'PLAYWRIGHT_BROWSERS_PATH',
+  homeSubdir: '.cache/ms-playwright',
+  directoryPrefixes: ['chromium_headless_shell', 'chromium-headless-shell'],
+  binaries: [
+    'chrome-headless-shell-linux64/chrome-headless-shell',
+    'chrome-headless-shell-linux/chrome-headless-shell',
+    'chrome-linux/headless_shell',
+    'chrome-headless-shell-mac-arm64/chrome-headless-shell',
+    'chrome-headless-shell-mac/chrome-headless-shell',
+    'chrome-headless-shell-win64/chrome-headless-shell.exe'
+  ]
+} as const;
+
+/** Chromium 作为目录数据：系统浏览器 → 用户缓存 Playwright Chromium → chrome-headless-shell → 要 root 装系统库。 */
 export const BUILTIN_CHROMIUM = {
   componentId: 'chromium',
   packageName: 'playwright-core',
   version: '1.66.0-alpha-2026-11-09',
   integrity: 'sha512-HZVc/E3nqrasH7PPvJNwc7aCNsKXKjvtViZBpeFfopGOeB0zr3r5q4TKfqzkrdIcCKWCulyLVVGtla/LYbmxUQ==',
   license: 'Apache-2.0',
+  runtime: 'pi' as const,
   capability: 'browser:chromium',
   /** 不是运行时插件：不交给 agent 当扩展加载。 */
-  mode: 'machine-tool'
-} as const;
+  mode: 'machine-tool' as const,
+  provides: [
+    {
+      capability: 'browser:chromium',
+      mode: 'machine-tool',
+      mcp: { name: 'playwright', executableArg: '--executable-path' }
+    }
+  ],
+  strategies: [
+    {
+      type: 'detect-system-binary',
+      id: 'system',
+      names: [
+        'google-chrome-stable',
+        'google-chrome',
+        'chromium',
+        'chromium-browser',
+        'chrome',
+        'microsoft-edge-stable',
+        'microsoft-edge',
+        'msedge'
+      ],
+      paths: [
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chrome',
+        '/opt/google/chrome/chrome',
+        '/usr/bin/microsoft-edge-stable',
+        '/usr/bin/microsoft-edge',
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Chromium.app/Contents/MacOS/Chromium',
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files\\Chromium\\Application\\chrome.exe'
+      ],
+      verify: {
+        args: [
+          '--headless=new',
+          '--disable-gpu',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--disable-extensions',
+          '--no-sandbox',
+          '--dump-dom',
+          'about:blank'
+        ]
+      }
+    },
+    {
+      type: 'user-space-install',
+      id: 'playwright',
+      args: ['install', 'chromium'],
+      locate: PLAYWRIGHT_CHROMIUM_LOCATE,
+      checkLibs: true
+    },
+    {
+      type: 'lighter-variant',
+      id: 'headless-shell',
+      args: ['install', 'chromium-headless-shell'],
+      fallbackArgs: ['install', '--only-shell'],
+      locate: PLAYWRIGHT_SHELL_LOCATE,
+      checkLibs: true
+    },
+    {
+      type: 'requires-root',
+      id: 'install-deps',
+      command: 'npx',
+      args: ['playwright', 'install-deps', 'chromium']
+    }
+  ]
+} as const satisfies BuiltinComponent & { capability: 'browser:chromium'; mode: 'machine-tool' };
+
+export const BUILTIN_COMPONENTS: readonly BuiltinComponent[] = [BUILTIN_CHROMIUM];
+
+export function builtinComponentById(id: string): BuiltinComponent | undefined {
+  return BUILTIN_COMPONENTS.find((item) => item.componentId === id);
+}
+
+/** 目录项没带策略时，用内置清单里同 id、同版本的补上（老目录项也能走无 root 选定）。 */
+export function builtinStrategiesFor(componentId: string, version: string): readonly AcquisitionStrategy[] | undefined {
+  const item = builtinComponentById(componentId);
+  return item && item.version === version ? item.strategies : undefined;
+}
+
+export function builtinComponentForCapability(capability: string): BuiltinComponent | undefined {
+  return BUILTIN_COMPONENTS.find((item) => item.provides.some((entry) => entry.capability === capability));
+}
+
+/** 内置资产声明的能力（browser: 'chromium' 等于 browser:chromium）。 */
+export function requiredCapabilitiesOf(item: Pick<BuiltinAsset, 'requires'> | null | undefined): string[] {
+  if (!item?.requires) return [];
+  const out: string[] = [];
+  if (item.requires.browser) out.push(`browser:${item.requires.browser}`);
+  for (const capability of item.requires.capabilities ?? []) if (!out.includes(capability)) out.push(capability);
+  return out;
+}
+
+/** @deprecated 请用 withExecutableArg；留给 Playwright 参数的旧调用。 */
+export function withPlaywrightExecutable(args: readonly string[], path: string): string[] {
+  return withExecutableArg(args, '--executable-path', path);
+}
+
+export function isPlaywrightMcp(entry: { readonly name: string; readonly args?: readonly string[] }): boolean {
+  if (entry.name === 'playwright') return true;
+  return (entry.args ?? []).some((arg) => arg === '@playwright/mcp' || arg.startsWith('@playwright/mcp@'));
+}
+
 
 const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 
@@ -298,8 +449,12 @@ export function builtinUpdateAvailable(asset: Pick<Asset, 'source'>): string | n
   return of.item.version === of.version ? null : of.item.version;
 }
 
+/** 这台机器缺不缺这个内置资产要的能力（只认可信能力）。 */
+export function needsCapabilities(item: Pick<BuiltinAsset, 'requires'> | null, trustedCapabilities: readonly string[]): string[] {
+  return requiredCapabilitiesOf(item).filter((capability) => !trustedCapabilities.includes(capability));
+}
+
 /** 这台机器缺不缺内置资产要的浏览器（只认 hub 装的、可信的 browser:chromium 能力）。 */
 export function needsBrowser(item: Pick<BuiltinAsset, 'requires'> | null, trustedCapabilities: readonly string[]): boolean {
-  if (!item?.requires?.browser) return false;
-  return !trustedCapabilities.includes(BUILTIN_CHROMIUM.capability);
+  return needsCapabilities(item, trustedCapabilities).includes(BUILTIN_CHROMIUM.capability);
 }
