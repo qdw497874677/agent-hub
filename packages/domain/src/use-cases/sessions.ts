@@ -267,6 +267,11 @@ export async function forkSessionUseCase(
   const project = await deps.projects.byId(sourceTask.projectId);
   if (!project) return err(notFound('项目不存在'));
 
+  // 分叉会继承 agentSessionRef，等于能读来源会话的 agent 文件：和 prompt 一样只认会话创建者
+  // （团队 owner / admin 或被显式授权的人也放行），不能因为项目被共享就越权。
+  const sourceAllowed = await authorizeSession(deps.access, command.actor ?? null, project, source, 'session.fork');
+  if (!sourceAllowed.ok) return sourceAllowed;
+
   const agentId = asAgentId(command.agentId);
   if (!deps.agents.descriptor(agentId)) {
     return err(conflict(`没有在线节点提供 ${command.agentId}`));

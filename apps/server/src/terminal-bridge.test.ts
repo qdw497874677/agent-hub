@@ -5,6 +5,7 @@ import { connect } from 'node:net';
 import { WebSocket } from 'ws';
 import type { Subject } from '@agent-hub/domain';
 import { forbidden, notFound } from '@agent-hub/domain';
+import { createRequestGuard } from './request-guard.ts';
 import {
   createTerminalBridge,
   loginTokenOf,
@@ -150,7 +151,7 @@ function open(port: number, cookie: string, options: { origin?: string } = {}): 
 }
 
 /** 直接发原始升级请求，拿响应头文本（失败时服务端会 end）。 */
-function rawUpgrade(port: number, headers: Record<string, string>): Promise<string> {
+function rawUpgrade(port: number, headers: Record<string, string>, options: { host?: boolean } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     const socket = connect(port, '127.0.0.1');
     let text = '';
@@ -165,7 +166,7 @@ function rawUpgrade(port: number, headers: Record<string, string>): Promise<stri
     socket.on('close', () => resolve(text));
     const lines = [
       'GET /api/sessions/s1/terminal HTTP/1.1',
-      `Host: ${headers.Host ?? `127.0.0.1:${port}`}`,
+      ...(options.host === false ? [] : [`Host: ${headers.Host ?? `127.0.0.1:${port}`}`]),
       'Upgrade: websocket',
       'Connection: Upgrade',
       'Sec-WebSocket-Version: 13',
@@ -206,6 +207,19 @@ test('握手：Host / Origin / cookie / session.read 四步（外加 access 的 
     // 缺 Origin + 回环：Origin 这步放行，卡在 cookie 上 → 401。
     assert.match(await rawUpgrade(world.port, {}), /^HTTP\/1\.1 401 /);
     assert.match(await rawUpgrade(world.port, { Cookie: 'hub_login=bad' }), /^HTTP\/1\.1 401 /);
+    assert.match(await rawUpgrade(world.port, { Cookie: 'hub_login=good', Origin: `http://${host}` }), /^HTTP\/1\.1 101 /);
+  } finally {
+    await world.close();
+  }
+});
+
+test('握手：不带 Host 的 HTTP/1.1 upgrade 直接 403（HTTP/1.1 起 Host 必填）', async () => {
+  // 用真的 Host 白名单判定，而不是 harness 里那个只认字符串的假件。
+  const world = await harness({ hostAllowed: createRequestGuard([]).hostAllowed });
+  try {
+    const host = `127.0.0.1:${world.port}`;
+    assert.match(await rawUpgrade(world.port, { Cookie: 'hub_login=good', Origin: `http://${host}` }, { host: false }), /^HTTP\/1\.1 403 /);
+    // 带上合法 Host 照常握手，证明不是一刀切拒 upgrade。
     assert.match(await rawUpgrade(world.port, { Cookie: 'hub_login=good', Origin: `http://${host}` }), /^HTTP\/1\.1 101 /);
   } finally {
     await world.close();

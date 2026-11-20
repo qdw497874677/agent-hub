@@ -273,17 +273,35 @@ const CREATOR_ONLY: ReadonlySet<Permission> = new Set<Permission>(['project.shar
 
 const isRead = (permission: Permission): boolean => permission.endsWith('.read');
 
+/**
+ * 一条显式授权现在是否还有效：撤销了不行，过期了也不行。
+ * `now` 由调用方从 Principal.grantsAt 取（withAccess 装配时的时间），decide 里不读全局时钟。
+ * 有 expiresAt 但不知道判断时间时按无效处理：宁可少放行，也不要让过期授权漏过去。
+ */
+const grantLive = (grant: AccessGrant, now: number | undefined): boolean => {
+  if (grant.revokedAt !== null) return false;
+  if (grant.expiresAt === null) return true;
+  return now !== undefined && grant.expiresAt > now;
+};
+
 const grantMatches = (principal: Principal, permission: Permission, resource: Resource): boolean =>
   resource.kind !== undefined &&
   resource.id !== undefined &&
   (principal.grants ?? []).some(
-    (g) => g.userId === principal.user.id && g.permission === permission && g.resourceKind === resource.kind && g.resourceId === resource.id && g.revokedAt === null
+    (g) =>
+      g.userId === principal.user.id &&
+      g.permission === permission &&
+      g.resourceKind === resource.kind &&
+      g.resourceId === resource.id &&
+      grantLive(g, principal.grantsAt)
   );
 
-/** 集群管理员是否正临时进入这个团队（只读）。 */
+/** 集群管理员是否正临时进入这个团队（只读）；过期的临时进入不算。 */
 export const visiting = (principal: Principal, teamId: string): boolean =>
   principal.user.clusterAdmin &&
-  (principal.grants ?? []).some((g) => g.permission === 'hub.visit' && g.resourceKind === 'team' && g.resourceId === teamId && g.revokedAt === null);
+  (principal.grants ?? []).some(
+    (g) => g.permission === 'hub.visit' && g.resourceKind === 'team' && g.resourceId === teamId && grantLive(g, principal.grantsAt)
+  );
 
 /** 拒绝原因：错误文案和测试用。 */
 export type DenyReason = 'anonymous' | 'disabled' | 'token' | 'bot_scope' | 'token_project' | 'hub_only' | 'local_worker' | 'team' | 'role' | 'relation' | 'setting';

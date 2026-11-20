@@ -10,6 +10,8 @@ test('Host：IP 字面量、localhost、配置过的主机名放行；陌生域�
   for (const host of ['evil.example:7878', 'evil.example', '127.0.0.1.evil.example']) {
     assert.ok(!guard.hostAllowed(host), host);
   }
+  // HTTP/1.1 起 Host 必填：没带 / 空值一律拒，别让它绕过白名单。
+  for (const host of [undefined, '', '   ']) assert.ok(!guard.hostAllowed(host), String(host));
 });
 
 test('Origin：同站或不带 Origin 放行；别的站发起的（跨站 WebSocket / 表单）拒', () => {

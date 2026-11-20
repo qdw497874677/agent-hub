@@ -123,5 +123,12 @@ const KIND: Record<string, ResourceRef['kind']> = { projects: 'project', tasks: 
 /** 这些不是 id。 */
 const RESERVED = new Set(['derive', 'fork', 'sweep']);
 
-/** 这些权限按会话本身判断（不是按项目）。 */
-const SESSION_SCOPED: ReadonlySet<Permission> = new Set<Permission>(['session.prompt', 'session.interrupt', 'session.delete', 'session.continue', 'session.settle']);
+/** 这些权限按会话本身判断（不是按项目）。分叉会继承 agentSessionRef，所以和 prompt 同口径。 */
+const SESSION_SCOPED: ReadonlySet<Permission> = new Set<Permission>([
+  'session.prompt',
+  'session.interrupt',
+  'session.delete',
+  'session.continue',
+  'session.settle',
+  'session.fork'
+]);

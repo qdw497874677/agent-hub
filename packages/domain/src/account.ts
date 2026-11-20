@@ -94,6 +94,11 @@ export interface Principal {
   readonly customRole?: CustomRole | null;
   /** 认证时加载的、给这个人的有效显式授权（含集群管理员的临时进入）。 */
   readonly grants?: readonly AccessGrant[];
+  /**
+   * 装配 grants 时的 now（withAccess 的入参）。decide() 用它再判一次授权有没有过期，
+   * 不在这里读全局时钟；没有它就不知道「现在几点」，带 expiresAt 的授权按无效处理。
+   */
+  readonly grantsAt?: number;
 }
 
 /** 登录态时效：30 天，用着就续（每次续到「最后一次使用 + 30 天」）。 */

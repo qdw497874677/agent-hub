@@ -215,6 +215,24 @@ test('显式授权：只补那一个资源、那一项权限', () => {
   assert.equal(can(revoked, 'session.prompt', session('own'), ctx), false);
 });
 
+test('过期授权：decide 自己按 grantsAt 判，不依赖装配层的预过滤', () => {
+  // 装配层（withAccess → activeFor）已经过滤一次；这里证明「过期 grant 硬塞进 Principal」也不生效。
+  const expired = { ...grant('mem', 'session.prompt', 'session', 's-own'), expiresAt: 100 };
+  const atExpiry = user('mem', 'member', 'hub', false, { grants: [expired], grantsAt: 100 });
+  assert.equal(can(atExpiry, 'session.prompt', session('own'), ctx), false, 'expiresAt == now 算过期');
+  const before = user('mem', 'member', 'hub', false, { grants: [expired], grantsAt: 99 });
+  assert.equal(can(before, 'session.prompt', session('own'), ctx), true);
+  // 不知道现在几点（没有 grantsAt）就不放行带 expiresAt 的授权：宁可少放行。
+  const unknown = user('mem', 'member', 'hub', false, { grants: [expired] });
+  assert.equal(can(unknown, 'session.prompt', session('own'), ctx), false);
+  // 集群管理员的临时进入同理。
+  const visit = { ...grant('david', 'hub.visit', 'team', 'other', 'other'), expiresAt: 100 };
+  const staleVisit = user('david', 'owner', 'hub', true, { grants: [visit], grantsAt: 100 });
+  assert.equal(can(staleVisit, 'project.read', project('o2', [], 'other'), ctx), false);
+  const liveVisit = user('david', 'owner', 'hub', true, { grants: [visit], grantsAt: 99 });
+  assert.equal(can(liveVisit, 'project.read', project('o2', [], 'other'), ctx), true);
+});
+
 test('临时进入：集群管理员只读那个团队；写操作、别的团队、非集群管理员都不行', () => {
   const visit = grant('david', 'hub.visit', 'team', 'other', 'other');
   const visiting = user('david', 'owner', 'hub', true, { grants: [visit] });

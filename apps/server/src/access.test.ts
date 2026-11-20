@@ -137,3 +137,24 @@ test('会话改名：能写这条会话的人才能改；别的团队 / 不相�
   const canvas = (await david(`/api/projects/${project.id}/canvas`)).body;
   assert.equal(canvas.sessions.find((s: { id: string }) => s.id === made.value.id)?.title, '查登录 bug');
 });
+
+test('分叉：共享项目里的成员不能分叉别人的会话（按会话创建者判，而不是按项目）', async () => {
+  const { david, member, accounts, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const task = (await david('/api/tasks', post({ projectId: project.id, title: '任务', goal: '' }))).body;
+  const made = deriveSession({ task: { ...task, createdAt: task.createdAt }, agentId: asAgentId('fake'), model: 'm1', now: 1, createdBy: 'david' });
+  assert.ok(made.ok);
+  await world.deps.sessions.save({ ...made.value, status: 'stopped', lastSeq: 1 });
+  // 项目共享给成员：他看得见会话，但不是创建者。
+  const user = await accounts.users.byEmail('m@b.co');
+  const stored = await world.deps.projects.byId(project.id);
+  await world.deps.projects.save({ ...stored!, members: [user!.id] });
+
+  const fork = post({ sessionId: made.value.id, agentId: 'fake', model: 'm1' });
+  const denied = await member('/api/sessions/fork', fork);
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  assert.match(denied.body.error.message, /创建者/, JSON.stringify(denied.body));
+  // 创建者照常分叉。
+  const allowed = await david('/api/sessions/fork', fork);
+  assert.equal(allowed.status, 201, JSON.stringify(allowed.body));
+});

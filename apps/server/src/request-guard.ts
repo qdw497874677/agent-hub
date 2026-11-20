@@ -26,7 +26,8 @@ export function createRequestGuard(extraHosts: readonly string[]): RequestGuard 
   };
   return {
     hostAllowed(host) {
-      if (host === undefined || host === '') return true; // HTTP/1.0 之类不带 Host 的客户端不是浏览器
+      // HTTP/1.1 起 Host 必填：浏览器一定带，DNS 重绑定攻击也一定带，所以这里只堵「根本没带 / 空值」。
+      if (host === undefined || host.trim() === '') return false;
       const name = hostnameOf(host);
       return isIP(name) !== 0 || named.has(name) || name.endsWith('.localhost');
     },

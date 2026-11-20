@@ -6,6 +6,7 @@ import { asAgentId, asSessionId, recordEvent, unavailable } from '@agent-hub/dom
 import { fakeHosting, fakeSessions, fakeTasks, inMemoryDeliveries, inMemoryDeps } from '@agent-hub/domain/testing';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
+import { createRequestGuard } from './request-guard.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
 
 /**
@@ -523,4 +524,15 @@ test('环境状态：现在算不出来（revision=null）时 pending=false，�
   const status = await call(`/api/sessions/${sessionId}/environment`);
   assert.equal(status.status, 200);
   assert.deepEqual(status.body, { revision: null, appliedRevision: 'rev-1', pending: false, supported: true });
+});
+
+test('Host：空 Host 的普通请求也 403（不泄露页面）；合法 Host 照常', async () => {
+  const { deps } = inMemoryDeps();
+  const app = createApp({ deps, hub: createStreamHub(), token: null, guard: createRequestGuard([]) });
+  // HTTP/1.1 起 Host 必填：空值不能当成「HTTP/1.0 老客户端」放过去。
+  const noHost = await app.fetch(new Request('http://hub/api/health', { headers: { host: '' } }));
+  assert.equal(noHost.status, 403);
+  // app.fetch 不会自动补 Host（真浏览器 / 客户端会带），所以这里显式给一个合法值。
+  const ok = await app.fetch(new Request('http://127.0.0.1:7878/api/health', { headers: { host: '127.0.0.1:7878' } }));
+  assert.equal(ok.status, 200);
 });

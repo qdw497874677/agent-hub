@@ -43,7 +43,7 @@ export async function withAccess(repos: AccessRepos | undefined, principal: Prin
   if (!repos || !principal) return principal;
   const id = customRoleId(principal.user.role);
   const [customRole, grants] = await Promise.all([id ? repos.roles.byId(id) : Promise.resolve(null), repos.grants.activeFor(principal.user.id, now)]);
-  return { ...principal, customRole, grants };
+  return { ...principal, customRole, grants, grantsAt: now };
 }
 
 async function record(deps: Pick<AccessAdminDeps, 'audit' | 'now'>, actor: Principal, action: AuditAction, target: string, detail: string, teamId: string | null): Promise<void> {
