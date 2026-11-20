@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { addTeamMember, fakeAssetSets, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps, type FakeGit } from '@agent-hub/domain/testing';
 import {
   asAgentId,
+  BUILTIN_CHROMIUM,
   createAccessPolicy,
   createMessageBus,
   createTask,
@@ -17,7 +18,11 @@ import {
   type AgentDescriptor,
   type AgentMessage,
   type AssetReviewDeps,
+  type CatalogComponent,
+  type ComponentDeps,
   type MessageStore,
+  type WorkerComponentPin,
+  type WorkerStatus,
   type WorkspaceBrowser
 } from '@agent-hub/domain';
 import { projectSchema, sessionSchema, taskSchema } from '@agent-hub/contract';
@@ -205,6 +210,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
   const reviewStore = inMemoryAssetReview();
   const assetReview: AssetReviewDeps = {
     ...assetsStore.deps,
+    projects: world.deps.projects,
     review: reviewStore.review,
     notifications: reviewStore.notifications,
     audit: accounts.audit!,
@@ -212,6 +218,41 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     teams: accounts.teams,
     policy: access
   };
+  // 内置浏览器开放接口（install_builtin_browser / worker_component_status）要组件设施在场：轻量内存实现，机器清单由用例往 componentWorkers 里塞。
+  const componentWorkers: WorkerStatus[] = [];
+  const componentCatalog = new Map<string, CatalogComponent>();
+  const componentPins: WorkerComponentPin[] = [];
+  const componentDeps: ComponentDeps = {
+    catalog: { list: async () => [...componentCatalog.values()], byId: async (key) => componentCatalog.get(key) ?? null, save: async (item) => void componentCatalog.set(`${item.id}@${item.version}`, item) },
+    pins: {
+      pinsFor: (w) => componentPins.filter((p) => p.workerId === w),
+      upsert: (pin) => {
+        const i = componentPins.findIndex((p) => p.workerId === pin.workerId && p.componentId === pin.componentId);
+        if (i >= 0) componentPins.splice(i, 1);
+        componentPins.push(pin);
+      },
+      remove: (w, c) => {
+        const i = componentPins.findIndex((p) => p.workerId === w && p.componentId === c);
+        if (i >= 0) componentPins.splice(i, 1);
+      }
+    },
+    workers: { list: async () => componentWorkers, runtimeJob: async () => true },
+    sessions: { listAll: async () => [] },
+    audit: accounts.audit!,
+    access,
+    resolveNpm: async (name, version) => ({ name, version, resolved: `https://r/${name}-${version}.tgz`, integrity: BUILTIN_CHROMIUM.integrity, scripts: {}, dependencyCount: 0 }),
+    now: () => 10,
+    newJobId: () => 'job-t'
+  };
+  const browserMachine = (id: string, extra: Partial<WorkerStatus> = {}): WorkerStatus => ({
+    workerId: id,
+    label: id,
+    origin: 'remote',
+    state: 'online',
+    agentIds: ['pi'],
+    inventory: { runtimes: [{ agentId: 'pi', version: '0.1.0', source: 'machine' }], components: [], capabilities: [], collectedAt: 1, componentInstall: true },
+    ...extra
+  });
   const app = createApp({
     deps,
     hub,
@@ -221,7 +262,8 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     assets: { deps: assetReview, audit: accounts.audit!, assetSets: fakeAssetSets() },
     files,
     ...(messaging ? { messaging } : {}),
-    openApi: { tokens: tokenDeps, manage: tokenDeps, rate, settings: accounts.settings, audit: accounts.audit!, teams: accounts.teams }
+    openApi: { tokens: tokenDeps, manage: tokenDeps, rate, settings: accounts.settings, audit: accounts.audit!, teams: accounts.teams },
+    components: componentDeps
   });
   const browser = () => {
     const jar = new Map<string, string>();
@@ -244,7 +286,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     );
     return { status: response.status, headers: response.headers, body: (await response.json().catch(() => null)) as any };
   };
-  return { accounts, world, app, hub, apiTokens, assetsStore, browser, api, enrolledBy, messaging, filesStore, files };
+  return { accounts, world, app, hub, apiTokens, assetsStore, browser, api, enrolledBy, messaging, componentWorkers, browserMachine, filesStore, files };
 }
 const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
 
@@ -329,6 +371,90 @@ test('成员的令牌不超过成员本人的权限：看不见主人的项目',
   assert.deepEqual((await h.api(token)('/projects')).body, []);
   // 成员建不了服务账号
   assert.equal((await member('/api/tokens', post({ name: 's', kind: 'service', scopes: ['projects:read'] }))).status, 403);
+});
+
+test('内置浏览器面：列 / 启用内置资产；机器浏览器状态；管理员令牌能装，本机和没权限的不行', async () => {
+  const { david, mint, api, componentWorkers, browserMachine, accounts } = await setup();
+  const scopes = ['projects:read', 'projects:write', 'assets:read', 'assets:submit', 'workers:read'];
+  const full = api((await mint(david, scopes)).token);
+  const bare = api((await mint(david, ['projects:read'])).token);
+  const project = (await full('/projects', post({ name: 'p' }))).body;
+  // 没权限的令牌：读不到（403），不是 404
+  assert.equal((await bare('/builtin-assets?projectId=x')).status, 403);
+  assert.equal((await bare('/workers/browser-status')).status, 403);
+  // 列内置资产：尚未启用
+  const list = await full(`/builtin-assets?projectId=${project.id}`);
+  assert.equal(list.status, 200, JSON.stringify(list.body));
+  const playwright = list.body.find((row: { id: string }) => row.id === 'playwright');
+  assert.equal(playwright.enabled, null);
+  assert.equal(playwright.requiresBrowser, true);
+  // 启用：created true；再启用：幂等 created false；网页端开关同步出现
+  const made = await full('/builtin-assets/playwright/enable', post({ projectId: project.id }));
+  assert.equal(made.status, 200, JSON.stringify(made.body));
+  assert.equal(made.body.created, true);
+  const again = await full('/builtin-assets/playwright/enable', post({ projectId: project.id }));
+  assert.equal(again.body.created, false);
+  // 网页端同一条数据源：现在也看到已启用
+  const web = (await david(`/api/assets/builtin?projectId=${project.id}`)).body;
+  assert.ok(web.find((row: { id: string; enabled: { on: boolean } | null }) => row.id === 'playwright' && row.enabled?.on === true));
+  // 机器浏览器状态：两台在线机器都没就绪
+  componentWorkers.push(browserMachine('w1'), browserMachine('hub-local', { origin: 'local' }));
+  const status = await full('/workers/browser-status');
+  assert.equal(status.status, 200);
+  assert.deepEqual(status.body.map((row: { workerId: string; ready: boolean; installing: boolean }) => [row.workerId, row.ready, row.installing]), [['w1', false, false], ['hub-local', false, false]]);
+  // 本机：开放 API 永远不能装（管理员令牌也不行）
+  const localDenied = await full('/workers/hub-local/builtin-browser', post({}));
+  assert.equal(localDenied.status, 403);
+  assert.match(localDenied.body.error.message, /本机/);
+  // 管理员令牌：扶植目录（提交→自准）→ 202 安装任务
+  const started = await full('/workers/w1/builtin-browser', post({}));
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.equal(started.body.jobId, 'job-t');
+  assert.equal(started.body.action, 'install_component');
+  // 404：没这台机器
+  assert.equal((await full('/workers/nope/builtin-browser', post({}))).status, 404);
+  // 通用能力状态 / 组件安装（别名之外的主接口）
+  const caps = await full('/workers/capability-status?capability=browser:chromium');
+  assert.equal(caps.status, 200);
+  assert.equal(caps.body[0]?.capability, 'browser:chromium');
+  const generic = await full('/workers/w1/components', post({ capability: 'browser:chromium' }));
+  // 第一次已经把任务发出去了：再装同一版本是冲突或又一次 202（幂等由用例决定），这里至少不是 404/401
+  assert.ok([202, 409].includes(generic.status), JSON.stringify(generic.body));
+  // 浏览器状态露出进行中的安装任务（workerControl 会把运行中的任务合到机器状态上）
+  Object.assign(componentWorkers[0] as WorkerStatus, { runtimeJob: {
+    jobId: 'job-t',
+    agentId: 'pi',
+    action: 'install_component',
+    version: BUILTIN_CHROMIUM.version,
+    component: {
+      componentId: BUILTIN_CHROMIUM.componentId,
+      runtime: 'pi',
+      packageName: BUILTIN_CHROMIUM.packageName,
+      version: BUILTIN_CHROMIUM.version,
+      resolved: '',
+      integrity: BUILTIN_CHROMIUM.integrity,
+      provides: [{ capability: BUILTIN_CHROMIUM.capability, mode: BUILTIN_CHROMIUM.mode }],
+      ignoreScripts: true,
+      expectedCurrent: null
+    },
+    state: 'running',
+    message: '正在安装组件 chromium 1.66.0-alpha-2026-11-09',
+    log: '',
+    startedAt: 10,
+    endedAt: null,
+    actorEmail: 'david@b.co'
+    } });
+  const after = await full('/workers/browser-status');
+  const w1 = after.body.find((row: { workerId: string }) => row.workerId === 'w1');
+  assert.equal(w1.installing, true);
+  assert.deepEqual(w1.installJob, { jobId: 'job-t', state: 'running', message: '正在安装组件 chromium 1.66.0-alpha-2026-11-09' });
+  assert.equal(w1.acquisition, null);
+  assert.equal(w1.capability, 'browser:chromium');
+  // 审计带令牌名
+  const davidUser = await accounts.users.byEmail('david@b.co');
+  assert.ok(davidUser);
+  const entries = await accounts.audit!.query({ actor: 'david@b.co', limit: 50 });
+  assert.ok(entries.some((e) => e.action === 'runtime.component.install' && /经令牌 bot/.test(e.detail)));
 });
 
 test('对话：开会话 → prompt（作者带 via）→ events / stream；审计写 via 令牌', async () => {
@@ -658,7 +784,7 @@ test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口
   assert.deepEqual(live, snapshot, '规范变了：跑 npm run openapi:snapshot 并在 PR 里说明');
   assert.ok(Object.values(live.paths).flatMap((p: any) => Object.keys(p)).length >= 26);
   assert.equal((await app.fetch(new Request('http://hub/openapi/v1/docs'))).status, 200);
-  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 46);
+  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 48);
 });
 
 test('过期的令牌、被停用的人的令牌：401', async () => {
@@ -679,7 +805,7 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   // 默认不强制只读：有写工具就一起列出来（能不能调由令牌权限和只读模式决定）
   assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create', 'task_default_agent', 'task_pull_requests']);
   assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name).sort(), ['get_project', 'list_projects', 'resolve_default_agent', 'team_agent_defaults', 'workspace_changes']);
-  assert.equal(mcpTools({ readOnly: true }).length, 26);
+  assert.equal(mcpTools({ readOnly: true }).length, 29);
   const workspaceTools = mcpTools({ modules: new Set(['workspaces']), writes: true });
   const workspaceNames = workspaceTools.map((t) => t.name).sort();
   for (const name of [
@@ -695,9 +821,9 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   assert.ok(workspaceTools.filter((t) => !t.readOnly && (t.name.startsWith('workspace_group_') || t.name.startsWith('workspace_sweep'))).every((t) => t.idempotent));
   // 资产自动化：三个新写工具只在开了写开关时出现，且都可重放
   const assetWrites = mcpTools({ modules: new Set(['assets']), writes: true });
-  assert.deepEqual(assetWrites.map((t) => t.name).sort(), ['asset_assign', 'asset_create', 'asset_import', 'asset_publish', 'get_asset', 'list_assets']);
+  assert.deepEqual(assetWrites.map((t) => t.name).sort(), ['asset_assign', 'asset_create', 'asset_import', 'asset_publish', 'enable_builtin_asset', 'get_asset', 'list_assets', 'list_builtin_assets']);
   assert.ok(assetWrites.filter((t) => !t.readOnly).every((t) => t.idempotent));
-  assert.equal(assetWrites.filter((t) => t.readOnly).length, 2);
+  assert.equal(assetWrites.filter((t) => t.readOnly).length, 3);
   const projectedWrap = projectEvents([
     { seq: 1, at: 1, event: { kind: 'prompt', text: 'AWS_SECRET_ACCESS_KEY=abc' } },
     { seq: 2, at: 2, turn: 1, event: { kind: 'tool_call', name: 'bash', input: { command: 'echo AWS_SECRET_ACCESS_KEY=abc' } } },
@@ -955,9 +1081,9 @@ test('/openapi/v1/projects：仓库只给 hasToken，令牌名 / 明文都不出
 test('MCP 工具清单按令牌权限筛：只列令牌用得了的（#E4）', () => {
   const policy = { modules: new Set(['tasks', 'projects', 'sessions', 'assets'] as const), writes: true };
   const names = (scopes: Parameters<typeof permissionsOf>[0]) => mcpToolsFor(permissionsOf(scopes), policy).map((t) => t.name).sort();
-  assert.deepEqual(names(['assets:read']), ['get_asset', 'list_assets']);
-  // 交资产（进审核）不等于发布 / 分配
-  assert.deepEqual(names(['assets:write']), ['asset_create', 'asset_import', 'get_asset', 'list_assets']);
+  assert.deepEqual(names(['assets:read']), ['get_asset', 'list_assets', 'list_builtin_assets']);
+  // 交资产（进审核）不等于发布 / 分配；启用内置资产属于「交」这一档（内部还有项目权限闸）
+  assert.deepEqual(names(['assets:write']), ['asset_create', 'asset_import', 'enable_builtin_asset', 'get_asset', 'list_assets', 'list_builtin_assets']);
   assert.ok(names(['assets:publish']).includes('asset_publish') && names(['assets:publish']).includes('asset_assign'));
   // 只有 sessions:write 看不到项目写工具
   const sessions = names(['sessions:write']);

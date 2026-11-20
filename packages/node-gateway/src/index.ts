@@ -41,6 +41,7 @@ export { createRuntimeManager, installEnv, type RuntimeManager, type RuntimeJobC
 export { createProviderRelay, type ProviderRelay, type RelaySession } from './provider-relay.ts';
 export { authHeaders, forwardProvider, mergeModelExtra, offeredToken, readLimited, errorResponse, safeSubpath, PayloadTooLarge, DEFAULT_PROXY_LIMITS, type ProxyLimits, type ProxyOutcome, type Upstream } from './provider-proxy.ts';
 export { collectInventory, parsePiPackage } from './inventory.ts';
+export { findLocatedBinary, listSystemBinaryCandidates, runAcquisitionStrategies, verifyBinary } from './acquire.ts';
 export type { InventorySources } from './inventory.ts';
 export { installComponent, installBundle, uninstallComponent, hubComponentDirs, currentVersionDir } from './components.ts';
 export { createWorkspaceBrowser, type BrowserOptions } from './workspace-browser.ts';

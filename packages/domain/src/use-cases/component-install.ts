@@ -1,11 +1,12 @@
 import { can } from '../access.ts';
-import { authorizeWorker, type AccessPolicy } from './authorization.ts';
+import { authorizeWorker, LOCAL_WORKER_DENIED, type AccessPolicy } from './authorization.ts';
 import { newId } from '../ids.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { ComponentCatalogRepository, ComponentPinStore } from '../ports/component-store.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
 import type { WorkerControl } from '../ports/worker-control.ts';
 import type { Principal } from '../account.ts';
+import type { WorkerStatus } from '../worker.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { RuntimeJob } from '../runtime-install.ts';
@@ -23,6 +24,7 @@ import {
   gitIntegrity,
   gitSpec
 } from '../component-catalog.ts';
+import { builtinStrategiesFor } from '../builtin-assets.ts';
 import type { WorkerComponentPin } from '../component-catalog.ts';
 
 export interface ComponentDeps {
@@ -40,15 +42,45 @@ export interface ComponentDeps {
   readonly requiredApprovals?: number;
 }
 
+const viaNote = (by: Principal): string => (by.via ? `（经令牌 ${by.via.name} / ${by.via.tokenId}）` : '');
 const audit = (deps: ComponentDeps, by: Principal, action: Parameters<AuditLog['append']>[0]['action'], target: string, detail: string) =>
-  deps.audit.append({ id: newId(), actorId: by.user.id, actorEmail: by.user.email, action, target, detail, at: deps.now() });
+  deps.audit.append({ id: newId(), actorId: by.user.id, actorEmail: by.user.email, action, target, detail: detail + viaNote(by), at: deps.now() });
 
 async function clusterAdmin(_deps: ComponentDeps, actor: Principal | null): Promise<Result<Principal, DomainError>> {
   if (!actor) return err(forbidden('请先登录'));
-  if (!can(actor, 'asset.publish_global')) {
+  // 管理员的个人令牌也算（runtime.component.install 永远拿不到，目录管理按账号判，审计里带令牌名）。
+  if (!(actor.user.clusterAdmin || can(actor, 'asset.publish_global'))) {
     return err(forbidden('只有集群管理员能管理组件目录'));
   }
   return ok(actor);
+}
+
+/**
+ * 开放 API / 令牌装组件的授权。runtime.component.install 永远不在令牌权限里（access.ts 的
+ * TOKEN_NEVER_GRANTABLE），这里按「令牌背后的账号」放宽：集群管理员，或这台机器的登记人（把
+ * 机器带进集群的人）。自定义角色 / 普通成员令牌依然不行——这是账号归属判断，不是给任意令牌
+ * 开权限点。本机（origin=local）对所有开放 API 一律拒绝。
+ */
+export async function authorizeComponentInstall(
+  deps: Pick<ComponentDeps, 'access'>,
+  actor: Principal | null,
+  workerId: string,
+  worker?: Pick<WorkerStatus, 'origin'>
+): Promise<Result<null, DomainError>> {
+  if (!actor) return err(forbidden('请先登录'));
+  if (worker?.origin === 'local') {
+    if (actor.via) return err(forbidden(LOCAL_WORKER_DENIED));
+    const scoped = await authorizeWorker(deps.access, actor, null, 'runtime.component.install');
+    return scoped.ok ? ok(null) : scoped;
+  }
+  if (!actor.via) {
+    const scoped = await authorizeWorker(deps.access, actor, workerId, 'runtime.component.install');
+    return scoped.ok ? ok(null) : scoped;
+  }
+  if (actor.user.clusterAdmin) return ok(null);
+  const resource = await deps.access.worker(workerId);
+  if (resource.createdBy !== null && resource.createdBy === actor.user.id) return ok(null);
+  return err(forbidden('只有集群管理员或这台机器的登记人能装组件：用对应账号的令牌，或请管理员在界面上操作'));
 }
 
 export async function listComponentCatalog(deps: ComponentDeps, actor: Principal | null): Promise<Result<CatalogComponent[], DomainError>> {
@@ -97,7 +129,8 @@ export async function submitComponent(
     version: input.version,
     resolved: info.resolved,
     integrity: info.integrity,
-    provides: input.provides.map((p) => ({ capability: p.capability, ...(p.mode ? { mode: p.mode } : {}) })),
+    provides: input.provides.map((p) => ({ capability: p.capability, ...(p.mode ? { mode: p.mode } : {}), ...(p.mcp ? { mcp: p.mcp } : {}) })),
+    ...(input.strategies && input.strategies.length ? { strategies: input.strategies } : {}),
     scripts: info.scripts,
     dependencyCount: info.dependencyCount,
     status: 'pending',
@@ -151,6 +184,7 @@ export async function reviewComponent(
 }
 
 function specOf(item: CatalogComponent, from: string | null): ComponentJobSpec {
+  const strategies = item.strategies ?? builtinStrategiesFor(item.id, item.version);
   return {
     componentId: item.id,
     runtime: item.runtime,
@@ -161,7 +195,8 @@ function specOf(item: CatalogComponent, from: string | null): ComponentJobSpec {
     integrity: item.integrity,
     provides: item.provides,
     ignoreScripts: true,
-    expectedCurrent: from
+    expectedCurrent: from,
+    ...(strategies && strategies.length ? { strategies } : {})
   };
 }
 
@@ -178,7 +213,7 @@ export async function startBundleJob(
 ): Promise<Result<RuntimeJob, DomainError>> {
   if (!actor) return err(forbidden('请先登录'));
   const worker = (await deps.workers.list()).find((candidate) => candidate.workerId === workerId);
-  const scoped = await authorizeWorker(deps.access, actor, worker?.origin === 'local' ? null : workerId, 'runtime.component.install');
+  const scoped = await authorizeComponentInstall(deps, actor, workerId, worker);
   if (!scoped.ok) return scoped;
   if (request.components.length === 0) return err(invalid('至少选一个组件'));
   if (request.components.length > 16) return err(invalid('一次最多装 16 个组件'));
@@ -230,7 +265,7 @@ export async function startComponentJob(
 ): Promise<Result<RuntimeJob, DomainError>> {
   if (!actor) return err(forbidden('请先登录'));
   const worker = (await deps.workers.list()).find((candidate) => candidate.workerId === workerId);
-  const scoped = await authorizeWorker(deps.access, actor, worker?.origin === 'local' ? null : workerId, 'runtime.component.install');
+  const scoped = await authorizeComponentInstall(deps, actor, workerId, worker);
   if (!scoped.ok) return scoped;
   const pins = deps.pins.pinsFor(workerId);
   const pin = pins.find((p) => p.componentId === request.componentId) ?? null;

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { BUILTIN_CHROMIUM, type ComponentJobResult, type ComponentJobSpec } from '@agent-hub/domain';
+import { BUILTIN_CHROMIUM, type AcquisitionResolution, type ComponentJobResult, type ComponentJobSpec } from '@agent-hub/domain';
+import { acquisitionJobResult, runAcquisitionStrategies, type AcquireHooks } from './acquire.ts';
 
 /**
  * hub 管理的组件安装（ADR 0021 P2）。目录布局（inventory.ts 读同一份）：
@@ -20,11 +21,16 @@ export interface ComponentInstallOptions {
   readonly node: string;
   /** npm-cli.js（和 Worker 同一个 node 配套）；null = 没法装。 */
   readonly npm: string | null;
-  /** 真正跑命令（runtime-jobs 的 runCommand，带超时和日志）。 */
-  readonly run: (file: string, args: readonly string[], options: { cwd: string; env: Record<string, string> }) => Promise<void>;
+  /** 真正跑命令（runtime-jobs 的 runCommand，带超时和日志）；成功时返回完整输出（核对用）。 */
+  readonly run: (file: string, args: readonly string[], options: { cwd: string; env: Record<string, string> }) => Promise<string>;
   readonly env: Record<string, string>;
   readonly log: (line: string) => void;
   readonly now?: () => number;
+  /**
+   * 获取策略钩子：测试注入假路径 / 关掉策略里的默认系统路径，避免碰到真实二进制或用户缓存。
+   * 生产不传：按目录项声明的 names/paths + PATH 探测，缓存目录按策略 locate。
+   */
+  readonly acquire?: Omit<AcquireHooks, 'env' | 'run' | 'log'>;
 }
 
 export interface ComponentOutcome {
@@ -88,6 +94,7 @@ interface Staged {
   readonly staging: string;
   readonly previous: string | null;
   readonly scripts: { package: string; script: string }[];
+  readonly acquisition?: AcquisitionResolution;
 }
 
 type StageResult = { ok: true; staged: Staged } | { ok: false; outcome: ComponentOutcome };
@@ -145,18 +152,47 @@ async function stageComponent(options: ComponentInstallOptions, spec: ComponentJ
     // 没执行的安装脚本：只是列出来（hub 记审计、提示可能用不了）
     scripts = scriptsInTree(staging, lock);
     if (scripts.length) options.log(`提示：${scripts.map((s) => `${s.package} ${s.script}`).join('、')} 声明了安装脚本，没有执行；依赖它的组件可能用不了`);
-    // 内置浏览器（builtin-assets.ts）：只认 playwright-core + browser:chromium 这一种，用它自带的命令把 Chromium 下到默认位置。
-    // 不是包的安装脚本（那些一律不跑），是这里写死的一条命令；HOME 用 Worker 用户自己的，npx 起的 Playwright MCP 才找得到。
-    if (installsBrowser(spec)) {
-      options.log('$ playwright-core install chromium（下载到 ~/.cache/ms-playwright）');
-      await options.run(options.node, [join(pkgDir, 'cli.js'), 'install', 'chromium'], { cwd: staging, env: { ...options.env } });
+    // 目录项如果声明了获取策略：在已核对的包上按顺序执行（系统二进制 / 用户空间安装 / 轻量退路 / 要 root）。
+    let acquisition: AcquisitionResolution | undefined;
+    if (spec.strategies?.length) {
+      const hooks: AcquireHooks = {
+        env: { ...options.env },
+        run: options.run,
+        log: options.log,
+        ...(options.acquire ?? {})
+      };
+      const capability = spec.provides[0]?.capability;
+      const resolved = await runAcquisitionStrategies({
+        hooks,
+        strategies: spec.strategies,
+        componentId: spec.componentId,
+        capability,
+        cwd: staging,
+        install: async (args) => {
+          await options.run(options.node, [join(pkgDir, 'cli.js'), ...args], { cwd: staging, env: { ...options.env } });
+        }
+      });
+      if (!resolved.ok) {
+        rmSync(staging, { recursive: true, force: true });
+        options.log(resolved.message);
+        return {
+          ok: false,
+          outcome: {
+            ok: false,
+            message: resolved.message,
+            result: acquisitionJobResult(resolved, { exitCode: 0, durationMs: elapsed() })
+          }
+        };
+      }
+      acquisition = resolved.acquisition;
+      options.log(resolved.message);
     }
     rmSync(join(staging, '.npm-cache'), { recursive: true, force: true });
     writeFileSync(
       join(staging, '.component.json'),
-      `${JSON.stringify({ id: spec.componentId, version: spec.version, packageName: spec.packageName, integrity: spec.integrity, enabled: true, provides: spec.provides, ...(spec.git ? { source: `git:${spec.git.url}` } : {}), installedAt: Date.now() }, null, 2)}\n`
+      `${JSON.stringify({ id: spec.componentId, version: spec.version, packageName: spec.packageName, integrity: spec.integrity, enabled: true, provides: spec.provides, ...(acquisition ? { acquisition } : {}), ...(spec.git ? { source: `git:${spec.git.url}` } : {}), installedAt: Date.now() }, null, 2)}\n`
     );
-    return { ok: true, staged: { spec, base, staging, previous, scripts } };
+    return { ok: true, staged: { spec, base, staging, previous, scripts, ...(acquisition ? { acquisition } : {}) } };
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });
     const message = error instanceof Error ? error.message : String(error);
@@ -184,10 +220,12 @@ export async function installComponent(options: ComponentInstallOptions, spec: C
   const stage = await stageComponent(options, spec, elapsed);
   if (!stage.ok) return stage.outcome;
   commitStaged(stage.staged);
+  const acquisition = stage.staged.acquisition;
+  const used = acquisition?.path ? `（策略 ${acquisition.strategy}：${acquisition.path}）` : acquisition ? `（策略 ${acquisition.strategy}）` : '';
   return {
     ok: true,
-    message: `已安装组件 ${spec.componentId} ${spec.version}`,
-    result: { integrity: spec.integrity, ignoredScripts: true, scripts: stage.staged.scripts, exitCode: 0, durationMs: elapsed() }
+    message: `已安装组件 ${spec.componentId} ${spec.version}${used}`,
+    result: { integrity: spec.integrity, ignoredScripts: true, scripts: stage.staged.scripts, exitCode: 0, durationMs: elapsed(), ...(acquisition ? { acquisition } : {}) }
   };
 }
 
@@ -209,10 +247,11 @@ export async function installBundle(options: ComponentInstallOptions, specs: rea
     staged.push(stage.staged);
   }
   for (const done of staged) commitStaged(done);
+  const acquisition = staged.map((s) => s.acquisition).find((item) => item);
   return {
     ok: true,
     message: `已整套安装 ${specs.length} 个组件：${specs.map((s) => `${s.componentId} ${s.version}`).join('、')}`,
-    result: { ignoredScripts: true, scripts: staged.flatMap((s) => s.scripts).slice(0, 200), exitCode: 0, durationMs: elapsed() }
+    result: { ignoredScripts: true, scripts: staged.flatMap((s) => s.scripts).slice(0, 200), exitCode: 0, durationMs: elapsed(), ...(acquisition ? { acquisition } : {}) }
   };
 }
 
@@ -247,12 +286,13 @@ export function hubComponentDirs(root: string, runtime: string): string[] {
   return out;
 }
 
-/** 内置浏览器组件：装完要再下载 Chromium。 */
-export function installsBrowser(spec: Pick<ComponentJobSpec, 'packageName' | 'provides'>): boolean {
+/** 这条组件任务是否要跑获取策略（目录声明或内置清单补上的）。 */
+export function installsBrowser(spec: Pick<ComponentJobSpec, 'packageName' | 'provides' | 'strategies'>): boolean {
+  if (spec.strategies && spec.strategies.length > 0) return true;
   return spec.packageName === BUILTIN_CHROMIUM.packageName && spec.provides.some((p) => p.capability === BUILTIN_CHROMIUM.capability);
 }
 
 /** 只提供机器工具（mode = machine-tool）的组件不是运行时插件。 */
 export function machineToolOnly(provides: unknown): boolean {
-  return Array.isArray(provides) && provides.length > 0 && provides.every((p) => (p as { mode?: unknown } | null)?.mode === BUILTIN_CHROMIUM.mode);
+  return Array.isArray(provides) && provides.length > 0 && provides.every((p) => (p as { mode?: unknown } | null)?.mode === 'machine-tool');
 }

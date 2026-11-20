@@ -47,6 +47,12 @@ import {
   notFound,
   authorizeAssetProject,
   authorizeAssetPublish,
+  bootstrapCapabilitiesForSession,
+  capabilityStatus,
+  builtinAssetsFor,
+  enableBuiltinAsset,
+  installBuiltinBrowser,
+  installWorkerComponent,
   projectReader,
   promptSessionUseCase,
   setProjectChecksUseCase,
@@ -93,7 +99,7 @@ import {
   providerActor
 } from '@agent-hub/domain';
 
-import type { AssetReviewDeps, DeleteProjectDeps, MessageBus, MessageStore } from '@agent-hub/domain';
+import type { AssetReviewDeps, ComponentDeps, DeleteProjectDeps, MessageBus, MessageStore, WorkerStatus } from '@agent-hub/domain';
 import { linkSessionsUseCase, unlinkSessionsUseCase, messageView } from '@agent-hub/domain';
 import type { z } from 'zod';
 import { assetSchema, sessionSchema, workspaceSchema } from '@agent-hub/contract';
@@ -127,6 +133,8 @@ export interface OpenApiOptions {
   readonly audit?: Pick<import('@agent-hub/domain').AuditLog, 'append'>;
   /** 团队目录：读/写团队运行时默认模型要用。不给则这两条路由 503。 */
   readonly teams?: import('@agent-hub/domain').TeamRepository;
+  /** 组件目录 / 安装（内置浏览器）：不给则 install_builtin_browser 返 501。 */
+  readonly components?: ComponentDeps;
 }
 
 interface V1Context {
@@ -138,6 +146,8 @@ interface V1Context {
   readonly waitOptions?: (sessionId: string) => Promise<void>;
   // 资产审核（ADR 0016）：令牌默认只能交新版本（assets:submit）；显式给 assets:publish 才能发布 / 分配。
   readonly assetReview?: AssetReviewDeps;
+  // 组件安装（ADR 0021）：内置浏览器安装 / 进度查询；不给 = install_builtin_browser 501。
+  readonly components?: ComponentDeps;
   readonly git?: GitWorkflowService;
   /** 开放 API 的两个只读工具（workspace_diff / workspace_read_file）走工作空间文件服务；不给 = 503。 */
   readonly files?: WorkspaceFilesService;
@@ -263,6 +273,27 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       if (await readable(asset)) visible.push(asset);
     }
     return c.json(visible);
+  });
+  on(routes.listBuiltinAssets, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'asset.read')) return fail(c, forbidden('令牌没有 assets:read'));
+    if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
+    const query = valid<{ projectId: string }>(c, 'query');
+    // 与项目设置页同门：能改这个项目才看得到启用状态（令牌要 projects:write + 项目权限）。
+    const listed = await builtinAssetsFor(ctx.assetReview, actor, query.projectId);
+    if (!listed.ok) return fail(c, listed.error);
+    return c.json(listed.value);
+  });
+  on(routes.enableBuiltinAsset, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'asset.submit')) return fail(c, forbidden('令牌没有 assets:write：不能启用内置资产'));
+    if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
+    const builtinId = c.req.param('builtinId') ?? '';
+    const body = valid<{ projectId: string; secrets?: Record<string, string> }>(c, 'json');
+    const made = await enableBuiltinAsset(ctx.assetReview, actor, { projectId: body.projectId, builtinId, secrets: body.secrets });
+    if (!made.ok) return fail(c, made.error);
+    await recordAssetAudit(ctx.assetReview, actor, 'asset.project', made.value.asset.name, `启用内置资产 ${builtinId} 到项目 ${body.projectId}${made.value.created ? '' : '（已在用，只打开项目开关）'}${viaNote(actor)}`);
+    return c.json({ asset: assetSchema.parse(await assetViewOf(ctx.assetReview, made.value.asset)), created: made.value.created });
   });
   on(routes.getAsset, async (c) => {
     const actor = principal(c);
@@ -443,6 +474,50 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       agentId: query.agentId
     });
     return c.json({ models: collected.models });
+  });
+  on(routes.workerBrowserStatus, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'worker.read')) return fail(c, forbidden('令牌没有 workers:read'));
+    if (!ctx.components) return fail(c, { code: 'not_implemented', message: '这个 hub 没开组件安装' });
+    const readable = await workerReader(deps.access, actor);
+    const workers: WorkerStatus[] = [];
+    for (const w of await ctx.components.workers.list()) if (await readable(w.workerId)) workers.push(w);
+    // 本来就只出能力视图（redactInventory 同款约束）：blocker / installJob 不含包名、来源串
+    return c.json(capabilityStatus(workers, 'browser:chromium'));
+  });
+  on(routes.capabilityStatus, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'worker.read')) return fail(c, forbidden('令牌没有 workers:read'));
+    if (!ctx.components) return fail(c, { code: 'not_implemented', message: '这个 hub 没开组件安装' });
+    const query = valid<{ capability?: string; workerId?: string }>(c, 'query');
+    const readable = await workerReader(deps.access, actor);
+    const workers: WorkerStatus[] = [];
+    for (const w of await ctx.components.workers.list()) {
+      if (query.workerId && w.workerId !== query.workerId) continue;
+      if (await readable(w.workerId)) workers.push(w);
+    }
+    return c.json(capabilityStatus(workers, query.capability));
+  });
+  on(routes.installBuiltinBrowser, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'worker.read')) return fail(c, forbidden('令牌没有 workers:read'));
+    if (!ctx.components) return fail(c, { code: 'not_implemented', message: '这个 hub 没开组件安装' });
+    const workerId = c.req.param('workerId') ?? '';
+    const started = await installBuiltinBrowser(ctx.components, actor, workerId);
+    if (!started.ok) return fail(c, started.error);
+    const { jobId, agentId, action, state, message } = started.value;
+    return c.json({ jobId, agentId, action, state, message }, 202);
+  });
+  on(routes.installWorkerComponent, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'worker.read')) return fail(c, forbidden('令牌没有 workers:read'));
+    if (!ctx.components) return fail(c, { code: 'not_implemented', message: '这个 hub 没开组件安装' });
+    const workerId = c.req.param('workerId') ?? '';
+    const body = valid<{ componentId?: string; version?: string; capability?: string }>(c, 'json');
+    const started = await installWorkerComponent(ctx.components, actor, { workerId, ...body });
+    if (!started.ok) return fail(c, started.error);
+    const { jobId, agentId, action, state, message } = started.value;
+    return c.json({ jobId, agentId, action, state, message }, 202);
   });
 
   on(routes.listProjects, async (c) => {
@@ -684,8 +759,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     // model 省略或空串：按默认 Agent 层级解析（任务默认 > 项目默认 > 团队运行时默认）；
     // 显式传的 model 不动。没有可解析的默认就明确 400，不写死某个模型名。
     let model = input.model ?? '';
+    const task = input.taskId ? await deps.tasks.byId(asTaskId(input.taskId)) : null;
     if (!model) {
-      const task = await deps.tasks.byId(asTaskId(input.taskId));
       if (!task) return fail(c, notFound('任务不存在'));
       const project = await deps.projects.byId(task.projectId);
       if (!project) return fail(c, notFound('项目不存在'));
@@ -707,6 +782,12 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     }
     const allowed = await ctx.providers?.checkModel(actor, model, input.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
+    // 会话声明 requires 时先引导：项目未配置则按能力自动启用配套内置资产；没有就绪机器且没在装，
+    // 挑一台能装的发安装任务（尽力而为，不拦派生；派生因缺能力失败时把安装任务写进报错）。
+    const bootstrap = await bootstrapCapabilitiesForSession(ctx.assetReview, ctx.components, actor, {
+      projectId: task?.projectId ?? null,
+      requires: input.requires
+    });
     const result = await deriveSessionUseCase(deps, {
       ...withoutRepo(input),
       model,
@@ -718,6 +799,9 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       await recordSessionAction(deps, ctx.activity, c, actor, 'session.start', result.value.id, '');
       await noteProvenance(deps, ctx.activity, c, actor, result.value, 'api');
       await applyStartExtras(deps, ctx.messaging?.bus, result.value, extras, linkIds.value, actor.user.id);
+    } else if (bootstrap.install) {
+      const { code, message } = result.error;
+      return fail(c, { code, message: `${message}；已在 ${bootstrap.install.workerId} 上开始安装组件（任务 ${bootstrap.install.jobId}）：用 capability_status 查进度，装好后重试` });
     }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });

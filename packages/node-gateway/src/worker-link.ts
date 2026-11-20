@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
 import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, linkEcho, procList, providerTest, serverToWorkerSchema, serviceList, serviceLogs, serviceStart, serviceStop, terminalClose, terminalList, terminalOpen, terminalResize } from '@agent-hub/contract';
-import { RECONNECT_POLICY, asTaskId, canInvoke, capabilityDenied, commandCapability, reconnectDelay, workerWatchdogMs } from '@agent-hub/domain';
+import { RECONNECT_POLICY, asTaskId, canInvoke, capabilityDenied, commandCapability, reconnectDelay, withExecutableArg, workerWatchdogMs } from '@agent-hub/domain';
 import type { WorkerCapability } from '@agent-hub/domain';
 import { createProviderRelay } from './provider-relay.ts';
 import { authHeaders } from './provider-proxy.ts';
@@ -1177,12 +1177,20 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     return { ...tools, url: await mcpEndpoint.url() };
   }
 
-  /** MCP 资产：http 的那些指向本机中转入口的 `/mcp/<名字>`（hub 代连远端）；stdio 原样交给运行时拉起。 */
+  /** MCP 资产：http 的那些指向本机中转入口的 `/mcp/<名字>`（hub 代连远端）；stdio 原样交给运行时拉起。目录能力若声明了 mcp 绑定且已选定可执行文件，启动时注入对应参数。 */
   async function mcpAccess(entries: NonNullable<Extract<ServerToWorker, { kind: 'start_session' }>['mcp']>): Promise<NonNullable<StartSpec['mcp']>> {
     const base = await mcpEndpoint.url();
-    return entries.map((entry) =>
-      entry.transport === 'http' ? { transport: 'http', name: entry.name, url: `${base}/${encodeURIComponent(entry.name)}` } : entry
-    );
+    const inventory = options.inventory?.() ?? null;
+    const capabilities = inventory?.capabilities ?? [];
+    const acquisitions = inventory?.acquisitions ?? [];
+    return entries.map((entry) => {
+      if (entry.transport === 'http') return { transport: 'http', name: entry.name, url: `${base}/${encodeURIComponent(entry.name)}` };
+      const cap = capabilities.find((item) => item.mcp?.name === entry.name);
+      if (!cap?.mcp) return entry;
+      const hit = acquisitions.find((item) => item.path && (item.capability === cap.capability || item.componentId === cap.via || !item.capability));
+      if (!hit?.path) return entry;
+      return { ...entry, args: withExecutableArg(entry.args, cap.mcp.executableArg, hit.path) };
+    });
   }
 
   async function startSession(command: Extract<ServerToWorker, { kind: 'start_session' }>): Promise<void> {

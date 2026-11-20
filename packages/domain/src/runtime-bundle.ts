@@ -1,3 +1,4 @@
+import type { AcquisitionResolution } from './acquisition.ts';
 import { invalid, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
 
@@ -19,6 +20,8 @@ export type ComponentSource =
 export interface ComponentProvides {
   readonly capability: string;
   readonly mode?: string;
+  /** 这个能力选定可执行文件后，启动该 MCP 时注入的参数（例如 Playwright 的 --executable-path）。 */
+  readonly mcp?: { readonly name: string; readonly executableArg: string };
 }
 
 export interface BundleComponent {
@@ -171,6 +174,8 @@ export interface InventoryCapability {
   readonly mode?: string;
   /** 由哪个组件提供。 */
   readonly via: string;
+  /** 启动同名 MCP 时注入可执行文件的参数。 */
+  readonly mcp?: { readonly name: string; readonly executableArg: string };
 }
 
 export interface WorkerInventory {
@@ -183,6 +188,8 @@ export interface WorkerInventory {
   readonly componentInstall?: boolean;
   /** 能接整套安装任务（P3：components[]，全有或全无）。 */
   readonly bundleInstall?: boolean;
+  /** 已选定的能力获取结果（策略 id / 类型 / 可执行文件路径）。 */
+  readonly acquisitions?: readonly AcquisitionResolution[];
 }
 
 /** 期望状态：hub 的 component_pins 里的一行（P2 才会写入；P1 一直是空的）。 */

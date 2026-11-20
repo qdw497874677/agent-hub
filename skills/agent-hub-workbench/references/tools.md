@@ -1,7 +1,7 @@
 # 工具清单（自动生成）
 
 由 `npm run skill:tools` 从 `apps/server/src/openapi/routes.ts` 的 MCP 元数据生成，等于 `tools/list` 的结果。
-当前 70 个：只读 26，写 44。
+当前 76 个：只读 29，写 47。
 
 「参数」只列名字，`?` 表示可选；具体类型和必填组合见 `SKILL.md` 与 `<hub>/openapi/v1/openapi.json`。
 
@@ -9,6 +9,10 @@
 | --- | --- | --- | --- | --- | --- |
 | `list_workers` | 读 | `worker.read` | `/workers` | — | 能用的机器 |
 | `list_models` | 读 | `worker.read` | `/models` | workerId?, agentId? | 开会话能用的模型 |
+| `worker_component_status` | 读 | `worker.read` | `/workers/browser-status` | — | 各机器的 browser:chromium 就绪状态（capability_status 的别名） |
+| `capability_status` | 读 | `worker.read` | `/workers/capability-status` | capability?, workerId? | 各机器某项能力的就绪状态 |
+| `install_builtin_browser` | 写 | `worker.read` | `/workers/{workerId}/builtin-browser` | workerId | 给机器安装内置浏览器（component_install 的别名）（写工具，要 `clientRequestId`） |
+| `component_install` | 写 | `worker.read` | `/workers/{workerId}/components` | workerId, componentId?, version?, capability? | 给机器安装组件（按 componentId 或 capability）（写工具，要 `clientRequestId`） |
 | `list_projects` | 读 | `project.read` | `/projects` | — | 我可见的项目 |
 | `project_create` | 写 | `project.create` | `/projects` | name, rootPath?, workerId?, repoUrl?, defaultBranch?, description? | 新建项目（写工具，要 `clientRequestId`） |
 | `get_project` | 读 | `project.read` | `/projects/{projectId}` | projectId | 看一个项目 |
@@ -25,6 +29,8 @@
 | `asset_import` | 写 | `asset.submit` | `/assets/import` | kind, url, ref?, path?, name?, scope?, projectId?, publish?, policy?, credential? | 从 Git 仓库导入资产（可选直接发布）（写工具，要 `clientRequestId`） |
 | `asset_publish` | 写 | `asset.review` | `/assets/{assetId}/publish` | assetId | 发布资产的最新版本（写工具，要 `clientRequestId`） |
 | `asset_assign` | 写 | `asset.assign` | `/assets/{assetId}/workers` | assetId, workerId, installed? | 把资产装到机器上（或卸下）（写工具，要 `clientRequestId`） |
+| `list_builtin_assets` | 读 | `asset.read` | `/builtin-assets` | projectId | 内置资产清单与项目启用状态 |
+| `enable_builtin_asset` | 写 | `asset.submit` | `/builtin-assets/{builtinId}/enable` | builtinId, projectId, secrets? | 给项目启用一项内置资产（写工具，要 `clientRequestId`） |
 | `list_tasks` | 读 | `task.read` | `/tasks` | projectId | 项目下的任务 |
 | `task_create` | 写 | `task.create` | `/tasks` | projectId, title, goal? | 新建任务（写工具，要 `clientRequestId`） |
 | `get_task` | 读 | `task.read` | `/tasks/{taskId}` | taskId | 任务详情（带会话列表） |
@@ -61,7 +67,7 @@
 | `workspace_diff` | 读 | `session.read` | `/sessions/{sessionId}/workspace/diff` | sessionId, member?, maxBytes? | 读工作树的未提交 diff（只读） |
 | `workspace_read_file` | 读 | `session.read` | `/sessions/{sessionId}/workspace/file` | sessionId, path, member?, confirmed? | 读工作树里的一个文件（只读） |
 | `session_git_run` | 写 | `session.prompt` | `/sessions/{sessionId}/git/run` | sessionId, action, message?, title?, body?, member? | 按仓提交、推送或开 PR（写工具，要 `clientRequestId`） |
-| `task_pull_requests` | 读 | `task.read` | `/tasks/{taskId}/pull-requests` | taskId, refresh? | 同步并列出任务上的 PR；打开任务时会按会话分支自动认领（head 是该分支、还没登记的 PR 也会进来） |
+| `task_pull_requests` | 读 | `task.read` | `/tasks/{taskId}/pull-requests` | taskId, refresh? | 同步并列出任务上的 PR |
 | `session_settle` | 写 | `session.settle` | `/sessions/{sessionId}/settle` | sessionId, settled | 收起或恢复会话（写工具，要 `clientRequestId`） |
 | `workspace_sweep` | 写 | `project.update` | `/projects/{projectId}/cleanup/sweep` | projectId | 按项目规则清理临时工作空间（写工具，要 `clientRequestId`） |
 | `workspace_sweep_records` | 读 | `project.read` | `/projects/{projectId}/cleanup/records` | projectId | 查看项目的清理记录 |
