@@ -44,6 +44,8 @@ export interface GitHostTokenStore {
 export interface GitHostApi {
   createPullRequest(input: { readonly token: string; readonly repo: string; readonly base: string; readonly head: string; readonly title: string; readonly body: string }): Promise<{ ok: true; pr: RemotePullRequest } | { ok: false; reason: string }>;
   getPullRequest(input: { readonly token: string; readonly repo: string; readonly number: number }): Promise<{ ok: true; pr: RemotePullRequest } | { ok: false; reason: string }>;
+  /** 按 head 分支列 PR：认领没走 session_git_run 的（#262）。 */
+  listPullRequestsByHead(input: { readonly token: string; readonly repo: string; readonly head: string }): Promise<{ ok: true; prs: readonly RemotePullRequest[] } | { ok: false; reason: string }>;
 }
 
 /** 写提交说明 / PR 标题和描述 / 分支名（ADR 0027 D4）：项目提炼模型，失败 = null（调用方用模板）。 */

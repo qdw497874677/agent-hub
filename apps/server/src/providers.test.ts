@@ -4,7 +4,7 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { Hono } from 'hono';
-import { createProvider, ok, systemSubject, type ProviderModel, type WorkerCommand } from '@agent-hub/domain';
+import { createProvider, ok, systemSubject, type Principal, type ProviderModel, type WorkerCommand } from '@agent-hub/domain';
 import { createSqliteProviders } from '@agent-hub/storage-sqlite';
 import { createProviderRelay } from '@agent-hub/node-gateway';
 import { serve } from '@hono/node-server';
@@ -436,4 +436,77 @@ test('explain：被剔掉的提供商连原因一起返回，默认仍是纯数�
   assert.equal(explained.providers.length, 0);
   assert.equal(explained.hidden[0]?.slug, 'gw');
   assert.match(explained.hidden[0]?.reason ?? '', /停用/);
+});
+
+test('UI /api/providers：workerRouting 按可见机器过滤；没权限整个省略（#261 LOW6）', async () => {
+  const providers = createSqliteProviders(new DatabaseSync(':memory:'), randomBytes(32));
+  await providers.setWorkerRouting('w-a', 'direct');
+  await providers.setWorkerRouting('w-b', 'hub');
+  const deps = { providers, audit: null, now: () => 1 };
+  // 假授权策略：w-a 本团队，w-b 别的团队 → 只看得到 w-a。
+  const access = {
+    context: async () => ({ hubTeamId: 'team-1', settings: { membersCanAddMachines: true } }),
+    worker: async (workerId: string | null) => ({
+      kind: 'worker' as const,
+      id: workerId,
+      teamId: workerId === 'w-b' ? 'team-2' : 'team-1',
+      createdBy: 'someone'
+    })
+  };
+  const wiring = createProviderWiring({
+    deps,
+    projectTeam: async () => null,
+    userTeam: async () => 'team-1',
+    hostOf: () => null,
+    testFromWorker: async () => ok({ ok: true, status: 200, message: 'ok', models: [] }),
+    access: access as never,
+    log: () => undefined
+  });
+  const owner = {
+    user: {
+      id: 'u1',
+      email: 'u@x.co',
+      displayName: 'U',
+      role: 'owner',
+      passwordHash: null,
+      emailVerifiedAt: 1,
+      disabledAt: null,
+      createdAt: 1,
+      teamId: 'team-1',
+      clusterAdmin: false,
+      deletedAt: null
+    },
+    loginId: 'l1'
+  } as unknown as Principal;
+  // 自定义角色一个权限都没有 → 没有 worker.read。
+  const limited = {
+    user: {
+      id: 'u2',
+      email: 'r@x.co',
+      displayName: 'R',
+      role: 'custom:r1',
+      passwordHash: null,
+      emailVerifiedAt: 1,
+      disabledAt: null,
+      createdAt: 1,
+      teamId: 'team-1',
+      clusterAdmin: false,
+      deletedAt: null
+    },
+    loginId: 'l2',
+    customRole: { id: 'r1', teamId: 'team-1', name: 'R', permissions: {}, createdBy: 'u', createdAt: 1, updatedAt: 1 }
+  } as unknown as Principal;
+  const app = new Hono();
+  wiring.install(app, () => owner);
+  const listed = await app.request('/api/providers');
+  const body = (await listed.json()) as { workerRouting?: Record<string, string> };
+  assert.equal(listed.status, 200, JSON.stringify(body));
+  assert.deepEqual(body.workerRouting, { 'w-a': 'direct' }, `只能看见读得到的机器：${JSON.stringify(body)}`);
+
+  const peekApp = new Hono();
+  wiring.install(peekApp, () => limited);
+  const peeked = await peekApp.request('/api/providers');
+  const peekBody = (await peeked.json()) as Record<string, unknown>;
+  assert.equal(peeked.status, 200, JSON.stringify(peekBody));
+  assert.equal('workerRouting' in peekBody, false, `没有 worker.read 时整个字段省略：${JSON.stringify(peekBody)}`);
 });

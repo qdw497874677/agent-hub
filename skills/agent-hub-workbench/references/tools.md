@@ -61,7 +61,7 @@
 | `workspace_diff` | 读 | `session.read` | `/sessions/{sessionId}/workspace/diff` | sessionId, member?, maxBytes? | 读工作树的未提交 diff（只读） |
 | `workspace_read_file` | 读 | `session.read` | `/sessions/{sessionId}/workspace/file` | sessionId, path, member?, confirmed? | 读工作树里的一个文件（只读） |
 | `session_git_run` | 写 | `session.prompt` | `/sessions/{sessionId}/git/run` | sessionId, action, message?, title?, body?, member? | 按仓提交、推送或开 PR（写工具，要 `clientRequestId`） |
-| `task_pull_requests` | 读 | `task.read` | `/tasks/{taskId}/pull-requests` | taskId, refresh? | 同步并列出任务上的 PR |
+| `task_pull_requests` | 读 | `task.read` | `/tasks/{taskId}/pull-requests` | taskId, refresh? | 同步并列出任务上的 PR；打开任务时会按会话分支自动认领（head 是该分支、还没登记的 PR 也会进来） |
 | `session_settle` | 写 | `session.settle` | `/sessions/{sessionId}/settle` | sessionId, settled | 收起或恢复会话（写工具，要 `clientRequestId`） |
 | `workspace_sweep` | 写 | `project.update` | `/projects/{projectId}/cleanup/sweep` | projectId | 按项目规则清理临时工作空间（写工具，要 `clientRequestId`） |
 | `workspace_sweep_records` | 读 | `project.read` | `/projects/{projectId}/cleanup/records` | projectId | 查看项目的清理记录 |

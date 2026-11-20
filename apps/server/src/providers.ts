@@ -38,6 +38,7 @@ import {
   updateProvider
 } from '@agent-hub/domain';
 import { DEFAULT_PROXY_LIMITS, PayloadTooLarge, authHeaders, errorResponse, forwardProvider, offeredToken, readLimited, type ProxyLimits } from '@agent-hub/node-gateway';
+import { visibleWorkerRouting } from './visible-worker-routing.ts';
 import { fail } from './http-error.ts';
 
 /**
@@ -506,7 +507,14 @@ export function createProviderWiring(wiring: ProviderWiring) {
       enabled: input['enabled'] !== false
     });
 
-    app.get('/api/providers', async (c) => c.json({ providers: (await listProviders(deps, principalOf(c))).map(publicProvider), workerRouting: await deps.providers.workerRouting() }));
+    // LOW6（#261）：机器维度的路由覆盖只给能看见这台机器的人——与开放 API provider_list 共用同一份过滤逻辑；
+    // 没有 worker.read 权限（看不见任何机器）时整个字段省略。
+    app.get('/api/providers', async (c) => {
+      const principal = principalOf(c);
+      const providers = (await listProviders(deps, principal)).map(publicProvider);
+      const workerRouting = await visibleWorkerRouting(wiring.access, principal, deps.providers.workerRouting);
+      return workerRouting === undefined ? c.json({ providers }) : c.json({ providers, workerRouting });
+    });
 
     /** 会话里能选的 hub 模型（按项目团队过滤）：模型选择器用。 */
     app.get('/api/providers/models', async (c) => {
