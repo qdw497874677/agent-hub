@@ -1,37 +1,19 @@
-import { applyStartExtras, checkStartExtras } from './session-start-extras.ts';
-import { backupArgs, runBackup } from './backup.ts';
-import { createInstallArtifacts } from './install-artifacts.ts';
-import { createRepoAuth } from './repo-auth.ts';
-import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createTimerSource } from '@agent-hub/connector-timer';
-import { createGithubClient, createGithubSink, createGithubSource, createGithubToolProvider, githubParams, parseIssueKey } from '@agent-hub/connector-github';
-import { createFeishuClient, createFeishuSink, createFeishuSource, createFeishuTurnReplies } from '@agent-hub/connector-feishu';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
+
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
+
+import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { createServerGateway } from '@agent-hub/node-gateway';
-import { createRemoteClients, serveMcpRelay } from './mcp-relay.ts';
-import { serveAssetFetch } from './asset-relay.ts';
-import { createMemorySources } from './memory-sources.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
-import { createWorkerEnroll } from './worker-enroll.ts';
-import { loadActor, openRoleSession } from './role-session.ts';
-import { createBotOfSession } from './bot-session.ts';
-import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqlitePullRequests, createSqliteGitHostTokens, createSqliteWorkspaceSweeps, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
-import { createNpmResolver } from './components.ts';
-import { createProviderWiring } from './providers.ts';
-import { createSessionEnvironment } from './session-environment.ts';
-import { createGitTextWriter } from './git-text-writer.ts';
-import { createGitHubApi } from './github-api.ts';
-import { createModelDistiller } from './model-distiller.ts';
-import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, ServiceGateway, SessionId, Subject, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
-import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
-  createMessageBus,
+import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqliteWorkspaceSweeps, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, ServiceGateway, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
+import { authenticateWorker, withToolAccess,
   createBotUseCase,
   getBotUseCase,
   listBotsUseCase,
@@ -41,81 +23,37 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   revokeBotUseCase,
   removeBotUseCase,
   updateBotUseCase,
-  interruptSessionUseCase,
-  renameSessionUseCase,
-  createGroupChat,
-  createPersistentAgents,
   createSessionLane,
   createContextService,
   createWorkspaceFilesService,
   createGitWorkflowService,
   createRewindService,
-  recordProvenance,
   recordServiceLogUseCase,
   recordServiceStateUseCase,
-  createMessageToolProvider,
   createMemoryService,
   checkProviderModel,
   invalid,
   ok,
-  createMemoryToolProvider,
-  createContextToolProvider,
-  createSessionToolProvider,
-  createAgentOrchestrationToolProvider,
-  createGitToolProvider,
-  createArtifactToolProvider,
-  createWorkspaceToolProvider,
-  createSessionControlToolProvider,
-  createProjectToolProvider,
-  setProjectChecksUseCase,
-  setProjectDescriptionUseCase,
-  changeSessionOption,
-  systemSubject,
-  createConnectorHub,
-  createAgentTaskToolProvider,
-  createDispatcher,
-  setTaskStatusUseCase,
-  defaultWorkspaceFor,
-  isBusy,
-  type AgentTaskRequest,
-  notFound, forbidden,
   handoffCapFromEnv,
   defaultMemoryRegistry,
   MEMORY_GUIDANCE,
   MEMORY_SWEEP_INTERVAL_MS,
   MEMORY_GUIDANCE_VERSION,
-  type MemoryGuidance,
-  deriveSessionUseCase,
-  promptSessionUseCase,
   pumpDeliveries,
   recoverOrphanedTurns,
-  releaseAfterTurn,
   sweepTemporaryWorkspacesUseCase,
-  prepareTemporaryWorkspaceUseCase,
-  prepareRepoWorktreeUseCase,
-  authorizeWorker,
-  asTaskId,
   adoptLocalWorkspacesUseCase,
   migrateAssetOwnership,
   sweepGitForReview,
   revokeLegacyLocalWorkerGrants,
   terminalAccess,
   terminalTarget,
-  asSessionId,
   asServiceId,
   asProjectId,
   authorizeProject,
   resolveSessionAssets,
-  createPreviewLinkUseCase,
-  createOutboxPump,
   projectOfSession,
-  createSessionInbox,
-  markWorkerPreviewsOfflineUseCase,
-  matchPreviewShare,
-  parsePreviewPortRange,
-  authorizeSession
 } from '@agent-hub/domain';
-import { createFakeChannel, createFakeOutbound, createFakeReplies } from './fake-channel.ts';
 import {
   authenticate,
   err,
@@ -137,25 +75,41 @@ import {
   withAccess
 } from '@agent-hub/domain';
 import type { ServerGateway } from '@agent-hub/node-gateway';
-import { autoLinkCandidates, type WorkspaceOwner } from './preview-autolink.ts';
+import { createGitWorkspace, createLocalFs, readBuildInfo, createWorkspaceBrowser, offlineWorkspaceBrowser } from '@agent-hub/node-gateway';
+import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
+import type { AccountDeps } from '@agent-hub/domain';
+import { componentJobFinished, createAccessPolicy, isFileAssetKind, loadResourcePolicy } from '@agent-hub/domain';
+
+import { backupArgs, runBackup } from './backup.ts';
+import { createInstallArtifacts } from './install-artifacts.ts';
+import { createRepoAuth } from './repo-auth.ts';
+import { createRemoteClients, serveMcpRelay } from './mcp-relay.ts';
+import { serveAssetFetch } from './asset-relay.ts';
+import { createMemorySources } from './memory-sources.ts';
+import { createWorkerEnroll } from './worker-enroll.ts';
+import { loadActor } from './role-session.ts';
+import { createNpmResolver } from './components.ts';
+import { createProviderWiring } from './providers.ts';
+import { createSessionEnvironment } from './session-environment.ts';
+import { createGitTextWriter } from './git-text-writer.ts';
+import { createGitHubApi } from './github-api.ts';
+import { createModelDistiller } from './model-distiller.ts';
 import { createApp } from './http.ts';
 import { createConnectorObserveReader } from './observe-connector.ts';
 import { createStreamHub } from './stream-hub.ts';
+import { createTurnFinisher, endStalledTurn, type TurnOutcome } from './turn-finish.ts';
+import { wireTools } from './wire-tools.ts';
+import { wireConnectors } from './wire-connectors.ts';
+import { createSchedules } from './schedules.ts';
+import { wirePreviews } from './wire-preview.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
-import { createGitWorkspace, createLocalFs, readBuildInfo, createWorkspaceBrowser, offlineWorkspaceBrowser } from '@agent-hub/node-gateway';
 import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
-import { createTerminalBridge, loginTokenOf, type TerminalBridge } from './terminal-bridge.ts';
-import { createTaskProgress } from './task-progress.ts';
-import { createPreviewChannel, type PreviewChannel } from './preview-channel.ts';
-import { createPreviewProxy, type PreviewProxy } from './preview-proxy.ts';
-import { createPreviewPrefix } from './preview-prefix.ts';
-import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
-import type { AccountDeps, PreviewLink, PreviewLinkId } from '@agent-hub/domain';
-import { componentJobFinished, createAccessPolicy, isContainerSession, isFileAssetKind, loadResourcePolicy } from '@agent-hub/domain';
+import { createTerminalBridge, type TerminalBridge } from './terminal-bridge.ts';
 import { seedTestAccount } from './account-setup.ts';
+
 
 const LOOPBACKS = new Set(['127.0.0.1', 'localhost', '::1']);
 
@@ -337,352 +291,27 @@ const deps: Deps = {
 };
 
 const log = (message: string) => console.log(`[hub] ${message}`);
+// 所有常驻定时器登记到一处，关停时统一 clear。
+const schedules = createSchedules();
 
 // 能力层：agent 经 MCP 回调 hub 的工具。HUB_TOOLS=0 关掉。
 // 唯一的传输是 relay：agent 连 worker 本机的入口，经 /worker 长连接到 hub，hub 不开 HTTP /mcp。
 const toolEndpoint = readEnv('HUB_TOOLS') === '0' ? null : { url: '', transport: 'relay' as const };
 if (readEnv('HUB_TOOLS_TRANSPORT') === 'http') log('HUB_TOOLS_TRANSPORT=http 已移除，忽略：工具一律经 worker 长连接中转');
-// agent 间通信（ADR 0018 · P2P）：消息总线 + 工具；回合结束（journal 里的 ended）时收回复、投下一条。
 // P2P 消息和群聊共用一道按会话的投递闸：同一条会话同一时间只有一个通道在等它的回复。
 const sessionLane = createSessionLane();
-const messageBus = createMessageBus({
-  lane: sessionLane,
-  occupied: (sessionId) => inbox.occupied(sessionId),
-  now: deps.now,
-  sessions: deps.sessions,
-  projects: deps.projects,
-  tasks: deps.tasks,
-  messages: store.messages,
-  bots: store.bots,
-  workspaces: deps.workspaces,
-  workspaceGroups: store.workspaceGroups,
-  links: store.links,
-  policy: deps.access,
-  principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-message'),
-  deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
-  spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-    projectId: project.id, title, ownerId: actor.user.id, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, botId: role.id, actor, via: 'bot'
-  })
-});
-setInterval(() => void messageBus.sweep().catch(() => undefined), 30_000).unref();
-
-// 群聊（ADR 0018 · 群组）：每个群每个角色一条常驻会话；主持人分派 / 竞价 / @ 直达；回合结束时收成员的回复。
-const groupChat = createGroupChat({
-  now: deps.now,
-  sessions: deps.sessions,
-  projects: deps.projects,
-  tasks: deps.tasks,
-  groups: store.groups,
-  policy: deps.access,
-  roles: async (projectId) => (await messageBus.config(projectId)).roles,
-  principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-group'),
-  deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
-  spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-    projectId: project.id, title, ownerId: actor.user.id, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, botId: role.id, actor, via: 'group'
-  }),
-  interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
-  lane: sessionLane,
-  occupied: (sessionId) => inbox.occupied(sessionId),
-  // #219 C3 出站：群帖里的 agent 回复镜回外部渠道（群目标 binding，飞书优先）。
-  external: {
-    outbox: store.outbox,
-    bindingOf: async (groupId) =>
-      (await store.connectors.allBindings()).find((b) => b.groupId === groupId && b.targetKind === 'group' && b.enabled) ?? null
-  }
-});
-// 会话收件箱（#221 步骤 5）：各投递来源共用「占用」判断与回合结束归属。
-// 顺序即优先级：P2P / 群聊先收（它们要在本轮文字上做判断），连接器与调度随后，最后才放开送达队列投下一条。
-const inbox = createSessionInbox({
-  sources: [
-    { id: 'p2p', open: async (sid: string) => (await store.messages.deliveredTo(asSessionId(sid))).length > 0, end: async (sid, outcome) => { await messageBus.turnEnded(asSessionId(sid), outcome); } },
-    { id: 'group', open: async (sid: string) => (await store.groups.deliveredTo(asSessionId(sid))).length > 0, end: async (sid, outcome, reason) => { await groupChat.turnEnded(asSessionId(sid), outcome, reason); } },
-    { id: 'connector', open: async () => false, end: async (sid, outcome) => { await connectorHub.turnEnded(asSessionId(sid), outcome); } },
-    { id: 'dispatch', open: async () => false, end: async (sid) => { await dispatcher.sessionEnded(asSessionId(sid)); } },
-    { id: 'delivery', open: async (sid: string) => (await store.deliveries.pendingFor(sid)).length > 0, end: async (sid) => { await releaseAfterTurn({ ...deps, deliveries: store.deliveries }, asSessionId(sid)); } }
-  ]
-});
-// 持久智能体（界面上叫 bot）：按条读写 bots 表；删除时从所有群移出。
-const persistentAgents = createPersistentAgents({
-  projects: deps.projects,
-  sessions: deps.sessions,
-  now: deps.now,
-  policy: deps.access,
-  bots: store.bots,
-  messages: store.messages,
-  workspaces: store.workspaces,
-  connectors: store.connectors,
-  contextSettings: store.contextSettings,
-  groupsOf: (projectId) => store.groups.groupsOf(projectId),
-  detach: (actor: Parameters<typeof groupChat.detachAgent>[0], projectId: Parameters<typeof groupChat.detachAgent>[1], name: string) => groupChat.detachAgent(actor, projectId, name)
-});
-// 连接器（ADR 0032 R1）：入站来源只经 InboundSource 端口接进来；核心不认识具体连接器。
-// bot 的会话：优先按 sessions.bot_id 查；老会话没有 botId，按派生记录 / 群成员里的名字反查（兼容路径）。
-const botOfSession = createBotOfSession({
-  sessions: deps.sessions,
-  tasks: deps.tasks,
-  bots: store.bots,
-  workspaces: store.workspaces,
-  workspaceGroups: store.workspaceGroups,
-  projects: store.projects,
-  spawnOf: (sessionId) => store.messages.spawnOf(sessionId),
-  memberOfSession: (sessionId) => store.groups.memberOfSession(sessionId)
-});
-/**
- * git 工具的权限主体（docs/design/agent-git-tools.md §3）：bot 没有自己的账号，
- * 用任务 owner（bot 代表的那个人）/ 会话创建者的用户 principal；普通会话用会话创建者。
- * 找不到人时返回 null，工作流按匿名拒绝，工具不在这里崩。
- */
-const subjectOf = async (sessionId: SessionId): Promise<Subject | null> => {
-  const session = await deps.sessions.byId(sessionId);
-  if (!session) return null;
-  // #221 步骤 3：授权签发时冻了身份，工具调用优先读它；旧授权没有 actor 才回落下面的推导。
-  const grant = await deps.toolGrants?.activeForSession(sessionId, deps.now());
-  const frozen = grant?.actor?.userId ?? null;
-  if (frozen !== null) return loadActor(store.users, store.access, frozen, 'agent-git');
-  const bot = await botOfSession(sessionId);
-  const task = isContainerSession(session) ? null : await deps.tasks.byId(session.taskId as TaskId);
-  const userId = bot ? task?.ownerId ?? session.createdBy ?? null : session.createdBy ?? task?.ownerId ?? null;
-  return userId ? loadActor(store.users, store.access, userId, bot ? 'agent-bot' : 'agent-git') : null;
-};
-// GitHub 连接器（ADR 0032 R4）：规则全在 @agent-hub/connector-github；这里只给它项目绑定的 token、PR 和会话的对应。
-const gitHostTokens = createSqliteGitHostTokens(store.db, secretKey);
-const githubClient = createGithubClient({ base: readEnv('HUB_GITHUB_API') ?? undefined });
-const teamTokenOf = async (projectId: string) => {
-  const teamId = (await store.projects.byId(projectId as ProjectId))?.teamId ?? null;
-  return teamId ? gitHostTokens.reveal(teamId) : null;
-};
-/** 某项目能回帖的仓库：智能体（默认项目 + 关联项目）覆盖到它的 github Binding。 */
-const githubReposFor = async (projectId: string) => {
-  const repos: string[] = [];
-  for (const b of await store.connectors.bindingsFor('github')) {
-    const scope = b.projectId ? [b.projectId] : [b.agentProjectId, ...(await store.connectors.agentProjects(b.agentProjectId, b.agentName))];
-    if (scope.includes(projectId)) repos.push(githubParams(b.params).repo);
-  }
-  return repos;
-};
-const pullRequestRepoEarly = createSqlitePullRequests(store.db);
-const githubSource = createGithubSource({
-  client: githubClient,
-  tokenFor: (b) => teamTokenOf(b.projectId ?? b.agentProjectId),
-  sessionForPr: async (repo, number) => {
-    const link = (await pullRequestRepoEarly.openSyncedBefore(Number.MAX_SAFE_INTEGER, 1000)).find((l) => l.repo.toLowerCase() === repo.toLowerCase() && l.number === number);
-    return link?.sessionId ?? null;
-  },
-  log
-});
-// 飞书（issue #219 C4 的第一个真实 IM 渠道）：长连接入站，不需要公网回调；出站走已有 channel_outbox。
-// 两个环境变量都非空才启用；只配一个是配置错误，启动时就报出来。
-const feishuAppId = readEnv('FEISHU_APP_ID');
-const feishuAppSecret = readEnv('FEISHU_APP_SECRET');
-if (Boolean(feishuAppId) !== Boolean(feishuAppSecret)) throw new Error('飞书连接器：FEISHU_APP_ID 与 FEISHU_APP_SECRET 要同时设置');
-const feishuCreds = feishuAppId && feishuAppSecret ? { appId: feishuAppId, appSecret: feishuAppSecret } : null;
-const feishuClient = feishuCreds ? createFeishuClient({ ...feishuCreds, log }) : null;
-const feishuSink = feishuClient ? createFeishuSink({ outbox: store.outbox, client: feishuClient, now: () => Date.now(), log }) : null;
-const feishuSource = feishuCreds ? createFeishuSource({ ...feishuCreds, log }) : null;
-const feishuReplies = feishuSink
-  ? createFeishuTurnReplies({
-    runs: store.connectors,
-    tail: (sessionId, limit) => store.sessions.tail(sessionId as SessionId, limit),
-    enqueueReply: feishuSink.enqueueReply
-  })
-  : null;
-if (feishuCreds) log('飞书连接器已启用（长连接）');
-// 假渠道（#221 步骤 8）：只在 HUB_FAKE_CHANNEL=1 时注册，用来跑通入站/出站/回声整条链。
-const fakeChannel = readEnv('HUB_FAKE_CHANNEL') === '1' ? createFakeChannel() : null;
-const fakeOutbound = fakeChannel ? createFakeOutbound() : null;
-const fakeReplies = fakeChannel
-  ? createFakeReplies({ enqueue: (input) => fakeOutboxPump!.enqueue(input as never), tail: (sessionId, limit) => store.sessions.tail(sessionId as never, limit) })
-  : null;
-if (fakeChannel) log('假渠道已启用：connector=fake（仅测试用，不要在生产打开）');
-const connectorHub = createConnectorHub({
-  now: deps.now, projects: deps.projects, sessions: deps.sessions, policy: deps.access,
-  store: store.connectors,
-  sources: [...(fakeChannel ? [fakeChannel.source] : []), createTimerSource(), githubSource, ...(feishuSource ? [feishuSource] : [])],
-  agentExists: async (projectId, name) => (await messageBus.config(projectId)).roles.some((r) => r.name === name),
-  spawn: async ({ bindingId, connector, projectId, agentName, ownerId, title }) => {
-    const role = (await messageBus.config(projectId)).roles.find((r) => r.name === agentName);
-    if (!role) return err(notFound(`bot @${agentName} 已不存在`));
-    const actor = await loadActor(store.users, store.access, ownerId, 'agent-connector');
-    if (!actor) return err(forbidden('建这个触发的账号已停用'));
-    const opened = await openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-      projectId, title, ownerId, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, botId: role.id, actor, via: 'bot',
-      afterDerive: async (session) => {
-        // 记成这个 bot 的派生会话：职责说明（系统提示）照常垫进去。先于来历。
-        await store.messages.saveSpawn({ sessionId: session.id, projectId: projectId as ProjectId, role: agentName, spawnerSessionId: session.id, traceId: `connector:${session.id}`, createdAt: Date.now() });
-      }
-    });
-    // 假渠道（步骤 8）：记下这条会话从哪来，回合结束后把回复投进出站队列。
-    if (opened.ok && fakeReplies && connector === 'fake') fakeReplies.remember(opened.value.id, bindingId);
-    return opened;
-  },
-  // 占用判断统一走收件箱：新增通道只要注册一个 InboxSource，不必再维护第二份旗标。
-  busy: (sessionId) => inbox.occupied(asSessionId(sessionId)),
-  deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
-  // #219 C3：外部消息可以直接以群为目标。落帖走群聊用例（外部作者 + 创建者身份派生会话）。
-  outbox: store.outbox,
-  groupOf: async (groupId) => {
-    const group = await store.groups.group(groupId);
-    return group ? { id: group.id, projectId: group.projectId } : null;
-  },
-  principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-connector-group'),
-  postExternal: async ({ groupId, author, text, externalId, actor }) => {
-    const posted = await groupChat.postExternal({ groupId, author, text, externalId, actor });
-    return posted.ok ? ok({ postId: posted.value.post.id }) : posted;
-  }
-});
-connectorHub.start();
-// 回滚保护（C1）：旧二进制不认识 target_kind，会把群目标读成主会话；回滚前先禁用这些 binding。
-void store.connectors.allBindings().then((all) => {
-  const groups = all.filter((b) => b.targetKind === 'group').length;
-  if (groups > 0) log(`连接器：有 ${groups} 条群目标 binding；回滚到旧版本前请先禁用它们`);
-}).catch(() => undefined);
-setInterval(() => void connectorHub.tick().catch((error: unknown) => log(`连接器重试失败：${String(error)}`)), 15_000).unref();
-// 调度器（ADR 0032 R3）：task.create 建出的任务排队 → 按上限开任务智能体会话 → 一轮结束经送达队列通知建它的 bot。
-// 只经端口：开会话 / 发消息复用现有派生 + 送达流程；人直接开的会话不经过这里。
-const sessionOwner = (ownerId: string) => loadActor(store.users, store.access, ownerId, 'agent-dispatch');
-const taskProgress = createTaskProgress({
-  now: deps.now,
-  workLog: store.workLog,
-  groupOfSession: async (sessionId) => {
-    const member = await groupChat.memberOf(asSessionId(sessionId));
-    return member ? { groupId: member.groupId } : null;
-  },
-  postToGroup: (groupId, body) => groupChat.postSystem(groupId, body),
-  log
-});
-
-const dispatcher = createDispatcher({
-  now: deps.now,
-  store: store.dispatches,
-  progress: (d, kind, detail) => taskProgress.emit(d, kind, detail),
-  placement: async (projectId) => {
-    const ws = await defaultWorkspaceFor(deps, projectId as ProjectId);
-    const workerId = ws?.workerId ?? null;
-    const workers = await deps.gateway.status();
-    return { workerId, online: workers.some((w) => w.state === 'online' && (workerId === null ? w.origin === 'local' : w.workerId === workerId)) };
-  },
-  start: async (d) => {
-    const actor = await sessionOwner(d.accountId);
-    if (!actor) return err(forbidden('建这个任务的账号已停用'));
-    if (!d.agentId) return err(notFound('不知道用哪个运行时'));
-    // 调度出来的会话也继承建任务的 bot 的启动选项（与 P2P / 群聊 / 连接器三条派生同源）。
-    const bot = d.notifySessionId ? await botOfSession(d.notifySessionId as SessionId) : null;
-    const role = bot ? (await messageBus.config(bot.projectId as ProjectId)).roles.find((x) => x.name === bot.name) : null;
-    const created = await deriveSessionUseCase(deps, {
-      taskId: d.taskId,
-      agentId: d.agentId,
-      model: d.model ?? '',
-      actor,
-      ...(role?.ref.options ? { options: role.ref.options } : {})
-    });
-    if (!created.ok) return created;
-    await recordProvenance({ provenance: store.provenance, audit: store.audit, now: deps.now }, { session: created.value, subject: actor, via: 'bot' }).catch(() => undefined);
-    const text = [`你是被调度器派来推进这个任务的任务智能体。任务：「${d.title}」`, d.goal ? `目标：\n${d.goal}` : '',
-      '直接动手完成它；做完后用一段简短的文字总结结果（做了什么、产出在哪、有没有没做完的）。这段总结会转给建这个任务的 bot。'].filter(Boolean).join('\n\n');
-    const sent = await promptSessionUseCase(deps, { sessionId: created.value.id, text, author: { id: d.accountId, name: '调度器', via: 'dispatch' } });
-    if (!sent.ok) return sent;
-    return ok({ sessionId: created.value.id as string, workerId: created.value.workerId ?? null });
-  },
-  sessionState: async (sid) => {
-    const s = await deps.sessions.byId(sid as SessionId);
-    if (!s) return null;
-    const pending = (await store.deliveries.pendingFor(sid)).length > 0;
-    if (s.status === 'running' || pending || s.lastSeq === 0) return { running: true, outcome: null, reply: '' };
-    const tail = await deps.sessions.tail(sid as SessionId, 400);
-    let reply = '';
-    for (const e of tail) { if (e.event.kind === 'prompt') reply = ''; else if (e.event.kind === 'text') reply += e.event.delta; }
-    return { running: false, outcome: s.status === 'done' ? 'done' : 'failed', reply: reply.trim() };
-  },
-  busy: async (sid) => {
-    const s = await deps.sessions.byId(sid as SessionId);
-    // 与连接器同一组旗标。isBusy 在第一轮 ended 之后经常为假，不能单独当互斥。
-    // 群 / P2P 已经写成 delivered 的投递，调度不能再往同一条会话插一句。
-    return (s ? isBusy(s) : false) || (await inbox.occupied(asSessionId(sid)));
-  },
-  notify: (sid, text) => promptSessionUseCase(deps, { sessionId: sid, text, author: { id: 'dispatch', name: '调度器', via: 'dispatch' } }),
-  abandonTask: async (taskId, reason) => { await setTaskStatusUseCase(deps, taskId as TaskId, 'abandoned', 'system', reason).catch(() => undefined); },
-  sinks: [createGithubSink({ outbox: store.outbox, now: () => Date.now(), client: githubClient, tokenFor: teamTokenOf, boundRepos: githubReposFor, prLinks: async (taskId) => (await pullRequestRepoEarly.byTask(taskId)).map((l) => l.url), log })],
-  log
-});
-const enqueueDispatch = async (r: AgentTaskRequest) => {
-  const creator = await deps.sessions.byId(r.sessionId as SessionId);
-  const bot = await botOfSession(r.sessionId as SessionId);
-  const role = bot ? (await messageBus.config(bot.projectId as ProjectId)).roles.find((x) => x.name === bot.name) : null;
-  await dispatcher.enqueue(r, { agentId: role?.ref.runtime ?? creator?.agentId ?? null, model: role?.ref.model ?? creator?.model ?? null });
-  void dispatcher.tick().catch((error: unknown) => log(`调度失败：${String(error)}`));
-};
-setInterval(() => void dispatcher.tick().catch((error: unknown) => log(`调度失败：${String(error)}`)), 10_000).unref();
-
-// 出站队列（#221 步骤 6）：会话要发到外部渠道的回复先落库，再按租约投递。
-// 目前只消费 session 目标；github 等 external 行保持 queued，等平台发送侧接线。
-const outboxPump = createOutboxPump({
-  store: store.outbox,
-  now: () => Date.now(),
-  deliver: async (message) => {
-    const sent = await promptSessionUseCase(deps, {
-      sessionId: message.target.id as SessionId,
-      text: message.body,
-      author: { id: 'outbox', name: message.author.name, via: 'connector' }
-    });
-    return sent.ok ? { ok: true } : { ok: false, error: sent.error };
-  }
-});
-// 假渠道的出站：只消费 external 目标（真实渠道的 external 行仍保持 queued）。
-const fakeOutboxPump = fakeOutbound
-  ? createOutboxPump({ store: store.outbox, now: () => Date.now(), kinds: ['external'], deliver: fakeOutbound.deliver })
-  : null;
-let fakeOutboxBusy = false;
-setInterval(() => {
-  if (!fakeOutboxPump || fakeOutboxBusy) return;
-  fakeOutboxBusy = true;
-  void (async () => {
-    try {
-      for (let i = 0; i < 10; i++) if ((await fakeOutboxPump.tick()) === 0) break;
-    } catch (error) {
-      log(`假渠道出站失败：${String(error)}`);
-    } finally {
-      fakeOutboxBusy = false;
-    }
-  })();
-}, 1_000).unref();
-// 飞书出站：只认领 `feishu:` 前缀的 external 行，github 的回帖继续留在队列里等各自的发送侧。
-const feishuOutboxPump = feishuSink
-  ? createOutboxPump({ store: store.outbox, now: () => Date.now(), kinds: ['external'], targetPrefixes: ['feishu:'], deliver: feishuSink.deliver })
-  : null;
-let feishuOutboxBusy = false;
-setInterval(() => {
-  if (!feishuOutboxPump || feishuOutboxBusy) return;
-  feishuOutboxBusy = true;
-  void (async () => {
-    try {
-      for (let i = 0; i < 10; i++) if ((await feishuOutboxPump.tick()) === 0) break;
-    } catch (error) {
-      log(`飞书出站失败：${String(error)}`);
-    } finally {
-      feishuOutboxBusy = false;
-    }
-  })();
-}, 1_000).unref();
-let outboxBusy = false;
-setInterval(() => {
-  if (outboxBusy) return;
-  outboxBusy = true;
-  void (async () => {
-    try {
-      for (let i = 0; i < 10; i++) if ((await outboxPump.tick()) === 0) break;
-    } catch (error) {
-      log(`出站队列失败：${String(error)}`);
-    } finally {
-      outboxBusy = false;
-    }
-  })();
-}, 1_000).unref();
+// 消息 / 群聊 / 收件箱 / 连接器 / 调度 / 出站：整块装配在 wire-connectors.ts，这里只按原顺序调用。
+const {
+  messageBus, groupChat, inbox, persistentAgents, botOfSession, subjectOf,
+  githubClient, teamTokenOf, githubReposFor, pullRequestRepo, gitHostTokens, feishuReplies, fakeReplies,
+  connectorHub, taskProgress, dispatcher, enqueueDispatch
+} = wireConnectors({ deps, store, log, readEnv, secretKey, sessionLane, schedules });
 const contextService = createContextService({ projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, access: deps.access, now: () => Date.now(), contextSettings: store.contextSettings, audit: store.audit, gateway: deps.gateway,
   // 角色层（ADR 0020 §8）：派生出来的角色会话 → 角色；否则群里的成员 → 角色
   roleOf: async (sessionId) => (await store.messages.spawnOf(sessionId as SessionId))?.role ?? (await store.groups.memberOfSession(sessionId as SessionId))?.role ?? null,
   // bot 职责说明（系统提示）：DM / 派生会话 / 群成员会话都在会话开头垫一次
   agentOf: async (projectId, role) => (await messageBus.config(projectId as ProjectId)).roles.find((r) => r.name === role) ?? null });
-(deps as { sessionInstructions?: (sessionId: string) => Promise<string | null> }).sessionInstructions = (sessionId) => contextService.instructionsFor(sessionId);
+deps.sessionInstructions = (sessionId) => contextService.instructionsFor(sessionId);
 const offlineBrowser = offlineWorkspaceBrowser('worker 通道尚未就绪');
 const filesService = createWorkspaceFilesService({
   projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, workspaceGroups: store.workspaceGroups, bots: store.bots, gateway: deps.gateway, access: deps.access, audit: store.audit,
@@ -694,55 +323,56 @@ const filesService = createWorkspaceFilesService({
   now: () => Date.now()
 });
 const rewindService = createRewindService({ ...deps, files: filesService, turnRefs: store.turnRefs });
-type TurnOutcome = 'done' | 'stopped' | 'interrupted' | 'failed';
 /**
- * 一轮结束的收尾。回合结束（event `ended`）与进程保活（status `idle`）都会到这里：
- * 各钩子自己幂等（开放的投递 / 未收尾的检查点处理过一次就空转），重复调用无害。
+ * 一轮结束的收尾总闸。回合结束（event `ended`）、进程保活（status `idle`）、
+ * 卡顿巡检、送达回收都走这一处；同一回合的重复信号按 journal 末尾去重。
  */
-const turnFinished = (sessionId: SessionId, outcome: TurnOutcome, reason?: string): void => {
-  // 各来源自己幂等：先让它们收这一轮（P2P/群聊要读本轮的最后一句话），送达队列最后放开投下一条。
-  void inbox.end(sessionId, outcome, reason).catch((error: unknown) => log(`回合收尾失败：${String(error)}`));
-  // 回合结束后拍「之后」那张（ADR 0027 D2）
-  void filesService.endTurn(sessionId).catch((error: unknown) => log(`回合检查点失败：${String(error)}`));
+const turnFinished = createTurnFinisher({
+  sessions: deps.sessions,
+  log,
+  inbox,
+  files: filesService,
   // 假渠道：把这轮回复投进出站队列（只在 HUB_FAKE_CHANNEL=1 时有路由）。
-  void fakeReplies?.finish(sessionId).catch((error: unknown) => log(`假渠道回程失败：${String(error)}`));
+  ...(fakeReplies ? { fakeReplies } : {}),
   // 飞书：这一轮若由飞书消息触发，把回复写进 outbox 并回在原消息下面。
-  void feishuReplies?.finish(sessionId).catch((error: unknown) => log(`飞书回程失败：${String(error)}`));
+  ...(feishuReplies ? { feishuReplies } : {})
+});
+const finishTurn = (sessionId: SessionId, outcome: TurnOutcome, reason?: string): void => {
+  void turnFinished.finish(sessionId, outcome, reason).catch((error: unknown) => log(`回合收尾失败：${String(error)}`));
 };
 hub.stream.subscribe((frame) => {
-  if (frame.event?.kind === 'ended') turnFinished(frame.sessionId, frame.event.outcome, frame.event.reason);
+  if (frame.event?.kind === 'ended') finishTurn(frame.sessionId, frame.event.outcome, frame.event.reason);
 });
 // 送达队列（ADR 0031 D2）：重启时把上次停在「发送中」的退回排队，之后每秒泵一次
 void store.deliveries.recoverSending(Date.now()).then((n) => n > 0 && log(`送达队列：${n} 条上次没送完，重新排队`));
 let pumping = false;
-setInterval(() => {
+schedules.every(1_000, () => {
   if (pumping) return;
   pumping = true;
   void pumpDeliveries({ ...deps, deliveries: store.deliveries })
     .catch((error: unknown) => log(`送达队列失败：${String(error)}`))
     .finally(() => { pumping = false; });
-}, 1_000).unref();
+});
 // 送出去却一直没下文的回合：Worker 丢过任务、掉线或旧协议不认这条会话时，别让队首永远堵着。
 let recovering = false;
-setInterval(() => {
+schedules.every(10_000, () => {
   if (recovering) return;
   recovering = true;
   void recoverOrphanedTurns({ ...deps, deliveries: store.deliveries })
     .then((n) => n > 0 && log(`送达队列：${n} 条送出去没有下文，按失败收尾并放行后面的消息`))
     .catch((error: unknown) => log(`回收没有下文的回合失败：${String(error)}`))
     .finally(() => { recovering = false; });
-}, 10_000).unref();
-setInterval(() => void filesService.sweepCheckpoints().catch(() => undefined), 3_600_000).unref();
-setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref();
+});
+schedules.every(3_600_000, () => void filesService.sweepCheckpoints().catch(() => undefined));
+// groupChat.sweep 已在 wire-connectors 里登记。
 
 // 记忆（ADR 0019 · P1）：SQLite + FTS5 默认适配器；来源就地索引（ADR、文档、任务）；只经工具读，第一轮只垫一行静态引导。
 // 记忆适配器都经注册表装配（memory.md §16）：来源、提炼、检索 / 排序、维护任务、治理各是一个端口。
 const providerRepo = createSqliteProviders(store.db, secretKey);
 const projectTeamOf = async (projectId: string) => (await store.projects.byId(projectId as ProjectId))?.teamId ?? null;
-const pullRequestRepo = pullRequestRepoEarly;
 const workspaceSweeps = createSqliteWorkspaceSweeps(store.db);
 // 清理（ADR 0027 阶段 3）：按 PR 合并 / 任务结束判断，删工作空间时一起删检查点 ref
-(deps as { cleanup?: Deps["cleanup"] }).cleanup = {
+deps.cleanup = {
   sweeps: workspaceSweeps,
   pullRequests: pullRequestRepo,
   dropCheckpoints: (sessionId: string) => filesService.dropSession(sessionId),
@@ -761,7 +391,7 @@ const gitService = createGitWorkflowService({
   now: () => Date.now()
 });
 // PR 状态每 10 分钟同步一次（打开任务时也会顺手同步）
-setInterval(() => void gitService.syncDue(20).catch(() => undefined), 600_000).unref();
+schedules.every(600_000, () => void gitService.syncDue(20).catch(() => undefined));
 const memoryRegistry = defaultMemoryRegistry();
 for (const source of createMemorySources(deps, store.groups)) memoryRegistry.source(source);
 // 会后提炼（ADR 0024）：项目选了模型就由 hub 直接调它，没选 / 失败回落规则版
@@ -800,172 +430,16 @@ hub.stream.subscribe((frame) => {
     .catch((error: unknown) => log(`压缩摘要写记忆失败：${String(error)}`));
 });
 const memorySweep = () => void memoryService.sweep().catch((error: unknown) => log(`记忆后台整理失败：${String(error)}`));
-setTimeout(memorySweep, 10 * 60_000).unref();
-setInterval(memorySweep, MEMORY_SWEEP_INTERVAL_MS).unref();
+schedules.after(10 * 60_000, memorySweep);
+schedules.every(MEMORY_SWEEP_INTERVAL_MS, memorySweep);
 if (toolEndpoint) {
-  (deps as { memoryGuidance?: MemoryGuidance }).memoryGuidance = {
+  deps.memoryGuidance = {
     text: MEMORY_GUIDANCE,
     version: MEMORY_GUIDANCE_VERSION,
     injected: (sessionId, version) => memoryService.guidanceInjected(sessionId, version)
   };
 }
 
-toolGateway = createToolGateway({
-  now: deps.now,
-  toolGrants: store.toolGrants,
-  tokens: createTokenIssuer(),
-  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService),
-    createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
-    // issue #216：agent 不 shell git/gh 也能 commit / push / 开 PR；权限与审计走工作流。
-    createGitToolProvider({ workflow: gitService, subjectOf, resolvePeer: (from, address) => messageBus.resolvePeer(from, address) }),
-    // issue #216 P2：产物列表 / 引用登记与工作空间文件只读。
-    createArtifactToolProvider({ sessions: deps.sessions, artifacts: deps.artifacts, tasks: deps.tasks, workLog: deps.workLog, now: deps.now }),
-    // 会话通信 P1c：session 参数只读看已连线同伴；workspace.changes 复用 git 工作流的 state。
-    createWorkspaceToolProvider({ files: filesService, subjectOf, resolvePeer: (from, address) => messageBus.resolvePeer(from, address), gitState: (subject, sessionId, member) => gitService.state(subject, sessionId, member) }),
-    // issue #216 P1：agent 可以改项目约定、在机器上跑项目声明的检查命令。
-    createProjectToolProvider({
-      sessions: deps.sessions,
-      tasks: deps.tasks,
-      projects: deps.projects,
-      workspaceGroups: deps.workspaceGroups,
-      bots: deps.bots,
-      workspaces: deps.workspaces,
-      gateway: deps.gateway,
-      access: deps.access,
-      subjectOf,
-      update: async ({ projectId, description, checks }) => {
-        let current = await deps.projects.byId(projectId as never);
-        if (!current) return err(notFound('项目不存在'));
-        if (description !== undefined) {
-          const next = await setProjectDescriptionUseCase(deps, { projectId, description });
-          if (!next.ok) return next;
-          current = next.value;
-        }
-        if (checks !== undefined) {
-          const next = await setProjectChecksUseCase(deps, { projectId, checks });
-          if (!next.ok) return next;
-          current = next.value;
-        }
-        return ok(current);
-      }
-    }),
-    // issue #216 P1：agent 可以派生子会话、收掉跑偏的会话（同项目才允许）。
-    createSessionControlToolProvider({
-      sessions: deps.sessions,
-      tasks: deps.tasks,
-      projects: deps.projects,
-      workspaceGroups: deps.workspaceGroups,
-      bots: deps.bots,
-      workspaces: deps.workspaces,
-      access: deps.access,
-      subjectOf,
-      derive: (command) => deriveSessionUseCase(deps, command),
-      interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
-      rename: (command) => renameSessionUseCase(deps, command)
-    }),
-    createAgentOrchestrationToolProvider({
-      agentProfiles: deps.agentProfiles,
-      sessions: deps.sessions,
-      tasks: deps.tasks,
-      projects: deps.projects,
-      agents: deps.agents,
-      now: deps.now,
-      spawn: async (input) => {
-        // 会话通信 P1b：派生出来的会话自动和发起方连线；起短名、挑机器、一仓一会话都按会话主人的权限算。
-        const owner = await subjectOf(asSessionId(input.callerSessionId));
-        const extras = { ...(input.handle ? { handle: input.handle } : {}), linkWith: [input.callerSessionId] };
-        const linkIds = await checkStartExtras(deps, store.messages, input.taskId, extras, owner);
-        if (!linkIds.ok) return linkIds;
-        // hub 托管模型（hub-xxx/模型）要先过提供商检查拿到协议，和 /api/sessions/derive 一样；按会话主人算权限
-        const modelCheck = await providerWiring.checkModel(owner, input.model, input.taskId);
-        if (!modelCheck.ok) return modelCheck;
-        if (input.workerId) {
-          const usable = await authorizeWorker(deps.access, owner, input.workerId);
-          if (!usable.ok) return usable;
-        }
-        // 档位：agent 要求隔离时现建 worktree（按项目配置跑准备命令），与 /api/sessions/derive 同一条路径。
-        let workspaceId: string | undefined;
-        if (input.repoId) {
-          const task = await deps.tasks.byId(asTaskId(input.taskId));
-          if (!task) return err(notFound('任务不存在'));
-          const prepared = await prepareRepoWorktreeUseCase(deps, {
-            projectId: task.projectId,
-            taskId: task.id,
-            repoId: input.repoId,
-            workerId: input.workerId ?? null,
-            home: homedir(),
-            actor: owner
-          });
-          if (!prepared.ok) return prepared;
-          workspaceId = prepared.value.id;
-        } else if (input.workspaceMode) {
-          const task = await deps.tasks.byId(asTaskId(input.taskId));
-          if (!task) return err(notFound('任务不存在'));
-          const prepared = await prepareTemporaryWorkspaceUseCase(deps, {
-            projectId: task.projectId,
-            taskId: task.id,
-            workerId: input.workerId ?? null,
-            home: homedir(),
-            mode: input.workspaceMode,
-            actor: input.workerId ? owner : systemSubject('agent.spawn')
-          });
-          if (!prepared.ok) return prepared;
-          workspaceId = prepared.value.id;
-        }
-        const created = await deriveSessionUseCase(deps, {
-          taskId: input.taskId,
-          agentId: input.agentId,
-          model: input.model,
-          options: input.options,
-          ...(modelCheck.value ? { hubProtocol: modelCheck.value } : {}),
-          ...(workspaceId === undefined ? {} : { workspaceId }),
-          ...(input.workerId && workspaceId === undefined ? { workerId: input.workerId } : {}),
-          actor: systemSubject('agent.spawn'),
-          createdBy: input.createdBy
-        });
-        if (!created.ok) return created;
-        const session = created.value;
-        await applyStartExtras(deps, messageBus, session, extras, linkIds.value, input.createdBy);
-        if (input.prompt) {
-          const sent = await promptSessionUseCase(deps, {
-            sessionId: session.id,
-            text: input.prompt,
-            author: { id: 'agent-orchestrator', name: '编排 Agent', via: 'agent' }
-          });
-          if (!sent.ok) return sent;
-        }
-        return ok({ sessionId: session.id, taskId: session.taskId, agentId: session.agentId, model: session.model, status: session.status, handle: await messageBus.handleOf(session), workspaceId: session.workspaceId ?? null });
-      },
-      setOption: (sessionId, optionId, value) => changeSessionOption(deps, { sessionId, id: optionId, value })
-    }),
-    // R2：bot 建任务 / 读关联项目；权限 = 关联关系，配额只算触发唤醒的回合（HUB_ROUTER_COUNT_HUMAN=1 时人发起的也算）
-    createAgentTaskToolProvider({
-      ...deps, requests: store.agentTasks, agentOf: botOfSession, onCreated: enqueueDispatch,
-      associations: (projectId, name) => store.connectors.agentProjects(projectId, name),
-      wakeOf: async (sid) => { const run = await store.connectors.deliveredRunFor(sid); const b = run ? await store.connectors.binding(run.bindingId) : null; return run && b ? { runId: run.id, timeZone: b.timeZone } : null; },
-      countHuman: readEnv('HUB_ROUTER_COUNT_HUMAN') === '1',
-      defaultTimeZone: readEnv('HUB_TIME_ZONE') ?? 'Asia/Shanghai'
-    }),
-    // R4：github.comment / github.react；只对绑给这个 bot（或这个任务来源）的仓库，能力按 Worker 预设映射
-    createGithubToolProvider({
-      client: githubClient,
-      tokenFor: teamTokenOf,
-      workerCapabilities: async (sid) => {
-        const s = await deps.sessions.byId(sid as SessionId);
-        return s?.workerId ? ((await store.enrollment.credentialFor(s.workerId))?.capabilities ?? null) : null;
-      },
-      bindingsOf: async (sid) => {
-        const bot = await botOfSession(sid as SessionId);
-        if (bot) {
-          return (await store.connectors.bindingsOf(bot.projectId, bot.name)).filter((b) => b.connector === 'github')
-            .map((b) => ({ repo: githubParams(b.params).repo, projectId: b.projectId ?? b.agentProjectId }));
-        }
-        const d = await store.dispatches.bySession(sid);
-        const at = d?.originConnector === 'github' && d.originExternalId ? parseIssueKey(d.originExternalId) : null;
-        return at && d && (await githubReposFor(d.projectId)).includes(at.repo) ? [{ repo: at.repo, projectId: d.projectId }] : [];
-      }
-    })]
-});
 
 // 工具授权不随 hub 重启回收：ACP 进程里的 MCP Authorization 无法热换，
 // 重启后旧会话仍可能继续使用同一把会话令牌。过期由授权自身的 TTL 负责。
@@ -1105,6 +579,11 @@ const providerWiring = createProviderWiring({
   // #261 HIGH2：probe 点名 workerId 时先过 worker.use 授权。
   access: deps.access,
   log
+});
+// 工具网关依赖上面建好的 providerWiring（模型检查），所以放在它后面。
+toolGateway = wireTools({
+  deps, store, readEnv, messageBus, groupChat, botOfSession, contextService, filesService, gitService, memoryService,
+  providerWiring, githubClient, teamTokenOf, githubReposFor, subjectOf, enqueueDispatch
 });
 const assetDeps: AssetReviewDeps = {
   assets: store.assets,
@@ -1265,14 +744,15 @@ serverGateway = createServerGateway({
     fromWorker(workerId, sessionId, () => {
       void (async () => {
         await ingestRuntimeStatus(deps, sessionId, status);
-        // idle / ended 都意味着「这一轮结束了」：补一遍回合收尾（幂等）。
+        // idle / ended 都意味着「这一轮结束了」：补一遍回合收尾（总闸幂等）。
         // idle 时进程还活着、托管不撤；ended 才是真结束，额外撤 provider 句柄与终端。
         if (status === 'idle' || status === 'ended') {
           // 事件帧和状态帧是两条路：这里先排一次这条会话的队，等已经到达的 ended 事件落盘，
           // 再照库里的结果补一遍收尾——否则可能把正常回合判成 failed。
           await deps.queue.run(sessionId, async () => undefined);
           const session = await deps.sessions.byId(sessionId);
-          turnFinished(sessionId, session?.status === 'done' ? 'done' : 'failed');
+          turnFinished.finish(sessionId, session?.status === 'done' ? 'done' : 'failed')
+            .catch((error: unknown) => log(`回合收尾失败：${String(error)}`));
         }
         if (status === 'ended') {
           providerWiring.revoke(sessionId);
@@ -1379,228 +859,35 @@ terminalBridge = createTerminalBridge({
   log
 });
 
-/**
- * 预览转发（docs/design/preview.md）：每一条预览链接在 hub 上占一个端口，
- * 浏览器访问那个端口时按帧转发给 worker 的 `/preview` 通道，再由 worker 打到本机回环端口。
- * `HUB_PREVIEW_PORTS` 为空串或 `0` 时整块关闭。
- */
-const previewPorts = parsePreviewPortRange(readEnv('HUB_PREVIEW_PORTS'), port);
-let previewChannel: PreviewChannel | null = null;
-let previewProxy: PreviewProxy | null = null;
-if (previewPorts !== null) {
-  const previewLog = (message: string) => log(`[preview] ${message}`);
-  const sameSecret = (given: string, expected: string): boolean => {
-    const left = Buffer.from(given);
-    const right = Buffer.from(expected);
-    return left.length === right.length && timingSafeEqual(left, right);
-  };
-  previewChannel = createPreviewChannel({
-    verifyWorker: async (request) => {
-      const header = request.headers.authorization;
-      if (typeof header === 'string' && header.startsWith('Bearer ')) {
-        const credential = header.slice('Bearer '.length).trim();
-        if (credential === '') return null;
-        const found = await enrollmentDeps.enrollment.credentialByHash(enrollmentDeps.tokens.hashOf(credential));
-        if (found === null || found.revokedAt !== null) return null;
-        return { workerId: found.workerId };
-      }
-      // 本机 Worker 没有专属凭据：用它自报的 workerId + hub 生成的 localSecret。
-      const secret = request.headers['x-hub-local-secret'];
-      const workerId = request.headers['x-hub-worker-id'];
-      if (spawnWorker !== '1' || typeof secret !== 'string' || typeof workerId !== 'string') return null;
-      return sameSecret(secret, localSecret) ? { workerId } : null;
-    },
-    // P2：worker 每 10 秒报一次自己回环上在监听的端口，用来把链接标 ready / stale。
-    onPorts: (workerId, ports) => {
-      void (async () => {
-        const listening = new Set(ports);
-        const links = (await store.previewLinks.listAll()).filter((link) => link.workerId === workerId);
-        let changed = 0;
-        for (const link of links) {
-          const wanted = listening.has(link.port);
-          const state: PreviewLink['state'] = wanted ? 'ready' : link.state === 'offline' ? 'offline' : 'stale';
-          if (state === link.state && !wanted) continue;
-          await store.previewLinks.save({
-            ...link,
-            state,
-            ...(wanted ? { lastSeenAt: accounts.now() } : {})
-          });
-          changed += 1;
-        }
-        if (changed > 0) previewLog(`端口状态更新：${changed} 条（${workerId}）`);
-      })().catch((failure: unknown) => previewLog(`同步端口状态失败：${(failure as Error).message}`));
-    },
-    // P2：终端输出里认出端口就自动挂一条预览（幂等、上限与端口分配都走领域用例）。
-    onDetected: (workerId, event) => {
-      void (async () => {
-        if (previewProxy === null || previewPorts === null) return;
-        const created = await createPreviewLinkUseCase(
-          {
-            projects: deps.projects,
-            tasks: deps.tasks,
-            sessions: deps.sessions,
-            workspaces: deps.workspaces,
-            access: deps.access,
-            previewLinks: store.previewLinks,
-            previewPorts,
-            now: accounts.now
-          },
-          systemSubject('preview.detected'),
-          { sessionId: event.sessionId, port: event.port, source: 'detected', ...(event.label === undefined ? {} : { label: event.label }) }
-        );
-        if (!created.ok) {
-          // 「最多 8 条」「端口用完了」这类是正常上限，不打扰日志。
-          if (created.error.code !== 'conflict') previewLog(`自动挂预览失败：${created.error.message}`);
-          return;
-        }
-        if (created.value.workerId !== workerId) return;
-        await previewProxy.listen(created.value);
-        previewLog(`自动发现端口 ${created.value.port}（会话 ${event.sessionId.slice(0, 8)}）`);
-      })().catch((failure: unknown) => previewLog(`自动挂预览失败：${(failure as Error).message}`));
-    },
-    onWorkerDown: (workerId) => {
-      void markWorkerPreviewsOfflineUseCase({ previewLinks: store.previewLinks }, workerId)
-        .then((changed) => {
-          if (changed > 0) log(`${changed} 条预览链接随机器离线（${workerId}）`);
-        })
-        .catch((failure: unknown) => previewLog(`标记离线失败：${(failure as Error).message}`));
-    },
-    onLog: previewLog
-  });
-  // 预览端口上的 302 要跳回 hub 自己的登录页（预览 origin 上没有 SPA）。
-  const hubOrigin =
-    readEnv('HUB_PUBLIC_URL') ??
-    `http://${host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host}:${port}`;
-  previewProxy = createPreviewProxy({
-    resolve: (hubPort) => store.previewLinks.byHubPort(hubPort),
-    loginUrl: (_request, _link, target) => `${hubOrigin}/login?next=${encodeURIComponent(target)}`,
-    authorize: async (request, link) => {
-      const token = loginTokenOf(request.headers.cookie);
-      if (token === '') return false;
-      const subject = await withAccess(store.access, await authenticate(accounts, token), accounts.now());
-      if (subject === null) return false;
-      const session = await store.sessions.byId(link.sessionId);
-      if (session === null) return false;
-      const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces, workspaceGroups: store.workspaceGroups }, session);
-      return (await authorizeSession(deps.access, subject, project, session, 'session.read')).ok;
-    },
-    matchShare: (link, token) =>
-      matchPreviewShare({ previewLinks: store.previewLinks }, link.id, token, accounts.now()).then(
-        (result) => result.ok
-      ),
-    channel: previewChannel,
-    host,
-    onConflict: (linkId) => {
-      void (async () => {
-        const link = await store.previewLinks.byId(linkId as PreviewLinkId);
-        if (link !== null && link.state !== 'stale') await store.previewLinks.save({ ...link, state: 'stale' });
-      })().catch((failure: unknown) => previewLog(`端口冲突处理失败：${(failure as Error).message}`));
-    },
-    onLog: previewLog
-  });
-}
-
-/**
- * 预览自动发现（docs/design/session-service.md §9）：进程的工作目录落在某条会话的工作目录里、
- * 端口又在听，就替这条会话挂一条预览链接——人不用再手填端口。
- * `HUB_PREVIEW_AUTO=0` 可以关掉；上限、去重、端口合法性都在 `preview-autolink.ts` 里。
- */
-const autoDiscoverPreviews = async (): Promise<void> => {
-  if (previewProxy === null || previewPorts === null) return;
-  if (readEnv('HUB_PREVIEW_AUTO') === '0') return;
-  const links = await store.previewLinks.listAll();
-  const spaces = [...(await store.workspaces.temporaries()), ...(await store.workspaces.longLived())];
-  const owners: WorkspaceOwner[] = [];
-  const allowed = new Set<string>();
-  const workerIds = new Set<string>();
-  for (const space of spaces) {
-    if (space.workerId === null) continue;
-    for (const session of await store.sessions.listByWorkspace(space.id)) {
-      if (session.status === 'failed') continue;
-      if (session.workerId !== space.workerId) continue;
-      owners.push({ sessionId: session.id, workerId: space.workerId, path: space.path });
-      allowed.add(session.id);
-      workerIds.add(space.workerId);
-    }
-  }
-  if (owners.length === 0) {
-    if (readEnv('HUB_PREVIEW_DEBUG') === '1') log(`预览自动发现：没有可挂的会话（空间 ${spaces.length} 个）`);
-    return;
-  }
-  for (const workerId of workerIds) {
-    const listed = await deps.gateway.processes?.(workerId);
-    if (listed === undefined) {
-      if (readEnv('HUB_PREVIEW_DEBUG') === '1') log('预览自动发现：网关没有提供进程清单');
-      continue;
-    }
-    if (!listed.ok) {
-      if (readEnv('HUB_PREVIEW_DEBUG') === '1') log(`预览自动发现：${workerId} 的进程清单拿不到：${listed.error.message}`);
-      continue;
-    }
-    // 只拿这台机器上的会话工作空间去匹配：路径前缀跨机器没有意义。
-    const workerOwners = owners.filter((entry) => entry.workerId === workerId);
-    if (readEnv('HUB_PREVIEW_DEBUG') === '1') log(`预览自动发现：${workerId} ${listed.value.length} 个进程，会话 ${workerOwners.length} 条`);
-    const candidates = autoLinkCandidates(
-      workerId,
-      listed.value.map((process) => ({ pid: process.pid, cwd: process.cwd, ports: process.ports })),
-      workerOwners,
-      { links, allowedSessions: allowed }
-    );
-    for (const candidate of candidates) {
-      const created = await createPreviewLinkUseCase(
-        {
-          projects: deps.projects,
-          tasks: deps.tasks,
-          sessions: deps.sessions,
-          workspaces: deps.workspaces,
-          access: deps.access,
-          previewLinks: store.previewLinks,
-          previewPorts,
-          now: accounts.now
-        },
-        systemSubject('preview.detected'),
-        { sessionId: candidate.sessionId as SessionId, port: candidate.port, source: 'detected' }
-      );
-      if (!created.ok) {
-        if (created.error.code !== 'conflict') log(`按进程自动挂预览失败：${created.error.message}`);
-        continue;
-      }
-      await previewProxy.listen(created.value);
-      log(`按进程自动挂了预览：${candidate.sessionId} 端口 ${candidate.port}`);
-    }
-  }
-};
-
-/** 预览端口和库里的链接对齐：新加的开监听、删掉的关掉。启动时一次，之后每 30 秒一次。 */
-const reconcilePreviews = async (): Promise<void> => {
-  if (previewProxy === null) return;
-  await autoDiscoverPreviews().catch((failure: unknown) => log(`自动发现预览失败：${(failure as Error).message}`));
-  const links = await store.previewLinks.listAll();
-  const wanted = new Set<string>(links.map((link) => link.id));
-  for (const listening of previewProxy.listening()) {
-    if (!wanted.has(listening.linkId)) await previewProxy.unlisten(listening.linkId as PreviewLinkId);
-  }
-  const active = new Set(previewProxy.listening().map((entry) => entry.linkId));
-  for (const link of links) {
-    if (!active.has(link.id)) await previewProxy.listen(link);
-  }
-};
+const previews = wirePreviews({
+  deps, store, log, readEnv, host, port, spawnWorker, localSecret,
+  enrollment: enrollmentDeps.enrollment,
+  tokens: enrollmentDeps.tokens,
+  subjectOfCookie: async (value) => withAccess(store.access, await authenticate(accounts, value), accounts.now()),
+  now: () => accounts.now(),
+  schedules
+});
+const { ports: previewPorts, reconcile: reconcilePreviews, channel: previewChannel } = previews;
 void loadResourcePolicy({ metrics: workerMetrics, settings: store.settings }).catch((failure: unknown) => log(`同步资源策略失败：${(failure as Error).message}`));
 
 const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
 
-// 卡顿巡检：一轮跑着却长时间没新事件，记一条 warn 诊断（卡片上显示提醒，可一键中断）并写日志。
+// 卡顿巡检：一轮跑着却长时间没新事件，先记一条 warn 诊断（卡片上显示提醒），
+// 再按「失败/中断」收尾这一轮——只提醒不收尾的话，队首会一直堵着，后面每句话都排队。
 const stallMs = Number(readEnv('HUB_STALL_MS') ?? 5 * 60_000);
 if (stallMs > 0) {
-  const timer = setInterval(() => {
-    flagStalledSessions(deps, { idleMs: stallMs, marker: STALL_NOTICE_MARKER })
-      .then((ids) => {
-        for (const id of ids) log(`会话 ${id} 已 ${Math.round(stallMs / 60_000)} 分钟以上没有新输出，可能卡住了`);
-      })
-      .catch((failure: unknown) => log(`卡顿巡检失败：${(failure as Error).message}`));
-  }, Math.min(30_000, stallMs));
-  timer.unref();
+  schedules.every(Math.min(30_000, stallMs), () => {
+    void (async () => {
+      const ids = await flagStalledSessions(deps, { idleMs: stallMs, marker: STALL_NOTICE_MARKER });
+      for (const id of ids) {
+        const minutes = Math.max(1, Math.round(stallMs / 60_000));
+        const reason = `已经 ${minutes} 分钟没有新输出，平台按中断结束了这一轮；需要的话请重发。`;
+        const ended = await endStalledTurn(deps, turnFinished, id, reason);
+        if (ended) log(`会话 ${id} 已 ${minutes} 分钟以上没有新输出，按中断收尾并放行后面的消息`);
+      }
+    })().catch((failure: unknown) => log(`卡顿巡检失败：${(failure as Error).message}`));
+  });
 }
 
 // 临时工作空间清理（workspaces.md §5）：启动后一会儿（等 Worker 连上）跑一次，之后每小时一次
@@ -1612,8 +899,8 @@ const sweep = (why: 'startup' | 'hourly') =>
       }
     })
     .catch((failure: unknown) => log(`临时工作空间清理失败：${(failure as Error).message}`));
-setTimeout(() => void sweep('startup'), 60_000).unref();
-setInterval(() => void sweep('hourly'), 60 * 60_000).unref();
+schedules.after(60_000, () => void sweep('startup'));
+schedules.every(60 * 60_000, () => void sweep('hourly'));
 
 // 资产更新提醒：定时去 Git 来源看有没有新版本（默认每 6 小时；HUB_ASSET_CHECK_MS=0 关掉）。只记「有新版本」，升级仍要主人看对比后确认。
 const assetCheckMs = Number(readEnv('HUB_ASSET_CHECK_MS') ?? 6 * 60 * 60_000);
@@ -1631,8 +918,8 @@ const checkAssets = (why: string) => {
     });
 };
 if (assetCheckMs > 0) {
-  setTimeout(() => void checkAssets('启动'), Math.min(120_000, assetCheckMs)).unref();
-  setInterval(() => void checkAssets('定时'), assetCheckMs).unref();
+  schedules.after(Math.min(120_000, assetCheckMs), () => void checkAssets('启动'));
+  schedules.every(assetCheckMs, () => void checkAssets('定时'));
 }
 
 // 开放 API 令牌（ADR 0015）：只存哈希。
@@ -1810,54 +1097,13 @@ app.get('/*', serveStatic({ root: webDist, path: 'index.html' }));
 
 // 预览的路径前缀模式（docs/design/preview.md §5，P4）：云上只放通 hub 一个端口时用。
 // WebSocket（HMR）不走这条路，需要它就用端口模式。
-const previewPrefixPath = (readEnv('HUB_PREVIEW_PREFIX') ?? '').trim().replace(/\/+$/, '');
-const previewPrefixActive = previewPrefixPath !== '' && previewPrefixPath !== '/' && previewChannel !== null;
-if (previewPrefixActive && previewChannel !== null) {
-  const prefixChannel = previewChannel;
-  const previewPrefix = createPreviewPrefix({
-    prefix: previewPrefixPath,
-    resolve: async (linkId) => store.previewLinks.byId(linkId as PreviewLinkId),
-    authorize: async (request, link) => {
-      const shared = new URL(request.url).searchParams.get('share');
-      if (shared !== null && shared !== '') {
-        const matched = await matchPreviewShare(
-          { previewLinks: store.previewLinks },
-          link.id,
-          shared,
-          accounts.now()
-        );
-        if (matched.ok) return true;
-      }
-      const token = loginTokenOf(request.headers.get('cookie') ?? '');
-      if (token === '') return false;
-      const subject = await withAccess(store.access, await authenticate(accounts, token), accounts.now());
-      if (subject === null) return false;
-      const session = await store.sessions.byId(link.sessionId);
-      if (session === null) return false;
-      const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces, workspaceGroups: store.workspaceGroups }, session);
-      return (await authorizeSession(deps.access, subject, project, session, 'session.read')).ok;
-    },
-    channel: prefixChannel,
-    onLog: (message) => log(`[preview] ${message}`)
-  });
-  app.all(`${previewPrefixPath}/*`, async (c) => (await previewPrefix.handle(c.req.raw)) ?? c.notFound());
-  log(`预览路径前缀模式：${previewPrefixPath}/<链接 id>/（不支持 WebSocket / HMR）`);
-  // 前缀模式和 hub 同源：预览页里的脚本能读到 hub_csrf，等于拿到了以用户身份发请求的能力。
-  // 只建议在「预览的就是自己写的页面」时开启。
-  log('注意：前缀模式与 Hub 同源，预览页脚本能读到 hub_csrf');
-}
+previews.attachPrefix(app, readEnv('HUB_PREVIEW_PREFIX') ?? '');
 
 const server = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
   log(`控制台：http://${host}:${info.port}`);
 });
 // 端口被占是最常见的一种「起不来」，不该打一坨堆栈了事
-if (previewProxy !== null) {
-  void reconcilePreviews().catch((failure: unknown) => log(`预览端口对齐失败：${(failure as Error).message}`));
-  const previewTimer = setInterval(() => {
-    void reconcilePreviews().catch((failure: unknown) => log(`预览端口对齐失败：${(failure as Error).message}`));
-  }, 30_000);
-  previewTimer.unref();
-}
+previews.start();
 
 server.on('error', (error: NodeJS.ErrnoException) => {
   if (error.code === 'EADDRINUSE') {
@@ -1933,10 +1179,11 @@ if (spawnWorker === '1') {
   let child = startLocalWorker();
   const shutdown = () => {
     stopping = true;
+    schedules.clear();
     child.kill('SIGTERM');
     terminalBridge?.close();
-    void previewProxy?.close();
-    previewChannel?.close();
+    void previews.proxy?.close();
+    previews.channel?.close();
     serverGateway?.close();
     store.close();
     server.close();

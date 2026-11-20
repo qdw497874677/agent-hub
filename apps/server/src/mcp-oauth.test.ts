@@ -135,3 +135,18 @@ test('MCP OAuth：force 刷新时上游仍 401 → 返回错误（只刷新一�
   assert.match(refreshed.error.message, /状态 401/);
   assert.equal(calls.length, 2);
 });
+
+test('MCP OAuth：client secret 轮换后不会命中旧 token', async () => {
+  const { calls, impl } = fakeFetch((n) => tokenResponse({ access_token: `tok-${n}`, expires_in: 3600 }));
+  const oauth = createMcpOAuth({ fetch: impl });
+  assert.ok((await oauth.authorization(base)).ok);
+  assert.equal(calls.length, 1);
+
+  const rotated = await oauth.authorization({ ...base, clientSecret: 'rotated-secret' });
+  assert.ok(rotated.ok);
+  assert.equal(rotated.value, 'Bearer tok-2');
+  assert.equal(calls.length, 2, 'secret 变了必须重新取 token');
+
+  assert.ok((await oauth.authorization({ ...base, clientSecret: 'rotated-secret' })).ok);
+  assert.equal(calls.length, 2, '新 secret 自己可以命中缓存');
+});

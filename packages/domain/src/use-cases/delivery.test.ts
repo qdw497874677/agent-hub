@@ -242,6 +242,50 @@ test('送出去就没有下文的那一轮：按失败收尾，并立刻放行�
   assert.equal(await recoverOrphanedTurns(w.deps), 0, '同一条不会反复收尾');
 });
 
+test('托管进程还在、但这一轮投递后没有任何事件：也按失败收尾', async () => {
+  const w = await world();
+  w.online();
+  await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '第一句' });
+  await settle();
+  assert.equal(w.sent.length, 1);
+  // 旧协议的 Worker 收下了 prompt 却丢帧：托管表里还登记着，journal 再没有这一轮的事件。
+  assert.equal(w.deps.hosting.has(w.sid), true, '这条会话确实还登记在托管表里');
+  w.tick(ORPHAN_TURN_MS + 1);
+  assert.equal(await recoverOrphanedTurns(w.deps), 1, '进程在也一样要收尾，不能一直堵队首');
+  const tail = await w.deps.sessions.tail(w.sid, 10);
+  const ended = tail.filter((e) => e.event.kind === 'ended').at(-1);
+  assert.ok(ended?.event.kind === 'ended' && ended.event.outcome === 'failed');
+  assert.equal((await w.deps.sessions.byId(w.sid))!.status, 'failed');
+  assert.equal(await recoverOrphanedTurns(w.deps), 0, '同一条不会反复收尾');
+});
+
+test('长回合有持续事件：托管进程在时绝不误杀', async () => {
+  const w = await world();
+  w.online();
+  await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '跑一个很慢的工具' });
+  await settle();
+  // 超过 ORPHAN_TURN_MS 之后还在出事件：这是正常的长回合。
+  w.tick(ORPHAN_TURN_MS + 1);
+  await recordEvent(w.deps, { sessionId: w.sid, event: { kind: 'text', delta: '还在跑' } });
+  assert.equal(await recoverOrphanedTurns(w.deps), 0, '有进展就不插手');
+  assert.equal((await w.deps.sessions.byId(w.sid))!.status, 'running');
+  const tail = await w.deps.sessions.tail(w.sid, 5);
+  assert.equal(tail.filter((e) => e.event.kind === 'ended').length, 0, '不能补一条 ended');
+});
+
+test('投递后只有排队消息的 prompt 事件：不算进展，照样收尾', async () => {
+  const w = await world();
+  w.online();
+  await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '第一句' });
+  await settle();
+  await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '第二句' });
+  await settle();
+  assert.equal(w.sent.length, 1, '第二句只在 journal 里落了一条 prompt，还没送');
+  w.tick(ORPHAN_TURN_MS + 1);
+  assert.equal(await recoverOrphanedTurns(w.deps), 1, 'prompt 事件是 hub 自己写的，不是这一轮的进展');
+  assert.equal(w.sent.length, 2, '收尾后第二句能立刻送出去');
+});
+
 test('同一会话两个入口同时触发：只投递一次', async () => {
   const w = await world();
   w.online();

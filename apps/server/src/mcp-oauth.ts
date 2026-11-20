@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DomainError, McpOAuth, Result } from '@agent-hub/domain';
 import { err, ok, unavailable } from '@agent-hub/domain';
 
@@ -35,8 +36,11 @@ export function createMcpOAuth(options: McpOAuthOptions = {}): McpOAuthClient {
   const log = options.log ?? (() => undefined);
   const cache = new Map<string, CachedToken>();
 
+  // secret 轮换后必须换 token；键里只放摘要，绝不留明文。
+  const secretDigest = (oauth: McpOAuth): string =>
+    createHash('sha256').update(oauth.clientSecret ?? '').digest('hex').slice(0, 12);
   const keyOf = (oauth: McpOAuth): string =>
-    [oauth.tokenUrl, oauth.clientId, oauth.scope ?? '', oauth.audience ?? ''].join('|');
+    [oauth.tokenUrl, oauth.clientId, oauth.scope ?? '', oauth.audience ?? '', secretDigest(oauth)].join('|');
 
   const sanitize = (text: string, oauth: McpOAuth): string => {
     let out = text;

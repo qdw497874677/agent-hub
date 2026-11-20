@@ -113,16 +113,16 @@ export interface Deps {
    * 记忆的静态引导（ADR 0019）：新会话第一轮垫一行（不含任何记忆内容），注入要审计。
    * 不给 = 没开记忆工具，不垫。
    */
-  readonly memoryGuidance?: MemoryGuidance;
+  memoryGuidance?: MemoryGuidance;
   /** 团队级的运行时默认模型（新会话没点名模型时按运行时取）。不给 = 用 agent 自己的默认。 */
   readonly agentDefaults?: AgentDefaultsStore;
   /**
    * 会话以某个 bot 身份跑时，它的职责说明（系统提示块）。由上下文服务按角色层解析（ADR 0020）；
    * 只在新会话第一句垫一次，续聊 / resume 不再垫。不给 = 不垫。
    */
-  readonly sessionInstructions?: (sessionId: string) => Promise<string | null>;
+  sessionInstructions?: (sessionId: string) => Promise<string | null>;
   /** 清理增强（ADR 0027 §3）：规则 / 记录 / PR 状态 / 删检查点。不给 = 只按原规则（任务结束且干净）。 */
-  readonly cleanup?: CleanupExtras;
+  cleanup?: CleanupExtras;
 }
 
 export interface CleanupExtras {

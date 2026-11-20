@@ -1,7 +1,7 @@
 import { afterFailure, type Delivery } from '../delivery.ts';
 import { notFound, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
-import type { SessionId } from '../ids.ts';
+import type { SessionId, Seq } from '../ids.ts';
 import type { PromptPart } from '../attachment.ts';
 import type { Deps } from './deps.ts';
 import type { DeliveryQueue } from '../ports/delivery-queue.ts';
@@ -115,16 +115,37 @@ export async function releaseAfterTurn(deps: DeliveryDeps, sessionId: string): P
 export const ORPHAN_TURN_MS = 2 * 60_000;
 
 /**
+ * 投递之后这一轮有没有真进展。只有 hub 自己写的事件不算：
+ * - `prompt`：后面排队的消息一进来就会落一条，不代表上一轮跑了；
+ * - `diagnostic`：卡顿巡检写的提醒，正是「没进展」的证据。
+ */
+async function turnHasProgressAfter(
+  deps: Pick<Deps, 'sessions'>,
+  sessionId: SessionId,
+  seq: number
+): Promise<boolean> {
+  const after = await deps.sessions.eventsAfter(sessionId, seq as Seq);
+  return after.some((entry) => entry.event.kind !== 'prompt' && entry.event.kind !== 'diagnostic');
+}
+
+/**
  * 收掉「送出去了、但机器上根本没跑起来」的回合。
  *
  * 真实事故：Worker 升级后还留着旧协议，收到 `taskId: null` 的 start_session 直接丢帧，
  * prompt 记成 delivered 之后永远没有事件。会话一直是 running，这一轮的 delivered 记录
  * 永远占着队首，后面每句话都只能排队——界面上就是「一直没反应」。
  *
- * 判据（三条同时满足才动手，避免误伤在跑的长回合）：
+ * 判据（同时满足才动手，避免误伤在跑的长回合）：
  * - 送达记录是 delivered，且已过去 ORPHAN_TURN_MS；
  * - 会话还是 running；
- * - 托管表里已经没有它（Worker 掉线或从未接住）。
+ * - 托管表里已经没有它（Worker 掉线或从未接住），**或者**托管进程还在、但投递之后
+ *   journal 里再没有这一轮的任何进展（旧协议丢帧、帧被吞）。
+ *
+ * 「托管表里有」不等于「这一轮在跑」：进程可能活着，但 prompt 根本没进去。只要投递后
+ * 有持续事件（text / thinking / tool_call / tool_result / …）就当成正常长回合，绝不插手；
+ * 只有 hub 自己写的那些事件（prompt / diagnostic）不算进展，否则后面排队的消息会把
+ * 一轮没跑起来的长回合伪装成「有动静」。
+ *
  * 收尾后立刻把队首那条放出去，不让用户再等 30 分钟。
  */
 export async function recoverOrphanedTurns(
@@ -136,8 +157,9 @@ export async function recoverOrphanedTurns(
   for (const delivery of orphaned) {
     const sessionId = delivery.sessionId as SessionId;
     const session = await deps.sessions.byId(sessionId);
-    // 会话已经收尾、或者它的 Worker 还托着它，就别插手。
-    if (!session || session.status !== 'running' || deps.hosting.has(sessionId)) continue;
+    if (!session || session.status !== 'running') continue;
+    // 托管进程在，而且投递之后这一轮还有进展：正常的慢回合，等它跑完。
+    if (deps.hosting.has(sessionId) && (await turnHasProgressAfter(deps, sessionId, delivery.seq))) continue;
     await deps.queue.run(sessionId, () =>
       recordEvent(deps, {
         sessionId,
