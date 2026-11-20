@@ -264,8 +264,9 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
         const url = created.out.trim().split('\n').map((l) => l.trim()).filter((l) => /^https?:\/\//.test(l)).at(-1);
         if (!url) return { ok: true, value: { ok: false, reason: 'gh 没有返回 PR 链接' } };
         const viewed = await viewPr(run, url);
-        return { ok: true, value: viewed.ok ? viewed : { ok: true, pr: { number: Number(/\/pull\/(\d+)/.exec(url)?.[1] ?? 0), url, state: 'open', headSha: null, mergedAt: null } } };
+        return { ok: true, value: viewed.ok ? viewed : { ok: true, pr: { number: Number(/\/pull\/(\d+)/.exec(url)?.[1] ?? 0), url, state: 'open' as const, headSha: null, mergedAt: null } } };
       }
+      if (request.action === 'list') return { ok: true, value: await listPr(run, request.head) };
       return { ok: true, value: await viewPr(run, String(request.number)) };
     },
 
@@ -559,15 +560,37 @@ function runGh(cwd: string, args: string[]): ReturnType<GhRun> {
 }
 
 async function viewPr(run: GhRun, ref: string): Promise<{ ok: true; pr: RemotePullRequest } | { ok: false; reason: string }> {
-  const viewed = await run(['pr', 'view', ref, '--json', 'number,url,state,headRefOid,mergedAt']);
+  const viewed = await run(['pr', 'view', ref, '--json', 'number,url,state,headRefOid,mergedAt,baseRefName']);
   if (!viewed.ok) return viewed;
   try {
-    const o = JSON.parse(viewed.out) as { number: number; url: string; state: string; headRefOid?: string; mergedAt?: string | null };
-    const state = o.state === 'MERGED' ? 'merged' : o.state === 'CLOSED' ? 'closed' : 'open';
-    return { ok: true, pr: { number: o.number, url: o.url, state, headSha: o.headRefOid ?? null, mergedAt: o.mergedAt ? Date.parse(o.mergedAt) : null } };
+    const o = JSON.parse(viewed.out) as { number: number; url: string; state: string; headRefOid?: string; mergedAt?: string | null; baseRefName?: string };
+    return { ok: true, pr: toRemotePr(o) };
   } catch {
     return { ok: false, reason: 'gh 返回的不是 JSON' };
   }
+}
+
+/** 按分支列 PR：认领 agent 用 gh pr create 在会话分支上开的、没落库的 PR（#262）。 */
+async function listPr(run: GhRun, head: string): Promise<{ ok: true; prs: readonly RemotePullRequest[] } | { ok: false; reason: string }> {
+  const listed = await run(['pr', 'list', '--head', head, '--state', 'all', '--limit', '20', '--json', 'number,url,state,headRefOid,mergedAt,baseRefName']);
+  if (!listed.ok) return listed;
+  try {
+    const items = JSON.parse(listed.out) as { number: number; url: string; state: string; headRefOid?: string; mergedAt?: string | null; baseRefName?: string }[];
+    return { ok: true, prs: items.map(toRemotePr) };
+  } catch {
+    return { ok: false, reason: 'gh 返回的不是 JSON' };
+  }
+}
+
+function toRemotePr(o: { number: number; url: string; state: string; headRefOid?: string; mergedAt?: string | null; baseRefName?: string }): RemotePullRequest {
+  return {
+    number: o.number,
+    url: o.url,
+    state: o.state === 'MERGED' ? 'merged' : o.state === 'CLOSED' ? 'closed' : 'open',
+    headSha: o.headRefOid ?? null,
+    mergedAt: o.mergedAt ? Date.parse(o.mergedAt) : null,
+    base: o.baseRefName ?? null
+  };
 }
 
 const STATUS_OF: Record<string, string> = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'added', T: 'modified', '?': 'untracked' };

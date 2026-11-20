@@ -60,6 +60,7 @@ workspace_changes { workspaceId }                                        # 分�
 - 两条会话各自在自己的分支上；不要把同一个目录给两条会话同时写（会抢 `.git/index.lock`）。
 - `workspaceMode: isolated` **只会建单仓临时空间**，即使 `get_project.repos` 有多项也不会自动变成组合组。组合会话见配方 6。
 - `workspace_changes` 没有 `member` 参数。收尾时让用户决定怎么合；你不要替它们 merge，也不要删工作目录。
+- 想看每条会话未提交的改动可以用 `workspace_diff { sessionId }`；要读某个文件用 `workspace_read_file { sessionId, path }`。
 
 ## 4. 换模型 / 换提供商
 
@@ -113,6 +114,7 @@ task_pull_requests { taskId, refresh: "1" }
 - 准备失败用 `workspace_group_retry { groupId }`；状态用 `workspace_group_get { groupId }`。
 - 不要对组合组调用 `sync_workspace` 来加仓。
 - 也可以让会话里的 agent 自己跑 git，但仍应再用 `session_git_run action=pr` 或确认 `task_pull_requests` 里能看到链接。
+- 只有同步到的 PR 才会列在 `task_pull_requests` 里。在会话分支上用 `gh` 等外部开的 PR 会在打开任务 / `refresh: "1"` 时按分支自动认领；认领需要项目 git token 或机器上的 `gh`，都没有就认领不到——这种环境请改用 `session_git_run action=pr`。
 
 ## 7. 把验证交给另一台机器
 

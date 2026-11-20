@@ -167,7 +167,8 @@ const remotePr = z.object({
   url: z.string(),
   state: z.enum(['open', 'closed', 'merged']),
   headSha: z.string().nullable(),
-  mergedAt: z.number().nullable()
+  mergedAt: z.number().nullable(),
+  base: z.string().nullable().optional()
 });
 
 export const wsPreview = method(
@@ -206,10 +207,11 @@ export const wsGh = method(
     path: z.string(),
     request: z.discriminatedUnion('action', [
       z.object({ action: z.literal('create'), base: z.string().min(1), head: z.string().min(1), title: z.string().min(1).max(300), body: z.string().max(65_536) }),
-      z.object({ action: z.literal('view'), number: z.number().int().positive() })
+      z.object({ action: z.literal('view'), number: z.number().int().positive() }),
+      z.object({ action: z.literal('list'), head: z.string().min(1) })
     ])
   }),
-  z.union([z.object({ ok: z.literal(true), pr: remotePr }), z.object({ ok: z.literal(false), reason: z.string() })])
+  z.union([z.object({ ok: z.literal(true), pr: remotePr }), z.object({ ok: z.literal(true), prs: z.array(remotePr) }), z.object({ ok: z.literal(false), reason: z.string() })])
 );
 
 /** Worker 删之前会再查一次；有改动就回 removed:false + 原因（不是错误）。 */

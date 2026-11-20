@@ -1,11 +1,12 @@
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { applyStartExtras, checkStartExtras } from '../session-start-extras.ts';
+import { visibleWorkerRouting } from '../visible-worker-routing.ts';
 import type { Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { homedir } from 'node:os';
 import { streamSSE } from 'hono/streaming';
 import { Scalar } from '@scalar/hono-api-reference';
-import type { ApiTokenDeps, Deps, GitWorkflowService, JournalEntry, LogAuthor, Principal, TaskStatus } from '@agent-hub/domain';
+import type { ApiTokenDeps, Deps, GitWorkflowService, JournalEntry, LogAuthor, Principal, TaskStatus, WorkspaceFilesService } from '@agent-hub/domain';
 import {
   ATTACHMENT_LIMITS,
   appendWorkLogUseCase,
@@ -27,6 +28,7 @@ import {
   createTaskUseCase,
   deleteProjectUseCase,
   submitAssetRevision,
+  defaultWorkspaceFor,
   deriveSessionUseCase,
   editWorkLogUseCase,
   forbidden,
@@ -147,6 +149,8 @@ interface V1Context {
   // 组件安装（ADR 0021）：内置浏览器安装 / 进度查询；不给 = install_builtin_browser 501。
   readonly components?: ComponentDeps;
   readonly git?: GitWorkflowService;
+  /** 开放 API 的两个只读工具（workspace_diff / workspace_read_file）走工作空间文件服务；不给 = 503。 */
+  readonly files?: WorkspaceFilesService;
   /** 会话通信 P1d：外部 agent 经消息总线发 send / ask、收回复。不给 = 这几条路由 501。 */
   readonly messaging?: { readonly bus: MessageBus; readonly messages?: MessageStore };
 }
@@ -746,23 +750,47 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const extras = { handle, linkWith };
     const linkIds = await checkStartExtras(deps, ctx.messaging?.messages, input.taskId, extras, actor);
     if (!linkIds.ok) return fail(c, linkIds.error);
-    const allowed = await ctx.providers?.checkModel(actor, input.model, input.taskId);
-    if (allowed && !allowed.ok) return fail(c, allowed.error);
     const placed = await workspaceForApiStart(
       deps,
       { ...input, ...(input.workspaceMode === undefined ? {} : { mode: input.workspaceMode }) },
       actor
     );
     if (!placed.ok) return fail(c, placed.error);
+    // model 省略或空串：按默认 Agent 层级解析（任务默认 > 项目默认 > 团队运行时默认）；
+    // 显式传的 model 不动。没有可解析的默认就明确 400，不写死某个模型名。
+    let model = input.model ?? '';
+    const task = input.taskId ? await deps.tasks.byId(asTaskId(input.taskId)) : null;
+    if (!model) {
+      if (!task) return fail(c, notFound('任务不存在'));
+      const project = await deps.projects.byId(task.projectId);
+      if (!project) return fail(c, notFound('项目不存在'));
+      const resolved = await resolveDefaultAgent(deps, { project, task, explicit: { runtime: input.agentId } });
+      model = resolved.effective.model;
+      if (!model) {
+        // 令牌打本机这类授权拒绝要盖过「没有默认模型」（与 deriveSessionUseCase 里的 authorizeWorker 同一条规则）。
+        const workers = await deps.gateway.status();
+        const chosen = placed.value ? await deps.workspaces.byId(asWorkspaceId(placed.value)) : await defaultWorkspaceFor(deps, project.id);
+        if (chosen) {
+          const homeWorker = chosen.workerId ?? workers.find((worker) => worker.origin === 'local')?.workerId ?? null;
+          if (homeWorker !== null) {
+            const early = await authorizeWorker(deps.access, actor, homeWorker);
+            if (!early.ok) return fail(c, early.error);
+          }
+        }
+        return fail(c, invalid('没有可解析的默认模型：先在任务或项目里设置默认 Agent，或显式传 model'));
+      }
+    }
+    const allowed = await ctx.providers?.checkModel(actor, model, input.taskId);
+    if (allowed && !allowed.ok) return fail(c, allowed.error);
     // 会话声明 requires 时先引导：项目未配置则按能力自动启用配套内置资产；没有就绪机器且没在装，
     // 挑一台能装的发安装任务（尽力而为，不拦派生；派生因缺能力失败时把安装任务写进报错）。
-    const task = input.taskId ? await deps.tasks.byId(asTaskId(input.taskId)) : null;
     const bootstrap = await bootstrapCapabilitiesForSession(ctx.assetReview, ctx.components, actor, {
       projectId: task?.projectId ?? null,
       requires: input.requires
     });
     const result = await deriveSessionUseCase(deps, {
       ...withoutRepo(input),
+      model,
       ...(placed.value ? { workspaceId: placed.value } : {}),
       actor,
       ...(allowed?.ok && allowed.value ? { hubProtocol: allowed.value } : {})
@@ -915,6 +943,32 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const member = c.req.query('member') || undefined;
     const result = await git.state(actor, c.req.param('sessionId') ?? '', member);
     return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  on(routes.workspaceDiff, async (c) => {
+    const files = ctx.files;
+    if (!files) return fail(c, unavailable('工作空间文件服务未就绪'));
+    const actor = principal(c);
+    if (!can(actor, 'session.read')) return fail(c, forbidden('令牌没有 sessions:read'));
+    const query = valid<{ member?: string; maxBytes?: number }>(c, 'query');
+    const result = await files.worktreeDiff(actor, c.req.param('sessionId') ?? '', {
+      ...(query.member ? { member: query.member } : {}),
+      ...(query.maxBytes !== undefined ? { maxBytes: query.maxBytes } : {})
+    });
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  on(routes.workspaceReadFile, async (c) => {
+    const files = ctx.files;
+    if (!files) return fail(c, unavailable('工作空间文件服务未就绪'));
+    const actor = principal(c);
+    if (!can(actor, 'session.read')) return fail(c, forbidden('令牌没有 sessions:read'));
+    const query = valid<{ path: string; member?: string; confirmed?: '1' | 'true' }>(c, 'query');
+    const result = await files.readWorktreeFile(actor, c.req.param('sessionId') ?? '', query.path, {
+      confirmed: query.confirmed === '1' || query.confirmed === 'true',
+      ...(query.member ? { member: query.member } : {})
+    });
+    if (!result.ok) return fail(c, result.error);
+    const file = result.value;
+    return c.json({ path: file.path, size: file.size, modifiedAt: file.modifiedAt, binary: file.binary, content: file.binary ? '' : new TextDecoder().decode(file.bytes) });
   });
   on(routes.sessionGitRun, async (c) => {
     const git = needGit();
@@ -1248,27 +1302,14 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
           : `删除后 ${models.length} 个模型将不可用。`
     };
   };
-  /** LOW6：机器维度的路由覆盖只给能看见这台机器的令牌——按 worker.read 逐台过滤；没有 workers:read 就整个字段省略。 */
-  const visibleWorkerRouting = async (
-    deps: Deps,
-    actor: Principal,
-    providers: { workerRouting: () => Promise<Record<string, unknown>> }
-  ): Promise<Record<string, unknown> | undefined> => {
-    if (!can(actor, 'worker.read')) return undefined;
-    const readable = await workerReader(deps.access, actor);
-    const visible: Record<string, unknown> = {};
-    for (const [workerId, routing] of Object.entries(await providers.workerRouting())) {
-      if (await readable(workerId)) visible[workerId] = routing;
-    }
-    return visible;
-  };
+  /** LOW6：机器维度的路由覆盖只给能看见这台机器的令牌——按 worker.read 逐台过滤；没有 workers:read 就整个字段省略。逻辑见 apps/server/src/visible-worker-routing.ts（Web 路由共用）。 */
   on(routes.providerList, async (c) => {
     if (!ctx.providers) return noProviders(c);
     const actor = principal(c);
     if (!can(actor, 'provider.read')) return fail(c, forbidden('令牌没有 providers:read'));
     const listed = await listProviders(ctx.providers.deps, actor);
     // LOW6：workerRouting 只含调用方能看见的机器；没有 workers:read 的令牌整个字段省略。
-    const workerRouting = await visibleWorkerRouting(deps, actor, ctx.providers.deps.providers);
+    const workerRouting = await visibleWorkerRouting(deps.access, actor, ctx.providers.deps.providers.workerRouting);
     return workerRouting === undefined ? c.json({ providers: listed.map(publicProvider) }) : c.json({ providers: listed.map(publicProvider), workerRouting });
   });
   on(routes.providerCreate, async (c) => {

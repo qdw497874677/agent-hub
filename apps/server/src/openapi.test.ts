@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { addTeamMember, fakeAssetSets, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps } from '@agent-hub/domain/testing';
+import { addTeamMember, fakeAssetSets, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps, type FakeGit } from '@agent-hub/domain/testing';
 import {
   asAgentId,
   BUILTIN_CHROMIUM,
@@ -13,6 +13,8 @@ import {
   newWorkspace,
   permissionsOf,
   uploadAsset,
+  createWorkspaceFilesService,
+  notFound,
   type AgentDescriptor,
   type AgentMessage,
   type AssetReviewDeps,
@@ -20,7 +22,8 @@ import {
   type ComponentDeps,
   type MessageStore,
   type WorkerComponentPin,
-  type WorkerStatus
+  type WorkerStatus,
+  type WorkspaceBrowser
 } from '@agent-hub/domain';
 import { projectSchema, sessionSchema, taskSchema } from '@agent-hub/contract';
 import { createApp } from './http.ts';
@@ -85,6 +88,53 @@ function memoryMessages(): MessageStore & { all: Map<string, AgentMessage> } {
   };
 }
 
+/** workspace_diff / workspace_read_file 用的假浏览器：文件都登记在 files 里，read 按 maxBytes 切。 */
+function fakeFilesBrowser(state: { calls: string[]; files: Record<string, { bytes: Uint8Array; binary?: boolean }> }): WorkspaceBrowser {
+  return {
+    list: async (root, path, options) => {
+      state.calls.push(`list:${root}:${path}`);
+      const all = Object.entries(state.files).map(([p, file], index) => ({
+        name: p.split('/').pop()!,
+        path: p,
+        type: 'file' as const,
+        size: file.bytes.length,
+        modifiedAt: 1000 + index,
+        ignored: false,
+        sensitive: /^\.env/.test(p.split('/').pop()!),
+        git: null
+      }));
+      const limit = options?.limit ?? all.length;
+      return { ok: true, value: { path, entries: all.slice(0, limit), truncated: all.length > limit, isGit: true } };
+    },
+    read: async (_root, path, maxBytes) => {
+      state.calls.push(`read:${path}:${maxBytes ?? 'all'}`);
+      const file = state.files[path];
+      if (!file) return { ok: false, error: notFound(`文件不存在：${path}`) };
+      const cut = Math.min(maxBytes ?? file.bytes.length, file.bytes.length);
+      return {
+        ok: true,
+        value: {
+          path,
+          size: file.bytes.length,
+          modifiedAt: 1234,
+          binary: file.binary ?? false,
+          truncated: file.bytes.length > cut,
+          bytes: file.bytes.subarray(0, cut)
+        }
+      };
+    },
+    find: async () => ({ ok: true, value: [] }),
+    changes: async () => ({ ok: true, value: [] }),
+    diff: async (_root, path) => ({ ok: true, value: { path, patch: '', truncated: false, binary: false } }),
+    checkpoint: async () => ({ ok: true, value: 'c0ffee' }),
+    dropRefs: async () => ({ ok: true, value: 0 }),
+    restore: async () => ({ ok: true, value: { safety: 'safe' as const, restored: 0, removed: 0 } }),
+    head: async () => ({ ok: true, value: 'abc1234' }),
+    branchBase: async () => ({ ok: true, value: { branch: 'main', commit: 'abc1234' } }),
+    watch: async () => ({ ok: true, value: () => undefined })
+  };
+}
+
 function harness(rate?: { general?: number; prompt?: number; streams?: number }, enrolledBy: Map<string, string> = new Map(), withMessaging = false) {
   const accounts = inMemoryAccounts(() => Date.now());
   const world = inMemoryDeps();
@@ -135,6 +185,25 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
   }
   const apiTokens = inMemoryApiTokens();
   const tokenDeps = { apiTokens, users: accounts.users, projects: world.deps.projects, tokens: accounts.tokens, audit: accounts.audit, now: () => Date.now() };
+  // workspace_diff / workspace_read_file（只读开放工具）：假浏览器 + inMemoryDeps 自带的假 git。
+  const filesStore = { calls: [] as string[], files: {} as Record<string, { bytes: Uint8Array; binary?: boolean }> };
+  const fileBases = new Map<string, string>();
+  const files = createWorkspaceFilesService({
+    projects: world.deps.projects,
+    tasks: world.deps.tasks,
+    sessions: world.deps.sessions,
+    workspaces: world.deps.workspaces,
+    workspaceGroups: world.deps.workspaceGroups,
+    bots: world.deps.bots,
+    gateway: world.deps.gateway,
+    access,
+    audit: accounts.audit!,
+    local: fakeFilesBrowser(filesStore),
+    remote: () => fakeFilesBrowser(filesStore),
+    bases: { get: async (id) => fileBases.get(id) ?? null, setIfAbsent: async (id, head) => void (fileBases.has(id) || fileBases.set(id, head)) },
+    git: world.deps.git,
+    now: () => Date.now()
+  });
   const hub = createStreamHub();
   // 资产自动化（导入 → 发布 → 分配）要资产中心在场：MCP 的 asset_* 工具靠它干活
   const assetsStore = inMemoryAssets(() => Date.now());
@@ -191,6 +260,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     auth: { accounts },
     activity: { audit: accounts.audit!, users: accounts.users },
     assets: { deps: assetReview, audit: accounts.audit!, assetSets: fakeAssetSets() },
+    files,
     ...(messaging ? { messaging } : {}),
     openApi: { tokens: tokenDeps, manage: tokenDeps, rate, settings: accounts.settings, audit: accounts.audit!, teams: accounts.teams },
     components: componentDeps
@@ -216,9 +286,22 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     );
     return { status: response.status, headers: response.headers, body: (await response.json().catch(() => null)) as any };
   };
-  return { accounts, world, app, hub, apiTokens, assetsStore, browser, api, enrolledBy, messaging, componentWorkers, browserMachine };
+  return { accounts, world, app, hub, apiTokens, assetsStore, browser, api, enrolledBy, messaging, componentWorkers, browserMachine, filesStore, files };
 }
 const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
+
+/** 幂等中间件要 Promise 版 replay store（裸 Map 会在 v1 内部请求里炸掉）。 */
+const replayStore = () => {
+  const rows = new Map<string, string>();
+  return {
+    async get(key: string) {
+      return rows.get(key) ?? null;
+    },
+    async put(key: string, body: string) {
+      rows.set(key, body);
+    }
+  };
+};
 
 async function setup(rate?: Parameters<typeof harness>[0], enrolledBy?: Map<string, string>, withMessaging = false) {
   const h = harness(rate, enrolledBy, withMessaging);
@@ -701,7 +784,7 @@ test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口
   assert.deepEqual(live, snapshot, '规范变了：跑 npm run openapi:snapshot 并在 PR 里说明');
   assert.ok(Object.values(live.paths).flatMap((p: any) => Object.keys(p)).length >= 26);
   assert.equal((await app.fetch(new Request('http://hub/openapi/v1/docs'))).status, 200);
-  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 46);
+  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 48);
 });
 
 test('过期的令牌、被停用的人的令牌：401', async () => {
@@ -722,7 +805,7 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   // 默认不强制只读：有写工具就一起列出来（能不能调由令牌权限和只读模式决定）
   assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create', 'task_default_agent', 'task_pull_requests']);
   assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name).sort(), ['get_project', 'list_projects', 'resolve_default_agent', 'team_agent_defaults', 'workspace_changes']);
-  assert.equal(mcpTools({ readOnly: true }).length, 27);
+  assert.equal(mcpTools({ readOnly: true }).length, 29);
   const workspaceTools = mcpTools({ modules: new Set(['workspaces']), writes: true });
   const workspaceNames = workspaceTools.map((t) => t.name).sort();
   for (const name of [
@@ -744,7 +827,7 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   const projectedWrap = projectEvents([
     { seq: 1, at: 1, event: { kind: 'prompt', text: 'AWS_SECRET_ACCESS_KEY=abc' } },
     { seq: 2, at: 2, turn: 1, event: { kind: 'tool_call', name: 'bash', input: { command: 'echo AWS_SECRET_ACCESS_KEY=abc' } } },
-    { seq: 3, at: 3, event: { kind: 'tool_result', ok: true, output: 'AWS_SECRET_ACCESS_KEY=abc' } },
+    { seq: 3, at: 3, event: { kind: 'tool_result', name: 'bash', ok: true, output: 'AWS_SECRET_ACCESS_KEY=abc' } },
     { seq: 4, at: 4, event: { kind: 'text', delta: '好了' } },
     { seq: 5, at: 5, event: { kind: 'thinking', text: '密钥是 abc' } },
     { seq: 6, at: 6, event: { kind: 'ended', outcome: 'done', reason: 'ok' } }
@@ -757,6 +840,8 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   // 正文在领域里叫 delta；投影后统一成 text，不能丢内容。
   assert.deepEqual(projected[2]!.event, { kind: 'text', text: '好了' });
   assert.deepEqual(projected[0]!.event, { kind: 'tool', name: 'bash' });
+  // tool_result 也要带工具名（#E 对齐 tool_call），但 output 不能投影出去。
+  assert.deepEqual(projected[1]!.event, { kind: 'tool_result', name: 'bash', ok: true });
   // turn 要留给调用方（events?sinceTurn= 对得上轮次）；没有 turn 的老事件不凭空生成。
   assert.equal(projected[0]!.turn, 1);
   assert.equal('turn' in projected[1]!, false);
@@ -1679,4 +1764,187 @@ test('#243：容器会话在开放 API 上也按项目限定（events / messages
   assert.equal((await scopedB(`${path}/peers`)).status, 200);
   const sent = await scopedB(`${path}/messages`, post({ kind: 'send', body: '你好' }));
   assert.equal(sent.status, 201, JSON.stringify(sent.body));
+});
+
+test('session_start：省略 model 按默认 Agent 层级解析；显式传的不被覆盖', async () => {
+  const h = await setup();
+  const { david, mint, api, app, world } = h;
+  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write'])).token;
+  const call = api(token);
+  const project = (await call('/projects', post({ name: 'omit-model' }))).body as { id: string };
+  const task = (await call('/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body as { id: string };
+  // 项目绑一个远端长期工作空间（否则 workspaceForApiStart 会现建本机临时空间，令牌会被 authorizeWorker 403）
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online' } as never);
+  const ws = newWorkspace({ projectId: project.id as never, workerId: 'w1', path: '/srv/omit-model', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(ws.ok);
+  await world.deps.workspaces.save(ws.value);
+
+  // 没有任何默认：省略 model → 明确 400，不写死模型名
+  const noDefault = await call('/sessions', post({ taskId: task.id, agentId: 'fake' }));
+  assert.equal(noDefault.status, 400, JSON.stringify(noDefault.body));
+  assert.match(String(noDefault.body?.error?.message ?? JSON.stringify(noDefault.body)), /默认/);
+
+  // 项目默认生效
+  const setProject = await call(`/projects/${project.id}`, { method: 'PATCH', body: JSON.stringify({ defaultAgent: { runtime: 'fake', model: 'project-model' } }) });
+  assert.equal(setProject.status, 200, JSON.stringify(setProject.body));
+  const viaProject = await call('/sessions', post({ taskId: task.id, agentId: 'fake' }));
+  assert.equal(viaProject.status, 201, JSON.stringify(viaProject.body));
+  assert.equal(viaProject.body.model, 'project-model');
+
+  // 任务默认盖过项目默认
+  const setTask = await call(`/tasks/${task.id}/default-agent`, { method: 'PATCH', body: JSON.stringify({ defaultAgent: { runtime: 'fake', model: 'task-model' } }) });
+  assert.equal(setTask.status, 200, JSON.stringify(setTask.body));
+  const viaTask = await call('/sessions', post({ taskId: task.id, agentId: 'fake' }));
+  assert.equal(viaTask.status, 201, JSON.stringify(viaTask.body));
+  assert.equal(viaTask.body.model, 'task-model');
+
+  // 显式传的 model 不被默认覆盖
+  const explicit = await call('/sessions', post({ taskId: task.id, agentId: 'fake', model: 'm1' }));
+  assert.equal(explicit.status, 201, JSON.stringify(explicit.body));
+  assert.equal(explicit.body.model, 'm1');
+
+  // MCP 的 session_start 同一条路：省略 model 也能开会话
+  const rpc = async (name: string, args: Record<string, unknown>) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })
+      }),
+      { mcpReplays: replayStore(), mcpPolicy: { modules: new Set(['sessions']), readOnly: false, writes: true } }
+    );
+    return (await response.json().catch(() => null)) as any;
+  };
+  const started = await rpc('session_start', { taskId: task.id, agentId: 'fake', clientRequestId: 'omit-1' });
+  assert.equal(started.result.isError, false, JSON.stringify(started.result));
+  const mcpSession = JSON.parse(started.result.content[0].text) as { id: string; model: string };
+  assert.equal(mcpSession.model, 'task-model');
+  assert.notEqual(mcpSession.id, viaTask.body.id);
+});
+
+test('token_revoke：吊销自己正在用的令牌返回成功（MCP/REST 一致），之后请求 401；不存在的令牌仍 404', async () => {
+  const { david, mint, api, app } = await setup();
+
+  // REST：令牌吊销自己
+  const selfToken = await mint(david, ['tokens:manage', 'projects:read']);
+  const callSelf = api(selfToken.token);
+  const revoked = await callSelf(`/tokens/${selfToken.info.id}/revoke`, { method: 'POST' });
+  assert.equal(revoked.status, 200, JSON.stringify(revoked.body));
+  assert.equal(revoked.body.id, selfToken.info.id);
+  assert.ok(revoked.body.revokedAt, '应返回带 revokedAt 的视图');
+  const after = await callSelf('/me');
+  assert.equal(after.status, 401, `吊销后再请求应 401：${JSON.stringify(after.body)}`);
+
+  // MCP：token_revoke 吊销当前 Bearer 令牌，结果是成功体而不是 404/401
+  const mcpToken = await mint(david, ['tokens:manage']);
+  const rpc = async (name: string, args: Record<string, unknown>) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${mcpToken.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })
+      }),
+      { mcpReplays: replayStore(), mcpPolicy: { modules: new Set(['tokens']), readOnly: false, writes: true } }
+    );
+    return (await response.json().catch(() => null)) as any;
+  };
+  const mcpRevoked = await rpc('token_revoke', { tokenId: mcpToken.info.id, clientRequestId: 'revoke-self-1' });
+  assert.equal(mcpRevoked.result.isError, false, JSON.stringify(mcpRevoked));
+  const view = JSON.parse(mcpRevoked.result.content[0].text) as { id: string; revokedAt: number | null };
+  assert.equal(view.id, mcpToken.info.id);
+  assert.ok(view.revokedAt);
+  const gone = await api(mcpToken.token)('/me');
+  assert.equal(gone.status, 401);
+
+  // 不存在的令牌仍是 404（没误伤）
+  const alive = await mint(david, ['tokens:manage', 'projects:read']);
+  const missing = await api(alive.token)('/tokens/does-not-exist/revoke', { method: 'POST' });
+  assert.equal(missing.status, 404, JSON.stringify(missing.body));
+});
+
+test('workspace_diff / workspace_read_file：diff、路径逃逸、敏感文件、超限、越权', async () => {
+  const s = await setup();
+  const { david, mint, api, world, filesStore, accounts } = s;
+  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'files:read'])).token;
+  const call = api(token);
+  const project = (await call('/projects', post({ name: 'ws-files' }))).body as { id: string };
+  const task = (await call('/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body as { id: string };
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online' } as never);
+  const workspace = newWorkspace({ projectId: project.id as never, workerId: 'w1', path: '/srv/ws-files', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(workspace.ok);
+  await world.deps.workspaces.save(workspace.value);
+  const created = await call('/sessions', post({ taskId: task.id, agentId: 'fake', model: 'm1', workspaceId: workspace.value.id }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const sessionId = created.body.id as string;
+  const fakeGit = world.git as FakeGit;
+
+  // 空改动：FakeGit 默认干净 → 200 + 空 patch，不是 500
+  const empty = await call(`/sessions/${sessionId}/workspace/diff`);
+  assert.equal(empty.status, 200, JSON.stringify(empty.body));
+  assert.equal(empty.body.patch, '');
+  assert.deepEqual(empty.body.files, []);
+  assert.equal(empty.body.truncated, false);
+
+
+  const preview = {
+    isGit: true, branch: 'feat', defaultBranch: 'main', remoteUrl: null, upstream: null, ahead: 1, head: 'h1',
+    files: [{ path: 'a.ts', status: 'M' }], patch: 'diff --git a/a.ts b/a.ts\n+hello', truncated: false
+  };
+  fakeGit.previews.set(workspace.value.path, preview as never);
+  const diff = await call(`/sessions/${sessionId}/workspace/diff`);
+  assert.equal(diff.status, 200, JSON.stringify(diff.body));
+  assert.equal(diff.body.patch, preview.patch);
+  assert.deepEqual(diff.body.files, preview.files);
+  assert.equal(diff.body.branch, 'feat');
+
+  // maxBytes：patch 超限截断并标 truncated
+  const small = await call(`/sessions/${sessionId}/workspace/diff?maxBytes=8`);
+  assert.equal(small.status, 200);
+  assert.equal(small.body.patch, preview.patch.slice(0, 8));
+  assert.equal(small.body.truncated, true);
+  const tooBig = await call(`/sessions/${sessionId}/workspace/diff?maxBytes=999999999`);
+  assert.equal(tooBig.status, 400);
+
+  // 非 git 仓库 → 400 明确报错
+  fakeGit.previews.set(workspace.value.path, { ...preview, isGit: false, branch: null } as never);
+  const notGit = await call(`/sessions/${sessionId}/workspace/diff`);
+  assert.equal(notGit.status, 400, JSON.stringify(notGit.body));
+
+  // read_file：正常读取
+  filesStore.files['notes.md'] = { bytes: Buffer.from('hello notes') };
+  const read = await call(`/sessions/${sessionId}/workspace/file?path=notes.md`);
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.content, 'hello notes');
+  assert.equal(read.body.path, 'notes.md');
+  assert.equal(read.body.binary, false);
+
+  // 404：文件不存在
+  const missing = await call(`/sessions/${sessionId}/workspace/file?path=nope.md`);
+  assert.equal(missing.status, 404, JSON.stringify(missing.body));
+
+  // 路径逃逸：`..` 与绝对路径都 400
+  assert.equal((await call(`/sessions/${sessionId}/workspace/file?path=${encodeURIComponent('../../etc/passwd')}`)).status, 400);
+  assert.equal((await call(`/sessions/${sessionId}/workspace/file?path=${encodeURIComponent('/etc/passwd')}`)).status, 400);
+  assert.equal((await call(`/sessions/${sessionId}/workspace/file?path=${encodeURIComponent('.git/config')}`)).status, 400);
+
+  // 敏感文件：不确认 → 400；确认 → 200
+  filesStore.files['.env.local'] = { bytes: Buffer.from('SECRET=1') };
+  const unconfirmed = await call(`/sessions/${sessionId}/workspace/file?path=.env.local`);
+  assert.equal(unconfirmed.status, 400, JSON.stringify(unconfirmed.body));
+  assert.match(String(unconfirmed.body?.error?.message ?? ''), /敏感/);
+  const confirmed = await call(`/sessions/${sessionId}/workspace/file?path=.env.local&confirmed=1`);
+  assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+  assert.equal(confirmed.body.content, 'SECRET=1');
+  assert.ok(accounts.auditRows.some((row) => row.action === 'workspace.files.sensitive' && String(row.detail).includes('.env.local')));
+
+  // 超限：> 256KiB 明确报错，不假装成功
+  filesStore.files['big.bin'] = { bytes: new Uint8Array(256 * 1024 + 1), binary: true };
+  const oversized = await call(`/sessions/${sessionId}/workspace/file?path=big.bin`);
+  assert.equal(oversized.status, 400, JSON.stringify(oversized.body));
+  assert.match(String(oversized.body?.error?.message ?? ''), /256 KiB/);
+
+  // 越权：令牌没有 sessions:read → 403
+  const ro = (await mint(david, ['projects:read'])).token;
+  assert.equal((await api(ro)(`/sessions/${sessionId}/workspace/diff`)).status, 403);
+  assert.equal((await api(ro)(`/sessions/${sessionId}/workspace/file?path=notes.md`)).status, 403);
 });

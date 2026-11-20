@@ -10640,8 +10640,7 @@
                 },
                 "required": [
                   "taskId",
-                  "agentId",
-                  "model"
+                  "agentId"
                 ]
               }
             }
@@ -17294,6 +17293,296 @@
                     "pullRequests"
                   ],
                   "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/sessions/{sessionId}/workspace/diff": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "读工作树的未提交 diff（只读）",
+        "description": "返回该会话工作树相对 HEAD 的 `git diff` 文本与未提交文件清单；未跟踪文件只列名字（如「新文件：notes.md」），内容不进 diff。没有改动时 patch 为空串，不是错误。\n参数：sessionId；query.member?（组合会话选成员仓库：仓库名 / repoId / workspaceId）；query.maxBytes?（patch 上限，默认与上限都是 256 KiB，超出截断并标 truncated=true）。\n错误：400 不是 git 仓库、或组合工作空间的容器根没选成员 / 403 无 sessions:read / 404。\n\n权限范围：`files:read`\n\nMCP 工具：`workspace_diff`",
+        "security": [
+          {
+            "bearer": [
+              "files:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "sessionId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "required": false,
+            "name": "member",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 262144
+            },
+            "required": false,
+            "name": "maxBytes",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "branch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "status"
+                        ]
+                      }
+                    },
+                    "patch": {
+                      "type": "string"
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "branch",
+                    "files",
+                    "patch",
+                    "truncated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/sessions/{sessionId}/workspace/file": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "读工作树里的一个文件（只读）",
+        "description": "读该会话工作树内一个相对路径的文件，返回 UTF-8 文本（binary 时 content 为空串，用 binary 自行判断）。单次上限 256 KiB：超限直接报错，不返回截断内容——先读目录，分块取大文件。\n路径必须留在工作树内：绝对路径、含 `..`、`.git` 内部路径都会被拒绝；组合会话的 `.agent-hub` 标记与敏感文件（.env、*.pem、*.key、SSH 私钥等）要 query.confirmed=1 才能读。\n参数：sessionId；query.path（必填，工作树内相对路径）；query.member?（组合会话选成员）；query.confirmed?。\n错误：400 路径逃逸 / 超上限 / 403 无 sessions:read / 404 文件不存在。\n\n权限范围：`files:read`\n\nMCP 工具：`workspace_read_file`",
+        "security": [
+          {
+            "bearer": [
+              "files:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "sessionId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "required": true,
+            "name": "path",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "required": false,
+            "name": "member",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true"
+              ]
+            },
+            "required": false,
+            "name": "confirmed",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "number"
+                    },
+                    "modifiedAt": {
+                      "type": "number"
+                    },
+                    "binary": {
+                      "type": "boolean"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "size",
+                    "modifiedAt",
+                    "binary",
+                    "content"
+                  ]
                 }
               }
             }

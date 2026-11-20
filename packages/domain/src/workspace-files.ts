@@ -40,3 +40,6 @@ export function looksBinary(bytes: Uint8Array): boolean {
 
 /** 提交号只认 4–64 位十六进制（防止把参数塞进 git 命令）。 */
 export const isCommitId = (value: string): boolean => /^[0-9a-f]{4,64}$/i.test(value);
+
+/** 开放 API（MCP 工具 workspace_diff / workspace_read_file）的上限：整树 diff 与单文件读取都是 256 KiB。 */
+export const OPEN_WORKSPACE_LIMITS = { diffBytes: 256 * 1024, fileBytes: 256 * 1024 } as const;

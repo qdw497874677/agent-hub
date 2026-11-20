@@ -141,6 +141,7 @@ export type ScopeNote =
   | 'projects:write'
   | 'sessions:read'
   | 'sessions:write'
+  | 'files:read'
   | 'workers:read'
   | 'assets:submit'
   | 'assets:read'
@@ -329,6 +330,19 @@ const sessionGitRunResultSchema = z.object({
   pullRequest: pullRequestLinkSchema.nullable(),
   compareUrl: z.string().nullable(),
   notes: z.array(z.string())
+});
+const workspaceDiffSchema = z.object({
+  branch: z.string().nullable(),
+  files: z.array(z.object({ path: z.string(), status: z.string() })),
+  patch: z.string(),
+  truncated: z.boolean()
+});
+const workspaceFileSchema = z.object({
+  path: z.string(),
+  size: z.number(),
+  modifiedAt: z.number(),
+  binary: z.boolean(),
+  content: z.string()
 });
 const sweepItemSchema = z.object({
   runId: z.string(),
@@ -1234,6 +1248,28 @@ export const routes = {
     request: { params: sessionId, query: z.object({ member: z.string().min(1).max(120).optional() }) },
     responses: { 200: json(sessionGitStateSchema) }
   }, { module: 'sessions', need: 'session.read', expose: 'session_git_state' }),
+  workspaceDiff: route('files:read', {
+    method: 'get', path: `${V1}/sessions/{sessionId}/workspace/diff`, tags: ['sessions'], summary: '读工作树的未提交 diff（只读）',
+    description:
+      '返回该会话工作树相对 HEAD 的 `git diff` 文本与未提交文件清单；未跟踪文件只列名字（如「新文件：notes.md」），内容不进 diff。没有改动时 patch 为空串，不是错误。\n' +
+      '参数：sessionId；query.member?（组合会话选成员仓库：仓库名 / repoId / workspaceId）；query.maxBytes?（patch 上限，默认与上限都是 256 KiB，超出截断并标 truncated=true）。\n' +
+      '错误：400 不是 git 仓库、或组合工作空间的容器根没选成员 / 403 无 sessions:read / 404。',
+    request: { params: sessionId, query: z.object({ member: z.string().min(1).max(120).optional(), maxBytes: z.coerce.number().int().positive().max(256 * 1024).optional() }) },
+    responses: { 200: json(workspaceDiffSchema) }
+  }, { module: 'sessions', need: 'session.read', expose: 'workspace_diff' }),
+  workspaceReadFile: route('files:read', {
+    method: 'get', path: `${V1}/sessions/{sessionId}/workspace/file`, tags: ['sessions'], summary: '读工作树里的一个文件（只读）',
+    description:
+      '读该会话工作树内一个相对路径的文件，返回 UTF-8 文本（binary 时 content 为空串，用 binary 自行判断）。单次上限 256 KiB：超限直接报错，不返回截断内容——先读目录，分块取大文件。\n' +
+      '路径必须留在工作树内：绝对路径、含 `..`、`.git` 内部路径都会被拒绝；组合会话的 `.agent-hub` 标记与敏感文件（.env、*.pem、*.key、SSH 私钥等）要 query.confirmed=1 才能读。\n' +
+      '参数：sessionId；query.path（必填，工作树内相对路径）；query.member?（组合会话选成员）；query.confirmed?。\n' +
+      '错误：400 路径逃逸 / 超上限 / 403 无 sessions:read / 404 文件不存在。',
+    request: {
+      params: sessionId,
+      query: z.object({ path: z.string().min(1).max(4096), member: z.string().min(1).max(120).optional(), confirmed: z.enum(['1', 'true']).optional() })
+    },
+    responses: { 200: json(workspaceFileSchema) }
+  }, { module: 'sessions', need: 'session.read', expose: 'workspace_read_file' }),
   sessionGitRun: route(
     'sessions:write',
     {

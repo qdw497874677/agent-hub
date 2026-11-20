@@ -34,7 +34,7 @@ get_session              → status / ended 原因 / 用量
 
 - 一个任务下可以有多条会话（并行分支、不同机器）。**独立的事就开新会话**，别在一条会话里来回变需求。
 - `session_start` 不传 `workspaceId` / `groupId` 时，如果项目里没有能用的长期目录，平台会自动开一个**单仓**临时工作目录。多仓要先用 `workspace_group_create` 建组，再把 `groupId` 传给 `session_start`（见「多仓组合会话」）。
-- `events` 是投影后的：`text`、`tool`、`tool_result`、`ended`、`diagnostic`。**提示词原文和工具输入输出不会给你**，要看代码改动用 `workspace_changes`。
+- `events` 是投影后的：`text`、`tool`、`tool_result`（带工具名）、`ended`、`diagnostic`。**提示词原文和工具输入输出不会给你**，要看代码改动用 `workspace_changes`。
 - 会话跑完不等于进程立刻消失（保活约 15 分钟，方便追问）。要继续聊直接 `session_reply`。
 - 等一轮结束别狂刷：`get_session { sessionId, waitSec: 30 }` / `events { sessionId, after, waitSec: 30 }` 长轮询（≤50 秒，到点照常返回，不取消这一轮）。
 
@@ -81,6 +81,7 @@ message_inbox    { after }                                   → 所有回复（
 - 项目后来又加了仓库：已有的**单目录**工作空间用 `sync_workspace { workspaceId }` 补克隆到同级目录。组合组用 `workspace_group_add_member { groupId, repoId }`，不要对组合组调 `sync_workspace`。
 - 私有仓库：`project_repos` 传 `credential`（非空存、空串清、省略不动）；之后 clone/push 自动带。
 - 想看会话改了什么：`workspace_changes { workspaceId }`（会话对象里有 workspaceId）。MCP 工具没有 `member` 参数，也没有按仓汇总工具。
+- 两个只读工具（令牌要有 `files:read`）：`workspace_diff { sessionId }` 返回该会话工作树相对 HEAD 的未提交 diff（无改动返回空 patch）；`workspace_read_file { sessionId, path }` 读工作树内的单个文件（相对路径，拒绝逃出工作树，单次上限 256 KiB）。
 
 ## 多仓组合会话
 

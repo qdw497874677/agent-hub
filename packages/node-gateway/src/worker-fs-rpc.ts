@@ -96,7 +96,12 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined, gitOpt
   });
   port.handle(wsCommit, async ({ path, ...input }) => unwrap(await need().commit(path, input)));
   port.handle(wsPush, async ({ path, auth }) => unwrap(await need().push(path, auth)));
-  port.handle(wsGh, async ({ path, request }) => unwrap(await need().gh(path, request)));
+  port.handle(wsGh, async ({ path, request }) => {
+    const outcome = unwrap(await need().gh(path, request));
+    if (!outcome.ok) return { ok: false as const, reason: outcome.reason };
+    // 传输层数组要可变（GhOutcome 里是 readonly）：拷一层
+    return 'prs' in outcome ? { ok: true as const, prs: [...outcome.prs] } : outcome;
+  });
   port.handle(wsRemove, async ({ path, kind, force, mergedHead }) => unwrap(await need().remove(path, kind, { force: force === true, ...(mergedHead ? { mergedHead } : {}) })));
 }
 
