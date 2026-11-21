@@ -50,9 +50,9 @@ function echoRuntime(seen: StartSpec[]): AgentRuntime {
         ok: true,
         value: {
           sessionId: spec.sessionId,
-          async prompt({ text }) {
+          async prompt({ text, deliveryId }) {
             queue.push({ kind: 'text', delta: text });
-            queue.push({ kind: 'ended', outcome: 'done' });
+            queue.push({ kind: 'ended', outcome: 'done', ...(deliveryId ? { deliveryId } : {}) });
             return { ok: true, value: undefined };
           },
           async interrupt() {},
@@ -231,7 +231,7 @@ test('start + prompt 连发：worker 串行执行，事件与状态回到 server
 
   const sessionId = asSessionId('s1');
   assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '你好' });
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '你好', deliveryId: 'delivery-1' });
 
   await rec.until(() => rec.statuses.includes('idle'));
   assert.deepEqual(seen[0]?.options, { model: 'm-1' });
@@ -239,6 +239,7 @@ test('start + prompt 连发：worker 串行执行，事件与状态回到 server
     rec.events.map((event) => event.kind),
     ['text', 'ended']
   );
+  assert.deepEqual(rec.events[1], { kind: 'ended', outcome: 'done', deliveryId: 'delivery-1' });
   // 回合结束报 idle（进程还活着），不是 ended（进程结束）
   assert.deepEqual(rec.statuses, ['running', 'idle']);
 
@@ -1147,6 +1148,67 @@ test('资源（ADR 0014）：带 metrics 能力的 worker 被 welcome 接受后�
   await waitFor(async () => gateway.workers().find((w) => w.workerId === 'new')?.state === 'offline');
   assert.equal(gateway.workers().find((w) => w.workerId === 'new')?.resources, undefined, '离线不展示过期数据');
   await stop(old);
+});
+
+test('可靠送达（#269）：带 deliveryId 的 prompt 只发给声明 durable_delivery 的 Worker；老 Worker 在线但一个字节都收不到', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  // 裸 hello：不声明任何能力（老 Worker），也不带 build。
+  const legacy = await rawHello(url, { workerId: 'old', origin: 'remote' });
+  const frames: Record<string, unknown>[] = [];
+  legacy.socket.on('message', (data) => frames.push(JSON.parse(String(data)) as Record<string, unknown>));
+  await rec.until(() => rec.hellos.length === 1);
+  assert.equal(rec.hellos[0]?.worker.build, undefined);
+
+  assert.equal((await gateway.gateway.dispatch(start('s1', 'old'))).ok, true);
+  const refused = await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '带键', deliveryId: 'delivery-1' });
+  assert.equal(refused.ok, false);
+  assert.equal(!refused.ok && refused.error.code, 'conflict');
+  assert.match(!refused.ok ? refused.error.message : '', /durable_delivery/);
+  assert.match(!refused.ok ? refused.error.message : '', /更新/);
+  assert.equal(gateway.workers().find((w) => w.workerId === 'old')?.state, 'online', '拒发不能把老 Worker 踢下线');
+
+  // 无键的既有指令照旧送到，且带键那帧确实没发出去。
+  assert.equal((await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '无键' })).ok, true);
+  await waitFor(async () => frames.some((frame) => frame['kind'] === 'prompt'));
+  const prompts = frames.filter((frame) => frame['kind'] === 'prompt');
+  assert.equal(prompts.length, 1, '带键的帧不能出现在线上');
+  assert.equal(prompts[0]?.['text'], '无键');
+  assert.equal(prompts[0]?.['deliveryId'], undefined);
+
+  legacy.socket.terminate();
+  await rec.until(() => rec.gone.includes('old'));
+  await stop();
+});
+
+test('可靠送达（#269）：声明后带键 prompt 原样下发；同一 workerId 重连不再声明就重新拒发', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const first = await rawHello(url, { workerId: 'flip', origin: 'remote', capabilities: ['durable_delivery'] });
+  const firstFrames: Record<string, unknown>[] = [];
+  first.socket.on('message', (data) => firstFrames.push(JSON.parse(String(data)) as Record<string, unknown>));
+  await rec.until(() => rec.hellos.length === 1);
+
+  assert.equal((await gateway.gateway.dispatch(start('s1', 'flip'))).ok, true);
+  assert.equal((await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '带键', deliveryId: 'delivery-7' })).ok, true);
+  await waitFor(async () => firstFrames.some((frame) => frame['kind'] === 'prompt'));
+  assert.equal(firstFrames.find((frame) => frame['kind'] === 'prompt')?.['deliveryId'], 'delivery-7');
+
+  // 能力跟这条新连接走：同一个 workerId 重连时不声明，就按老 Worker 对待。
+  first.socket.terminate();
+  await rec.until(() => rec.gone.includes('flip'));
+  const second = await rawHello(url, { workerId: 'flip', origin: 'remote' });
+  const secondFrames: Record<string, unknown>[] = [];
+  second.socket.on('message', (data) => secondFrames.push(JSON.parse(String(data)) as Record<string, unknown>));
+  await rec.until(() => rec.hellos.length === 2);
+
+  assert.equal((await gateway.gateway.dispatch(start('s2', 'flip'))).ok, true);
+  const refused = await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s2'), text: '带键', deliveryId: 'delivery-8' });
+  assert.equal(refused.ok, false);
+  assert.equal(!refused.ok && refused.error.code, 'conflict');
+  assert.equal(secondFrames.filter((frame) => frame['kind'] === 'prompt').length, 0);
+
+  second.socket.terminate();
+  await rec.until(() => rec.gone.length === 2);
+  await stop();
 });
 
 test('连接健康（ADR 0030 D1）：welcome 带心跳参数；link.echo 回来后 syncing → live，断开记 disconnected，吊销记 rejected', async () => {

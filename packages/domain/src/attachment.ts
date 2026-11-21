@@ -36,6 +36,8 @@ export type PromptPart =
 export interface PromptInput {
   readonly text: string;
   readonly parts: readonly PromptPart[];
+  /** Hub 投递标识；运行时只在确认这条投递结束时回传。 */
+  readonly deliveryId?: string;
 }
 
 export const ATTACHMENT_LIMITS = {

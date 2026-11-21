@@ -109,18 +109,24 @@ function artifactOf(rawOutput: unknown, subagentId?: string): (SessionEvent & { 
 export interface TurnFacts {
   readonly produced: boolean;
   readonly stderrTail?: readonly string[];
+  /** 这条 prompt 的送达号：只有确实是这一轮 session/prompt 的终态才带。 */
+  readonly deliveryId?: string;
 }
 
+/** ended 事件的具体形状：带上 deliveryId 时要能按窄类型构造，不被联合类型挡住。 */
+export type EndedEvent = Extract<SessionEvent, { kind: 'ended' }>;
+
 /** 只有「真的回答了」才算 done：空回合、拒答、截断都要让人看见原因（红色错误），不能静默成「完成」。 */
-export function endedFromStopReason(stopReason: unknown, facts: TurnFacts = { produced: true }): SessionEvent {
+export function endedFromStopReason(stopReason: unknown, facts: TurnFacts = { produced: true }): EndedEvent {
   const reason = typeof stopReason === 'string' ? stopReason : String(stopReason ?? 'unknown');
-  if (reason === 'cancelled') return { kind: 'ended', outcome: 'stopped' };
+  const deliveryId = facts.deliveryId ? { deliveryId: facts.deliveryId } : {};
+  if (reason === 'cancelled') return { kind: 'ended', outcome: 'stopped', ...deliveryId };
   const tail = facts.stderrTail && facts.stderrTail.length > 0 ? `\n最近的 agent 日志：\n${facts.stderrTail.join('\n')}` : '';
-  if (reason === 'refusal') return { kind: 'ended', outcome: 'failed', reason: `模型拒绝了这次请求（stopReason: refusal）${tail}` };
-  if (reason === 'max_tokens') return { kind: 'ended', outcome: 'failed', reason: `输出达到长度上限被截断（stopReason: max_tokens）${tail}` };
-  if (reason === 'max_turn_requests') return { kind: 'ended', outcome: 'failed', reason: `这一轮调用模型的次数达到上限，被中止（stopReason: max_turn_requests）${tail}` };
-  if (!facts.produced) return { kind: 'ended', outcome: 'failed', reason: `agent 没有返回任何内容（可能是模型/鉴权/网络问题）。stopReason: ${reason}${tail}` };
-  return { kind: 'ended', outcome: 'done' };
+  if (reason === 'refusal') return { kind: 'ended', outcome: 'failed', reason: `模型拒绝了这次请求（stopReason: refusal）${tail}`, ...deliveryId };
+  if (reason === 'max_tokens') return { kind: 'ended', outcome: 'failed', reason: `输出达到长度上限被截断（stopReason: max_tokens）${tail}`, ...deliveryId };
+  if (reason === 'max_turn_requests') return { kind: 'ended', outcome: 'failed', reason: `这一轮调用模型的次数达到上限，被中止（stopReason: max_turn_requests）${tail}`, ...deliveryId };
+  if (!facts.produced) return { kind: 'ended', outcome: 'failed', reason: `agent 没有返回任何内容（可能是模型/鉴权/网络问题）。stopReason: ${reason}${tail}`, ...deliveryId };
+  return { kind: 'ended', outcome: 'done', ...deliveryId };
 }
 
 const SECRET_PATTERNS: readonly RegExp[] = [

@@ -31,6 +31,10 @@ test('一轮没结束又超时没动静：记一条 warn 诊断，且只记一�
   const last = (await w.deps.sessions.tail(w.id, 1))[0]?.event;
   assert.equal(last?.kind, 'diagnostic');
   assert.ok(last?.kind === 'diagnostic' && last.level === 'warn' && last.text.startsWith(policy.marker));
+  assert.match(last?.kind === 'diagnostic' ? last.text : '', /不会自动收尾/);
+  const tail = await w.deps.sessions.tail(w.id, 20);
+  assert.equal(tail.filter((e) => e.event.kind === 'ended').length, 0, '只提醒，不补 ended');
+  assert.equal((await w.deps.sessions.byId(w.id))!.status, 'running', '状态留给人和运行时');
   w.advance(600_000);
   assert.deepEqual(await flagStalledSessions(w.deps, policy), [], '同一次卡顿不重复提醒');
 });

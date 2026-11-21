@@ -44,11 +44,18 @@ list_task_log { taskId }                       # 复盘它自己记的决策
 ```
 
 - `events` 的 structuredContent / HTTP 响应都是 `{ events: [...], nextAfter }`，不要把它当成数组或再拆 `result`。
-- 第一次用 `sinceTurn=session_reply 返回的 turn`；之后用 `after=nextAfter` 增量拉。本 turn 出现 `ended` 即结束。
+- 每次都传 `sinceTurn=session_reply 返回的 turn`；之后同时用 `after=nextAfter` 增量拉。空页也要保留服务端给的游标；断线从最后确认的游标读，不重新发 prompt。只认 `turn` 严格相等的 `ended`，再检查其 `outcome`。
 - `waitSec`（最长 50）会等到有**符合过滤条件**的事件或超时。会话启动留下的无 turn 旧事件不会让它立刻空返回。
-- 新回合开始（`turn` 增长）说明它在继续做，不是卡住；卡住看 `ended{failed}` 或 `diagnostic`。
+- `get_session` 的状态描述最新一轮，不能代替目标回合的事件。单次长轮询空返回不是完成；总等待到期时记录 `sessionId`、`turn` 和游标，之后可续查，不自动重发或取消。
 - 想打断：`session_cancel { sessionId }`（它可能已经在收尾，重复调用无副作用）。
 - 长任务不要自己短间隔空转——把「我去盯着」告诉用户，用 `waitSec` 长轮询，超时就报告现状。
+
+### 同一任务：隔离开发，固定空间验证
+
+1. 开发会话用 `repoId` 或 `workspaceMode: "isolated"` 建 worktree；验证会话显式传不同的固定 `workspaceId`，不要共享开发目录。
+2. 等开发回合成功结束，读取交付报告并核对开发 worktree 的完整 commit SHA（可交接的不是分支名，也不是仅有的 `done` 状态）。
+3. 把完整 SHA 交给验证会话；在固定空间从授权来源取得该提交，以 detached HEAD 检出，并确认 `git rev-parse HEAD` 与交付 SHA 完全一致。不改源码，不替开发会话提交。
+4. 用新端口和独立数据目录启动临时服务跑 E2E。记录命令、退出码和用例结果，确认服务停止、端口释放，再收尾任务。
 
 ## 3. 同一个仓库并行改两处
 
@@ -82,17 +89,16 @@ list_projects → get_project → list_tasks → get_task → get_session → ev
 适合回答"现在有哪些项目/任务在跑""那条会话改了什么""上次为什么失败"。
 只读令牌就够；如果工具列表里只有 `list_*`/`get_*`，说明这是只读令牌，别去试写工具。
 
-## 项目后来加了仓库：sync_workspace
+## 检查单仓工作空间远端：sync_workspace
 
-已有工作空间不会自己多出目录。确认项目 `repos` 之后：
+项目只绑定一个仓库时，可检查当前工作空间：
 
 ```
-sync_workspace { workspaceId }     # 缺的仓库克隆到工作空间的同级目录；already-in 的不重复
+sync_workspace { workspaceId }     # 只检查已登记的目录，不扫描同级目录，不克隆或拉取
 ```
 
-返回 `added` / `present` / `skipped`（例如同名目录不是 git 仓库）/ `failed`（地址错、没权限；不影响其它仓库）。
-「已存在」按远端地址判断，所以目录名和仓库名不一致也不会重复克隆。组合工作空间（`groupId` 非空）
-不走这里——成员用 `workspace_group_create` / `workspace_group_add_member` / `workspace_group_retry` 管理（见配方 6）。单仓命令验证用 `workspace_changes`。
+远端匹配时返回 `present`，不匹配时返回 `skipped` 和原因；`added` / `failed` 是保留的兼容字段。
+项目新增仓库后请使用组合工作空间，成员用 `workspace_group_create` / `workspace_group_add_member` / `workspace_group_retry` 管理（见配方 6）。查看单仓改动用 `workspace_changes`。
 
 ## 6. 多仓组合会话（主仓库 + 成员子集）
 
@@ -129,7 +135,7 @@ append_task_log { taskId, body, sessionId }
 
 `fromGroupId` 会按开发组成员的已有分支在目标机器再建一组（`branches` 可覆盖个别仓库）。准备命令仍只在主仓库跑。把验证结果记进任务日志。
 
-若 `get_project` / `project_create` 里 `repos[].hasToken === false`，HTTPS 推送和开 PR 可能失败。用 `project_repos` 写入对应仓库的 `credential`（只写不回，按仓存在 `repo-git:<repoId>`）；SSH 远程则依赖机器上的密钥。响应只会回 `hasToken` 和 `tokenHint`，不会回显明文。
+若 `get_project` / `project_create` 里 `repos[].hasToken === false`，HTTPS 推送和开 PR 可能失败。用 `project_repos` 写入对应仓库的 `credential`（只写不回，按项目和仓库存在 `repo-git:<projectId>:<repoId>`；旧的单段键需要重新输入一次）；SSH 远程则依赖机器上的密钥。响应只会回 `hasToken` 和 `tokenHint`，不会回显明文。
 
 ## 8. 合并后收起与清理
 

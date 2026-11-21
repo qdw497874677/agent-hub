@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { asSessionId, asTaskId } from '@agent-hub/domain';
-import type { RuntimeSession, SessionEvent, StartSpec } from '@agent-hub/domain';
+import type { PromptInput, RuntimeSession, SessionEvent, StartSpec } from '@agent-hub/domain';
 import { hermesAcpOptionValue } from './hermes-acp.ts';
 import { createAcpRuntime } from './acp-runtime.ts';
 import type { AcpAgentConfig } from './config.ts';
@@ -44,6 +44,115 @@ async function collectUntilEnded(session: RuntimeSession): Promise<SessionEvent[
   }
   return out;
 }
+
+/** #269/2：送达号是端口上的可选字段，测试里显式带上，等 domain 补字段后类型不用改。 */
+function keyed(text: string, deliveryId: string): PromptInput & { readonly deliveryId: string } {
+  return { text, parts: [], deliveryId };
+}
+
+test('acp runtime: deliveryId 只挂在确认属于这一轮的 ended 上；无 key / dispose 的 ended 不带', async (t) => {
+  const runtime = createAcpRuntime(config);
+  const started = await runtime.start(await spec(t));
+  assert.ok(started.ok);
+  const session = started.value;
+
+  // 带 key：应答 = 这一轮 session/prompt 的确切终态，ended 原样带回同一个 id
+  const keyedTurn = collectUntilEnded(session);
+  assert.ok((await session.prompt(keyed('hi', 'd-acp-1'))).ok);
+  const keyedEvents = await keyedTurn;
+  assert.deepEqual(keyedEvents.at(-1), { kind: 'ended', outcome: 'done', deliveryId: 'd-acp-1' });
+
+  // 没带 key：不编造 deliveryId（老调用方 / 无送达记录的轮次）
+  const bareTurn = collectUntilEnded(session);
+  assert.ok((await session.prompt({ text: 'hi', parts: [] })).ok);
+  const bareEnded = (await bareTurn).at(-1);
+  assert.ok(bareEnded && bareEnded.kind === 'ended');
+  assert.equal('deliveryId' in bareEnded, false);
+
+  // 生命周期（dispose）不是送达的终态：即使上一轮带过 key，stopped 也不带
+  const rest = collectUntilEnded(session);
+  await session.dispose();
+  const stopped = (await rest).at(-1);
+  assert.ok(stopped && stopped.kind === 'ended');
+  assert.deepEqual(stopped, { kind: 'ended', outcome: 'stopped' });
+  assert.equal('deliveryId' in stopped, false);
+});
+
+test('acp runtime: 上一轮还在飞时拒绝并发 prompt，不把两轮的 update 混在一起', async (t) => {
+  const runtime = createAcpRuntime(config);
+  const started = await runtime.start(await spec(t));
+  assert.ok(started.ok);
+  const session = started.value;
+  t.after(() => session.dispose());
+
+  // 'ask' 会等客户端回 permission（本适配器自动允许），第一轮在应答到达前一直算在飞
+  const first = session.prompt(keyed('ask', 'd-acp-2'));
+  const second = await session.prompt({ text: 'hi', parts: [] });
+  assert.equal(second.ok, false, '并发 prompt 直接拒');
+  assert.match(second.ok ? '' : second.error.message, /上一轮还没结束/);
+  const events = await first;
+  assert.ok(events.ok);
+  const ended = await (async () => {
+    for await (const event of session.events()) if (event.kind === 'ended') return event;
+    return null;
+  })();
+  assert.ok(ended && ended.kind === 'ended');
+  assert.equal(ended.deliveryId, 'd-acp-2');
+});
+
+/**
+ * 在 `ms` 内等一条 ended；超时返回 null，但**保留**已经挂上的 next()，
+ * 下次调用继续用它，避免把随后到达的事件吞进一个没人等的 promise。
+ */
+function endedReader(events: AsyncIterator<SessionEvent>): (ms: number) => Promise<SessionEvent | null> {
+  let pending = events.next();
+  return async (ms) => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const left = deadline - Date.now();
+      if (left <= 0) return null;
+      const raced = await Promise.race([
+        pending.then((next) => ({ kind: 'next' as const, next })),
+        new Promise<{ kind: 'timeout' }>((resolve) => setTimeout(() => resolve({ kind: 'timeout' as const }), left))
+      ]);
+      if (raced.kind === 'timeout') return null;
+      pending = events.next();
+      if (raced.next.done) return null;
+      if (raced.next.value.kind === 'ended') return raced.next.value;
+    }
+  };
+}
+
+test('acp runtime: 事件流断了但进程还活着 → 不推 ended；真实退出才报终态且不带 key', async (t) => {
+  const runtime = createAcpRuntime(config);
+  const started = await runtime.start(await spec(t));
+  assert.ok(started.ok);
+  const session = started.value;
+  const pid = session.pid?.() ?? null;
+  assert.ok(pid !== null, '拿得到子进程 pid');
+  t.after(() => {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* 已经退出 */
+    }
+  });
+
+  const nextEnded = endedReader(session.events()[Symbol.asyncIterator]());
+  // please-detach：agent 关掉 stdout、这一轮不应答、进程继续活着
+  const prompt = await session.prompt(keyed('please-detach', 'd-acp-detach'));
+  assert.equal(prompt.ok, false, '连接断了，这一条 prompt 不可能成功');
+
+  // 旧实现会在这里凭 connection.closed 推一条带 key 的 failed ended；断流不是进程退出证明。
+  assert.equal(await nextEnded(300), null, '进程还活着，不能凭断流编一个终态');
+
+  process.kill(pid, 'SIGKILL');
+  const ended = await nextEnded(5000);
+  assert.ok(ended && ended.kind === 'ended');
+  assert.equal(ended.outcome, 'failed');
+  // 这一条 prompt 的应答已经是失败（hub 已知投递没成），进程退出属于生命周期，不补挂 key。
+  assert.equal('deliveryId' in ended, false);
+});
 
 test('acp runtime: 认证钩子、_meta、开跑前选项都按顺序落到 agent 上', async (t) => {
   const refs: string[] = [];

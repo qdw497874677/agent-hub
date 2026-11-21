@@ -40,7 +40,9 @@ import { authenticateWorker, withToolAccess,
   MEMORY_SWEEP_INTERVAL_MS,
   MEMORY_GUIDANCE_VERSION,
   pumpDeliveries,
+  reconcileSendingDeliveries,
   recoverOrphanedTurns,
+  resolveOrphanTurnMs,
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase,
   migrateAssetOwnership,
@@ -97,7 +99,7 @@ import { createModelDistiller } from './model-distiller.ts';
 import { createApp } from './http.ts';
 import { createConnectorObserveReader } from './observe-connector.ts';
 import { createStreamHub } from './stream-hub.ts';
-import { createTurnFinisher, endStalledTurn, type TurnOutcome } from './turn-finish.ts';
+import { createTurnFinisher, finishFromJournalTail, type TurnOutcome } from './turn-finish.ts';
 import { wireTools } from './wire-tools.ts';
 import { wireConnectors } from './wire-connectors.ts';
 import { createSchedules } from './schedules.ts';
@@ -302,11 +304,11 @@ if (readEnv('HUB_TOOLS_TRANSPORT') === 'http') log('HUB_TOOLS_TRANSPORT=http 已
 const sessionLane = createSessionLane();
 // 消息 / 群聊 / 收件箱 / 连接器 / 调度 / 出站：整块装配在 wire-connectors.ts，这里只按原顺序调用。
 const {
-  messageBus, groupChat, inbox, persistentAgents, botOfSession, subjectOf,
+  messageBus, groupChat, inbox, releaseDelivery, persistentAgents, botOfSession, subjectOf,
   githubClient, teamTokenOf, githubReposFor, pullRequestRepo, gitHostTokens, feishuReplies, fakeReplies,
   connectorHub, taskProgress, dispatcher, enqueueDispatch
 } = wireConnectors({ deps, store, log, readEnv, secretKey, sessionLane, schedules });
-const contextService = createContextService({ projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, access: deps.access, now: () => Date.now(), contextSettings: store.contextSettings, audit: store.audit, gateway: deps.gateway,
+const contextService = createContextService({ projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, workspaceGroups: store.workspaceGroups, access: deps.access, now: () => Date.now(), contextSettings: store.contextSettings, audit: store.audit, gateway: deps.gateway,
   // 角色层（ADR 0020 §8）：派生出来的角色会话 → 角色；否则群里的成员 → 角色
   roleOf: async (sessionId) => (await store.messages.spawnOf(sessionId as SessionId))?.role ?? (await store.groups.memberOfSession(sessionId as SessionId))?.role ?? null,
   // bot 职责说明（系统提示）：DM / 派生会话 / 群成员会话都在会话开头垫一次
@@ -328,23 +330,38 @@ const rewindService = createRewindService({ ...deps, files: filesService, turnRe
  * 卡顿巡检、送达回收都走这一处；同一回合的重复信号按 journal 末尾去重。
  */
 const turnFinished = createTurnFinisher({
-  sessions: deps.sessions,
   log,
   inbox,
   files: filesService,
+  // 有 durable sending 时，ended 必须与它同会话、同 deliveryId 才收尾；身份检查先于去重水位。
+  inFlight: (sessionId) => store.deliveries.inFlight(sessionId),
+  // 送达队列在 inbox 钩子之后放行；expected id 直接取这条 ended 的 deliveryId。
+  releaseDelivery,
   // 假渠道：把这轮回复投进出站队列（只在 HUB_FAKE_CHANNEL=1 时有路由）。
   ...(fakeReplies ? { fakeReplies } : {}),
   // 飞书：这一轮若由飞书消息触发，把回复写进 outbox 并回在原消息下面。
   ...(feishuReplies ? { feishuReplies } : {})
 });
-const finishTurn = (sessionId: SessionId, outcome: TurnOutcome, reason?: string): void => {
-  void turnFinished.finish(sessionId, outcome, reason).catch((error: unknown) => log(`回合收尾失败：${String(error)}`));
+const finishTurn = (
+  sessionId: SessionId,
+  seq: number,
+  outcome: TurnOutcome,
+  reason?: string,
+  deliveryId?: string
+): void => {
+  void turnFinished
+    .finish({ sessionId, seq, outcome, ...(reason === undefined ? {} : { reason }), ...(deliveryId === undefined ? {} : { deliveryId }) })
+    .catch((error: unknown) => log(`回合收尾失败：${String(error)}`));
 };
+// `ended` 帧里的 seq / outcome / reason / deliveryId 都是落盘时定下的：直接当作回合身份交给总闸。
+// `idle` 状态帧走 finishFromJournalTail，只有 journal 末尾确实是 ended 才收尾。
 hub.stream.subscribe((frame) => {
-  if (frame.event?.kind === 'ended') finishTurn(frame.sessionId, frame.event.outcome, frame.event.reason);
+  if (frame.event?.kind === 'ended') finishTurn(frame.sessionId, frame.seq, frame.event.outcome, frame.event.reason, frame.event.deliveryId);
 });
-// 送达队列（ADR 0031 D2）：重启时把上次停在「发送中」的退回排队，之后每秒泵一次
-void store.deliveries.recoverSending(Date.now()).then((n) => n > 0 && log(`送达队列：${n} 条上次没送完，重新排队`));
+// 重启不重发在途消息；只有 journal 中属于同一投递的结束证据才能收尾。
+void reconcileSendingDeliveries({ ...deps, deliveries: store.deliveries })
+  .then((n) => n > 0 && log(`送达队列：已按落盘结束事件对账 ${n} 条投递`))
+  .catch((error: unknown) => log(`送达队列启动对账失败：${String(error)}`));
 let pumping = false;
 schedules.every(1_000, () => {
   if (pumping) return;
@@ -353,14 +370,20 @@ schedules.every(1_000, () => {
     .catch((error: unknown) => log(`送达队列失败：${String(error)}`))
     .finally(() => { pumping = false; });
 });
-// 送出去却一直没下文的回合：Worker 丢过任务、掉线或旧协议不认这条会话时，别让队首永远堵着。
+// 送出去却一直没进展的回合（#269 第 2 项）：
+// - 托管进程还在：最多请求一次运行时 interrupt，让 Worker 自己按真实结果收尾；
+// - 托管进程不在：只记诊断，不收尾、不放行（掉线 / 托管记录缺失都不是「已停止」的证据）；
+// - 任何情况下都不代写 ended、不替用户放行下一句。
+// 阈值独立于卡顿巡检，默认 2 分钟，可用 HUB_ORPHAN_TURN_MS（毫秒）覆盖。
+const orphanTurnMs = resolveOrphanTurnMs(readEnv('HUB_ORPHAN_TURN_MS'));
+log(`送达回收：送达后 ${Math.round(orphanTurnMs / 1_000)} 秒仍无进展才请求中断；不代写结束、不自动放行（HUB_ORPHAN_TURN_MS）`);
 let recovering = false;
 schedules.every(10_000, () => {
   if (recovering) return;
   recovering = true;
-  void recoverOrphanedTurns({ ...deps, deliveries: store.deliveries })
-    .then((n) => n > 0 && log(`送达队列：${n} 条送出去没有下文，按失败收尾并放行后面的消息`))
-    .catch((error: unknown) => log(`回收没有下文的回合失败：${String(error)}`))
+  void recoverOrphanedTurns({ ...deps, deliveries: store.deliveries }, Date.now(), orphanTurnMs)
+    .then((n) => n > 0 && log(`送达队列：${n} 条送出去没有进展，已请求中断或记诊断（不代写结束、不放行后面的消息）`))
+    .catch((error: unknown) => log(`处理没有进展的回合失败：${String(error)}`))
     .finally(() => { recovering = false; });
 });
 schedules.every(3_600_000, () => void filesService.sweepCheckpoints().catch(() => undefined));
@@ -744,15 +767,13 @@ serverGateway = createServerGateway({
     fromWorker(workerId, sessionId, () => {
       void (async () => {
         await ingestRuntimeStatus(deps, sessionId, status);
-        // idle / ended 都意味着「这一轮结束了」：补一遍回合收尾（总闸幂等）。
+        // idle / ended 只当作「可能结束了」的提示：等已经到达的 ended 事件落盘后看 journal 末尾，
+        // 只有末尾真的是 ended 才收尾（outcome / reason / seq 取自那条落盘事件，不从 session.status 推断）。
         // idle 时进程还活着、托管不撤；ended 才是真结束，额外撤 provider 句柄与终端。
         if (status === 'idle' || status === 'ended') {
-          // 事件帧和状态帧是两条路：这里先排一次这条会话的队，等已经到达的 ended 事件落盘，
-          // 再照库里的结果补一遍收尾——否则可能把正常回合判成 failed。
-          await deps.queue.run(sessionId, async () => undefined);
-          const session = await deps.sessions.byId(sessionId);
-          turnFinished.finish(sessionId, session?.status === 'done' ? 'done' : 'failed')
-            .catch((error: unknown) => log(`回合收尾失败：${String(error)}`));
+          await finishFromJournalTail(deps, turnFinished, sessionId).catch((error: unknown) =>
+            log(`回合收尾失败：${String(error)}`)
+          );
         }
         if (status === 'ended') {
           providerWiring.revoke(sessionId);
@@ -873,8 +894,9 @@ void loadResourcePolicy({ metrics: workerMetrics, settings: store.settings }).ca
 const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
 
-// 卡顿巡检：一轮跑着却长时间没新事件，先记一条 warn 诊断（卡片上显示提醒），
-// 再按「失败/中断」收尾这一轮——只提醒不收尾的话，队首会一直堵着，后面每句话都排队。
+// 卡顿巡检：一轮跑着却长时间没新事件，只记一条 warn 诊断（卡片上显示提醒）。
+// 不补 ended、不收尾、不放行——模型可能只是在跑很慢的工具；是否中断交给人。
+// 「送达后没有进展」那条独立的有界策略最多请求一次运行时 interrupt，也不代写结束。
 const stallMs = Number(readEnv('HUB_STALL_MS') ?? 5 * 60_000);
 if (stallMs > 0) {
   schedules.every(Math.min(30_000, stallMs), () => {
@@ -882,9 +904,7 @@ if (stallMs > 0) {
       const ids = await flagStalledSessions(deps, { idleMs: stallMs, marker: STALL_NOTICE_MARKER });
       for (const id of ids) {
         const minutes = Math.max(1, Math.round(stallMs / 60_000));
-        const reason = `已经 ${minutes} 分钟没有新输出，平台按中断结束了这一轮；需要的话请重发。`;
-        const ended = await endStalledTurn(deps, turnFinished, id, reason);
-        if (ended) log(`会话 ${id} 已 ${minutes} 分钟以上没有新输出，按中断收尾并放行后面的消息`);
+        log(`会话 ${id} 已 ${minutes} 分钟以上没有新输出，已记诊断提醒；不会自动收尾`);
       }
     })().catch((failure: unknown) => log(`卡顿巡检失败：${(failure as Error).message}`));
   });

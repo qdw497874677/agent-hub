@@ -4,7 +4,13 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { Hono } from 'hono';
 import type { McpReplayStore } from '@agent-hub/domain';
-import { createIdempotency, IDEMPOTENCY_HEADER, IDEMPOTENCY_PLACEHOLDER_MS, IDEMPOTENCY_TTL_MS } from './idempotency.ts';
+import {
+  createIdempotency,
+  IDEMPOTENCY_CONFLICT_CODE,
+  IDEMPOTENCY_HEADER,
+  IDEMPOTENCY_PLACEHOLDER_MS,
+  IDEMPOTENCY_TTL_MS
+} from './idempotency.ts';
 
 interface Row {
   body: string;
@@ -32,8 +38,17 @@ const memoryStore = (): McpReplayStore & { readonly rows: Map<string, Row> } => 
       }
       return false;
     },
-    release: async (key) => {
-      if (rows.get(key)?.status === 'pending') rows.delete(key);
+    commit: async (key, body, at, claimedAt) => {
+      const row = rows.get(key);
+      if (row === undefined || row.status !== 'pending' || row.createdAt !== claimedAt) return false;
+      rows.set(key, { body, createdAt: at, status: 'done' });
+      return true;
+    },
+    release: async (key, claimedAt) => {
+      const row = rows.get(key);
+      if (row?.status !== 'pending') return;
+      if (claimedAt !== undefined && row.createdAt !== claimedAt) return;
+      rows.delete(key);
     }
   };
 };
@@ -73,7 +88,11 @@ const post = (app: Hono, path: string, key?: string, token = 'ahp_a', body?: str
   });
 
 const digest = (text: string): string => createHash('sha256').update(text).digest('hex');
-const replayKeyOf = (token: string, path: string, key: string, body = ''): string =>
+/** 现在的键：请求体不进键。 */
+const replayKeyOf = (token: string, path: string, key: string): string =>
+  [digest(`Bearer ${token}`), 'POST', path, key].join('\u0000');
+/** 升级前的键：请求体摘要也在里面。 */
+const legacyKeyOf = (token: string, path: string, key: string, body = ''): string =>
   [digest(`Bearer ${token}`), 'POST', path, digest(body), key].join('\u0000');
 
 test('同一个 key + 同一个 body 重试只执行一次，第二次标 idempotent-replay', async () => {
@@ -92,18 +111,28 @@ test('同一个 key + 同一个 body 重试只执行一次，第二次标 idempo
   assert.equal(counter.hits, 1);
 });
 
-test('同一个 key 换了请求体：不回放旧结果，重新执行', async () => {
+test('同一个 key 换了请求体：409 冲突，不回放旧结果也不重新执行', async () => {
   const store = memoryStore();
   const counter = { hits: 0 };
   const app = build(store, counter);
 
   const first = await post(app, '/v1/things', 'same-key', 'ahp_a', '{"a":1}');
   assert.equal(first.status, 201);
+
   const second = await post(app, '/v1/things', 'same-key', 'ahp_a', '{"a":2}');
-  assert.equal(second.status, 201);
+  assert.equal(second.status, 409);
   assert.equal(second.headers.get('idempotent-replay'), null);
-  deepStrictEqual(await second.json(), { n: 2 });
-  assert.equal(counter.hits, 2);
+  const error = (await second.json()) as { error?: { code?: string; message?: string } };
+  assert.equal(error.error?.code, IDEMPOTENCY_CONFLICT_CODE);
+  assert.match(String(error.error?.message), /不同的请求体/);
+  assert.equal(counter.hits, 1, '换 body 不能重新执行');
+
+  // 原来的请求体仍然可以回放：冲突不破坏第一次的结果。
+  const again = await post(app, '/v1/things', 'same-key', 'ahp_a', '{"a":1}');
+  assert.equal(again.status, 201);
+  assert.equal(again.headers.get('idempotent-replay'), 'true');
+  deepStrictEqual(await again.json(), { n: 1 });
+  assert.equal(counter.hits, 1);
 });
 
 test('不带 key 的请求行为不变，每次都执行', async () => {
@@ -132,6 +161,26 @@ test('5xx 不留档，重试会真的再跑', async () => {
   const app = build(memoryStore(), counter);
   await post(app, '/v1/boom', 'k2');
   await post(app, '/v1/boom', 'k2');
+  assert.equal(counter.hits, 2);
+});
+
+test('5xx 没留下结果，之后换请求体也能执行（失败的那次不锁 key）', async () => {
+  const store = memoryStore();
+  const counter = { hits: 0 };
+  const app = new Hono();
+  app.use('/v1/*', createIdempotency({ store }).handle);
+  app.post('/v1/maybe', (c) => {
+    counter.hits += 1;
+    return counter.hits === 1 ? c.json({ error: 'boom' }, 500) : c.json({ n: counter.hits }, 201);
+  });
+
+  assert.equal((await post(app, '/v1/maybe', 'k5', 'ahp_a', '{"a":1}')).status, 500);
+  const retried = await post(app, '/v1/maybe', 'k5', 'ahp_a', '{"a":2}');
+  assert.equal(retried.status, 201);
+  assert.equal(counter.hits, 2);
+
+  const replayed = await post(app, '/v1/maybe', 'k5', 'ahp_a', '{"a":2}');
+  assert.equal(replayed.headers.get('idempotent-replay'), 'true');
   assert.equal(counter.hits, 2);
 });
 
@@ -170,6 +219,39 @@ test('并发两个同 key 请求：只有一个真正执行，另一个 409', as
   assert.equal(counter.hits, 1);
 });
 
+test('并发两个同 key 不同 body 的请求：只有一个执行，另一个 409 且不执行', async () => {
+  const store = memoryStore();
+  const counter = { hits: 0 };
+  const app = new Hono();
+  app.use('/v1/*', createIdempotency({ store }).handle);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  app.post('/v1/slow', async (c) => {
+    counter.hits += 1;
+    await gate;
+    return c.json({ n: counter.hits }, 201);
+  });
+
+  const first = post(app, '/v1/slow', 'k-diff', 'ahp_a', '{"a":1}');
+  while (counter.hits === 0) await new Promise((resolve) => setImmediate(resolve));
+  const second = await post(app, '/v1/slow', 'k-diff', 'ahp_a', '{"a":2}');
+  assert.equal(second.status, 409);
+  assert.equal(second.headers.get('retry-after'), '1');
+  release();
+  assert.equal((await first).status, 201);
+  assert.equal(counter.hits, 1);
+
+  // 落档之后：原 body 回放，另一个 body 仍然 409，都不再执行。
+  const replayed = await post(app, '/v1/slow', 'k-diff', 'ahp_a', '{"a":1}');
+  assert.equal(replayed.headers.get('idempotent-replay'), 'true');
+  const other = await post(app, '/v1/slow', 'k-diff', 'ahp_a', '{"a":2}');
+  assert.equal(other.status, 409);
+  assert.equal(other.headers.get('idempotent-replay'), null);
+  assert.equal(counter.hits, 1);
+});
+
 test('占位超过 30 秒后可被后来的请求接管', async () => {
   let clock = 1_000;
   const store = memoryStore();
@@ -186,6 +268,55 @@ test('占位超过 30 秒后可被后来的请求接管', async () => {
   const taken = await post(app, '/v1/things', 'k-stale', 'ahp_a');
   assert.equal(taken.status, 201);
   assert.equal(counter.hits, 1);
+});
+
+test('占位被接管后，老请求不会覆盖新请求的结果', async () => {
+  let clock = 1_000;
+  const store = memoryStore();
+  const hits = { a: 0, b: 0 };
+  const app = new Hono();
+  app.use('/v1/*', createIdempotency({ store, now: () => clock }).handle);
+  let releaseA!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseA = resolve;
+  });
+  let enteredA!: () => void;
+  const startedA = new Promise<void>((resolve) => {
+    enteredA = resolve;
+  });
+  app.post('/v1/race', async (c) => {
+    const body = await c.req.text();
+    if (body === '{"v":"a"}') {
+      hits.a += 1;
+      enteredA();
+      await gate;
+      return c.json({ from: 'a' }, 201);
+    }
+    hits.b += 1;
+    return c.json({ from: 'b' }, 201);
+  });
+
+  const first = post(app, '/v1/race', 'k-takeover', 'ahp_a', '{"v":"a"}');
+  await startedA;
+  // a 卡住超过占位超时 → b 接管同一个 key。
+  clock += IDEMPOTENCY_PLACEHOLDER_MS + 1;
+  const second = await post(app, '/v1/race', 'k-takeover', 'ahp_a', '{"v":"b"}');
+  assert.equal(second.status, 201);
+  deepStrictEqual(await second.json(), { from: 'b' });
+
+  // a 现在才写完：结果作废，不能覆盖 b 写下的记录。
+  releaseA();
+  assert.equal((await first).status, 201);
+  assert.equal(hits.a, 1);
+  assert.equal(hits.b, 1);
+
+  const replayed = await post(app, '/v1/race', 'k-takeover', 'ahp_a', '{"v":"b"}');
+  assert.equal(replayed.headers.get('idempotent-replay'), 'true');
+  deepStrictEqual(await replayed.json(), { from: 'b' });
+  const staleBody = await post(app, '/v1/race', 'k-takeover', 'ahp_a', '{"v":"a"}');
+  assert.equal(staleBody.status, 409);
+  assert.equal(hits.a, 1, '被接管的老请求不能重跑');
+  assert.equal(hits.b, 1);
 });
 
 test('超过 TTL 的已完成结果不会被回放', async () => {
@@ -207,4 +338,84 @@ test('超过 TTL 的已完成结果不会被回放', async () => {
   assert.equal(expired.status, 201);
   assert.equal(expired.headers.get('idempotent-replay'), null);
   assert.equal(counter.hits, 2);
+});
+
+test('TTL 内的 body 冲突在过期后解除：新一个 key 生命周期重新计时', async () => {
+  let clock = 1_000;
+  const store = memoryStore();
+  const counter = { hits: 0 };
+  const app = build(store, counter, { now: () => clock, ttlMs: 1_000 });
+
+  assert.equal((await post(app, '/v1/things', 'k-ttl-diff', 'ahp_a', '{"a":1}')).status, 201);
+  clock += 500;
+  const conflict = await post(app, '/v1/things', 'k-ttl-diff', 'ahp_a', '{"a":2}');
+  assert.equal(conflict.status, 409);
+  assert.equal(counter.hits, 1);
+
+  // 过了 TTL，旧结果不再可回放，同一个 key 重新从这次请求开始算。
+  clock += 501;
+  const fresh = await post(app, '/v1/things', 'k-ttl-diff', 'ahp_a', '{"a":2}');
+  assert.equal(fresh.status, 201);
+  assert.equal(fresh.headers.get('idempotent-replay'), null);
+  assert.equal(counter.hits, 2);
+
+  assert.equal((await post(app, '/v1/things', 'k-ttl-diff', 'ahp_a', '{"a":2}')).headers.get('idempotent-replay'), 'true');
+  assert.equal((await post(app, '/v1/things', 'k-ttl-diff', 'ahp_a', '{"a":1}')).status, 409);
+  assert.equal(counter.hits, 2);
+});
+
+test('升级前的旧行：同一个请求体继续回放，并迁移到新键', async () => {
+  let clock = 5_000;
+  const store = memoryStore();
+  const counter = { hits: 0 };
+  const app = build(store, counter, { now: () => clock });
+  const oldBody = '{"a":1}';
+  store.rows.set(legacyKeyOf('ahp_a', '/v1/things', 'k-old', oldBody), {
+    body: JSON.stringify({ status: 201, body: '{"n":9}', contentType: 'application/json', at: 4_000 }),
+    createdAt: 4_000,
+    status: 'done'
+  });
+
+  const replayed = await post(app, '/v1/things', 'k-old', 'ahp_a', oldBody);
+  assert.equal(replayed.status, 201);
+  assert.equal(replayed.headers.get('idempotent-replay'), 'true');
+  deepStrictEqual(await replayed.json(), { n: 9 });
+  assert.equal(counter.hits, 0);
+
+  // 迁到新键时保留旧完成时间（TTL 不续命）。
+  const migrated = store.rows.get(replayKeyOf('ahp_a', '/v1/things', 'k-old'));
+  assert.equal(migrated?.status, 'done');
+  assert.equal(migrated?.createdAt, 4_000);
+
+  // 迁移之后这个 key 进入新语义：换 body 就是 409。
+  const other = await post(app, '/v1/things', 'k-old', 'ahp_a', '{"a":2}');
+  assert.equal(other.status, 409);
+  assert.equal(counter.hits, 0);
+
+  // 迁移后的结果照常过期。
+  clock = 4_000 + IDEMPOTENCY_TTL_MS + 1;
+  const expired = await post(app, '/v1/things', 'k-old', 'ahp_a', oldBody);
+  assert.equal(expired.status, 201);
+  assert.equal(counter.hits, 1);
+});
+
+test('升级前的旧行：换个请求体查不到旧行，仍会执行（已知的过渡限制）', async () => {
+  const store = memoryStore();
+  const counter = { hits: 0 };
+  const app = build(store, counter);
+  store.rows.set(legacyKeyOf('ahp_a', '/v1/things', 'k-old2', '{"a":1}'), {
+    body: JSON.stringify({ status: 201, body: '{"n":9}', contentType: 'application/json', at: 4_000 }),
+    createdAt: 4_000,
+    status: 'done'
+  });
+
+  // 旧键里的请求体事后不可知：新 body 查不到这一行，只能执行一次。
+  const other = await post(app, '/v1/things', 'k-old2', 'ahp_a', '{"a":2}');
+  assert.equal(other.status, 201);
+  assert.equal(counter.hits, 1);
+
+  // 从这次写入起，这个 key 已被新 body 占用，旧 body 再来就是 409。
+  const staleBody = await post(app, '/v1/things', 'k-old2', 'ahp_a', '{"a":1}');
+  assert.equal(staleBody.status, 409);
+  assert.equal(counter.hits, 1);
 });

@@ -1,6 +1,16 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { Workspace, WorkspaceRepository } from '@agent-hub/domain';
-import { asProjectId, asTaskId, asWorkspaceGroupId, asWorkspaceId, newWorkspaceId, normalizePath } from '@agent-hub/domain';
+import type {
+  ProjectWorkspaceLink,
+  Workspace,
+  WorkspaceClaim,
+  WorkspaceClaimOutcome,
+  WorkspaceRepository,
+  WorkspaceSaveOutcome,
+  WorkspaceTransfer,
+  WorkspaceTransferOutcome
+} from '@agent-hub/domain';
+import { asProjectId, asTaskId, asWorkspaceGroupId, asWorkspaceId, newWorkspaceId, normalizePath, type WorkspaceId } from '@agent-hub/domain';
+import { inTransaction } from './tx.ts';
 
 type Row = Record<string, unknown>;
 
@@ -34,6 +44,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
 CREATE INDEX IF NOT EXISTS workspaces_by_project ON workspaces(project_id);
 CREATE INDEX IF NOT EXISTS workspaces_by_task ON workspaces(owner_task_id);
 CREATE INDEX IF NOT EXISTS workspaces_by_place ON workspaces(COALESCE(worker_id, ''), path);
+-- #233：给团队 / 机器 / 目录的活跃登记加查询索引（非唯一，不清理老数据；唯一性由 save/claim 事务保证）。
+CREATE INDEX IF NOT EXISTS workspaces_by_team_place ON workspaces(COALESCE(team_id, ''), COALESCE(worker_id, ''), path);
 CREATE TABLE IF NOT EXISTS project_workspaces (
   project_id   TEXT NOT NULL,
   workspace_id TEXT NOT NULL,
@@ -123,6 +135,78 @@ export function toWorkspace(row: Row): Workspace {
   };
 }
 
+const LINKS_SQL = 'SELECT * FROM project_workspaces WHERE workspace_id = ? ORDER BY linked_at ASC, project_id ASC';
+const INSERT_LINK_SQL = 'INSERT INTO project_workspaces(project_id, workspace_id, linked_by, linked_at) VALUES (?, ?, ?, ?)';
+// 同团队 / 机器下的活跃长期登记；路径在 JS 里 normalize 后再比，兼容老数据里没归一化的写法。
+const LIVE_PLACE_SQL =
+  "SELECT * FROM workspaces WHERE kind = 'long_lived' AND state <> 'removed' AND id <> ? " +
+  "AND COALESCE(team_id, '') = COALESCE(?, '') AND COALESCE(worker_id, '') = COALESCE(?, '') " +
+  'ORDER BY created_at ASC, id ASC';
+
+function toLink(row: Row): ProjectWorkspaceLink {
+  return {
+    projectId: asProjectId(row['project_id'] as string),
+    workspaceId: asWorkspaceId(row['workspace_id'] as string),
+    linkedBy: (row['linked_by'] as string | null) ?? null,
+    linkedAt: row['linked_at'] as number
+  };
+}
+
+function linksIn(db: DatabaseSync, workspaceId: WorkspaceId): ProjectWorkspaceLink[] {
+  return (db.prepare(LINKS_SQL).all(workspaceId) as Row[]).map(toLink);
+}
+
+function insertLinkIn(db: DatabaseSync, link: ProjectWorkspaceLink): void {
+  db.prepare(INSERT_LINK_SQL).run(link.projectId, link.workspaceId, link.linkedBy, link.linkedAt);
+}
+
+/** 同一团队 / 机器 / 归一化目录上的其他活跃长期登记（不含自己）。 */
+function placePeersIn(db: DatabaseSync, workspace: Workspace): Workspace[] {
+  const path = normalizePath(workspace.path);
+  return (db.prepare(LIVE_PLACE_SQL).all(workspace.id, workspace.teamId, workspace.workerId) as Row[])
+    .map(toWorkspace)
+    .filter((peer) => normalizePath(peer.path) === path);
+}
+
+/**
+ * 历史重复行保护：工作空间自己在同一位置还有别的活跃登记时，认领 / 转移都可能让两条重复登记
+ * 继续分属不同项目，所以先显式拒绝；不替调用方挑一条，也不改动任何一行。
+ */
+function ambiguousIn(db: DatabaseSync, workspaceId: WorkspaceId): Workspace[] | null {
+  const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(workspaceId) as Row | undefined;
+  if (!row) return null;
+  const workspace = toWorkspace(row);
+  if (workspace.kind !== 'long_lived' || workspace.state === 'removed') return null;
+  const peers = placePeersIn(db, workspace);
+  return peers.length > 0 ? [workspace, ...peers] : null;
+}
+
+/**
+ * #233：检查与写入必须在调用方的 BEGIN IMMEDIATE 里。同项目 → owned（保留原元数据）；
+ * 别的项目 → conflict（现任不动）；空 → 新认领。绝不 REPLACE。
+ * 导出让 store.ts 把「建项目 + 认领已有工作空间」放进同一次事务。
+ */
+export function claimWorkspaceInTransaction(db: DatabaseSync, c: WorkspaceClaim): WorkspaceClaimOutcome {
+  const current = linksIn(db, c.workspaceId);
+  const ambiguous = ambiguousIn(db, c.workspaceId);
+  if (ambiguous) {
+    // 已经是这个项目、且没有别的认领：幂等成功，不算「建立新归属」。
+    if (current.length === 1 && current[0]!.projectId === c.projectId) return { status: 'owned', link: current[0]! };
+    return { status: 'ambiguous', candidates: ambiguous };
+  }
+  const same = current.find((l) => l.projectId === c.projectId);
+  if (same) return { status: 'owned', link: same };
+  if (current.length > 0) return { status: 'conflict', owner: current[0]! };
+  const link: ProjectWorkspaceLink = {
+    projectId: c.projectId,
+    workspaceId: c.workspaceId,
+    linkedBy: c.linkedBy,
+    linkedAt: c.linkedAt
+  };
+  insertLinkIn(db, link);
+  return { status: 'claimed', link };
+}
+
 export function createWorkspaceRepository(db: DatabaseSync): WorkspaceRepository {
   const upsert = db.prepare(
     `INSERT INTO workspaces(${WORKSPACE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ` +
@@ -136,40 +220,140 @@ export function createWorkspaceRepository(db: DatabaseSync): WorkspaceRepository
     "SELECT * FROM workspaces WHERE (kind = 'temporary' AND project_id = ?) " +
       'OR id IN (SELECT workspace_id FROM project_workspaces WHERE project_id = ?) ORDER BY created_at ASC'
   );
-  const exists = db.prepare('SELECT 1 FROM workspaces WHERE id = ?');
   const longLived = db.prepare("SELECT * FROM workspaces WHERE kind = 'long_lived' AND state <> 'removed' ORDER BY created_at ASC");
-  const link = db.prepare('INSERT OR REPLACE INTO project_workspaces(project_id, workspace_id, linked_by, linked_at) VALUES (?, ?, ?, ?)');
+  const deleteOtherLinks = db.prepare('DELETE FROM project_workspaces WHERE workspace_id = ? AND project_id <> ?');
   const unlink = db.prepare('DELETE FROM project_workspaces WHERE project_id = ? AND workspace_id = ?');
-  const linksOf = db.prepare('SELECT * FROM project_workspaces WHERE workspace_id = ? ORDER BY linked_at ASC');
   const byTask = db.prepare('SELECT * FROM workspaces WHERE owner_task_id = ? ORDER BY created_at ASC');
   const temporaries = db.prepare("SELECT * FROM workspaces WHERE kind = 'temporary' AND state <> 'removed' ORDER BY created_at ASC");
   const onMachine = db.prepare("SELECT * FROM workspaces WHERE worker_id IS ? AND state <> 'removed' ORDER BY created_at ASC");
+
+  /**
+   * #233：只有当前「其他认领者」与调用方观察到的 expectedProjectIds 完全一致才替换；
+   * 不一致 → stale，一行都不改。这样转移期间别人的新认领不会被覆盖。
+   */
+  const transferInTx = (t: WorkspaceTransfer): WorkspaceTransferOutcome => {
+    const current = linksIn(db, t.workspaceId);
+    const others = current.filter((l) => l.projectId !== t.projectId);
+    const expected = [...new Set(t.expectedProjectIds)].map(String).sort();
+    const actual = others.map((l) => String(l.projectId)).sort();
+    const sameSet = expected.length === actual.length && expected.every((id, i) => id === actual[i]);
+    if (!sameSet) return { status: 'stale', owner: others[0] ?? null };
+    const existing = current.find((l) => l.projectId === t.projectId);
+    if (others.length === 0) {
+      if (existing) return { status: 'owned', link: existing };
+      insertLinkIn(db, { projectId: t.projectId, workspaceId: t.workspaceId, linkedBy: t.linkedBy, linkedAt: t.linkedAt });
+      return {
+        status: 'transferred',
+        link: { projectId: t.projectId, workspaceId: t.workspaceId, linkedBy: t.linkedBy, linkedAt: t.linkedAt }
+      };
+    }
+    deleteOtherLinks.run(t.workspaceId, t.projectId);
+    if (existing) return { status: 'transferred', link: existing };
+    insertLinkIn(db, { projectId: t.projectId, workspaceId: t.workspaceId, linkedBy: t.linkedBy, linkedAt: t.linkedAt });
+    return {
+      status: 'transferred',
+      link: { projectId: t.projectId, workspaceId: t.workspaceId, linkedBy: t.linkedBy, linkedAt: t.linkedAt }
+    };
+  };
+
+  const uniqueViolation = (error: unknown): boolean =>
+    error instanceof Error && /UNIQUE constraint failed/i.test(error.message);
+
   return {
-    async save(w) {
-      const fresh = exists.get(w.id) === undefined;
-      upsert.run(
-        w.id, w.projectId, w.teamId, w.repoUrl, w.workerId, w.path, w.kind, w.source, w.baseWorkspaceId, w.branch, w.ownerTaskId, w.label,
-        w.isGit === null ? null : w.isGit ? 1 : 0, w.state, w.keptReason, w.setup ? JSON.stringify(w.setup) : null, w.groupId ?? null,
-        w.createdAt, w.updatedAt
-      );
-      if (fresh && w.kind === 'long_lived' && w.projectId !== null) link.run(w.projectId, w.id, null, w.createdAt);
+    async save(w): Promise<WorkspaceSaveOutcome> {
+      // 目录唯一性检查 + 写入 + 自动关联都在同一个 BEGIN IMMEDIATE 里（#233 / ADR 0026 §6）。
+      return inTransaction(db, () => {
+        const target: Workspace = { ...w, path: normalizePath(w.path) };
+        const currentRow = byId.get(target.id) as Row | undefined;
+        const previous = currentRow === undefined ? null : toWorkspace(currentRow);
+        const fresh = previous === null;
+        const moved =
+          previous !== null &&
+          (previous.teamId !== target.teamId ||
+            previous.workerId !== target.workerId ||
+            normalizePath(previous.path) !== target.path);
+        const liveLongLived = target.kind === 'long_lived' && target.state !== 'removed';
+        const wasLiveLongLived = previous !== null && previous.kind === 'long_lived' && previous.state !== 'removed';
+        // 除了新建 / 换目录，已删除或临时登记在同一路径「复活」成长期也要过唯一性检查，
+        // 否则会悄悄多出一条活跃长期登记。
+        const becomingLive = liveLongLived && !wasLiveLongLived;
+        if (liveLongLived && (fresh || moved || becomingLive)) {
+          const peers = placePeersIn(db, target);
+          if (peers.length > 1) return { status: 'ambiguous', candidates: peers };
+          const peer = peers[0];
+          // 同位置已经有唯一登记：复用现任，不插入第二条，也不改现任的元数据 / 认领。
+          if (fresh && peer) return { status: 'existing', workspace: peer };
+          // 已有登记换目录 / 复活，撞上别的登记：不静默改写，让人显式处理。
+          if (!fresh && peer) return { status: 'place-taken', existing: peer };
+        }
+        let projectId = target.projectId;
+        if (fresh && target.kind === 'long_lived' && target.projectId !== null) {
+          const outcome = claimWorkspaceInTransaction(db, { projectId: target.projectId, workspaceId: target.id, linkedBy: null, linkedAt: target.createdAt });
+          if (outcome.status === 'conflict') {
+            // 已有别的项目认领：这行按团队级工作空间保存，不留下和关联表矛盾的 project_id。
+            projectId = null;
+            console.warn(
+              `[storage] 工作空间 ${target.id} 已属于项目 ${outcome.owner.projectId}，保存时不再关联到项目 ${target.projectId}`
+            );
+          }
+        }
+        upsert.run(
+          target.id, projectId, target.teamId, target.repoUrl, target.workerId, target.path, target.kind, target.source, target.baseWorkspaceId,
+          target.branch, target.ownerTaskId, target.label, target.isGit === null ? null : target.isGit ? 1 : 0, target.state, target.keptReason,
+          target.setup ? JSON.stringify(target.setup) : null, target.groupId ?? null, target.createdAt, target.updatedAt
+        );
+        // 自动认领冲突时 projectId 可能被置空，返回真正落库的行，调用方看到的和库里一致。
+        return { status: 'saved', workspace: toWorkspace(byId.get(target.id) as Row) };
+      });
     },
     async longLived() {
       return (longLived.all() as Row[]).map(toWorkspace);
     },
-    async link(l) {
-      link.run(l.projectId, l.workspaceId, l.linkedBy, l.linkedAt);
+    async claim(c) {
+      try {
+        return inTransaction(db, () => {
+          const ambiguous = ambiguousIn(db, c.workspaceId);
+          if (ambiguous) {
+            // 已经是这个项目、且没有别的认领：幂等成功，不算「建立新归属」。
+            const current = linksIn(db, c.workspaceId);
+            if (current.length === 1 && current[0]!.projectId === c.projectId) return { status: 'owned', link: current[0]! };
+            return { status: 'ambiguous', candidates: ambiguous };
+          }
+          return claimWorkspaceInTransaction(db, c);
+        });
+      } catch (error) {
+        if (!uniqueViolation(error)) throw error;
+        // 唯一索引兜底：事务已回滚，重新读取现任（另一个连接刚刚抢先写入）。
+        const current = linksIn(db, c.workspaceId);
+        const same = current.find((l) => l.projectId === c.projectId);
+        if (same) return { status: 'owned', link: same };
+        if (current.length > 0) return { status: 'conflict', owner: current[0]! };
+        throw error;
+      }
+    },
+    async transfer(t) {
+      try {
+        return inTransaction(db, () => {
+          const ambiguous = ambiguousIn(db, t.workspaceId);
+          if (ambiguous) {
+            // 当前只有目标项目一个认领：转移是空操作，允许幂等返回，不借机改任何行。
+            const current = linksIn(db, t.workspaceId);
+            if (current.length === 1 && current[0]!.projectId === t.projectId) return { status: 'owned', link: current[0]! };
+            return { status: 'ambiguous', candidates: ambiguous };
+          }
+          return transferInTx(t);
+        });
+      } catch (error) {
+        if (!uniqueViolation(error)) throw error;
+        const current = linksIn(db, t.workspaceId);
+        return { status: 'stale', owner: current.find((l) => l.projectId !== t.projectId) ?? null };
+      }
     },
     async unlink(projectId, workspaceId) {
       unlink.run(projectId, workspaceId);
     },
     async linksOf(workspaceId) {
-      return (linksOf.all(workspaceId) as Row[]).map((row) => ({
-        projectId: asProjectId(row['project_id'] as string),
-        workspaceId: asWorkspaceId(row['workspace_id'] as string),
-        linkedBy: (row['linked_by'] as string | null) ?? null,
-        linkedAt: row['linked_at'] as number
-      }));
+      return linksIn(db, workspaceId);
     },
     async byId(id) {
       const row = byId.get(id) as Row | undefined;
@@ -325,26 +509,92 @@ export function migrateSharedWorkspaces(db: DatabaseSync, now: number = Date.now
 
 /**
  * 独占归属（2026-11）：一个长期工作空间同一时间只能被一个项目认领。
- * 1. 兜底去重：每个 workspace_id 只保留 `linked_at` 最早的一行（老库 / 合并迁移可能留下多条）；
+ * 1. 兜底去重：每个 workspace_id 只保留一条认领。优先保留「还活着」的项目（projects.deleted_at IS NULL），
+ *    其次是软删除但仍存在的项目，最后才是项目已不存在的悬空认领；同一档内沿用老规则（linked_at 最早、
+ *    project_id 字典序最小），保证老库重复跑的结果稳定；
  * 2. 建 `project_workspaces(workspace_id)` 唯一索引，之后由数据库兜底。
  * 幂等：重复跑没有重复行就什么都不删，索引 IF NOT EXISTS。
+ *
+ * 被删的每条认领都在同一事务里写 audit_log（actor=system，action=workspace.owner.reconcile），
+ * 带 workspace_id / project_id / linked_at / survivor 及两边的 live|deleted|dangling 分类。事务回滚时
+ * 审计一起回滚。只有调用前 audit_log 还不存在（裸 DatabaseSync 的单测）时才退化为提交后的结构化 console
+ * 日志——日志只在 COMMIT 之后输出，不会记录未落地的清理。
  */
 export function ensureSingleWorkspaceOwner(db: DatabaseSync): number {
   let removed = 0;
+  const records: {
+    workspaceId: string;
+    projectId: string;
+    linkedAt: number;
+    projectState: 'live' | 'deleted' | 'dangling';
+    survivorProjectId: string;
+    survivorLinkedAt: number;
+    survivorState: 'live' | 'deleted' | 'dangling';
+  }[] = [];
+  const auditReady =
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'audit_log'").get() !== undefined;
   db.exec('BEGIN IMMEDIATE');
   try {
     const dupes = db
       .prepare('SELECT workspace_id FROM project_workspaces GROUP BY workspace_id HAVING COUNT(*) > 1')
       .all() as Row[];
+    const claimsOf = db.prepare(
+      'SELECT pw.project_id, pw.linked_at, ' +
+        'CASE WHEN p.id IS NULL THEN 2 WHEN p.deleted_at IS NOT NULL THEN 1 ELSE 0 END AS rank ' +
+        'FROM project_workspaces pw LEFT JOIN projects p ON p.id = pw.project_id ' +
+        'WHERE pw.workspace_id = ? ORDER BY rank ASC, pw.linked_at ASC, pw.project_id ASC'
+    );
+    const removeClaim = db.prepare('DELETE FROM project_workspaces WHERE workspace_id = ? AND project_id = ?');
+    // 只写老 schema 就有的列：老库的 audit_log 可能还没有 ip / team_id。
+    const insertAudit = auditReady
+      ? db.prepare(
+          'INSERT INTO audit_log(id, actor_id, actor_email, action, target, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        )
+      : null;
+    const stateOf = (rank: number): 'live' | 'deleted' | 'dangling' =>
+      rank === 0 ? 'live' : rank === 1 ? 'deleted' : 'dangling';
     for (const dupe of dupes) {
       const workspaceId = dupe['workspace_id'] as string;
-      const keep = db
-        .prepare('SELECT project_id FROM project_workspaces WHERE workspace_id = ? ORDER BY linked_at ASC, project_id ASC LIMIT 1')
-        .get(workspaceId) as Row | undefined;
-      if (keep === undefined) continue;
-      removed += Number(
-        db.prepare('DELETE FROM project_workspaces WHERE workspace_id = ? AND project_id <> ?').run(workspaceId, keep['project_id'] as string).changes
-      );
+      const claims = claimsOf.all(workspaceId) as Row[];
+      const survivor = claims[0];
+      if (survivor === undefined) continue;
+      const survivorProjectId = survivor['project_id'] as string;
+      const survivorLinkedAt = Number(survivor['linked_at']);
+      const survivorState = stateOf(Number(survivor['rank']));
+      for (const claim of claims.slice(1)) {
+        const projectId = claim['project_id'] as string;
+        const linkedAt = Number(claim['linked_at']);
+        const projectState = stateOf(Number(claim['rank']));
+        const changes = Number(removeClaim.run(workspaceId, projectId).changes);
+        if (changes === 0) continue;
+        removed += changes;
+        const record = {
+          workspaceId,
+          projectId,
+          linkedAt,
+          projectState,
+          survivorProjectId,
+          survivorLinkedAt,
+          survivorState
+        };
+        records.push(record);
+        insertAudit?.run(
+          globalThis.crypto.randomUUID(),
+          'system',
+          '',
+          'workspace.owner.reconcile',
+          workspaceId,
+          JSON.stringify({
+            projectId,
+            linkedAt,
+            projectState,
+            survivorProjectId,
+            survivorLinkedAt,
+            survivorState
+          }),
+          Date.now()
+        );
+      }
     }
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS project_workspaces_workspace ON project_workspaces(workspace_id)');
     db.exec('DROP INDEX IF EXISTS project_workspaces_by_workspace');
@@ -354,7 +604,14 @@ export function ensureSingleWorkspaceOwner(db: DatabaseSync): number {
     throw error;
   }
   if (removed > 0) {
-    console.log(`[storage] 工作空间独占归属迁移：清理了 ${removed} 条重复认领，每个目录只保留最早关联的项目`);
+    if (auditReady) {
+      console.log(
+        `[storage] 工作空间独占归属迁移：清理了 ${removed} 条重复认领，每个目录只保留一条认领（优先 live 项目，audit_log action=workspace.owner.reconcile）`
+      );
+    } else {
+      // 没有 audit_log 的裸库：提交后逐条输出，格式与审计 detail 一致，便于直接检索。
+      for (const record of records) console.log(`[storage] workspace.owner.reconcile ${JSON.stringify(record)}`);
+    }
   }
   return removed;
 }

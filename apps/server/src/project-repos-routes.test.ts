@@ -5,8 +5,19 @@ import { createAccessPolicy, repoTokenKey } from '@agent-hub/domain';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { authHeaderFor } from './repo-auth.ts';
+import { projectDto } from './project-dto.ts';
 
 const PASSWORD = 'long enough pw';
+
+test('项目出站只把自己的标准密钥名标为已配置', () => {
+  const one = { id: 'repo_12345678', name: 'api', url: 'https://example.test/api.git', defaultBranch: null };
+  for (const tokenSecret of ['repo-git:repo_12345678', repoTokenKey('other', one.id), repoTokenKey('mine', one.id)]) {
+    const dto = projectDto({ id: 'mine', repos: [{ ...one, tokenSecret }] }).repos[0]!;
+    assert.equal(dto.hasToken, tokenSecret === repoTokenKey('mine', one.id));
+    assert.equal('tokenSecret' in dto, false);
+    assert.equal('tokenHint' in dto, !dto.hasToken);
+  }
+});
 
 /** 和 access.test.ts 同一个 harness：真的 createAccessPolicy + cookie jar，外加审计记录。 */
 function harness() {
@@ -229,7 +240,7 @@ test('PATCH /api/projects/:id：credential 进密钥箱，响应只有 hasToken'
   assert.equal(JSON.stringify(res.body).includes('glpat-abc'), false);
   assert.equal(JSON.stringify(res.body).includes('repo-git:'), false, '密钥名也不出去');
 
-  const key = repoTokenKey(repo.id);
+  const key = repoTokenKey(project.id, repo.id);
   assert.equal(vaultRows(world.deps).get(key), 'glpat-abc');
 
   // 清单接口也走同一套投影
@@ -247,7 +258,7 @@ test('PATCH /api/projects/:id：不带 credential 不清除，空串清除', asy
     patch({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git', credential: 'glpat-abc' }] })
   );
   assert.equal(first.status, 200, JSON.stringify(first.body));
-  const key = repoTokenKey(first.body.repos[0].id);
+  const key = repoTokenKey(project.id, first.body.repos[0].id);
 
   // 只改别的字段：令牌不动
   const again = await david(`/api/projects/${project.id}`, patch({ repos: [{ id: first.body.repos[0].id, name: 'api', url: 'https://gitlab.test/me/api.git', defaultBranch: 'main' }] }));
@@ -279,13 +290,13 @@ test('PATCH /api/projects/:id：从清单里移除的仓库，密钥一起删', 
   );
   assert.equal(both.status, 200, JSON.stringify(both.body));
   const [api, web] = both.body.repos;
-  assert.equal(vaultRows(world.deps).has(repoTokenKey(web.id)), true);
+  assert.equal(vaultRows(world.deps).has(repoTokenKey(project.id, web.id)), true);
 
   const removed = await david(`/api/projects/${project.id}`, patch({ repos: [{ id: api.id, name: 'api', url: 'https://gitlab.test/me/api.git' }] }));
   assert.equal(removed.status, 200, JSON.stringify(removed.body));
   assert.deepEqual(removed.body.repos.map((repo: { name: string }) => repo.name), ['api']);
-  assert.equal(vaultRows(world.deps).has(repoTokenKey(web.id)), false, '移除的仓库密钥要回收');
-  assert.equal(vaultRows(world.deps).get(repoTokenKey(api.id)), 'glpat-api');
+  assert.equal(vaultRows(world.deps).has(repoTokenKey(project.id, web.id)), false, '移除的仓库密钥要回收');
+  assert.equal(vaultRows(world.deps).get(repoTokenKey(project.id, api.id)), 'glpat-api');
 });
 
 test('POST /api/projects/:id/repos/check：credential 透传给 git，响应用已存的令牌时也一样', async () => {
@@ -299,7 +310,7 @@ test('POST /api/projects/:id/repos/check：credential 透传给 git，响应用�
     post({ repos: [{ name: 'api', url: target, defaultBranch: 'main', credential: 'glpat-live' }] })
   );
   assert.equal(fresh.status, 200, JSON.stringify(fresh.body));
-  assert.deepEqual(world.git.authCalls, [`local:check_repo:${target}:${authHeaderFor('glpat-live').header}`]);
+  assert.deepEqual(world.git.authCalls, [`local:check_repo:${target}:${authHeaderFor('glpat-live', target).header}`]);
 
   // 2）已保存的令牌（请求里没带 credential）
   const saved = await david(`/api/projects/${project.id}`, patch({ repos: [{ name: 'api', url: target, credential: 'glpat-saved' }] }));
@@ -307,7 +318,7 @@ test('POST /api/projects/:id/repos/check：credential 透传给 git，响应用�
   world.git.authCalls.length = 0;
   const check = await david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ name: 'api', url: target, defaultBranch: 'main' }] }));
   assert.equal(check.status, 200, JSON.stringify(check.body));
-  assert.deepEqual(world.git.authCalls, [`local:check_repo:${target}:${authHeaderFor('glpat-saved').header}`]);
+  assert.deepEqual(world.git.authCalls, [`local:check_repo:${target}:${authHeaderFor('glpat-saved', target).header}`]);
   // 审计与响应里都不该出现令牌
   assert.equal(JSON.stringify(check.body).includes('glpat'), false);
 

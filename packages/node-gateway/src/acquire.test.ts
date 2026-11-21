@@ -1,13 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BUILTIN_CHROMIUM, isPlaywrightMcp, withExecutableArg, withPlaywrightExecutable, type AcquisitionStrategy } from '@agent-hub/domain';
 import {
+  binarySupportsPlatform,
   findLocatedBinary,
   listSystemBinaryCandidates,
   runAcquisitionStrategies,
+  trustedRecordedAcquisition,
   verifyBinary,
   type AcquireHooks,
   type CommandRunner
@@ -117,13 +119,23 @@ test('验证使用独立 user-data-dir，不把 HOME 当用户配置', async () 
   }
 });
 
+test('候选平台过滤：Windows / Linux / macOS 标记互斥，无标记的通用路径仍保留', () => {
+  assert.equal(binarySupportsPlatform('chrome-win64/chrome.exe', 'win32'), true);
+  assert.equal(binarySupportsPlatform('chrome-win64/chrome.exe', 'linux'), false);
+  assert.equal(binarySupportsPlatform('chrome-linux/chrome', 'linux'), true);
+  assert.equal(binarySupportsPlatform('chrome-linux/chrome', 'win32'), false);
+  assert.equal(binarySupportsPlatform('chrome-mac/Chromium', 'darwin'), true);
+  assert.equal(binarySupportsPlatform('chrome-mac/Chromium', 'win32'), false);
+  assert.equal(binarySupportsPlatform('vendor/bin/chrome', 'win32'), true, '无平台标记的候选仍按当前平台检查文件');
+});
+
 test('定位：认 chromium 与 chrome-headless-shell，且互不误认', () => {
   const f = isolated();
   try {
     mkdirSync(join(f.browsers, 'chromium-1234', 'chrome-linux'), { recursive: true });
-    writeFileSync(join(f.browsers, 'chromium-1234', 'chrome-linux', 'chrome'), 'x');
+    writeFileSync(join(f.browsers, 'chromium-1234', 'chrome-linux', 'chrome'), 'x', { mode: 0o755 });
     mkdirSync(join(f.browsers, 'chromium_headless_shell-5678', 'chrome-headless-shell-linux64'), { recursive: true });
-    writeFileSync(join(f.browsers, 'chromium_headless_shell-5678', 'chrome-headless-shell-linux64', 'chrome-headless-shell'), 'y');
+    writeFileSync(join(f.browsers, 'chromium_headless_shell-5678', 'chrome-headless-shell-linux64', 'chrome-headless-shell'), 'y', { mode: 0o755 });
     assert.equal(
       findLocatedBinary(f.browsers, PLAYWRIGHT.locate),
       join(f.browsers, 'chromium-1234', 'chrome-linux', 'chrome')
@@ -162,10 +174,10 @@ test('策略顺序：系统二进制可用则不下载；否则用户空间安�
     const plant = (kind: 'playwright' | 'headless-shell') => {
       if (kind === 'playwright') {
         mkdirSync(join(f.browsers, 'chromium-1', 'chrome-linux'), { recursive: true });
-        writeFileSync(join(f.browsers, 'chromium-1', 'chrome-linux', 'chrome'), 'x');
+        writeFileSync(join(f.browsers, 'chromium-1', 'chrome-linux', 'chrome'), 'x', { mode: 0o755 });
       } else {
         mkdirSync(join(f.browsers, 'chromium_headless_shell-1', 'chrome-headless-shell-linux64'), { recursive: true });
-        writeFileSync(join(f.browsers, 'chromium_headless_shell-1', 'chrome-headless-shell-linux64', 'chrome-headless-shell'), 'y');
+        writeFileSync(join(f.browsers, 'chromium_headless_shell-1', 'chrome-headless-shell-linux64', 'chrome-headless-shell'), 'y', { mode: 0o755 });
       }
     };
     const install = async (args: readonly string[]) => {
@@ -242,4 +254,83 @@ test('MCP 可执行路径改写：按 binding 的 executableArg 去掉旧值再�
     ['--foo', 'x', '--executable-path', '/opt/chrome']
   );
   assert.ok(!args.includes('/old'));
+});
+
+test('定位：符号链接逃出 locate 根目录、非常规文件、不可执行文件都不算命中', () => {
+  const f = isolated();
+  try {
+    const evil = join(f.bin, 'evil');
+    stub(evil);
+    mkdirSync(join(f.browsers, 'chromium-1', 'chrome-linux'), { recursive: true });
+    symlinkSync(evil, join(f.browsers, 'chromium-1', 'chrome-linux', 'chrome'));
+    assert.equal(findLocatedBinary(f.browsers, PLAYWRIGHT.locate), null, '不能跟到根目录外');
+
+    rmSync(join(f.browsers, 'chromium-1'), { recursive: true, force: true });
+    mkdirSync(join(f.browsers, 'chromium-1', 'chrome-linux'), { recursive: true });
+    writeFileSync(join(f.browsers, 'chromium-1', 'chrome-linux', 'chrome'), 'x', { mode: 0o644 });
+    assert.equal(findLocatedBinary(f.browsers, PLAYWRIGHT.locate), null, '不可执行不算');
+
+    rmSync(join(f.browsers, 'chromium-1'), { recursive: true, force: true });
+    mkdirSync(join(f.browsers, 'chromium-1', 'chrome-linux', 'chrome'), { recursive: true });
+    assert.equal(findLocatedBinary(f.browsers, PLAYWRIGHT.locate), null, '目录不算常规文件');
+  } finally {
+    f.dispose();
+  }
+});
+
+test('读侧复核：只接受能按内置策略定位到的可执行路径，其余旧元数据一律丢弃', () => {
+  const f = isolated();
+  try {
+    mkdirSync(join(f.browsers, 'chromium-1', 'chrome-linux'), { recursive: true });
+    const chrome = join(f.browsers, 'chromium-1', 'chrome-linux', 'chrome');
+    stub(chrome);
+    const located = { strategy: 'playwright', type: 'user-space-install', path: chrome, componentId: 'chromium' } as const;
+    const good = trustedRecordedAcquisition(located, BUILTIN_CHROMIUM.strategies, {
+      env: { HOME: f.home, PLAYWRIGHT_BROWSERS_PATH: f.browsers }
+    });
+    assert.equal(good?.path, chrome, '合法路径要 canonical 返回');
+    assert.equal(
+      trustedRecordedAcquisition(located, BUILTIN_CHROMIUM.strategies, {
+        env: { HOME: f.home, PLAYWRIGHT_BROWSERS_PATH: f.browsers },
+        platform: 'win32'
+      }),
+      null,
+      '别的平台的 locate 路径不能复用'
+    );
+
+    const outside = join(f.bin, 'evil');
+    stub(outside);
+    assert.equal(
+      trustedRecordedAcquisition({ ...located, path: outside }, BUILTIN_CHROMIUM.strategies, {
+        env: { HOME: f.home, PLAYWRIGHT_BROWSERS_PATH: f.browsers }
+      }),
+      null,
+      '不在内置 locate 布局里就丢弃'
+    );
+    assert.equal(trustedRecordedAcquisition({ ...located, path: 'relative/chrome' }, BUILTIN_CHROMIUM.strategies, { env: {} }), null);
+    assert.equal(trustedRecordedAcquisition({ ...located, strategy: 'guess' }, BUILTIN_CHROMIUM.strategies, { env: {} }), null);
+    assert.equal(trustedRecordedAcquisition({ ...located, type: 'lighter-variant' }, BUILTIN_CHROMIUM.strategies, { env: {} }), null);
+    assert.equal(trustedRecordedAcquisition(located, undefined, { env: {} }), null, '普通组件没有内置策略，不能当可执行路径');
+
+    // 系统二进制：必须真的在 PATH 候选里
+    const system = { ...SYSTEM, paths: [], names: ['chromium'] } as Extract<AcquisitionStrategy, { type: 'detect-system-binary' }>;
+    const systemChrome = join(f.bin, 'chromium');
+    stub(systemChrome);
+    const detected = trustedRecordedAcquisition(
+      { strategy: 'system', type: 'detect-system-binary', path: systemChrome, componentId: 'chromium' },
+      [system],
+      { env: { PATH: f.bin, HOME: f.home } }
+    );
+    assert.equal(detected?.path, systemChrome);
+    assert.equal(
+      trustedRecordedAcquisition(
+        { strategy: 'system', type: 'detect-system-binary', path: outside, componentId: 'chromium' },
+        [system],
+        { env: { PATH: f.bin, HOME: f.home } }
+      ),
+      null
+    );
+  } finally {
+    f.dispose();
+  }
 });

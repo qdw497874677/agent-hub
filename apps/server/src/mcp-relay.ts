@@ -20,6 +20,7 @@ import type { DomainError, McpOAuth, McpToolFilter, Result, ToolGateway } from '
 import { toolAllowed } from '@agent-hub/domain';
 import { createMcpServer } from './mcp-server.ts';
 import { createMcpOAuth, type McpOAuthClient } from './mcp-oauth.ts';
+import { defaultMcpEgress, type McpEgress } from './mcp-egress.ts';
 
 /** hub 代连一个远端 http MCP 时拿到的目标：连接信息 + 工具过滤 + 可选的 OAuth。 */
 export interface RemoteMcpTarget {
@@ -40,6 +41,8 @@ export interface McpRelayDeps {
   readonly remoteClients?: RemoteClients;
   /** OAuth token 缓存（测试可注入）；缺省每个 relay 自建一个。 */
   readonly oauth?: McpOAuthClient;
+  /** MCP 出口策略（测试可注入）；缺省用 hub 共享的安全出口。 */
+  readonly egress?: McpEgress;
 }
 
 /**
@@ -52,7 +55,13 @@ export interface RemoteClients {
   close(): Promise<void>;
 }
 
-export function createRemoteClients(): RemoteClients {
+export interface RemoteClientsOptions {
+  /** 测试或特殊宿主注入的出口；缺省用 hub 共享的安全出口。 */
+  readonly egress?: McpEgress;
+}
+
+export function createRemoteClients(options: RemoteClientsOptions = {}): RemoteClients {
+  const egress = options.egress ?? defaultMcpEgress();
   const clients = new Map<string, Promise<Client>>();
   const keyOf = (target: { url: string; headers: Record<string, string> }) =>
     createHash('sha256').update(JSON.stringify([target.url, Object.entries(target.headers).sort()])).digest('hex');
@@ -62,8 +71,17 @@ export function createRemoteClients(): RemoteClients {
       let client = clients.get(key);
       if (!client) {
         client = (async () => {
+          // 展开后的地址在用之前先校验；连接时再由 Agent.lookup 校验实际解析结果。
+          const checked = egress.checkUrl(target.url);
+          if (!checked.ok) throw new Error(checked.error.message);
+          egress.assertHeaders(target.headers);
           const created = new Client({ name: 'agent-hub-proxy', version: '1.0.0' });
-          await created.connect(new StreamableHTTPClientTransport(new URL(target.url), { requestInit: { headers: target.headers } }));
+          await created.connect(
+            new StreamableHTTPClientTransport(checked.value, {
+              requestInit: { headers: target.headers },
+              fetch: egress.fetch
+            })
+          );
           return created;
         })();
         clients.set(key, client);
@@ -214,7 +232,8 @@ function proxyServer(remote: RemoteClients, target: RemoteMcpTarget, oauth?: Mcp
  * 无状态（同 /mcp）：hub 重启不用记 MCP 会话。令牌不进日志。
  */
 export function serveMcpRelay(port: RpcPort, workerId: string, deps: McpRelayDeps): void {
-  const oauth = deps.oauth ?? createMcpOAuth();
+  const egress = deps.egress ?? defaultMcpEgress();
+  const oauth = deps.oauth ?? createMcpOAuth({ egress, fetch: egress.fetch });
   port.handle(mcpMessage, async ({ token, server, message }, { signal }) => {
     const grant = await deps.gateway.authenticate(token);
     if (!grant) throw new RpcFailure('forbidden', '工具令牌无效或已过期');
@@ -224,6 +243,14 @@ export function serveMcpRelay(port: RpcPort, workerId: string, deps: McpRelayDep
       if (!deps.remote || !deps.remoteClients) throw new RpcFailure('unavailable', '这个 hub 没开远端 MCP 代理');
       const target = await deps.remote(workerId, server, grant.sessionId);
       if (!target.ok) throw new RpcFailure('forbidden', target.error.message);
+      // 资产展开后的 URL / 头先过策略；真正连接时 Agent.lookup 还会校验 DNS 解析结果。
+      const checked = egress.checkUrl(target.value.url);
+      if (!checked.ok) throw new RpcFailure('forbidden', checked.error.message);
+      try {
+        egress.assertHeaders(target.value.headers);
+      } catch (error) {
+        throw new RpcFailure('forbidden', error instanceof Error ? error.message : 'MCP 请求头不合法');
+      }
       const remote = deps.remoteClients;
       const reply = await exchangeWith(() => proxyServer(remote, target.value, oauth), message as JSONRPCMessage, signal);
       return { message: reply as Record<string, unknown> | null };

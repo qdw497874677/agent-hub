@@ -1,4 +1,4 @@
-import type { AgentId, Seq, SessionId, TaskId, WorkspaceId, WorkspaceGroupId } from './ids.ts';
+import type { AgentId, ProjectId, Seq, SessionId, TaskId, WorkspaceId, WorkspaceGroupId } from './ids.ts';
 import { newSessionId } from './ids.ts';
 import { conflict, invalid, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
@@ -76,6 +76,11 @@ export interface Session {
    * 有值时 `workspaceId` 是 primary 成员的镜像；null / 缺省 = 单仓库会话。
    */
   readonly groupId?: WorkspaceGroupId | null;
+  /**
+   * 容器会话（`taskId === null`）创建时落定的来源项目；只用于授权，不允许后续改写。
+   * 缺省 / null = 任务会话或老数据：任务会话以任务为准，老容器会话只认组 / 临时空间等安全来源。
+   */
+  readonly originProjectId?: ProjectId | null;
   /** 谁开的这条会话（ADR 0017：说话 / 中断 / 换机继续默认只有他）。null = 老会话或系统开的。 */
   readonly createdBy?: string | null;
   /**
@@ -170,6 +175,11 @@ export interface DeriveSessionInput {
   readonly workspaceId?: WorkspaceId | null;
   /** 组合工作空间（多仓库）：有值时 workspaceId 是 primary 成员的镜像。 */
   readonly groupId?: WorkspaceGroupId | null;
+  /**
+   * 容器会话创建时**已验证**的项目，作为唯一可持久化的授权来源；任务会话不填（任务才是来源）。
+   * 一旦写入就不能改：工作空间之后挂到别的项目、组被删，都不影响出生时的来源。
+   */
+  readonly originProjectId?: ProjectId | null;
   readonly createdBy?: string | null;
   /** 开这条会话的 bot（按 id，不按名字）。人开的 / 老入口没有。 */
   readonly botId?: BotId | null;
@@ -209,6 +219,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     workerId: input.workerId ?? null,
     workspaceId: input.workspaceId ?? null,
     groupId: input.groupId ?? null,
+    ...(input.originProjectId == null ? {} : { originProjectId: input.originProjectId }),
     createdBy: input.createdBy ?? null,
     botId: input.botId ?? null,
     ...(input.assetIds == null ? {} : { assetIds: input.assetIds }),

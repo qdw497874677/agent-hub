@@ -8,6 +8,7 @@ import { inMemoryDeps } from '../testing/in-memory.ts';
 import type { GitHostApi, PullRequestLink, PullRequestRepository, GitHostTokenStore } from '../ports/pull-requests.ts';
 import type { RemotePullRequest } from '../ports/workspace-git.ts';
 import { cleanBranchName, compareUrl, githubRepoOf, parseGitText, templateGitText } from '../git-workflow.ts';
+import { newWorkspace } from '../workspace.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
@@ -88,8 +89,8 @@ async function world(opts: { token?: boolean; host?: Partial<GitHostApi>; writer
   return { ...w, svc, audits, prs, tokens, hostCalls, listedPrs, session: session.value, task: task.value, root, tick: (ms: number) => (clock += ms) };
 }
 
-const dirty = (branch: string, remoteUrl: string | null) => ({
-  isGit: true, branch, defaultBranch: 'main', remoteUrl, upstream: null, ahead: 0, head: 'h0',
+const dirty = (branch: string, remoteUrl: string | null, head = 'h0', defaultBranch: string | null = 'main') => ({
+  isGit: true, branch, defaultBranch, remoteUrl, upstream: null, ahead: 0, head,
   files: [{ path: 'src/login.ts', status: 'M' }, { path: 'new.txt', status: '??' }], patch: 'diff --git a/src/login.ts', truncated: false
 });
 
@@ -163,6 +164,22 @@ test('提交：要说明；没改动拒绝；写审计', async () => {
   assert.ok(!push.ok);
 });
 
+test('敏感文件改动仍进入 Git 工作流状态与提交门槛（#269）', async () => {
+  const w = await world();
+  const sensitive = {
+    ...dirty('feat/x', null),
+    files: [{ path: '.env', status: 'M' }],
+    patch: 'diff --git a/.env b/.env\n+SECRET=not-real-269'
+  };
+  w.git.previews.set(w.root, sensitive);
+  const state = await w.svc.state(null, w.session.id);
+  assert.ok(state.ok);
+  assert.deepEqual(state.value.files, sensitive.files);
+  const commit = await w.svc.run(null, w.session.id, { action: 'commit', message: 'fix: 保留敏感改动' });
+  assert.ok(commit.ok);
+  assert.equal(commit.value.committed, true);
+});
+
 test('开 PR：团队 token 优先；记工作日志、审计；同步拿到合并状态', async () => {
   const w = await world({ token: true });
   w.git.previews.set(w.root, dirty('feat/x', 'https://github.com/o/r.git'));
@@ -224,7 +241,7 @@ test('开 PR：token 失败 → gh；gh 也没有 → 只推送 + 链接', async
 test('按分支认领：只在 GitHub 上、head 是会话分支的 PR，打开任务后进列表（token 路径，#262）', async () => {
   const w = await world({ token: true });
   w.git.previews.set(w.root, dirty('feat/x', 'https://github.com/o/r.git'));
-  w.listedPrs.push({ repo: 'o/r', head: 'feat/x', pr: { number: 42, url: 'https://github.com/o/r/pull/42', state: 'open', headSha: 'abc', mergedAt: null, base: 'main' } });
+  w.listedPrs.push({ repo: 'o/r', head: 'feat/x', pr: { number: 42, url: 'https://github.com/o/r/pull/42', state: 'open', headSha: 'h0', mergedAt: null, base: 'main', repo: 'o/r', headRef: 'feat/x' } });
   const r = await w.svc.syncTask(null, w.task.id);
   assert.ok(r.ok);
   assert.equal(r.value.length, 1);
@@ -260,7 +277,7 @@ test('按分支认领：只在 GitHub 上、head 是会话分支的 PR，打开�
 test('按分支认领：没 token 用 gh；查不到不把列表打挂，原因进工作日志', async () => {
   // gh 可用：认领 gh 查到的 PR（列表没带 base，回落 main）
   const w = await world();
-  w.git.gh = { next: 3, state: 'open', listed: [{ number: 5, url: 'https://github.com/o/r/pull/5', state: 'open', headSha: 'abc', mergedAt: null }] };
+  w.git.gh = { next: 3, state: 'open', listed: [{ number: 5, url: 'https://github.com/o/r/pull/5', state: 'open', headSha: 'h0', mergedAt: null, repo: 'o/r', headRef: 'feat/y' }] };
   w.git.previews.set(w.root, dirty('feat/y', 'https://github.com/o/r.git'));
   const r = await w.svc.syncTask(null, w.task.id);
   assert.ok(r.ok);
@@ -279,6 +296,118 @@ test('按分支认领：没 token 用 gh；查不到不把列表打挂，原因�
   assert.equal(listed.value[0]?.number, 1);
   const log = await v.deps.workLog.list(v.task.id, { limit: 50 });
   assert.ok(log.some((e) => e.body.includes('按分支找已有 PR')));
+});
+
+test('按分支认领：同仓库同分支、HEAD 不同的两条任务不串线；仓库大小写不敏感（#269）', async () => {
+  const w = await world({ token: true });
+  // origin 的大小写就是权威值；PR 里的 owner/name 大小写不同也算同一个仓库
+  w.git.previews.set(w.root, dirty('feat/x', 'https://github.com/O/R.git', 'h1'));
+  w.listedPrs.push({ repo: 'O/R', head: 'feat/x', pr: { number: 42, url: 'https://github.com/o/r/pull/42', state: 'open', headSha: 'h1', mergedAt: null, base: 'main', repo: 'o/r', headRef: 'feat/x' } });
+  const one = await w.svc.syncTask(null, w.task.id);
+  assert.ok(one.ok);
+  assert.deepEqual(one.value.map((link) => link.number), [42]);
+  assert.equal(one.value[0]?.repo, 'O/R');
+
+  // 另一个任务：同一 owner/repo、同一分支名，checkout 的 HEAD 是 h2 → 不能认领 head 为 h1 的 PR
+  const task2 = await createTaskUseCase(w.deps, { projectId: w.task.projectId, title: '另一个任务' });
+  assert.ok(task2.ok);
+  const ws2 = newWorkspace({ projectId: w.task.projectId, workerId: null, path: '/tmp/demo-2', kind: 'temporary', ownerTaskId: task2.value.id, source: 'worktree', branch: 'feat/x', repoUrl: 'https://github.com/o/r.git', now: 1 });
+  assert.ok(ws2.ok);
+  await w.deps.workspaces.save(ws2.value);
+  const session2 = await deriveSessionUseCase(w.deps, { taskId: task2.value.id, agentId: 'fake', model: 'm1', workspaceId: ws2.value.id });
+  assert.ok(session2.ok);
+  w.git.previews.set('/tmp/demo-2', dirty('feat/x', 'https://github.com/o/r.git', 'h2'));
+
+  const other = await w.svc.syncTask(null, task2.value.id);
+  assert.ok(other.ok);
+  assert.equal(other.value.length, 0);
+  assert.equal((await w.prs.byTask(task2.value.id)).length, 0);
+  assert.equal((await w.prs.byTask(w.task.id)).length, 1);
+});
+
+test('按分支认领：同一任务的两个 checkout 同仓库同分支、HEAD 不同，后一个仍能认领（#269）', async () => {
+  const w = await world({ token: true });
+  // 会话工作的 checkout 是 h1；另一个同任务工作空间是同一分支的 h2
+  w.git.previews.set(w.root, dirty('feat/x', 'https://github.com/o/r.git', 'h1'));
+  const ws2 = newWorkspace({ projectId: w.task.projectId, workerId: null, path: '/tmp/demo-2', kind: 'temporary', ownerTaskId: w.task.id, source: 'worktree', branch: 'feat/x', repoUrl: 'https://github.com/o/r.git', now: 1 });
+  assert.ok(ws2.ok);
+  await w.deps.workspaces.save(ws2.value);
+  w.git.previews.set('/tmp/demo-2', dirty('feat/x', 'https://github.com/o/r.git', 'h2'));
+  // 非匹配的 h2 候选先被扫到，不能把后面 h1 的匹配候选去重掉
+  w.listedPrs.push({ repo: 'o/r', head: 'feat/x', pr: { number: 7, url: 'https://github.com/o/r/pull/7', state: 'open', headSha: 'h1', mergedAt: null, base: 'main', repo: 'o/r', headRef: 'feat/x' } });
+  const r = await w.svc.syncTask(null, w.task.id);
+  assert.ok(r.ok);
+  assert.deepEqual(r.value.map((link) => [link.number, link.headSha]), [[7, 'h1']]);
+});
+
+test('按分支认领：别的仓库同号 PR 不会挡住本仓库的 PR（#269）', async () => {
+  const w = await world({ token: true });
+  // 已有一条别的仓库的 #42：编号只在仓库内唯一，不能据此跳过本仓库的 #42
+  await w.prs.save({ id: 'p0', taskId: w.task.id, workspaceId: null, sessionId: w.session.id, provider: 'github', via: 'gh', repo: 'other/r', number: 42, url: 'https://github.com/other/r/pull/42', branch: 'feat/other', base: 'main', state: 'open', headSha: 'zzz', mergedAt: null, createdBy: 'u', createdAt: 1, lastSyncedAt: 1000 });
+  w.git.previews.set(w.root, dirty('feat/x', 'https://github.com/o/r.git'));
+  w.listedPrs.push({ repo: 'o/r', head: 'feat/x', pr: { number: 42, url: 'https://github.com/o/r/pull/42', state: 'open', headSha: 'h0', mergedAt: null, base: 'main', repo: 'o/r', headRef: 'feat/x' } });
+  const r = await w.svc.syncTask(null, w.task.id);
+  assert.ok(r.ok);
+  assert.deepEqual(r.value.map((link) => [link.repo, link.number]).sort(), [['o/r', 42], ['other/r', 42]]);
+  assert.equal((await w.prs.byTask(w.task.id)).length, 2);
+});
+
+test('按分支认领：fork / 分支名不精确 / 老响应缺 repo·headRef 都不认（#269）', async () => {
+  const w = await world({ token: true });
+  w.git.previews.set(w.root, dirty('feat/x', 'https://github.com/o/r.git'));
+  const url = (n: number) => `https://github.com/o/r/pull/${n}`;
+  w.listedPrs.push(
+    // fork 的 PR：head 仓库不是本任务的 origin
+    { repo: 'o/r', head: 'feat/x', pr: { number: 1, url: url(1), state: 'open', headSha: 'h0', mergedAt: null, base: 'main', repo: 'someone/r', headRef: 'feat/x' } },
+    // 同名近似分支，不是当前检出的那一条
+    { repo: 'o/r', head: 'feat/x', pr: { number: 2, url: url(2), state: 'open', headSha: 'h0', mergedAt: null, base: 'main', repo: 'o/r', headRef: 'feat/x-copy' } },
+    // 老 Worker 的响应：没有 repo / headRef，无法证明 head 就是这次 checkout
+    { repo: 'o/r', head: 'feat/x', pr: { number: 3, url: url(3), state: 'open', headSha: 'h0', mergedAt: null, base: 'main' } }
+  );
+  const r = await w.svc.syncTask(null, w.task.id);
+  assert.ok(r.ok);
+  assert.equal(r.value.length, 0);
+  assert.equal((await w.prs.byTask(w.task.id)).length, 0);
+});
+
+test('按分支认领：已关闭 / 已合并的 PR 永不自动认领（#269）', async () => {
+  const w = await world({ token: true });
+  w.git.previews.set(w.root, dirty('feat/x', 'https://github.com/o/r.git'));
+  w.listedPrs.push(
+    { repo: 'o/r', head: 'feat/x', pr: { number: 8, url: 'https://github.com/o/r/pull/8', state: 'merged', headSha: 'h0', mergedAt: 5, base: 'main', repo: 'o/r', headRef: 'feat/x' } },
+    { repo: 'o/r', head: 'feat/x', pr: { number: 9, url: 'https://github.com/o/r/pull/9', state: 'closed', headSha: 'h0', mergedAt: null, base: 'main', repo: 'o/r', headRef: 'feat/x' } }
+  );
+  const r = await w.svc.syncTask(null, w.task.id);
+  assert.ok(r.ok);
+  assert.equal(r.value.length, 0);
+  assert.equal((await w.prs.byTask(w.task.id)).length, 0);
+});
+
+test('按分支认领：默认分支上的 checkout 不认领；base 只用 PR 报的或 preview 的 defaultBranch（#269）', async () => {
+  // 默认分支是 trunk：即使 GitHub 上有同名 PR 也不认
+  const w = await world({ token: true });
+  w.git.previews.set(w.root, dirty('trunk', 'https://github.com/o/r.git', 'h0', 'trunk'));
+  w.listedPrs.push({ repo: 'o/r', head: 'trunk', pr: { number: 6, url: 'https://github.com/o/r/pull/6', state: 'open', headSha: 'h0', mergedAt: null, base: 'trunk', repo: 'o/r', headRef: 'trunk' } });
+  const onDefault = await w.svc.syncTask(null, w.task.id);
+  assert.ok(onDefault.ok);
+  assert.equal(onDefault.value.length, 0);
+  assert.ok(!w.hostCalls.some((call) => call.startsWith('list:')));
+
+  // PR 没报 base、preview 也不知道默认分支 → 跳过，不回落写死 main
+  const v = await world({ token: true });
+  v.git.previews.set(v.root, dirty('feat/x', 'https://github.com/o/r.git', 'h0', null));
+  v.listedPrs.push({ repo: 'o/r', head: 'feat/x', pr: { number: 4, url: 'https://github.com/o/r/pull/4', state: 'open', headSha: 'h0', mergedAt: null, repo: 'o/r', headRef: 'feat/x' } });
+  const unknownBase = await v.svc.syncTask(null, v.task.id);
+  assert.ok(unknownBase.ok);
+  assert.equal(unknownBase.value.length, 0);
+
+  // PR 没报 base、preview 报 develop → 用 develop，不写死 main
+  const u = await world({ token: true });
+  u.git.previews.set(u.root, dirty('feat/x', 'https://github.com/o/r.git', 'h0', 'develop'));
+  u.listedPrs.push({ repo: 'o/r', head: 'feat/x', pr: { number: 5, url: 'https://github.com/o/r/pull/5', state: 'open', headSha: 'h0', mergedAt: null, repo: 'o/r', headRef: 'feat/x' } });
+  const fromPreview = await u.svc.syncTask(null, u.task.id);
+  assert.ok(fromPreview.ok);
+  assert.equal(fromPreview.value[0]?.base, 'develop');
 });
 
 test('推送：默认分支直接拒绝（#217 / #221 步骤 0）', async () => {

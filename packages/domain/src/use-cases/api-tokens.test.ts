@@ -381,6 +381,15 @@ test('tokens:manage：管理员能授；成员不能；项目级和 bot 一律�
   const bot = await createApiToken(deps, owner, { name: 'bot-tok', kind: 'bot', projectId: 'p1', scopes: ['tokens:manage'] });
   assert.equal(bot.ok, false);
   assert.equal(tokenManageGrantDenied(owner, { kind: 'personal', scopes: ['projects:read'] }), null);
+
+  // 项目限定是运行时约束，不能只依赖签发校验（例如历史存量）。
+  const principal = await authenticateApiToken(deps, okOwner.value.token);
+  assert.ok(principal?.via);
+  assert.equal(decide(principal, 'token.manage').allow, true);
+  assert.deepEqual(decide({ ...principal, via: { ...principal.via, projectIds: ['p1'] } }, 'token.manage'), {
+    allow: false,
+    reason: 'token_project'
+  });
 });
 
 test('经 tokens:manage 令牌可签发子集个人令牌：要过期、不能提权、明文只在结果里、审计不记明文', async () => {

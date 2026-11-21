@@ -43,9 +43,8 @@ import type {
 import type { Project } from '../project.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Session } from '../session.ts';
-import { projectAsResource, type AccessPolicy } from './authorization.ts';
+import { projectAsResource, projectOfSessionOrigin, type AccessPolicy } from './authorization.ts';
 import type { Deps } from './deps.ts';
-import { projectOfSession } from './workspaces.ts';
 
 /**
  * 记忆服务（ADR 0019 · P1）：唯一入口。MCP 工具、HTTP 路由、界面都只调它；它只调端口。
@@ -176,7 +175,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
   const context = async (): Promise<AccessContext> => (deps.access ? deps.access.context() : FALLBACK_CONTEXT);
 
   const projectOf = async (session: Session): Promise<Project | null> => {
-    const project = await projectOfSession(deps, session);
+    const project = await projectOfSessionOrigin(deps, session);
     return project && project.deletedAt === null ? project : null;
   };
 

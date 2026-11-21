@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inMemoryDeps } from '@agent-hub/domain/testing';
-import { createProjectUseCase, createTaskUseCase } from '@agent-hub/domain';
+import { inMemoryDeps, fakeSessionLinks } from '@agent-hub/domain/testing';
+import { asAgentId, createProjectUseCase, createTaskUseCase, deriveSession, newWorkspace } from '@agent-hub/domain';
 import { workspaceForApiStart } from './session-workspace.ts';
 
 async function world(repoUrl?: string) {
@@ -83,4 +83,28 @@ test('会话通信 P1b：开会话前检查 handle 与 linkWith（格式 / 占�
   const fine = await checkStartExtras(w.deps, taken, w.task.id, { handle: 'dev', linkWith: [other.value.id] }, null);
   assert.ok(fine.ok, fine.ok ? '' : fine.error.message);
   assert.deepEqual(fine.value, [other.value.id]);
+});
+
+test('#243：开会话连线按不可变来源项目判；旧容器会话不能借长期空间混进来', async () => {
+  const { checkStartExtras } = await import('./session-start-extras.ts');
+  const base = await world();
+  const deps = { ...base.deps, links: fakeSessionLinks() };
+  // 长期空间不记录项目也无所谓：来源已经落在会话自己身上。
+  const ws = newWorkspace({ projectId: null, workerId: 'remote-1', path: '/srv/originless', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(ws.ok);
+  await deps.workspaces.save(ws.value);
+  const input = { agentId: asAgentId('fake'), model: 'm1', now: 1, workspaceId: ws.value.id };
+  const origin = deriveSession({ ...input, originProjectId: base.project.id });
+  const legacy = deriveSession(input);
+  assert.ok(origin.ok);
+  assert.ok(legacy.ok);
+  await deps.sessions.save(origin.value);
+  await deps.sessions.save(legacy.value);
+
+  const allowed = await checkStartExtras(deps, undefined, base.task.id, { linkWith: [origin.value.id] }, null);
+  assert.ok(allowed.ok, allowed.ok ? '' : allowed.error.message);
+  assert.deepEqual(allowed.value, [origin.value.id]);
+
+  const denied = await checkStartExtras(deps, undefined, base.task.id, { linkWith: [legacy.value.id] }, null);
+  assert.equal(denied.ok ? null : denied.error.code, 'not_found');
 });

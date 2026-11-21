@@ -151,7 +151,8 @@ export const workspaceDiffSchema = z.object({
   branch: z.string().nullable(),
   files: z.array(z.object({ path: z.string(), status: z.string() })),
   patch: z.string(),
-  truncated: z.boolean()
+  truncated: z.boolean(),
+  notice: z.string().optional()
 });
 export const workspaceFileSchema = z.object({
   path: z.string(),
@@ -202,6 +203,8 @@ export const worktreeCleanupItemSchema = z.object({
 export const settleSessionResponse = sessionSchema.extend({
   cleanup: z.object({ items: z.array(worktreeCleanupItemSchema) })
 });
+/** 对外 start / get 的会话对象：额外带任务内短名；来源与 session_peers 的 handle 一致（同一台消息总线）。 */
+export const sessionWithHandleSchema = sessionSchema.extend({ handle: z.string().nullable() });
 
 export const tokenIdParam = z.object({ tokenId: z.string().openapi({ param: { name: 'tokenId', in: 'path' } }) });
 /** 经 MCP / 开放 API 签发：必须设过期时间，最长 30 天；不能带管理类 scope。 */

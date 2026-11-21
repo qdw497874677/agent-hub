@@ -37,6 +37,22 @@ export class PiSession implements RuntimeSession {
   private compactionsSeen = 0;
   private disposed = false;
   /**
+   * 已确认 `started`、还在等 `agent_settled` 的那一轮。Pi 一条会话同时只跑一轮；
+   * ended 只有落在这一轮的 settled 上才带 deliveryId，空闲的 settled 一律不带。
+   */
+  private prompting = false;
+  /** prompt RPC 的 ack 还没回来：这时不让第二条 prompt 插进来。 */
+  private sending = false;
+  private turnDeliveryId: string | null = null;
+  /**
+   * 归属不明的 keyed 投递（`queued` / 没见过的 disposition）：这条消息被 Pi 收下了，
+   * 但它到底落在哪一轮跑、哪个 settled 算它的终态都说不清，不能按到达顺序认。
+   * 先压住，等进程真的退出（唯一还能确认的证据）再把它算成这条投递的终态。
+   */
+  private heldDeliveryId: string | null = null;
+  /** finished 只允许走一次（事件流断 + 进程退出可能先后到）。 */
+  private finished = false;
+  /**
    * Pi 的可调项不是一次问完的：模型清单在本机探测时就已知，
    * 但思考档位取决于**当前模型**（不支持的模型只给 `['off']`），
    * 所以换模型之后必须重新问一次，否则会给用户一个按下去就报错的档位。
@@ -110,9 +126,16 @@ export class PiSession implements RuntimeSession {
           continue;
         }
         const mapped = this.mapper.map(record);
+        // settled 是 armed 那一轮（disposition=started）的确切终态：先把这一轮认下来（到点即清），
+        // 之后再推的 ended 才带 deliveryId；空闲 / 归属不明的 settled 拿到 null，不编造归属。
+        const settled = head['type'] === 'agent_settled' ? this.consumeTurn() : null;
         if (head['type'] === 'agent_settled' && this.onTurnRef) this.tail = this.tail.then(() => this.reportTurnRef());
         this.tail = this.tail.then(() => {
-          for (const event of mapped) this.queue.push(event);
+          for (const event of mapped) {
+            this.queue.push(
+              settled?.deliveryId && event.kind === 'ended' ? { ...event, deliveryId: settled.deliveryId } : event
+            );
+          }
         });
         // 一轮结束 / 压缩结束后问一次真实用量（ADR 0020 L1）。不能在 pump 里 await：响应也是 pump 读的。
         if (head['type'] === 'agent_settled' || head['type'] === 'compaction_end') {
@@ -128,27 +151,55 @@ export class PiSession implements RuntimeSession {
       });
     } finally {
       await this.tail;
-      // 退出码 + 最后一行 stderr 一起进 ended.reason：卡片上要能看出为什么失败。
-      const code = this.child.exitCode;
-      const root = this.workspaceRoot;
-      const directoryGone = root !== null && root !== '' && !existsSync(root);
-      // 目录没了时退出码常常是 libuv 的 -2，stderr 可能还有 Pi 自己的说明。两样都留，不把原文吞掉。
-      const reason = this.disposed
-        ? undefined
-        : directoryGone
-          ? [`工作目录不存在：${root}`, this.lastStderr].filter((part) => part !== '').join('：')
-          : [code === null ? 'Pi 进程已退出' : `Pi 退出码 ${code}`, this.spawnError?.code ?? '', this.lastStderr]
-              .filter((part) => part !== '')
-              .join('：');
-      this.queue.push({
-        kind: 'ended',
-        outcome: this.disposed ? 'stopped' : 'failed',
-        ...(reason ? { reason } : {})
-      });
-      this.queue.close();
+      // stdout 的 EOF 只说明事件流断了，不说明 Pi 进程走了（进程可以先关 stdout 再继续活着）。
+      // 挂在管道上的 pending 再也等不到响应，先全部拒掉；终态等真实 exit 再定，别替它编。
       for (const [, pending] of this.pending) pending.reject(new Error('Pi 进程已退出'));
       this.pending.clear();
+      if (this.child.exitCode !== null || this.child.signalCode !== null) this.finish();
+      else this.child.once('exit', () => this.finish());
     }
+  }
+
+  /**
+   * 会话终态：只有**子进程确实退出**（exitCode / signalCode 有值，不是流关掉）才调用。
+   * 退出码 + 最后一行 stderr 一起进 ended.reason：卡片上要能看出为什么失败。
+   */
+  private finish(): void {
+    if (this.finished) return;
+    this.finished = true;
+    const code = this.child.exitCode;
+    const root = this.workspaceRoot;
+    const directoryGone = root !== null && root !== '' && !existsSync(root);
+    // 目录没了时退出码常常是 libuv 的 -2，stderr 可能还有 Pi 自己的说明。两样都留，不把原文吞掉。
+    const reason = this.disposed
+      ? undefined
+      : directoryGone
+        ? [`工作目录不存在：${root}`, this.lastStderr].filter((part) => part !== '').join('：')
+        : [code === null ? 'Pi 进程已退出' : `Pi 退出码 ${code}`, this.spawnError?.code ?? '', this.lastStderr]
+            .filter((part) => part !== '')
+            .join('：');
+    // 只有「这一轮真的在飞」时进程退出才是这一轮的终态；空闲退出 / 主动 dispose 不挂 deliveryId。
+    // held 是收下了但归属不明的那条：进程退出同样能确认它没有正常收尾，把 key 还给这条投递。
+    const turn = this.disposed ? null : this.consumeTurn();
+    const held = this.disposed ? null : this.heldDeliveryId;
+    this.heldDeliveryId = null;
+    const deliveryId = turn?.deliveryId ?? held;
+    this.queue.push({
+      kind: 'ended',
+      outcome: this.disposed ? 'stopped' : 'failed',
+      ...(reason ? { reason } : {}),
+      ...(deliveryId ? { deliveryId } : {})
+    });
+    this.queue.close();
+  }
+
+  /** 认下正在飞的那一轮（`agent_settled` 到时用）：返回它的 deliveryId，并清掉在飞状态。 */
+  private consumeTurn(): { readonly deliveryId: string | null } | null {
+    if (!this.prompting) return null;
+    const turn = { deliveryId: this.turnDeliveryId };
+    this.prompting = false;
+    this.turnDeliveryId = null;
+    return turn;
   }
 
   private send(command: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -173,6 +224,13 @@ export class PiSession implements RuntimeSession {
   }
 
   async prompt(input: PromptInput): Promise<Result<void, DomainError>> {
+    // Pi 一条会话同时只跑一轮：并发会把两轮的 update 混在一起，ended 也没法说清属于谁。
+    // sending：ack 还没回，这一条也已经发出去了，不能让第二条插进来。
+    // held：上一条 keyed 投递归属不明还压着，也不能再叠一条。
+    if (this.prompting || this.sending || this.heldDeliveryId !== null) {
+      return { ok: false, error: unavailable('Pi 上一轮还没结束，不能并发发送') as DomainError };
+    }
+    this.sending = true;
     try {
       const image = input.parts.find((part) => part.kind === 'image');
       if (image) {
@@ -181,10 +239,33 @@ export class PiSession implements RuntimeSession {
         const refused = imageRefusal(state['data'], image.name);
         if (refused) return { ok: false, error: invalid(refused) };
       }
-      await this.send(toPiPrompt(input));
+      const response = await this.send(toPiPrompt(input));
+      const deliveryId = input.deliveryId && input.deliveryId.length > 0 ? input.deliveryId : null;
+      // Pi 的 prompt 应答带 disposition（上游 agent-session.ts preflightResult → rpc-mode.ts）：
+      // - started：这条 prompt 真的开了一轮，后面 FIFO 的 agent_settled 就是它的终态；
+      // - handled：扩展命令 / 输入处理器直接消费了这条，Pi 不会为它跑 agent，也就没有 settled；
+      // - queued：Pi 当时在 streaming，这条被排进后台，settled 归属说不清。
+      const disposition = promptDisposition(response);
+      if (disposition === 'handled') {
+        // 现在就是这条投递的确切终态：立刻报掉，不等一个不会来的 settled。
+        // 扩展自己随后触发的后台输出 / settled 与这条无关，不能让它替这条收尾（也不认给下一条）。
+        this.queue.push({ kind: 'ended', outcome: 'done', ...(deliveryId ? { deliveryId } : {}) });
+        return { ok: true, value: undefined };
+      }
+      if (disposition === 'started' || deliveryId === null) {
+        // started：ack 之后 Pi 才开跑，第一条 settled 必属于这一轮。
+        // 没有 key 的老路径（含老版本 Pi 不带 disposition 的应答）保持原行为：认下一次 settled。
+        this.prompting = true;
+        this.turnDeliveryId = deliveryId;
+        return { ok: true, value: undefined };
+      }
+      // keyed 且归属不明：不猜 settled，压到进程退出再收尾。
+      this.heldDeliveryId = deliveryId;
       return { ok: true, value: undefined };
     } catch (error) {
       return { ok: false, error: unavailable((error as Error).message) as DomainError };
+    } finally {
+      this.sending = false;
     }
   }
 
@@ -376,6 +457,17 @@ export class PiSession implements RuntimeSession {
 function withTimeout<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   return Promise.race([work, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(message)), ms)))]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Pi RPC `prompt` 应答里的 disposition。上游只有 started / handled / queued 三种；
+ * 老版本 Pi 不带这一项（null），按未知处理。
+ */
+function promptDisposition(response: Record<string, unknown>): 'started' | 'handled' | 'queued' | null {
+  const data = response['data'];
+  if (typeof data !== 'object' || data === null) return null;
+  const disposition = (data as Record<string, unknown>)['disposition'];
+  return disposition === 'started' || disposition === 'handled' || disposition === 'queued' ? disposition : null;
 }
 
 /**

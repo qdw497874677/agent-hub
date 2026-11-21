@@ -42,6 +42,31 @@ test('mcp_replays：占位超时可被接管，release 立刻放行', async () =
   assert.equal(await store.claim!('k', 2_000, -28_000, -86_398_000), true);
 });
 
+test('mcp_replays：commit 只在占位还是自己那次时落档，release 带归属不删别人的占位', async () => {
+  const db = new DatabaseSync(':memory:');
+  const store = createMcpReplays(db);
+
+  assert.equal(await store.claim!('k', 1_000, -29_000, -86_399_000), true);
+  // created_at 不是自己占位那次：视为被别人接管，不能写。
+  assert.equal(await store.commit!('k', 'stale', 1_001, 999), false);
+  assert.equal(await store.get('k', 1_001), null);
+  assert.equal(await store.commit!('k', 'mine', 1_002, 1_000), true);
+  assert.equal(await store.get('k', 1_002), 'mine');
+
+  // 接管场景：老请求的 commit / release 都不能动新占位或新结果。
+  const other = createMcpReplays(new DatabaseSync(':memory:'));
+  assert.equal(await other.claim!('k', 1_000, -29_000, -86_399_000), true);
+  assert.equal(await other.claim!('k', 40_000, 40_000 - 30_000, 40_000 - 86_400_000), true, '占位超时可被接管');
+  assert.equal(await other.commit!('k', 'newer', 40_001, 40_000), true);
+  assert.equal(await other.commit!('k', 'stale', 40_002, 1_000), false);
+  await other.release!('k', 1_000);
+  assert.equal(await other.get('k', 40_002), 'newer', '老请求不能删掉新结果');
+
+  assert.equal(await other.claim!('k2', 50_000, 20_000, -36_400_000), true);
+  await other.release!('k2', 50_000);
+  assert.equal(await other.get('k2', 50_000), null, '归属对得上时能放行');
+});
+
 test('mcp_replays：老库没有 status 列时自动补列', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE mcp_replays (key TEXT PRIMARY KEY, body TEXT NOT NULL, created_at INTEGER NOT NULL)');

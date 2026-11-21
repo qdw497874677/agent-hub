@@ -19,7 +19,7 @@ export interface TerminalTarget {
   readonly root: string;
 }
 
-export type TerminalTargetDeps = Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'workspaces' | 'access'>;
+export type TerminalTargetDeps = Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'workspaces' | 'workspaceGroups' | 'access'>;
 
 /**
  * 终端的目标机器与目录。

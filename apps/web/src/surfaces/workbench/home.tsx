@@ -51,9 +51,11 @@ export function HomePage({
   }
 
   return (
-    <div className="flex h-full flex-col md:flex-row">
+    // 窄屏只有一个滚动源（就是这层）：以前上段 max-h-[40dvh] 自带滚动、下段 main 又滚一次，
+    // 手指在上半屏滚不到会话，40dvh 也不跟 --app-height 收（键盘弹起时下段被压到几乎没有）。
+    <div data-testid="home-root" className="flex h-full flex-col overflow-y-auto md:flex-row md:overflow-visible">
       <aside
-        className="flex max-h-[40dvh] w-full shrink-0 flex-col overflow-y-auto border-b border-hair px-3 py-4 md:max-h-none md:w-[220px] md:border-b-0 md:border-r"
+        className="flex w-full shrink-0 flex-col border-b border-hair px-3 py-4 md:w-[220px] md:overflow-y-auto md:border-b-0 md:border-r"
         aria-label="首页侧栏"
       >
         {/* 窄屏顺序：招牌 → 导航 → 项目；md 起（侧栏成 220px 固定栏）仍是招牌 → 项目 → 导航，DOM 不动、只换 order。 */}
@@ -121,7 +123,7 @@ export function HomePage({
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1 overflow-y-auto">
+      <main className="min-w-0 flex-none overflow-visible md:flex-1 md:overflow-y-auto">
         <div className="mx-auto w-full max-w-[760px] px-4 py-6 md:px-8">
           {creating ? null : (
             <AttentionInbox

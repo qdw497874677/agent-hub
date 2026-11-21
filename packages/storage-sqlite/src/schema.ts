@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   options          TEXT NOT NULL DEFAULT '{}',
   option_spec      TEXT NOT NULL DEFAULT '[]',
   worker_id        TEXT,
+  -- #243：容器会话创建时落定的来源项目；只用于授权。老库为 NULL，由 store.ts 补列。
+  origin_project_id TEXT,
   environment_revision TEXT,
   -- 常驻：Worker 不按空闲回收这条会话，也不占保活上限。
   pinned           INTEGER NOT NULL DEFAULT 0,

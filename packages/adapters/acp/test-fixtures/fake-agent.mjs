@@ -1,6 +1,6 @@
 // 最小的 ACP agent（ndjson over stdio），只给 acp-runtime 的测试用。
 import { createInterface } from 'node:readline';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
@@ -23,6 +23,14 @@ if (process.argv.includes('--models')) {
 // --empty-all：每一轮都什么都不回（模拟模型 / 鉴权坏掉的 agent）
 const EMPTY_ALL = process.argv.includes('--empty-all');
 process.stderr.write('fake agent booting\n');
+
+// --gate-dir <目录>：门控文件信号（e2e 排序用）。prompt 里出现
+//   please-hold:<key> → 先写 <目录>/hold-<key>.started（证明这一轮真的进了运行时），
+//                        再等 <目录>/hold-<key>.go 出现才回 end_turn；
+//   please-mark:<key> → 只写 <目录>/mark-<key>.started，然后正常回一句结束。
+// 用文件而不是 sleep：测试能确定「这一轮开始了没有」，也能自己决定它什么时候结束。
+const gateFlag = process.argv.indexOf('--gate-dir');
+const GATE_DIR = gateFlag >= 0 ? process.argv[gateFlag + 1] : null;
 
 let model = 'a';
 let mode = 'default';
@@ -122,6 +130,33 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         process.stderr.write('Error: 401 Unauthorized from provider, api_key=sk-livesecret1234567890 Authorization: Bearer abcdefghijklmnop\n');
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }
+      // 门控（e2e #269 排序）：见文件头 --gate-dir 说明。
+      const gated = GATE_DIR ? all.match(/please-(hold|mark):([\w.-]+)/) : null;
+      if (GATE_DIR && gated) {
+        const [, how, key] = gated;
+        const sessionId = msg.params.sessionId;
+        // 追加而不是覆盖：同一个 key 进来两次会留两行，测试能看出来
+        appendFileSync(join(GATE_DIR, `${how}-${key}.started`), `${Date.now()}\n`);
+        if (how === 'mark') {
+          say(sessionId, `marked:${key} 开跑`);
+          return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+        }
+        say(sessionId, `hold:${key} 开始`);
+        const goFile = join(GATE_DIR, `hold-${key}.go`);
+        const deadline = Date.now() + 120_000;
+        const wait = () => {
+          if (existsSync(goFile)) {
+            say(sessionId, `hold:${key} 放行`);
+            return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+          }
+          if (Date.now() > deadline) {
+            say(sessionId, `hold:${key} 等太久，自己结束`);
+            return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+          }
+          setTimeout(wait, 25);
+        };
+        return wait();
+      }
       // please-write:<相对路径>=<一行内容>：在会话目录里追加一行（回合检查点 e2e 用）
       const writes = [...all.matchAll(/please-write:([\w./-]+)=(\S+)/g)];
       if (writes.length > 0) {
@@ -170,6 +205,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }
       if (all.includes('please-refuse')) return send({ id: msg.id, result: { stopReason: 'refusal' } });
+      // please-detach：把事件流（stdout）关掉，但进程继续活着、这一轮也不应答。
+      // 用来验证「流关了 ≠ 进程退出」：适配器不能凭断流推 ended，更不能挂 deliveryId。
+      if (all.includes('please-detach')) {
+        process.stdout.end();
+        setInterval(() => undefined, 1000);
+        return;
+      }
       if (all.includes('please-long')) {
         say(msg.params.sessionId, '写了一半');
         return send({ id: msg.id, result: { stopReason: 'max_tokens' } });

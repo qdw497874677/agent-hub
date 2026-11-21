@@ -25,8 +25,20 @@ export interface FeishuSink extends ConnectorSink {
     readonly body: string;
     readonly replyToExternalId?: string | null;
     readonly sessionId?: string | null;
+    /**
+     * 确定性出站行 id（直聊回合回复用 `feishuReplyOutboxId(run.id)`）。
+     * 不填则生成随机 id。同一个 id 重放时保留已存在行（含已 `sent` 状态）。
+     */
+    readonly outboxId?: string | null;
   }): Promise<ChannelOutboxMessage>;
 }
+
+/**
+ * 直聊回合回复的确定性出站身份：一个 run 只对应一行。
+ * 回合结束被重复触发、或 pump 重放时，不会把已发出的回复重新排队。
+ */
+export const feishuReplyOutboxId = (runId: string | null | undefined): string | null =>
+  runId ? `feishu-reply:${runId}` : null;
 
 export interface FeishuSinkDeps {
   readonly outbox: OutboxStore;
@@ -89,27 +101,117 @@ export function createFeishuSink(deps: FeishuSinkDeps): FeishuSink {
         origin: 'reply',
         replyToExternalId: input.replyToExternalId ?? null,
         externalConversationId: input.chatId
-      }, now());
-      await deps.outbox.save(queued);
-      deps.log?.(`[feishu] 回复入队 ${queued.target.id}（outbox ${queued.id}）`);
-      return queued;
+      }, now(), input.outboxId ?? undefined);
+      // 确定性 id 的幂等入队：同一 run 重放不覆盖已存在行（尤其是已 sent 的）。
+      const { message, inserted } = await deps.outbox.insertIfAbsent(queued);
+      deps.log?.(inserted
+        ? `[feishu] 回复入队 ${message.target.id}（outbox ${message.id}）`
+        : `[feishu] 回复已存在 ${message.target.id}（outbox ${message.id}，state=${message.state}）`);
+      return message;
     }
   };
 }
 
-export interface FeishuTurnRepliesDeps {
-  readonly runs: Pick<ConnectorStore, 'deliveredRunFor' | 'binding'>;
-  readonly tail: (sessionId: string, limit: number) => Promise<readonly { readonly event: { readonly kind: string; readonly delta?: string } }[]>;
-  readonly enqueueReply: FeishuSink['enqueueReply'];
+/** journal 里回程要用的最小事件形状；seq 必须是真的落盘序号。 */
+export interface TurnReplyEntry {
+  readonly seq: number;
+  readonly event: { readonly kind: string; readonly delta?: string; readonly deliveryId?: string };
 }
 
-/** 本轮最后一段智能体文字（最后一个 prompt 之后的所有 text）。 */
-function lastTurnText(entries: readonly { readonly event: { readonly kind: string; readonly delta?: string } }[]): string {
-  let lastPrompt = -1;
-  entries.forEach((entry, index) => {
-    if (entry.event.kind === 'prompt') lastPrompt = index;
+/** 回合收尾身份（`TurnEnd` 的结构子集，连接器不认识 server 的收尾类型）。 */
+export interface TurnReplyEnd {
+  readonly seq: number;
+  readonly reason?: string;
+  readonly deliveryId?: string;
+}
+
+export interface TurnReplyInFlight {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly seq: number;
+}
+
+/**
+ * 平台补写的「这轮根本没送达」ended 没有 deliveryId，也不属于任何一次真实回程。
+ * 旧协议的真实 ended 也没有 deliveryId，所以只按已知 reason 前缀排除，不能一刀切。
+ */
+export const isKnownSyntheticTurnEnd = (end: TurnReplyEnd): boolean =>
+  end.deliveryId === undefined &&
+  (end.reason?.startsWith('发送失败：') === true ||
+    end.reason?.startsWith('未送达：') === true ||
+    end.reason === '还没开始就停止了');
+
+export interface TurnReplyTextWindow {
+  /** keyed 回合的 prompt seq；null 表示旧协议里没有投递身份，只能退回「最后一个 prompt」。 */
+  readonly anchorSeq: number | null;
+  /** 目标 ended 的落盘 seq，窗口不能越过它。 */
+  readonly endedSeq: number;
+}
+
+const textOf = (entry: TurnReplyEntry): string => (entry.event.kind === 'text' ? entry.event.delta ?? '' : '');
+
+/**
+ * 取一条回合窗口里的智能体文字。
+ *
+ * keyed：从 prompt seq 之后开始，但遇到本轮 ended 之前的**上一条 ended** 就把窗口清空重来。
+ * B 的 prompt 可能先于 A 的 ended 落盘（排队时先记 prompt），A 的文字也会插在中间；
+ * 只看「最后一个 prompt」会把 A 的尾巴算进 B 的回复。
+ *
+ * legacy：没有投递身份，保持原来的「最后一个 prompt 之后」算法；end.seq 已知时只看到这里为止。
+ */
+export function turnReplyText(
+  entries: readonly TurnReplyEntry[],
+  window: TurnReplyTextWindow
+): string {
+  const bounded = entries.filter(
+    (entry) => entry.seq <= window.endedSeq && (window.anchorSeq === null || entry.seq > window.anchorSeq)
+  );
+  if (window.anchorSeq === null) {
+    let lastPrompt = -1;
+    bounded.forEach((entry, index) => {
+      if (entry.event.kind === 'prompt') lastPrompt = index;
+    });
+    return bounded.slice(lastPrompt + 1).map(textOf).join('').trim();
+  }
+  let previousEnd = -1;
+  bounded.forEach((entry, index) => {
+    if (entry.event.kind === 'ended' && entry.seq < window.endedSeq) previousEnd = index;
   });
-  return entries.slice(lastPrompt + 1).map((entry) => (entry.event.kind === 'text' ? entry.event.delta ?? '' : '')).join('').trim();
+  return bounded.slice(previousEnd + 1).map(textOf).join('').trim();
+}
+
+export interface TurnReplyJournalDeps {
+  /** keyed 窗口用：只取 anchor 之后的 journal，不受 tail 条数限制。 */
+  readonly eventsAfter: (sessionId: string, afterSeq: number) => Promise<readonly TurnReplyEntry[]>;
+  /** legacy 窗口用：没有投递身份时仍按原行为只回看最近 500 条。 */
+  readonly tail: (sessionId: string, limit: number) => Promise<readonly TurnReplyEntry[]>;
+  /** 当前 `sending` 的投递；用来验证 ended 的 deliveryId 与锚点确实属于同一条会话/回合。 */
+  readonly inFlight: (sessionId: string) => Promise<TurnReplyInFlight | null>;
+}
+
+/**
+ * 回程窗口的身份校验：
+ * - 带 deliveryId：必须等于当前 inFlight.id，且 inFlight 属于同一会话；否则不回复（不拿 inFlight 硬套）。
+ * - 不带 deliveryId 但仍有 inFlight：这是抢跑/平台补写的 ended，不能归因给当前回合。
+ * - 不带 deliveryId 且没有 inFlight：旧协议兜底。
+ */
+export async function turnReplyWindow(
+  deps: TurnReplyJournalDeps,
+  sessionId: string,
+  end: TurnReplyEnd
+): Promise<{ readonly entries: readonly TurnReplyEntry[]; readonly anchorSeq: number | null } | null> {
+  const inFlight = await deps.inFlight(sessionId);
+  if (end.deliveryId !== undefined) {
+    if (!inFlight || inFlight.sessionId !== sessionId || inFlight.id !== end.deliveryId) return null;
+    return { entries: await deps.eventsAfter(sessionId, inFlight.seq), anchorSeq: inFlight.seq };
+  }
+  if (inFlight) return null;
+  return { entries: await deps.tail(sessionId, 500), anchorSeq: null };
+}
+
+export interface FeishuTurnRepliesDeps extends TurnReplyJournalDeps {
+  readonly runs: Pick<ConnectorStore, 'deliveredRunFor' | 'binding'>;
+  readonly enqueueReply: FeishuSink['enqueueReply'];
 }
 
 /**
@@ -118,7 +220,8 @@ function lastTurnText(entries: readonly { readonly event: { readonly kind: strin
  */
 export function createFeishuTurnReplies(deps: FeishuTurnRepliesDeps) {
   return {
-    async finish(sessionId: string): Promise<string | null> {
+    async finish(sessionId: string, end: TurnReplyEnd): Promise<string | null> {
+      if (isKnownSyntheticTurnEnd(end)) return null;
       const run = await deps.runs.deliveredRunFor(sessionId);
       if (!run) return null;
       const binding = await deps.runs.binding(run.bindingId);
@@ -128,9 +231,17 @@ export function createFeishuTurnReplies(deps: FeishuTurnRepliesDeps) {
       if (binding.targetKind === 'group') return null;
       const at = parseFeishuExternalId(run.externalId);
       if (!at) return null;
-      const body = lastTurnText(await deps.tail(sessionId, 500));
+      const window = await turnReplyWindow(deps, sessionId, end);
+      if (!window) return null;
+      const body = turnReplyText(window.entries, { anchorSeq: window.anchorSeq, endedSeq: end.seq });
       if (body === '') return null;
-      await deps.enqueueReply({ chatId: at.chatId, body, replyToExternalId: at.messageId, sessionId });
+      await deps.enqueueReply({
+        chatId: at.chatId,
+        body,
+        replyToExternalId: at.messageId,
+        sessionId,
+        outboxId: feishuReplyOutboxId(run.id)
+      });
       return body;
     }
   };

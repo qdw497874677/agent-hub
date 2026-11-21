@@ -97,7 +97,7 @@ async function world() {
     });
     assert.ok(created.ok);
     await deps.workspaces.save(created.value);
-    await deps.workspaces.link({ projectId: project.value.id, workspaceId: created.value.id, linkedBy: null, linkedAt: 1 });
+    await deps.workspaces.claim({ projectId: project.value.id, workspaceId: created.value.id, linkedBy: null, linkedAt: 1 });
     members.push({ workspaceId: created.value.id, repoId: `repo_${name}`, name, state: 'ready', error: null });
   }
   const group = {

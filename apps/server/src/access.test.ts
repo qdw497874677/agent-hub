@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { addTeamMember, inMemoryAccounts, inMemoryDeps, mailedToken } from '@agent-hub/domain/testing';
-import { asAgentId, createAccessPolicy, deriveSession, newWorkspace, type AgentDescriptor } from '@agent-hub/domain';
+import { asAgentId, asProjectId, asWorkspaceGroupId, createAccessPolicy, deriveSession, newWorkspace, type AgentDescriptor, type WorkspaceGroupId, type WorkspaceId } from '@agent-hub/domain';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 
@@ -157,4 +157,90 @@ test('分叉：共享项目里的成员不能分叉别人的会话（按会话�
   // 创建者照常分叉。
   const allowed = await david('/api/sessions/fork', fork);
   assert.equal(allowed.status, 201, JSON.stringify(allowed.body));
+});
+
+test('#243 容器会话来源项目：组合组与临时空间可读；丢失的组 / 长期空间失败关闭', async () => {
+  const { david, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const task = (await david('/api/tasks', post({ projectId: project.id, title: '任务', goal: '' }))).body;
+
+  const groupId = asWorkspaceGroupId('grp_243');
+  await world.deps.workspaceGroups.save({
+    id: groupId,
+    projectId: asProjectId(project.id),
+    workerId: null,
+    root: '/tmp/grp-243',
+    members: [],
+    state: 'ready',
+    ownerTaskId: null,
+    createdAt: 1,
+    error: null
+  });
+
+  const longLived = newWorkspace({ projectId: project.id, workerId: null, path: '/tmp/long-243', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(longLived.ok);
+  await world.deps.workspaces.save(longLived.value);
+  const temporary = newWorkspace({
+    projectId: project.id,
+    workerId: null,
+    path: '/tmp/temp-243',
+    kind: 'temporary',
+    source: 'worktree',
+    ownerTaskId: task.id,
+    now: 1
+  });
+  assert.ok(temporary.ok);
+  await world.deps.workspaces.save(temporary.value);
+
+  const saveContainer = async (input: {
+    groupId?: WorkspaceGroupId | null;
+    workspaceId?: WorkspaceId | null;
+    originProjectId?: ReturnType<typeof asProjectId> | null;
+  }) => {
+    const made = deriveSession({
+      task: null,
+      agentId: asAgentId('fake'),
+      model: 'm1',
+      now: 1,
+      createdBy: 'david',
+      groupId: input.groupId ?? null,
+      workspaceId: input.workspaceId ?? null,
+      originProjectId: input.originProjectId ?? null
+    });
+    assert.ok(made.ok);
+    await world.deps.sessions.save(made.value);
+    return made.value;
+  };
+
+  // 组合组：建组时的 projectId 是固定来源。
+  const grouped = await saveContainer({ groupId });
+  assert.equal((await david(`/api/sessions/${grouped.id}`)).status, 200);
+
+  // 临时工作空间：projectId 在出生时定死，可以当来源。
+  const temporarySession = await saveContainer({ workspaceId: temporary.value.id });
+  assert.equal((await david(`/api/sessions/${temporarySession.id}`)).status, 200);
+
+  // 组丢了：即使同项目的临时工作空间还在，也不能退回它；守门中间件直接失败关闭。
+  const lostGroup = await saveContainer({ groupId: asWorkspaceGroupId('grp_missing'), workspaceId: temporary.value.id });
+  const deniedLostGroup = await david(`/api/sessions/${lostGroup.id}`);
+  assert.equal(deniedLostGroup.status, 404, JSON.stringify(deniedLostGroup.body));
+
+  // 新数据：派生时把已验证项目写死，长期工作空间也能作为来源，不受工作空间后续归属变化影响。
+  const withOrigin = await saveContainer({ workspaceId: longLived.value.id, originProjectId: asProjectId(project.id) });
+  assert.equal((await david(`/api/sessions/${withOrigin.id}`)).status, 200);
+
+  // 来源项目后来没了：失败关闭，不退回长期工作空间。
+  const danglingOrigin = await saveContainer({
+    workspaceId: longLived.value.id,
+    originProjectId: asProjectId('prj_missing_243')
+  });
+  assert.equal((await david(`/api/sessions/${danglingOrigin.id}`)).status, 404);
+
+  // 只有长期工作空间：它的 projectId 只是记录（关联还能改），不算来源。
+  const longLivedOnly = await saveContainer({ workspaceId: longLived.value.id });
+  const deniedLongLived = await david(`/api/sessions/${longLivedOnly.id}`);
+  assert.equal(deniedLongLived.status, 404, JSON.stringify(deniedLongLived.body));
+
+  // 真正不存在的会话仍然由路由报 404。
+  assert.equal((await david('/api/sessions/sess_missing')).status, 404);
 });

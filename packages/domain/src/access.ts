@@ -343,8 +343,8 @@ export function decide(subject: Subject | null | undefined, permission: Permissi
   const scoped = subject.via?.projectIds;
   if (scoped) {
     if (permission === 'project.create') return deny('token_project');
-    // 管理提供商是全站/团队级能力：限定项目的令牌永远拿不到。
-    if (permission === 'provider.manage') return deny('token_project');
+    // 管理提供商和访问令牌是全站/团队级能力，旧数据也不能绕过项目限制。
+    if (permission === 'provider.manage' || permission === 'token.manage') return deny('token_project');
     // 模型提供商（全站 / 个人）也不属于项目：限定项目不影响「用哪个模型」。
     if (resource !== undefined && resource.kind !== 'worker' && resource.kind !== 'provider') {
       const owner = resource.kind === 'project' ? resource.id : resource.projectId;

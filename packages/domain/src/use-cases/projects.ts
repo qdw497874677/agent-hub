@@ -1,5 +1,5 @@
 import { principalOfSubject, type Subject } from '../access.ts';
-import { createProject, deriveRepoId, normalizeChecks, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeSubmodules, normalizePrimaryRepoId, normalizeRepos, parseRepo, repoNameFromUrl, repoTokenKey, withProjectRepos } from '../project.ts';
+import { createProject, deriveRepoId, isCanonicalRepoTokenKey, normalizeChecks, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeSubmodules, normalizePrimaryRepoId, normalizeRepos, parseRepo, repoNameFromUrl, repoTokenKey, withProjectRepos } from '../project.ts';
 import { normalizeDefaultAgent } from '../agent-ref.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project, ProjectRepo } from '../project.ts';
@@ -9,9 +9,10 @@ import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import type { Deps } from './deps.ts';
 import type { DirectoryEntry } from '../ports/workspace-fs.ts';
-import { newWorkspace, type Workspace } from '../workspace.ts';
+import { ambiguousPlaceError, newWorkspace, type Workspace } from '../workspace.ts';
 import { claimOf, directoryOwner, listOn, normalize, parentOf, remoteExists, resolveMachine, rootsOf } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
+import { claimConflictError } from './workspaces.ts';
 
 export { createDirectory, directoryOwner } from './machine-dirs.ts';
 import { managedDirectory, projectSlug, sortDirectoryEntries } from '../directories.ts';
@@ -59,23 +60,43 @@ export async function createProjectUseCase(
     createdBy: principalOfSubject(command.actor)?.user.id ?? null
   });
   if (!created.ok) return created;
-  let first: Workspace | null = null;
-  let reuse: Workspace | null = null;
+  let target: Workspace | null = null;
   if (rootPath !== '') {
     const taken = await claimOf(deps, { teamId: created.value.teamId, projectId: created.value.id, workerId: where.value.workerId, path: rootPath });
     if (!taken.ok) return taken;
-    reuse = taken.value;
-    if (!reuse) {
-      // 给了目录：它就是这个项目的第一个持久工作空间（关联已有目录，平台永不删它）
-      const linked = newWorkspace({ projectId: created.value.id, teamId: created.value.teamId, workerId: where.value.workerId, path: rootPath, kind: 'long_lived', source: 'linked', now: deps.now() });
+    target = taken.value;
+    if (!target) {
+      // 给了目录：它就是这个项目的第一个持久工作空间（关联已有目录，平台永不删它）。
+      // 先按团队级（projectId=null）保存并处理目录唯一性，再认领；项目本身最后才提交。
+      const linked = newWorkspace({
+        projectId: null,
+        teamId: created.value.teamId,
+        workerId: where.value.workerId,
+        path: rootPath,
+        kind: 'long_lived',
+        source: 'linked',
+        now: deps.now()
+      });
       if (!linked.ok) return linked;
-      first = linked.value;
+      const saved = await deps.workspaces.save(linked.value);
+      if (saved.status === 'ambiguous' || saved.status === 'place-taken') return err(ambiguousPlaceError());
+      target = saved.workspace;
     }
   }
-  await deps.projects.save(created.value);
-  if (first) await deps.workspaces.save(first);
-  // 团队里已经登记过这个目录（ADR 0026）：直接关联，不再「属于别的项目」
-  if (reuse) await deps.workspaces.link({ projectId: created.value.id, workspaceId: reuse.id, linkedBy: created.value.createdBy, linkedAt: deps.now() });
+  // 团队里已经登记过这个目录（ADR 0026）：项目与认领在同一个 SQLite 事务里提交（#233）。
+  // 冲突 / 历史重复时不写项目；写项目失败会连同认领一起回滚，工作空间本身可以保持未认领。
+  if (target) {
+    const claimed = await deps.projects.saveWithWorkspaceClaim(created.value, {
+      projectId: created.value.id,
+      workspaceId: target.id,
+      linkedBy: created.value.createdBy,
+      linkedAt: deps.now()
+    });
+    if (claimed.status === 'conflict') return err(claimConflictError());
+    if (claimed.status === 'ambiguous') return err(ambiguousPlaceError());
+  } else {
+    await deps.projects.save(created.value);
+  }
   return ok(created.value);
 }
 
@@ -156,6 +177,7 @@ export async function browseDirectories(
  * 绑定 / 改 / 解除项目仓库（url 为空 = 解除）。只影响以后新建的工作空间，已有的不动。
  * 多仓库项目里这是「改 primary」：替换第一个成员，保留其后的仓库（旧客户端不该顺手清掉别的仓库）。
  * 地址没变时保留 primary 的 HTTPS 令牌；换了地址（可能是另一台主机）就把它从密钥箱里回收。
+ * 只碰本项目自己的规范键（`repo-git:<projectId>:<repoId>`）：旧格式 / 别人的键既不读也不删。
  */
 export async function setProjectRepoUseCase(
   deps: Pick<Deps, 'projects' | 'secrets'>,
@@ -166,26 +188,34 @@ export async function setProjectRepoUseCase(
   const parsed = parseRepo(command.repoUrl, command.defaultBranch);
   if (!parsed.ok) return parsed;
   const previous = project.repos[0] ?? null;
+  const previousCanonical = previous === null ? null : repoTokenKey(project.id, previous.id);
   if (parsed.value === null) {
     const cleared = withProjectRepos(project, []);
     await deps.projects.save(cleared);
-    if (previous?.tokenSecret) await deps.secrets.remove(previous.tokenSecret);
+    if (previous !== null && previousCanonical !== null && isCanonicalRepoTokenKey(project.id, previous.id, previous.tokenSecret)) {
+      await deps.secrets.remove(previousCanonical);
+    }
     return ok(cleared);
   }
   const existing = previous;
   // name 是组合工作空间的子目录名，跟着旧 primary 走，不随 URL 变化；没有旧 primary 时从 URL 派生。
   const name = existing?.name ?? repoNameFromUrl(parsed.value.url);
   const sameUrl = existing !== null && existing.url === parsed.value.url;
+  const id = existing?.id ?? deriveRepoId(name, parsed.value.url);
+  const canonical = repoTokenKey(project.id, id);
   const primary: ProjectRepo = {
-    id: existing?.id ?? deriveRepoId(name, parsed.value.url),
+    id,
     name,
     url: parsed.value.url,
     defaultBranch: parsed.value.defaultBranch,
-    ...(sameUrl && existing?.tokenSecret ? { tokenSecret: existing.tokenSecret } : {})
+    // 旧格式（或别的项目的键）不沿用：用户需要重新输入 credential。
+    ...(sameUrl && existing?.tokenSecret === canonical ? { tokenSecret: canonical } : {})
   };
   const next = withProjectRepos(project, [primary, ...project.repos.slice(1)]);
   await deps.projects.save(next);
-  if (!sameUrl && existing?.tokenSecret) await deps.secrets.remove(existing.tokenSecret);
+  if (!sameUrl && existing !== null && existing.tokenSecret === repoTokenKey(project.id, existing.id)) {
+    await deps.secrets.remove(canonical);
+  }
   return ok(next);
 }
 
@@ -201,8 +231,10 @@ export interface ProjectRepoInput extends Partial<ProjectRepo> {
  * 改项目的仓库清单（PATCH /api/projects/:id 的 repos 字段，docs/design/multi-repo.md §11.2）。
  * 空数组 = 不绑仓库；同时维护过渡期的 `repo`（= 第一个）。
  *
- * 令牌只以密钥名（`repo-git:<id>`）落在 domain 对象上：明文进密钥箱，从清单里移除的仓库、
- * 换了地址（可能是另一台主机）的仓库、显式 `credential: ''` 的仓库，密钥条目一起回收。
+ * 令牌只以规范密钥名（`repo-git:<projectId>:<repoId>`）落在 domain 对象上：明文进密钥箱，
+ * 从清单里移除的仓库、换了地址（可能是另一台主机）的仓库、显式 `credential: ''` 的仓库，
+ * 本项目自己的密钥条目一起回收。请求方自带的 `tokenSecret` 一律忽略；旧格式 / 别人的键
+ * 既不读也不删（旧数据需要重新输入 credential 才会变回规范键）。
  */
 export async function updateProjectReposUseCase(
   deps: Pick<Deps, 'projects' | 'secrets' | 'now'>,
@@ -210,7 +242,8 @@ export async function updateProjectReposUseCase(
 ): Promise<Result<Project, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
   if (!project) return err(notFound('项目不存在'));
-  const normalized = normalizeRepos(command.repos);
+  // 请求里的 tokenSecret 不可信：密钥名只能由这里按 (projectId, repoId) 生成。
+  const normalized = normalizeRepos(command.repos, { acceptTokenSecret: false });
   if (!normalized.ok) return normalized;
   const previous = new Map(project.repos.map((repo) => [repo.id, repo] as const));
   const repos: ProjectRepo[] = [];
@@ -220,22 +253,31 @@ export async function updateProjectReposUseCase(
     const credential = typeof raw?.credential === 'string' ? raw.credential : null;
     const before = previous.get(repo.id) ?? null;
     const sameUrl = before !== null && before.url === repo.url;
-    const secret = repoTokenKey(repo.id);
+    const canonical = repoTokenKey(project.id, repo.id);
+    const beforeCanonical = before === null ? null : repoTokenKey(project.id, before.id);
     if (credential !== null && credential.trim() !== '') {
-      await deps.secrets.put(secret, credential.trim(), deps.now());
-      repos.push({ ...repo, tokenSecret: repoTokenKey(repo.id) });
-      if (before?.tokenSecret && before.tokenSecret !== secret) revoked.push(before.tokenSecret);
+      await deps.secrets.put(canonical, credential.trim(), deps.now());
+      repos.push({ ...repo, tokenSecret: canonical });
       continue;
     }
-    if (credential === '') revoked.push(secret);
-    // 没给新令牌：地址没变就沿用，换了地址（可能换了主机）就丢弃并回收
-    const carried = credential !== null ? null : sameUrl ? before?.tokenSecret ?? null : null;
-    if (credential === null && !sameUrl && before?.tokenSecret) revoked.push(before.tokenSecret);
+    if (credential === '') {
+      if (before?.tokenSecret === canonical) revoked.push(canonical);
+      repos.push(repo);
+      continue;
+    }
+    // 没给新令牌：地址没变且持久化引用正好是本项目规范键时才沿用；
+    // 旧格式（repo-git:<repoId>）跨项目共享，归属不明确，读不了也删不得，需要用户重新输入。
+    const carried = sameUrl && before?.tokenSecret === canonical ? canonical : null;
+    if (credential === null && !sameUrl && beforeCanonical !== null && before?.tokenSecret === beforeCanonical) {
+      revoked.push(beforeCanonical);
+    }
     repos.push(carried === null ? repo : { ...repo, tokenSecret: carried });
   }
   const kept = new Set(repos.map((repo) => repo.id));
   for (const repo of project.repos) {
-    if (!kept.has(repo.id) && repo.tokenSecret) revoked.push(repo.tokenSecret);
+    if (kept.has(repo.id)) continue;
+    const canonical = repoTokenKey(project.id, repo.id);
+    if (repo.tokenSecret === canonical) revoked.push(canonical);
   }
   for (const name of new Set(revoked)) await deps.secrets.remove(name);
   const primaryRepoId = command.primaryRepoId !== undefined

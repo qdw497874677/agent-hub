@@ -50,7 +50,11 @@ export interface SessionService {
   readonly command: string;
   /** 1024–65535；null = 未声明端口。 */
   readonly port: number | null;
-  readonly env: Readonly<Record<string, string>>;
+  /**
+   * 只留环境变量的键名：值只交给 Worker 起进程用，hub 不落库、不回 HTTP。
+   * 租户 / 审计想确认「配了哪些变量」看这里就够了。
+   */
+  readonly envKeys: readonly string[];
   readonly restart: ServiceRestart;
   readonly state: ServiceState;
   readonly pid: number | null;
@@ -138,7 +142,7 @@ export function appendServiceLog(tail: string, chunk: string): string {
 /**
  * HTTP 契约用的公开形状（`serviceSchema` 解析的就是它）。
  *
- * `env` 的值是 Worker 起进程要用的密钥，绝不能回给浏览器：只回键名，值走单独的
+ * 环境变量值只交给 Worker 起进程用，绝不能回给浏览器：这里只回键名，值走单独的
  * `/api/services/:id/env-keys` 同样只给键名（见 service-routes）。
  */
 export function servicePublic(service: SessionService) {
@@ -152,7 +156,7 @@ export function servicePublic(service: SessionService) {
     root: service.root,
     command: service.command,
     port: service.port,
-    envKeys: Object.keys(service.env).sort(),
+    envKeys: [...service.envKeys].sort(),
     restart: service.restart,
     state: service.state,
     pid: service.pid,

@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import type { Principal, User } from '../account.ts';
+import { asLoginId, asTeamId, asUserId } from '../account.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
+import { createAccessPolicy as createAccessPolicyForTests } from './authorization.ts';
 import { createProjectUseCase, setProjectWorktreeUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
@@ -167,22 +170,26 @@ test('ADR 0026 唯一性：同团队同一目录复用并关联，上下级目�
   const first = await link(w.project.id, '/srv/work/shared');
   assert.ok(first.ok);
   const again = await link(other.value.id, '/srv/work/shared');
-  assert.ok(again.ok && again.value.id === first.value.id, '同一目录 = 同一个工作空间');
-  assert.deepEqual((await w.deps.workspaces.linksOf(first.value.id)).map((l) => l.projectId).sort(), [w.project.id, other.value.id].sort());
+  assert.equal(again.ok, false, '同一目录已被别的项目认领，不能再关联（#233）');
+  if (!again.ok) assert.match(again.error.message, /已经分配给其他项目/);
+  assert.deepEqual((await w.deps.workspaces.linksOf(first.value.id)).map((l) => l.projectId), [w.project.id]);
   for (const path of ['/srv/work/shared/sub', '/srv/work']) {
     const result = await link(other.value.id, path);
     assert.equal(result.ok, false, path);
-    if (!result.ok) assert.match(result.error.message, /互相嵌套/);
+    if (!result.ok) {
+      assert.match(result.error.message, /互相嵌套/);
+      // 不泄露嵌套空间的所属项目名（调用方未必有权看见它）
+      assert.doesNotMatch(result.error.message, /Demo App/);
+    }
   }
   assert.ok((await link(other.value.id, '/srv/work/elsewhere')).ok, '兄弟目录没问题');
-  // 建项目时直接给同一个目录：复用并关联，不再拒绝
+  // 建项目时直接给同一个目录：已被别的项目认领 → 明确冲突，不静默抢走
   const third = await createProjectUseCase(w.deps, { name: 'third', rootPath: '/tmp/x' });
   assert.ok(third.ok);
   const fourth = await createProjectUseCase(w.deps, { name: 'fourth', rootPath: '/tmp/x' });
-  assert.ok(fourth.ok);
-  const thirdWs = (await w.deps.workspaces.byProject(third.value.id))[0];
-  const fourthWs = (await w.deps.workspaces.byProject(fourth.value.id))[0];
-  assert.equal(thirdWs?.id, fourthWs?.id);
+  assert.equal(fourth.ok, false);
+  if (!fourth.ok) assert.match(fourth.error.message, /已经分配给其他项目/);
+  assert.deepEqual((await w.deps.workspaces.linksOf((await w.deps.workspaces.byProject(third.value.id))[0]!.id)).map((l) => l.projectId), [third.value.id]);
   const nested = await createProjectUseCase(w.deps, { name: 'fifth', rootPath: '/tmp/x/y' });
   assert.equal(nested.ok, false);
 });
@@ -248,4 +255,109 @@ test('准备命令失败：state=failed、原因说人话、目录保留；重�
   // 已经不是 failed 了：再重试是 conflict
   const again = await retryWorkspaceSetupUseCase(w.deps, { workspaceId: failed.value.id });
   assert.equal(again.ok, false);
+});
+
+function principalOf(id: string, teamId: string, role: User['role']): Principal {
+  const user: User = {
+    id: asUserId(id),
+    email: `${id}@example.com`,
+    displayName: id,
+    role,
+    passwordHash: null,
+    emailVerifiedAt: 1,
+    disabledAt: null,
+    createdAt: 1,
+    teamId: asTeamId(teamId),
+    clusterAdmin: false,
+    deletedAt: null
+  };
+  return { user, loginId: asLoginId(`login-${id}`) };
+}
+
+/** 一个准备命令失败、目录保留的临时空间（项目配了 isolated + setup）。 */
+async function failedTemporary() {
+  const configured = await world('https://example.com/demo.git');
+  const worktree = await setProjectWorktreeUseCase(configured.deps, {
+    projectId: configured.project.id,
+    worktree: { mode: 'isolated', setup: { command: 'pnpm i', waitForSetup: true, timeoutSeconds: 120 } }
+  });
+  assert.ok(worktree.ok, worktree.ok ? '' : worktree.error.message);
+  configured.git.setups.set('*', { exitCode: 1, output: 'boom', timedOut: false });
+  const failed = await configured.temp('isolated');
+  assert.ok(failed.ok, failed.ok ? '' : failed.error.message);
+  assert.equal(failed.value.setup?.state, 'failed');
+  configured.git.setups.delete('*');
+  return { ...configured, workspace: failed.value };
+}
+
+test('重试准备 #243：没有项目 update 的人被拒，且不会执行准备命令', async () => {
+  const w = await failedTemporary();
+  const owner = principalOf('owner', 'team-1', 'owner');
+  const viewer = principalOf('viewer', 'team-1', 'viewer');
+  const outsider = principalOf('outsider', 'team-2', 'member');
+  const policy = createAccessPolicyForTests({
+    users: {
+      firstClusterAdmin: async () => owner.user,
+      byId: async (id) => (id === owner.user.id ? owner.user : null)
+    },
+    settings: { get: async () => ({ openRegistration: false, membersCanAddMachines: true, refuseWhenFull: [] }) },
+    enrollment: { credentialFor: async () => null },
+    gateway: { status: async () => w.workers }
+  });
+  const deps = { ...w.deps, access: policy };
+  const setups = () => w.git.calls.filter((call) => call.includes(':run_setup:')).length;
+  const before = setups();
+
+  // 只读成员看得见项目，但没有 project.update
+  const denied = await retryWorkspaceSetupUseCase(deps, { workspaceId: w.workspace.id, actor: viewer });
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'forbidden');
+  // 别的团队看不见项目，也不泄露工作空间存在
+  const hidden = await retryWorkspaceSetupUseCase(deps, { workspaceId: w.workspace.id, actor: outsider });
+  assert.equal(hidden.ok, false);
+  if (!hidden.ok) assert.equal(hidden.error.code, 'not_found');
+  assert.equal(setups(), before, '被拒时不能跑准备命令');
+
+  // 项目 owner 可以，正常派发一次
+  const passed = await retryWorkspaceSetupUseCase(deps, { workspaceId: w.workspace.id, actor: owner });
+  assert.ok(passed.ok, passed.ok ? '' : passed.error.message);
+  assert.equal(passed.value.setup?.state, 'ready');
+  assert.equal(setups(), before + 1);
+});
+
+test('重试准备 #243：长期空间、linked、所有者任务与项目对不上，一律拒绝且不派发', async () => {
+  const w = await failedTemporary();
+  const setups = () => w.git.calls.filter((call) => call.includes(':run_setup:')).length;
+
+  // 长期空间即使被人为弄成 failed 也不跑准备命令（那是人自己的目录）
+  const long = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'remote-1', plan: { mode: 'create' }, home: '/home/me' });
+  assert.ok(long.ok);
+  assert.equal(long.value.kind, 'long_lived');
+  await w.deps.workspaces.save({ ...long.value, state: 'failed', setup: w.workspace.setup });
+  const before = setups();
+  const longRetry = await retryWorkspaceSetupUseCase(w.deps, { workspaceId: long.value.id });
+  assert.equal(longRetry.ok, false);
+  if (!longRetry.ok) {
+    assert.equal(longRetry.error.code, 'conflict');
+    assert.match(longRetry.error.message, /平台创建的临时工作空间/);
+  }
+
+  // 合成一条「临时但 linked」的登记：不是平台建的目录，不允许
+  await w.deps.workspaces.save({ ...w.workspace, source: 'linked' });
+  const linkedRetry = await retryWorkspaceSetupUseCase(w.deps, { workspaceId: w.workspace.id });
+  assert.equal(linkedRetry.ok, false);
+  if (!linkedRetry.ok) assert.match(linkedRetry.error.message, /平台创建的临时工作空间/);
+  await w.deps.workspaces.save(w.workspace);
+
+  // 所有者任务被挪到别的项目：空间和任务对不上
+  const other = await createProjectUseCase(w.deps, { name: 'Other' });
+  assert.ok(other.ok);
+  await w.deps.tasks.save({ ...w.task, projectId: other.value.id });
+  const mismatch = await retryWorkspaceSetupUseCase(w.deps, { workspaceId: w.workspace.id });
+  assert.equal(mismatch.ok, false);
+  if (!mismatch.ok) {
+    assert.equal(mismatch.error.code, 'conflict');
+    assert.match(mismatch.error.message, /对不上/);
+  }
+  assert.equal(setups(), before, '三种拒绝都不能跑到准备命令');
 });

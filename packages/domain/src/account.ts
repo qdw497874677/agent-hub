@@ -184,6 +184,7 @@ export type AuditAction =
   | 'project.repos_check'
   | 'workspace.setup'
   | 'workspace.transfer'
+  | 'workspace.owner.reconcile'
   | 'workspace.group.create'
   | 'workspace.group.retry'
   | 'workspace.group.remove'

@@ -14,7 +14,10 @@ export interface SessionServiceRepository {
    * （旧帧晚到）不覆盖。返回是否真的写进去了。
    */
   updateState(service: SessionService): Promise<boolean>;
-  /** 只更新日志尾巴与 updated_at，不碰状态 / env / command。 */
-  appendLogTail(id: ServiceId, logTail: string, updatedAt: number): Promise<void>;
+  /**
+   * 原子追加一段日志（只留最后 `SERVICE_LOG_MAX` 个字符）并更新 updated_at，不碰状态 / env / command。
+   * 实现必须在存储层拼接当前尾巴，不能把进程里读到的旧快照整段写回（并发帧会互相覆盖）。
+   */
+  appendLogTail(id: ServiceId, chunk: string, updatedAt: number): Promise<void>;
   remove(id: ServiceId): Promise<void>;
 }

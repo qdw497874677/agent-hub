@@ -112,7 +112,7 @@ async function world() {
     });
     assert.ok(base.ok);
     await deps.workspaces.save(base.value);
-    await deps.workspaces.link({ projectId: project.value.id, workspaceId: base.value.id, linkedBy: null, linkedAt: 1 });
+    await deps.workspaces.claim({ projectId: project.value.id, workspaceId: base.value.id, linkedBy: null, linkedAt: 1 });
   }
   const build = () =>
     buildWorkspaceGroupUseCase(deps, {
@@ -325,7 +325,7 @@ test('给已有组合追加仓库：worktree 建在 repos/ 下，并标记下一
   });
   assert.ok(base.ok);
   await w.deps.workspaces.save(base.value);
-  await w.deps.workspaces.link({ projectId: w.project.id, workspaceId: base.value.id, linkedBy: null, linkedAt: 1 });
+  await w.deps.workspaces.claim({ projectId: w.project.id, workspaceId: base.value.id, linkedBy: null, linkedAt: 1 });
   const added = await addWorkspaceGroupMemberUseCase(w.deps, {
     groupId: built.value.id,
     repoId: docs.id,

@@ -11,10 +11,19 @@ export interface PromptClaim {
 export interface DeliveryQueue {
   save(delivery: Delivery): Promise<void>;
   /**
-   * 条件认领：只有这条还在 queued/undelivered 时才改成 sending。
-   * 返回 false 说明另一个入口（定时泵 / 回合结束 / 立即重试）已经抢走了，调用方不能再派发。
+   * 原子认领队首：只有这条 prompt 是会话队首（没有更早的 queued/sending/undelivered），
+   * 且同一会话没有别的 sending 时，才把状态翻成 sending，占用这一轮。
+   * 返回 false 说明另一个入口（定时泵 / 回合结束 / 立即重试）已经抢走了，或者前面还有没走完的消息，
+   * 调用方都不能派发。
    */
   claimSend(id: string, now: number): Promise<boolean>;
+  /**
+   * 完成一次认领：只有 id 属于该会话且仍在 sending 时才改成 delivered，attempt + 1，清掉 nextAt / lastError。
+   * 返回 false（重复完成 / 会话不符 / 已经不是 sending）时不改任何行。
+   */
+  finishSending(sessionId: string, id: string, now: number): Promise<boolean>;
+  /** 这个会话当前真正在飞的那条 prompt（state = sending）；没有就 null。精确查询，不受 recent 窗口限制。 */
+  inFlight(sessionId: string): Promise<Delivery | null>;
   /**
    * 上一轮还在跑：把这条按条件改回 queued 并定下一次检查时间。
    * 只有它还在 queued/undelivered 时才写，返回 false 说明别的入口已经接管，调用方不能再动它。
@@ -42,6 +51,4 @@ export interface DeliveryQueue {
   deliveredBefore(cutoff: number, limit: number): Promise<Delivery[]>;
   /** Worker 重连：把 queued 的都改成现在就到期；返回改了几条。 */
   wakeAll(now: number): Promise<number>;
-  /** 进程重启：上次停在 sending 的退回 queued。 */
-  recoverSending(now: number): Promise<number>;
 }

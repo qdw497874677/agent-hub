@@ -108,3 +108,61 @@ test('byId 取回整行（入队幂等用）；没有就是 null', async () => {
   assert.deepEqual(await store.byId('group-reply:p1'), row);
   assert.equal(await store.byId('nope'), null);
 });
+
+test('insertIfAbsent：同 id 已存在不覆盖（sent 保留），新 id 才插入', async () => {
+  const store = outboxOf();
+  const first = make('feishu-reply:run-1');
+  assert.deepEqual(await store.insertIfAbsent(first), { message: first, inserted: true });
+  await store.save({ ...first, state: 'sent', leaseUntil: null, externalMessageId: 'om_1', updatedAt: 2_000 });
+
+  const again = await store.insertIfAbsent(make('feishu-reply:run-1', { body: '重放正文' }, 3_000));
+  assert.equal(again.inserted, false);
+  assert.equal(again.message.state, 'sent');
+  assert.equal(again.message.externalMessageId, 'om_1');
+  assert.equal(again.message.body, 'body-feishu-reply:run-1', '已存在的行不被覆盖');
+  assert.deepEqual(await store.byId('feishu-reply:run-1'), again.message);
+
+  const other = await store.insertIfAbsent(make('feishu-reply:run-2', {}, 4_000));
+  assert.equal(other.inserted, true);
+  assert.equal(other.message.state, 'queued');
+});
+
+test('settle 租约 CAS：租约不符 / 被重领 / 已结算的旧结果不落库', async () => {
+  const store = outboxOf();
+  await store.save(make('m1'));
+  const claimed = (await store.claim({ kinds: ['session'] }, 1_000, 500))!;
+  assert.equal(claimed.leaseUntil, 1_500);
+
+  // 租约不符：不改行
+  assert.equal(await store.settle({
+    ...claimed, state: 'sent', leaseUntil: null, externalMessageId: 'wrong', updatedAt: 1_100
+  }, 1_400), false);
+  assert.equal((await store.byId('m1'))!.state, 'sending');
+
+  // 租约相符：结算成功；重复结算（已不是 sending）返回 false
+  const sent = { ...claimed, state: 'sent' as const, leaseUntil: null, externalMessageId: 'ok', updatedAt: 1_100 };
+  assert.equal(await store.settle(sent, 1_500), true);
+  assert.deepEqual(await store.byId('m1'), sent);
+  assert.equal(await store.settle({ ...sent, updatedAt: 1_200 }, 1_500), false);
+
+  // 租约过期后另一泵重领；旧泵拿旧租约结算不生效
+  await store.save(make('m2'));
+  const old = (await store.claim({ kinds: ['session'] }, 2_000, 500))!;
+  assert.equal(old.leaseUntil, 2_500);
+  const fresh = (await store.claim({ kinds: ['session'] }, 2_600, 500))!;
+  assert.equal(fresh.id, 'm2');
+  assert.equal(fresh.leaseUntil, 3_100);
+
+  assert.equal(await store.settle({
+    ...old, state: 'failed', leaseUntil: null, updatedAt: 2_700
+  }, old.leaseUntil), false);
+  const row = (await store.byId('m2'))!;
+  assert.equal(row.state, 'sending');
+  assert.equal(row.leaseUntil, 3_100);
+
+  // 新租约可以结算
+  assert.equal(await store.settle({
+    ...fresh, state: 'sent', leaseUntil: null, externalMessageId: 'new', updatedAt: 2_700
+  }, fresh.leaseUntil), true);
+  assert.equal((await store.byId('m2'))!.state, 'sent');
+});

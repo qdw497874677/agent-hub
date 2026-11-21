@@ -21,8 +21,10 @@ const method = <P extends z.ZodType, R extends z.ZodType>(name: string, capabili
 /**
  * 私有 HTTPS 仓库的鉴权头（`Authorization: Basic …`）：hub 从密钥箱解出来、只交给那台机器的 git。
  * **不进日志、不进错误信息、不回给浏览器**。不传 = 用 Worker 本机的 git 凭据（SSH key / agent）。
+ * `url` = hub 解析令牌时绑定的预期 HTTPS 仓库地址；可选只为滚动升级兼容旧 hub，
+ * 新 Worker 收到没有 `url` 的 auth 会拒绝使用（失败关闭）。
  */
-const gitAuth = z.object({ header: z.string().min(1).max(4096) }).optional();
+const gitAuth = z.object({ header: z.string().min(1).max(4096), url: z.string().min(1).max(2000).optional() }).optional();
 
 const entry = z.object({ name: z.string(), path: z.string(), isGit: z.boolean().optional(), modifiedAt: z.number().optional(), hidden: z.boolean().optional() });
 
@@ -168,13 +170,17 @@ const remotePr = z.object({
   state: z.enum(['open', 'closed', 'merged']),
   headSha: z.string().nullable(),
   mergedAt: z.number().nullable(),
-  base: z.string().nullable().optional()
+  base: z.string().nullable().optional(),
+  /** head 所在仓库（owner/name）；老 Worker 不带，自动认领会因此跳过（#269）。 */
+  repo: z.string().nullable().optional(),
+  /** head 分支名；老 Worker 不带，自动认领会因此跳过（#269）。 */
+  headRef: z.string().nullable().optional()
 });
 
 export const wsPreview = method(
   'ws.preview', 'files.read',
-  /** auth 只为两端形状一致：预览只读本地，不需要令牌。 */
-  z.object({ path: z.string(), maxPatchBytes: z.number().int().min(0).max(1 << 20), auth: gitAuth }),
+  /** auth 只为两端形状一致：预览只读本地，不需要令牌。redactSensitive=false（默认）保持旧行为。 */
+  z.object({ path: z.string(), maxPatchBytes: z.number().int().min(0).max(1 << 20), auth: gitAuth, redactSensitive: z.boolean().optional() }),
   z.object({
     isGit: z.boolean(),
     branch: z.string().nullable(),
@@ -185,7 +191,9 @@ export const wsPreview = method(
     head: z.string().nullable(),
     files: z.array(z.object({ path: z.string(), status: z.string() })),
     patch: z.string(),
-    truncated: z.boolean()
+    truncated: z.boolean(),
+    redactedSensitive: z.boolean().optional(),
+    notice: z.string().optional()
   })
 );
 
@@ -208,7 +216,7 @@ export const wsGh = method(
     request: z.discriminatedUnion('action', [
       z.object({ action: z.literal('create'), base: z.string().min(1), head: z.string().min(1), title: z.string().min(1).max(300), body: z.string().max(65_536) }),
       z.object({ action: z.literal('view'), number: z.number().int().positive() }),
-      z.object({ action: z.literal('list'), head: z.string().min(1) })
+      z.object({ action: z.literal('list'), head: z.string().min(1), repo: z.string().min(1).optional() })
     ])
   }),
   z.union([z.object({ ok: z.literal(true), pr: remotePr }), z.object({ ok: z.literal(true), prs: z.array(remotePr) }), z.object({ ok: z.literal(false), reason: z.string() })])

@@ -6,7 +6,25 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import type { AuditLog, McpReplayStore, Permission, Principal } from '@agent-hub/domain';
 import { resolveMcp, routes, type McpModule, type ResolvedMcp } from './routes.ts';
+import { IDEMPOTENCY_KEY_MAX } from './idempotency.ts';
 import { workbenchSkillFileByUri, workbenchSkillFiles, workbenchSkillUri } from '../workbench-skill.ts';
+
+/**
+ * 写工具的调用方重试键：tools/list 的 inputSchema 与运行时校验共用这一份规则。
+ * 与 REST 的 `Idempotency-Key` 同一个上限（200），但超长直接拒绝，不静默截断——
+ * 否则两个不同的超长 key 会在转发时被截成同一个，重试语义就串了。
+ *
+ * 这个值最终会放进 `Idempotency-Key` 请求头，所以只接受 HTTP 头能原样携带的字符：
+ * HTAB、可见 ASCII、以及 obs-text（%x80-FF）。换行、其它控制字符和超出 Latin-1 的
+ * Unicode（如 emoji）会在 Fetch Headers 里直接抛错，必须在这里先拒绝并给出工具错误。
+ */
+const HTTP_HEADER_VALUE = /^[\t\x20-\x7E\x80-\xFF]+$/;
+export const clientRequestIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(IDEMPOTENCY_KEY_MAX)
+  .regex(HTTP_HEADER_VALUE, 'clientRequestId 含有 HTTP 头不能传输的字符');
 
 /** 内部转调的标记：只有这个模块拿得到，外面的请求伪造不了（放在 env 里，不是请求头）。 */
 export const INTERNAL: unique symbol = Symbol('openapi-internal');
@@ -101,6 +119,8 @@ function toolOf(key: string, route: RouteDef, meta: ResolvedMcp): ToolDef {
     shape.body = bodySchema;
     body = 'nested';
   }
+  // 写工具的顶层参数永远带 clientRequestId（即使 body 是 nested），与下面的运行时校验同一份 schema。
+  if (!meta.readOnly) shape['clientRequestId'] = clientRequestIdSchema;
   const r = route as { summary?: string; description?: string; method: string; path: string };
   // 路由 description 末尾那句「MCP 工具：`x`」是写给 REST 文档的；放进工具说明里是自指，去掉。
   const described = (r.description ?? '').replace(/\n*MCP 工具：`[^`]*`\s*$/, '');
@@ -244,14 +264,24 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
     // Idempotency-Key 交给 v1 的共享幂等中间件——REST 调用方拿到的是同一份保证。
     let clientRequestId = '';
     if (!tool.readOnly) {
-      clientRequestId = String(args['clientRequestId'] ?? '').trim();
+      const raw = args['clientRequestId'];
       delete args['clientRequestId'];
-      if (clientRequestId === '') {
-        return {
-          isError: true,
-          content: [{ type: 'text' as const, text: '写工具要带 clientRequestId（同一请求重试用同一个值，服务端 24 小时内返回同一份结果）' }]
-        };
+      const parsed = clientRequestIdSchema.safeParse(raw);
+      if (!parsed.success) {
+        const trimmed = typeof raw === 'string' ? raw.trim() : '';
+        const text =
+          raw === undefined
+            ? '写工具要带 clientRequestId（同一请求重试用同一个值，服务端 24 小时内返回同一份结果）'
+            : typeof raw !== 'string'
+              ? 'clientRequestId 必须是字符串（同一请求重试用同一个值）'
+              : trimmed === ''
+                ? 'clientRequestId 不能为空（同一请求重试用同一个值）'
+                : trimmed.length > IDEMPOTENCY_KEY_MAX
+                  ? `clientRequestId 最多 ${IDEMPOTENCY_KEY_MAX} 个字符，不会截断（同一请求重试用同一个值）`
+                  : 'clientRequestId 只能包含 HTTP 头可传输的字符（不含换行/控制字符，每个字符不超过 U+00FF）（同一请求重试用同一个值）';
+        return { isError: true, content: [{ type: 'text' as const, text }] };
       }
+      clientRequestId = parsed.data;
     }
     const r = tool.route as { method: string; path: string };
     let path = r.path;

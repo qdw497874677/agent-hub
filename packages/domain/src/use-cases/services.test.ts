@@ -4,12 +4,14 @@ import type { AgentDescriptor } from '../agent.ts';
 import type { Principal, User } from '../account.ts';
 import type { TeamId, UserId } from '../account.ts';
 import { asLoginId, asTeamId, asUserId } from '../account.ts';
+import { unavailable } from '../errors.ts';
 import { asAgentId, type ServiceId } from '../ids.ts';
+import { err, ok } from '../result.ts';
 import { available, capabilityMatrix } from '../capability.ts';
 import type { ServiceGateway, ServiceRuntime, ServiceStartInput } from '../ports/node-gateway.ts';
 import type { SessionServiceRepository } from '../ports/session-service-repository.ts';
 import type { SessionService } from '../service.ts';
-import { servicePublic } from '../service.ts';
+import { appendServiceLog, servicePublic } from '../service.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
 import { createAccessPolicy as createAccessPolicyForTests } from './authorization.ts';
 import { createProjectUseCase } from './projects.ts';
@@ -86,12 +88,21 @@ function fakeServices(): SessionServiceRepository & { readonly rows: Map<Service
     async updateState(service) {
       const current = rows.get(service.id);
       if (!current || current.updatedAt > service.updatedAt) return false;
-      rows.set(service.id, service);
+      // 和 SQLite 一样只写状态列：别用调用方的旧快照把 log_tail / envKeys 盖回去。
+      rows.set(service.id, {
+        ...current,
+        state: service.state,
+        pid: service.pid,
+        detail: service.detail,
+        port: service.port,
+        startedAt: service.startedAt,
+        updatedAt: service.updatedAt,
+      });
       return true;
     },
-    async appendLogTail(id, logTail, updatedAt) {
+    async appendLogTail(id, chunk, updatedAt) {
       const current = rows.get(id);
-      if (current) rows.set(id, { ...current, logTail, updatedAt });
+      if (current) rows.set(id, { ...current, logTail: appendServiceLog(current.logTail, chunk), updatedAt });
     },
     async remove(id) {
       rows.delete(id);
@@ -175,6 +186,9 @@ test('建服务：按会话定位机器与目录，先落 starting，状态等 W
   assert.equal(service.state, 'starting');
   assert.equal(service.pid, null);
   assert.equal(service.startedAt, null);
+  // 落库形状只有键名；值只在同一次请求里交给 Worker。
+  assert.deepEqual(service.envKeys, ['NODE_ENV']);
+  assert.equal('env' in service, false);
   assert.equal(w.starts.length, 1);
   assert.equal(w.starts[0]?.serviceId, service.id);
   assert.equal(w.starts[0]?.command, 'npm run dev');
@@ -309,5 +323,76 @@ test('状态 / 日志帧必须来自服务所属的 Worker；日志落库前擦�
   assert.match(logged, /KEY=\*\*\*/);
   assert.match(logged, /sk-\*\*\*/);
   assert.doesNotMatch(logged, /abcdefghijklmnop/);
+});
+
+test('日志并发追加：两帧读到同一份旧快照也不会丢掉另一帧（#233）', async () => {
+  const w = await world();
+  const created = await createServiceUseCase(w.serviceDeps, w.owner, { taskId: w.task.id, sessionId: w.session.id, command: 'npm run dev' });
+  assert.ok(created.ok, JSON.stringify(created));
+  const service = created.value;
+
+  await recordServiceLogUseCase({ sessionServices: w.sessionServices, now: () => service.updatedAt + 1 }, service.id, service.workerId, 'first\n');
+  const stale = await w.sessionServices.byId(service.id);
+  assert.ok(stale);
+
+  // 两帧都在对方写回之前读到同一份快照；旧实现会用 stale.logTail 拼好整段覆盖，后写者丢掉先写者。
+  let staleReads = 2;
+  const racing: SessionServiceRepository = {
+    ...w.sessionServices,
+    async byId(id) {
+      if (id === service.id && staleReads > 0) {
+        staleReads -= 1;
+        return stale;
+      }
+      return w.sessionServices.byId(id);
+    },
+  };
+
+  await Promise.all([
+    recordServiceLogUseCase({ sessionServices: racing, now: () => service.updatedAt + 2 }, service.id, service.workerId, 'one\n'),
+    recordServiceLogUseCase({ sessionServices: racing, now: () => service.updatedAt + 3 }, service.id, service.workerId, 'two\n'),
+  ]);
+
+  assert.equal((await w.sessionServices.byId(service.id))?.logTail, 'first\none\ntwo\n');
+});
+
+test('建服务失败只改状态：start 期间已落库的日志不会被旧快照抹掉（#233）', async () => {
+  const w = await world();
+  const failingDeps: ServiceDeps = {
+    ...w.serviceDeps,
+    gateway: {
+      services: () => ({
+        async start(input) {
+          const current = await w.sessionServices.byId(input.serviceId);
+          assert.ok(current);
+          await recordServiceLogUseCase(
+            { sessionServices: w.sessionServices, now: () => current.updatedAt + 1 },
+            input.serviceId,
+            current.workerId,
+            'boot\n',
+          );
+          return err(unavailable('start boom'));
+        },
+        async stop() {
+          return err(unavailable('no stop'));
+        },
+        async list() {
+          return ok([]);
+        },
+        async logs() {
+          return ok({ tail: '' });
+        },
+      }),
+    },
+  };
+
+  const created = await createServiceUseCase(failingDeps, w.owner, { taskId: w.task.id, sessionId: w.session.id, command: 'npm run dev' });
+  assert.equal(created.ok, false);
+
+  const row = [...w.sessionServices.rows.values()][0];
+  assert.ok(row);
+  assert.equal(row.state, 'failed');
+  assert.equal(row.detail, 'start boom');
+  assert.equal(row.logTail, 'boot\n');
 });
 

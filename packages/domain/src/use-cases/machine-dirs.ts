@@ -1,7 +1,7 @@
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
 import type { ProjectId } from '../ids.ts';
-import { placeConflict, type Workspace } from '../workspace.ts';
+import { ambiguousPlaceError, placeConflict, type Workspace } from '../workspace.ts';
 import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import type { Deps } from './deps.ts';
@@ -156,10 +156,10 @@ export async function claimOf(
   place: { readonly teamId: string | null; readonly projectId: ProjectId | null; readonly workerId: string | null; readonly path: string }
 ): Promise<Result<Workspace | null, DomainError>> {
   const found = placeConflict(place, await deps.workspaces.onMachine(place.workerId));
+  if (found.ambiguous.length > 0) return err(ambiguousPlaceError());
   if (found.nested) {
-    const owner = found.nested.projectId ? await deps.projects.byId(found.nested.projectId) : null;
-    const where = owner ? `项目「${owner.name}」的` : '团队里的';
-    return err(conflict(`这个目录和${where}工作空间 ${found.nested.path} 互相嵌套；一个目录不能套在另一个工作空间里`));
+    // 不点名嵌套空间的所属项目：调用方未必有权看见它，路径本身足以让人修正选择。
+    return err(conflict(`这个目录和团队里已有的工作空间 ${found.nested.path} 互相嵌套；一个目录不能套在另一个工作空间里`));
   }
   return ok(found.exact);
 }

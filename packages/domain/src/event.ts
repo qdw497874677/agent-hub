@@ -87,6 +87,13 @@ export type SessionEvent =
       readonly kind: 'ended';
       readonly outcome: 'done' | 'stopped' | 'interrupted' | 'failed';
       readonly reason?: string;
+      /**
+       * 这条 ended 属于哪一条 prompt 送达（送出时带下去的 deliveryId）。
+       *
+       * 队首的 `sending` 只能靠它精确收尾：迟到、重复的 A 的 ended 绝不能把 B 的
+       * 送达通道放掉。老协议 / 升级前的 journal 没有这一项，只保留有界的兼容路径。
+       */
+      readonly deliveryId?: string;
     }
   | { readonly kind: 'diagnostic'; readonly level: 'info' | 'warn' | 'error'; readonly text: string }
   /**

@@ -170,26 +170,32 @@ export interface ProjectWorkspaceLink {
   readonly linkedAt: number;
 }
 
+/** 同一位置有多条历史长期登记时的统一说法：不点名归属，也不替人挑一条。 */
+export function ambiguousPlaceError(): DomainError {
+  return conflict('这个目录在团队里有重复的工作空间登记；请先在团队工作空间里清理重复项，再新建、关联或转移');
+}
+
 /**
  * 唯一性（ADR 0026 §6）：同一团队、同一台机器上，活跃的长期工作空间路径唯一且不嵌套。
  * - exact：完全相同的目录已经登记成长期工作空间（调用方复用它、关联到项目即可）；
- * - nested：和某个已登记目录互相嵌套（拒绝）。同项目的临时工作空间不算（沿用原规则）。
+ * - nested：和某个已登记目录互相嵌套（拒绝）。同项目的临时工作空间不算（沿用原规则）；
+ * - ambiguous：完全相同的目录有多条活跃长期登记（老数据 / 并发遗漏），调用方必须显式拒绝，不能任选一条。
  */
 export function placeConflict(
   place: { readonly teamId: string | null; readonly workerId: string | null; readonly path: string; readonly projectId?: ProjectId | null },
   registered: readonly Workspace[]
-): { readonly exact: Workspace | null; readonly nested: Workspace | null } {
+): { readonly exact: Workspace | null; readonly nested: Workspace | null; readonly ambiguous: readonly Workspace[] } {
   const path = normalizePath(place.path);
-  let exact: Workspace | null = null;
+  const exact: Workspace[] = [];
   let nested: Workspace | null = null;
   for (const other of registered) {
     if (other.state === 'removed' || other.workerId !== place.workerId || other.teamId !== place.teamId) continue;
     if (other.kind === 'temporary' && place.projectId != null && other.projectId === place.projectId) continue;
     const otherPath = normalizePath(other.path);
-    if (otherPath === path && other.kind === 'long_lived') exact ??= other;
+    if (otherPath === path && other.kind === 'long_lived') exact.push(other);
     else if (within(path, otherPath) || within(otherPath, path)) nested ??= other;
   }
-  return { exact, nested };
+  return { exact: exact[0] ?? null, nested, ambiguous: exact.length > 1 ? exact : [] };
 }
 
 /** 同一个工作空间里正在跑的会话，按是不是本项目分开数（跨项目并发警告，ADR 0026 §5）。 */

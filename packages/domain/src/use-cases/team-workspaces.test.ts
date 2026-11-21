@@ -15,9 +15,10 @@ import {
   deleteWorkspaceUseCase,
   linkWorkspaceUseCase,
   listTeamWorkspacesUseCase,
-  transferWorkspaceUseCase
+  transferWorkspaceUseCase,
+  unlinkWorkspaceUseCase
 } from './team-workspaces.ts';
-import { newWorkspace } from '../workspace.ts';
+import { newWorkspace, type ProjectWorkspaceLink, type Workspace } from '../workspace.ts';
 
 import type { AgentDescriptor } from '../agent.ts';
 const fake: AgentDescriptor = {
@@ -91,7 +92,7 @@ test('团队页：owner 新建（不关联），成员看不见没关联的；�
   assert.equal(forBob.value.length, 1, '未认领的那个也看得见');
 });
 
-test('独占归属：别的项目不能直接关联（conflict 点名当前项目）；同一项目重复关联幂等；视图带认领者', async () => {
+test('独占归属：别的项目不能直接关联（conflict 不泄露现任项目名）；同一项目重复关联幂等；视图带认领者', async () => {
   const w = await world();
   const ws = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.a.id, workerId: 'remote-1', plan: { mode: 'link', path: '/srv/work/a' }, home: '/h', actor: alice });
   assert.ok(ws.ok);
@@ -99,15 +100,17 @@ test('独占归属：别的项目不能直接关联（conflict 点名当前项�
   assert.equal((await linkWorkspaceUseCase(w.deps, { actor: bob, projectId: w.b.id, workspaceId: ws.value.id })).ok, false);
   // alice 不能改 beta → 授权先挡住
   assert.equal((await linkWorkspaceUseCase(w.deps, { actor: alice, projectId: w.b.id, workspaceId: ws.value.id })).ok, false);
-  // owner 能改 beta、也看得见工作空间：被独占拦下，消息里点名 alpha
+  // owner 能改 beta、也看得见工作空间：被独占拦下；错误信息不点名现任（可能对失败方不可见）
   const taken = await linkWorkspaceUseCase(w.deps, { actor: owner, projectId: w.b.id, workspaceId: ws.value.id });
   assert.equal(taken.ok ? '' : taken.error.code, 'conflict');
-  assert.match(taken.ok ? '' : taken.error.message, /alpha/);
+  assert.match(taken.ok ? '' : taken.error.message, /已经分配给其他项目/);
+  assert.doesNotMatch(taken.ok ? '' : taken.error.message, /alpha/);
   assert.deepEqual((await w.deps.workspaces.linksOf(ws.value.id)).map((l) => l.projectId), [w.a.id]);
 
-  // 同一个项目重复关联幂等；登记还是只有一条
-  assert.ok((await linkWorkspaceUseCase(w.deps, { actor: alice, projectId: w.a.id, workspaceId: ws.value.id })).ok);
-  assert.deepEqual((await w.deps.workspaces.linksOf(ws.value.id)).map((l) => l.projectId), [w.a.id]);
+  // 同一个项目重复关联幂等；登记还是只有一条，保留首次自动认领的元数据（#233）
+  assert.ok((await linkWorkspaceUseCase(w.deps, { actor: owner, projectId: w.a.id, workspaceId: ws.value.id })).ok);
+  const links = await w.deps.workspaces.linksOf(ws.value.id);
+  assert.deepEqual(links.map((l) => [l.projectId, l.linkedBy]), [[w.a.id, null]]);
 
   // 运行面板 / 项目设置里带认领者；bob 在团队页看不到它
   const views = await workspaceViewsUseCase(w.deps, w.a.id);
@@ -119,6 +122,65 @@ test('独占归属：别的项目不能直接关联（conflict 点名当前项�
 
   // 独占后只有一个认领者：对 alpha 有 project.update 的 alice 一个人就能删（只移除登记）
   assert.ok((await deleteWorkspaceUseCase(w.deps, { actor: alice, workspaceId: ws.value.id, deleteDirectory: false })).ok);
+});
+
+test('历史重复登记：关联/转移都报重复，保留老行不覆盖（#233）', async () => {
+  const w = await world();
+  const ws = await createTeamWorkspaceUseCase(w.deps, { actor: owner, workerId: 'remote-1', plan: { mode: 'link', path: '/srv/work/dup' }, home: '/h' });
+  assert.ok(ws.ok, ws.ok ? '' : ws.error.message);
+  const duplicate = newWorkspace({ projectId: null, teamId: 't1', workerId: 'remote-1', path: '/srv/work/dup', kind: 'long_lived', source: 'linked', now: 5 });
+  assert.ok(duplicate.ok);
+  const store = w.deps.workspaces as typeof w.deps.workspaces & { rows: Map<string, Workspace> };
+  store.rows.set(duplicate.value.id, duplicate.value);
+
+  const linked = await linkWorkspaceUseCase(w.deps, { actor: alice, projectId: w.a.id, workspaceId: ws.value.id });
+  assert.equal(linked.ok, false);
+  if (!linked.ok) assert.match(linked.error.message, /重复的工作空间登记/);
+  assert.deepEqual(await w.deps.workspaces.linksOf(ws.value.id), []);
+
+  const moved = await transferWorkspaceUseCase(w.deps, { actor: alice, projectId: w.a.id, workspaceId: ws.value.id });
+  assert.equal(moved.ok, false);
+  if (!moved.ok) assert.match(moved.error.message, /重复的工作空间登记/);
+  assert.deepEqual(await w.deps.workspaces.linksOf(ws.value.id), []);
+
+  // 已经是当前项目的唯一认领：历史重复行不应把幂等关联/转移变成冲突。
+  const links = w.deps.workspaces as typeof w.deps.workspaces & { links: ProjectWorkspaceLink[] };
+  links.links.push({ projectId: w.a.id, workspaceId: ws.value.id, linkedBy: 'legacy', linkedAt: 1 });
+  assert.ok((await linkWorkspaceUseCase(w.deps, { actor: alice, projectId: w.a.id, workspaceId: ws.value.id })).ok);
+  assert.ok((await transferWorkspaceUseCase(w.deps, { actor: alice, projectId: w.a.id, workspaceId: ws.value.id })).ok);
+  assert.deepEqual((await w.deps.workspaces.linksOf(ws.value.id)).map((l) => [l.projectId, l.linkedBy]), [[w.a.id, 'legacy']]);
+  assert.equal(store.rows.size, 2);
+});
+
+test('并发认领：预检查看到空目录，claim 时已被别人抢先 → conflict，不挤掉新认领（#233）', async () => {
+  const w = await world();
+  const ws = await createTeamWorkspaceUseCase(w.deps, { actor: owner, workerId: 'remote-1', plan: { mode: 'link', path: '/srv/work/race' }, home: '/h' });
+  assert.ok(ws.ok, ws.ok ? '' : ws.error.message);
+  const c = createProject({ name: 'gamma', now: 1, teamId: 't1', createdBy: 'boss' });
+  assert.ok(c.ok);
+  await w.deps.projects.save(c.value);
+  // linkWorkspaceUseCase 先 linksOf 做可见性预检查；这里在它返回后、claim 之前让另一个项目抢先认领。
+  const linksOf = w.deps.workspaces.linksOf.bind(w.deps.workspaces);
+  let raced = false;
+  w.deps.workspaces.linksOf = async (workspaceId) => {
+    const seen = await linksOf(workspaceId);
+    if (!raced) {
+      raced = true;
+      const winner = await w.deps.workspaces.claim({
+        projectId: c.value.id,
+        workspaceId: ws.value.id,
+        linkedBy: 'racer',
+        linkedAt: 2
+      });
+      assert.equal(winner.status, 'claimed');
+    }
+    return seen;
+  };
+  const claimed = await linkWorkspaceUseCase(w.deps, { actor: bob, projectId: w.b.id, workspaceId: ws.value.id });
+  assert.equal(claimed.ok ? '' : claimed.error.code, 'conflict');
+  assert.match(claimed.ok ? '' : claimed.error.message, /已经分配给其他项目/);
+  assert.doesNotMatch(claimed.ok ? '' : claimed.error.message, /gamma/);
+  assert.deepEqual((await w.deps.workspaces.linksOf(ws.value.id)).map((l) => l.projectId), [c.value.id]);
 });
 
 test('转移：A→B 成功，登记只剩 B；对已经属于本项目的空间再转移是幂等的', async () => {
@@ -180,6 +242,45 @@ test('转移：源项目还有会话在这个目录里跑 → conflict，停了�
   assert.deepEqual((await w.deps.workspaces.linksOf(ws.value.id)).map((l) => l.projectId), [w.b.id]);
 });
 
+test('转移/取消关联：团队级工作空间上的容器会话按 originProjectId 判定，来源项目在跑就拦（#233）', async () => {
+  const w = await world();
+  const ws = await createTeamWorkspaceUseCase(w.deps, { actor: owner, workerId: 'remote-1', plan: { mode: 'link', path: '/srv/work/team' }, home: '/h' });
+  assert.ok(ws.ok, ws.ok ? '' : ws.error.message);
+  assert.equal(ws.value.projectId, null, '团队页新建的长期空间没有登记项目');
+  assert.ok((await linkWorkspaceUseCase(w.deps, { actor: owner, projectId: w.a.id, workspaceId: ws.value.id })).ok);
+  // 容器会话：出生来源是 alpha；工作空间自己的 project_id 仍是 null，旧的宽松判定会漏掉它。
+  const session = deriveSession({ task: null, agentId: asAgentId('pi'), model: 'm', now: 1, workspaceId: ws.value.id, originProjectId: w.a.id });
+  assert.ok(session.ok);
+  await w.deps.sessions.save(session.value);
+  const blocked = await transferWorkspaceUseCase(w.deps, { actor: owner, projectId: w.b.id, workspaceId: ws.value.id });
+  assert.equal(blocked.ok ? '' : blocked.error.code, 'conflict');
+  assert.match(blocked.ok ? '' : blocked.error.message, /源项目还有会话/);
+  const unlinkBlocked = await unlinkWorkspaceUseCase(w.deps, { actor: owner, projectId: w.a.id, workspaceId: ws.value.id });
+  assert.equal(unlinkBlocked.ok ? '' : unlinkBlocked.error.code, 'conflict');
+  assert.match(unlinkBlocked.ok ? '' : unlinkBlocked.error.message, /本项目还有会话/);
+  assert.deepEqual((await w.deps.workspaces.linksOf(ws.value.id)).map((l) => l.projectId), [w.a.id]);
+  await w.deps.sessions.save({ ...session.value, status: 'stopped' });
+  assert.ok((await transferWorkspaceUseCase(w.deps, { actor: owner, projectId: w.b.id, workspaceId: ws.value.id })).ok);
+});
+
+test('转移/取消关联：来源不明的运行中会话保守拦截，不因判不出归属而放行（#233）', async () => {
+  const w = await world();
+  const ws = await createTeamWorkspaceUseCase(w.deps, { actor: owner, workerId: 'remote-1', plan: { mode: 'link', path: '/srv/work/unknown' }, home: '/h' });
+  assert.ok(ws.ok, ws.ok ? '' : ws.error.message);
+  assert.ok((await linkWorkspaceUseCase(w.deps, { actor: owner, projectId: w.a.id, workspaceId: ws.value.id })).ok);
+  // 老容器会话：没有 originProjectId、没有组，长期工作空间自己的 project_id 也不作来源。
+  const session = deriveSession({ task: null, agentId: asAgentId('pi'), model: 'm', now: 1, workspaceId: ws.value.id });
+  assert.ok(session.ok);
+  await w.deps.sessions.save(session.value);
+  const blocked = await transferWorkspaceUseCase(w.deps, { actor: owner, projectId: w.b.id, workspaceId: ws.value.id });
+  assert.equal(blocked.ok ? '' : blocked.error.code, 'conflict');
+  assert.match(blocked.ok ? '' : blocked.error.message, /来源不明的运行中会话/);
+  const unlinkBlocked = await unlinkWorkspaceUseCase(w.deps, { actor: owner, projectId: w.a.id, workspaceId: ws.value.id });
+  assert.equal(unlinkBlocked.ok ? '' : unlinkBlocked.error.code, 'conflict');
+  assert.match(unlinkBlocked.ok ? '' : unlinkBlocked.error.message, /来源不明的运行中会话/);
+  assert.deepEqual((await w.deps.workspaces.linksOf(ws.value.id)).map((l) => l.projectId), [w.a.id]);
+});
+
 test('转移：临时工作空间只属于一个任务，不能转移（invalid）', async () => {
   const w = await world();
   const task = createTask({ projectId: w.a.id, title: 't', goal: '', now: 1 });
@@ -193,6 +294,37 @@ test('转移：临时工作空间只属于一个任务，不能转移（invalid�
   const moved = await transferWorkspaceUseCase(w.deps, { actor: owner, projectId: w.b.id, workspaceId: temp.value.id });
   assert.equal(moved.ok ? '' : moved.error.code, 'invalid');
   assert.match(moved.ok ? '' : moved.error.message, /临时工作空间/);
+});
+
+test('转移：会话检查期间别人抢先完成 A→C，原转移 stale 且 C 的认领不被删（#233）', async () => {
+  const w = await world();
+  const ws = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.a.id, workerId: 'remote-1', plan: { mode: 'link', path: '/srv/work/a' }, home: '/h', actor: alice });
+  assert.ok(ws.ok);
+  const c = createProject({ name: 'gamma', now: 1, teamId: 't1', createdBy: 'boss' });
+  assert.ok(c.ok);
+  await w.deps.projects.save(c.value);
+  // 转移在检查运行中会话时会让出事件循环；这里确定性地模拟另一个并发转移 A→C 抢先完成
+  const list = w.deps.sessions.listByWorkspace.bind(w.deps.sessions);
+  let raced = false;
+  w.deps.sessions.listByWorkspace = async (workspaceId) => {
+    if (!raced) {
+      raced = true;
+      const winner = await w.deps.workspaces.transfer({
+        projectId: c.value.id,
+        workspaceId: ws.value.id,
+        linkedBy: 'racer',
+        linkedAt: 2,
+        expectedProjectIds: [w.a.id]
+      });
+      assert.equal(winner.status, 'transferred');
+    }
+    return list(workspaceId);
+  };
+  const moved = await transferWorkspaceUseCase(w.deps, { actor: owner, projectId: w.b.id, workspaceId: ws.value.id });
+  assert.equal(moved.ok ? '' : moved.error.code, 'conflict');
+  assert.match(moved.ok ? '' : moved.error.message, /归属刚刚变了/);
+  assert.doesNotMatch(moved.ok ? '' : moved.error.message, /gamma/);
+  assert.deepEqual((await w.deps.workspaces.linksOf(ws.value.id)).map((l) => l.projectId), [c.value.id]);
 });
 
 test('团队页新建（还没分配）的长期工作空间可以被项目认领', async () => {

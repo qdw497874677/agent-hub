@@ -20,6 +20,7 @@ import {
   acceptedSchema,
   waitSec,
   sessionId,
+  sessionWithHandleSchema,
   sessionGitRunRequest,
   sessionGitStateSchema,
   sessionGitRunResultSchema,
@@ -37,12 +38,12 @@ export const sessions = {
       '参数：taskId、agentId、model（省略或空串=按 resolve_default_agent 的层级取：任务默认 > 项目默认 > 团队运行时默认模型）、workerId（建议显式给在线机器）、workspaceId（可选）、groupId（可选：已有的组合工作空间；多仓项目要先在 Hub 建组，本工具不会自动建组合组）、assetIds（可选：只带这些资产）。\n' +
       '会话通信：repoId（可选：一仓一会话——只为项目里这个仓库新开隔离 worktree，和 workspaceId / groupId 互斥）、handle（可选：任务内短名，别的会话用 peer:<handle> 找它）、linkWith（可选：建好后和这些同项目会话连线，连上才能互发消息）。\n' +
       '资产：不传 assetIds = 用项目生效的全部资产；要排除某个技能/指令时，传完整清单减掉它（清单里的 id 必须对该项目可见，看不见的会被丢掉）。\n' +
-      '返回：会话对象（id、status、model、workspaceId）。\n' +
+      '返回：会话对象（id、status、model、workspaceId、handle）。handle 是任务内短名，和 session_peers 返回的一致：没显式传 handle 时用默认短名 `<agentId>-<会话 id 的 4 位后缀>`；只有没接消息总线时为 null。\n' +
       '下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n' +
       '错误：400 参数不合法（含 handle 格式、repoId 不在项目里）；403 无 sessions:write 或不能和 linkWith 里的会话说话；404 linkWith 的会话不在同一项目；409 机器不可用、没装该 runtime、短名已被占用或 linkWith 的会话已收起（archived）。\n' +
       '重试：MCP 调用要给 clientRequestId，同一值重试不会开第二条会话。',
     request: body(deriveSessionRequest),
-    responses: { 201: json(sessionSchema, '已开始') }
+    responses: { 201: json(sessionWithHandleSchema, '已开始') }
   }, { module: 'sessions', need: 'session.create', readOnly: false, expose: 'session_start', idempotent: true }),
   forkSession: route('sessions:write', {
     method: 'post', path: `${V1}/sessions/fork`, tags: ['sessions'], summary: '从某条消息分叉',
@@ -54,13 +55,13 @@ export const sessions = {
     description:
       '取一条会话的状态与配置。**status 只描述最近一轮**：running = 这一轮在跑；done/stopped/interrupted/failed = 这一轮的结果。\n' +
       '参数：sessionId。\n' +
-      '返回：会话对象（status、turn、lastSeq、model、workspaceId、taskId…；taskId 可能为 null，表示常驻容器会话）。\n' +
+      '返回：会话对象（status、turn、lastSeq、model、workspaceId、taskId…；taskId 可能为 null，表示常驻容器会话）。handle 是任务内短名，和 session_peers 返回的一致：没显式设 handle 时是默认短名 `<agentId>-<会话 id 的 4 位后缀>`；只有没接消息总线时为 null。\n' +
       '轮询用法：记下 turn；调 events(sessionId, sinceTurn=turn) 或 events(sessionId, after=lastSeq)；未到终态就 3–5 秒后再看；看到本 turn 的 ended 事件即这一轮结束。\n' +
       '下一步：用 events 读它的时间线；要发下一句用 session_reply。\n' +
       '长轮询：waitSec（0–50）= 这一轮还在跑时最多等这么久再返回（不取消这一轮；到点仍在跑就原样返回 running）。\n' +
       '错误：404 会话不存在或属于看不见的项目。',
     request: { params: sessionId, query: z.object({ waitSec }) },
-    responses: { 200: json(sessionSchema) }
+    responses: { 200: json(sessionWithHandleSchema) }
   }),
   setSessionModel: route('sessions:write', {
     method: 'post', path: `${V1}/sessions/{sessionId}/model`, tags: ['sessions'], summary: '换这条会话的模型（可换提供商）',
@@ -78,6 +79,7 @@ export const sessions = {
     description:
       '给会话发一条消息，立即返回（202）；回合在后台跑。\n' +
       '参数：text、clientMessageId（建议总是带；同一条消息重试用同一个值，服务端按它去重）。\n' +
+      'MCP 重试：clientRequestId 是整个工具调用的重试键（同一值不会重复发送）；clientMessageId 是这条消息的去重键，两者独立——换 clientRequestId 重试同一条消息时，仍靠 clientMessageId 去重。\n' +
       '返回：{ ok, turn, seq, deliveryId, state }——turn 是这句开启的轮次。\n' +
       '轮询用法：拿返回的 turn，反复调 events(sessionId, sinceTurn=turn)；读到的每条事件都带同一个 turn；看到 ended 就是这一轮结束（事件里 outcome 区分 done/stopped/interrupted/failed）。\n' +
       '下一步：轮询 events 或 list_task_log 看进展与结论；要打断用 session_cancel。\n' +

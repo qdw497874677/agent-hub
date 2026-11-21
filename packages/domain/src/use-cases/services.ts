@@ -7,7 +7,6 @@ import { scrubCredentials } from '../scrub.ts';
 import {
   SERVICE_ENV_MAX,
   SERVICE_LOG_MAX,
-  appendServiceLog,
   serviceCommandProblem,
   serviceEnvProblem,
   serviceIdFrom,
@@ -31,7 +30,7 @@ import { locationOf } from './workspaces.ts';
  * 只按任务建时按 `project.update`。`root` 是否落在 WORKER_ROOTS 内由 Worker realpath 后判定，
  * hub 只做非空 / 绝对路径校验。
  */
-export type ServiceDeps = Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'workspaces' | 'access' | 'now'> & {
+export type ServiceDeps = Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'workspaces' | 'workspaceGroups' | 'access' | 'now'> & {
   readonly sessionServices: SessionServiceRepository;
   readonly gateway: Pick<NodeGateway, 'services' | 'processes'>;
 };
@@ -152,7 +151,8 @@ export async function createServiceUseCase(
     root,
     command,
     port,
-    env: { ...env },
+    // 值只活在这个请求里：落库只存键名，启动时用下面校验过的原始 env 交给 Worker。
+    envKeys: Object.keys(env).sort(),
     restart,
     state: 'starting',
     pid: null,
@@ -166,13 +166,16 @@ export async function createServiceUseCase(
   const bridge = deps.gateway.services?.(workerId);
   if (!bridge) {
     const detail = '这台机器的 Worker 太旧，不支持本地服务';
-    await deps.sessionServices.save(serviceStateOf(service, { state: 'failed', detail, at: now }));
+    // 状态失败只写状态列：整行 save 会把创建时读到的空日志快照盖回去（#233）。
+    await deps.sessionServices.updateState(serviceStateOf(service, { state: 'failed', detail, at: now }));
     return err(unavailable(detail));
   }
 
-  const started = await bridge.start({ serviceId: service.id, root, command, port, env: service.env, restart });
+  // 不要从 service.envKeys 还原：这里是唯一还持有值的时刻，Worker 起进程 / 内存重拉都靠它。
+  const started = await bridge.start({ serviceId: service.id, root, command, port, env, restart });
   if (!started.ok) {
-    await deps.sessionServices.save(serviceStateOf(service, { state: 'failed', detail: started.error.message, at: deps.now() }));
+    // 同上：start 期间可能已经有 service_log 落库，不能用旧快照整行覆盖。
+    await deps.sessionServices.updateState(serviceStateOf(service, { state: 'failed', detail: started.error.message, at: deps.now() }));
     return err(started.error);
   }
   // 不做乐观状态：pid / running 都等 Worker 的 `service_state` 回报。
@@ -254,7 +257,7 @@ export async function readServiceLogsUseCase(
   return ok(service.logTail.slice(-limit));
 }
 
-/** 读一条服务的环境变量键名（值永远不出 domain）。权限与读日志 / 停服务一致。 */
+/** 读一条服务的环境变量键名（值从未落库，也永远不出 domain）。权限与读日志 / 停服务一致。 */
 export async function readServiceEnvKeysUseCase(
   deps: ServiceDeps,
   subject: Subject | null,
@@ -264,7 +267,7 @@ export async function readServiceEnvKeysUseCase(
   if (!service) return err(notFound('服务不存在'));
   const allowed = await authorizeService(deps, subject, service);
   if (!allowed.ok) return allowed;
-  return ok(Object.keys(service.env).sort());
+  return ok([...service.envKeys].sort());
 }
 
 /**
@@ -286,7 +289,11 @@ export async function recordServiceStateUseCase(
   return changed ? next : null;
 }
 
-/** Worker 的 `service_log` 帧 → 追加到 log_tail（先擦凭据，只留尾部 8 KiB）。 */
+/**
+ * Worker 的 `service_log` 帧 → 追加到 log_tail（先擦凭据；存储层原子拼接并只留尾部 8 KiB）。
+ *
+ * 不在这里读整段再拼：两帧同时读到同一份 logTail 时，后写的整段覆盖会让先写的丢失（#233）。
+ */
 export async function recordServiceLogUseCase(
   deps: Pick<ServiceDeps, 'sessionServices' | 'now'>,
   serviceId: string,
@@ -295,8 +302,7 @@ export async function recordServiceLogUseCase(
 ): Promise<void> {
   const service = await deps.sessionServices.byId(asServiceId(serviceId));
   if (!service || service.workerId !== workerId) return;
-  const nextTail = appendServiceLog(service.logTail, scrubCredentials(chunk));
-  await deps.sessionServices.appendLogTail(service.id, nextTail, deps.now());
+  await deps.sessionServices.appendLogTail(service.id, scrubCredentials(chunk), deps.now());
 }
 
 /** 有会话就按会话（session.prompt），否则按服务所属任务（project.update）。 */

@@ -13,8 +13,9 @@ export interface StallPolicy {
  * 找出「一轮还没结束、却很久没动静」的会话，各记一条 warn 诊断。
  *
  * 「一轮还没结束」= 最后一条事件不是 ended：用户在等回复，不是 agent 在等用户。
- * 只提醒、不擅自中断——模型可能只是在跑一个很慢的工具，停不停交给人。
- * 诊断事件本身会推进 journal，所以同一次卡顿只提醒一次；之后再有输出就重新计时。
+ * 只提醒、不擅自中断、也不补 ended——模型可能只是在跑一个很慢的工具，停不停交给人
+ * 和「送达后没有进展」那条有界中断策略。诊断事件本身会推进 journal，所以同一次卡顿
+ * 只提醒一次；之后再有输出就重新计时。
  */
 export async function flagStalledSessions(
   deps: Pick<Deps, 'artifacts' | 'now' | 'queue' | 'sessions' | 'stream'>,
@@ -30,7 +31,7 @@ export async function flagStalledSessions(
       const idle = deps.now() - last.at;
       if (idle < policy.idleMs) return false;
       const minutes = Math.max(1, Math.round(idle / 60_000));
-      const text = `${policy.marker}：已经 ${minutes} 分钟没有新输出，模型可能卡住了，可以点「中断」停下这一轮。`;
+      const text = `${policy.marker}：已经 ${minutes} 分钟没有新输出，模型可能卡住了，可以点「中断」停下这一轮。平台只提醒，不会自动收尾。`;
       const result = await recordEvent(deps, { sessionId: session.id, event: { kind: 'diagnostic', level: 'warn', text } });
       return result.ok;
     });

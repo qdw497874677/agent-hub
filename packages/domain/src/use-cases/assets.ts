@@ -1029,8 +1029,6 @@ export async function resolveSessionAssets(
     }
   }
   const candidates = [...bySlot.values()];
-  const installed = new Set((await deps.assets.installations()).filter((row) => row.workerId === request.workerId).map((row) => row.assetId));
-  const landed = deps.board.get(request.workerId)?.installed ?? {};
   // 允许清单 + 自动预热：只有文件类候选要装到机器上（MCP 不下发，直接用钉住的版本），
   // 先交给 ensure 装好，再按返回的 digest 组成清单。
   const fileCandidates = candidates.filter((asset) => isFileAssetKind(asset.kind));
@@ -1043,13 +1041,33 @@ export async function resolveSessionAssets(
     return { assetIds: [], entries: [], setIds, blocked: describeEnsureFailure(names, ensured === null ? null : ensured.reason) };
   }
   const preheated = ensured === null || isEnsureFailure(ensured) ? null : ensured;
+  // 预热成功但没回报某个文件类候选的 digest（或回报空串）= 没真正落地：整次拦住，
+  // 不能回落到预热前读的看板——那可能正是刚被替换掉的旧 digest（#233）。
+  if (preheated !== null) {
+    const missing = fileCandidates.filter((asset) => {
+      const digest = preheated[asset.id];
+      return digest === undefined || digest === '';
+    });
+    if (missing.length > 0) {
+      return {
+        assetIds: [],
+        entries: [],
+        setIds,
+        blocked: describeEnsureFailure(missing.map((asset) => asset.name), '机器没有回报装好')
+      };
+    }
+  }
+  // 只有旧语义（没有 ensure）才需要看板：装了哪些、落地的是哪个 digest。
+  const installed = request.ensure === undefined
+    ? new Set((await deps.assets.installations()).filter((row) => row.workerId === request.workerId).map((row) => row.assetId))
+    : null;
+  const landed = request.ensure === undefined ? deps.board.get(request.workerId)?.installed ?? {} : null;
   let entries: SessionAssetEntry[] = [];
   for (const asset of candidates) {
-    if (request.ensure === undefined && !installed.has(asset.id)) continue;
-    // 旧语义（没有 ensure）：必须已经落地，否则视为「这台机器上没有」。
-    // 允许清单模式（有 ensure）：落地优先，其次用预热返回的 digest。
+    if (installed !== null && !installed.has(asset.id)) continue;
+    // 有 ensure：预热返回的 digest 是权威的（前面已校验完整）；没有 ensure：沿用看板上的落地 digest。
     const digest = isFileAssetKind(asset.kind)
-      ? landed[asset.id] ?? (preheated === null ? undefined : preheated[asset.id])
+      ? preheated !== null ? preheated[asset.id] : landed?.[asset.id]
       : asset.pinned;
     if (digest === undefined || digest === '') continue;
     entries.push({ assetId: asset.id, kind: asset.kind, name: asset.name, digest, scope: assetScope(asset) });

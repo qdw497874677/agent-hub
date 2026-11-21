@@ -40,7 +40,14 @@ export * from './runtime-install.ts';
 
 export type { TaskRepository } from './ports/task-repository.ts';
 export type { WorkLogRepository, WorkLogQuery } from './ports/work-log-repository.ts';
-export type { WorkspaceRepository } from './ports/workspace-repository.ts';
+export type {
+  WorkspaceClaim,
+  WorkspaceClaimOutcome,
+  WorkspaceRepository,
+  WorkspaceSaveOutcome,
+  WorkspaceTransfer,
+  WorkspaceTransferOutcome
+} from './ports/workspace-repository.ts';
 export type { WorkspaceGroupRepository } from './ports/workspace-groups.ts';
 export type { WorkspaceGroupGit } from './ports/workspace-group-git.ts';
 export type { RepoAuthPort } from './ports/repo-auth.ts';
@@ -49,7 +56,7 @@ export type { PreviewLinkRepository } from './ports/preview-links.ts';
 export type { SessionServiceRepository } from './ports/session-service-repository.ts';
 export type { ComponentCatalogRepository, ComponentPinStore } from './ports/component-store.ts';
 export type { HarnessProbe, HarnessReadiness, HarnessSelfCheck } from './ports/harness-readiness.ts';
-export type { ProjectRepository } from './ports/project-repository.ts';
+export type { ProjectRepository, ProjectWorkspaceClaimOutcome } from './ports/project-repository.ts';
 export type { SessionRepository } from './ports/session-repository.ts';
 export type { ArtifactRepository } from './ports/artifact-repository.ts';
 export type { LayoutStore } from './ports/layout-store.ts';
@@ -65,7 +72,7 @@ export type { NodeGateway, WorkerCommand, DispatchOutcome, ServiceGateway, Servi
 export type { NodeProvisioner } from './ports/node-provisioner.ts';
 export type { CapacityPolicy, AdmissionRequest } from './ports/capacity-policy.ts';
 export type { DirectoryEntry, WorkspaceFS } from './ports/workspace-fs.ts';
-export type { CommitInput, CommitOutcome, CommitPreview, GhOutcome, GhRequest, PushOutcome, RemotePullRequest, CloneInput, GitAuth, GitInspection, GitStatus, RemoveKind, RemoveOptions, RemoveOutcome, RepoProbe, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
+export type { CommitInput, CommitOutcome, CommitPreview, GhOutcome, GhRequest, PushOutcome, RemotePullRequest, CloneInput, GitAuth, GitInspection, GitStatus, PreviewOptions, RemoveKind, RemoveOptions, RemoveOutcome, RepoProbe, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
 export type { SearchGateway, SearchHit, SearchQuery } from './ports/search-gateway.ts';
 
 export type { SessionHosting } from './ports/session-hosting.ts';
@@ -204,7 +211,7 @@ export * from './runtime-bundle.ts';
 export * from './component-catalog.ts';
 export type { BranchBase, BrowserEntry, ChangedFile, DirectoryPage, FileChangeNotice, FileContent, FileDiff, FileGitStatus, SessionBaseStore, WorkspaceBrowser, TurnCheckpoint, CheckpointStore, TurnRefStore } from './ports/workspace-browser.ts';
 export { CHECKPOINT_REF_PREFIX, CHECKPOINT_RETENTION_MS, checkpointRef, isCheckpointRef, isCheckpointPrefix } from './ports/workspace-browser.ts';
-export { FILES_LIMITS, isBrowsablePath, isCommitId, isSensitivePath, looksBinary } from './workspace-files.ts';
+export { FILES_LIMITS, isBrowsablePath, isCommitId, isSensitivePath, looksBinary, withoutSensitiveDiff } from './workspace-files.ts';
 export * from './use-cases/workspace-files.ts';
 export { DEFAULT_CLEANUP_POLICY, IDLE_DAYS_MAX } from './ports/workspace-sweeps.ts';
 export type { CleanupPolicy, SweepAction, SweepItem, SweepRun, WorkspaceSweepStore } from './ports/workspace-sweeps.ts';
@@ -213,7 +220,7 @@ export * from './git-workflow.ts';
 export * from './use-cases/git-workflow.ts';
 export * from './delivery.ts';
 export type { DeliveryQueue } from './ports/delivery-queue.ts';
-export { attemptDelivery, pumpDeliveries, releaseAfterTurn, recoverOrphanedTurns, TURN_WAIT_MS, ORPHAN_TURN_MS, retryDeliveryNow, cancelDelivery, type DeliveryDeps, type PromptPayload } from './use-cases/delivery.ts';
+export { attemptDelivery, pumpDeliveries, releaseAfterTurn, recoverOrphanedTurns, resolveOrphanTurnMs, findDeliveryEnded, reconcileInFlightDelivery, reconcileSendingDeliveries, TURN_WAIT_MS, ORPHAN_TURN_MS, ORPHAN_TURN_MARKER, retryDeliveryNow, cancelDelivery, type DeliveryDeps, type PromptPayload } from './use-cases/delivery.ts';
 export { validateProvenance, legacyProvenance, viaLabel, PARENT_REQUIRED, type SessionProvenance, type ProvenanceVia, type ProvenanceActorKind } from './provenance.ts';
 export type { ProvenanceStore } from './ports/provenance-store.ts';
 export { recordProvenance, type ProvenanceDeps, type RecordProvenanceInput } from './use-cases/provenance.ts';

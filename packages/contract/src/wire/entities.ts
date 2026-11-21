@@ -469,7 +469,8 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('ended'),
     outcome: z.enum(['done', 'stopped', 'interrupted', 'failed']),
-    reason: z.string().optional()
+    reason: z.string().optional(),
+    deliveryId: z.string().min(1).max(128).optional()
   }),
   z.object({
     kind: z.literal('diagnostic'),

@@ -4,7 +4,7 @@ import { recurseSubmodules } from '../project.ts';
 import type { WorkspaceGroup } from '../workspace-group.ts';
 import { groupMemberRoot, groupSessionRoot } from '../workspace-group.ts';
 import { isContainerSession, type Session } from '../session.ts';
-import { concurrencyOf, isUsable, newWorkspace, normalizePath, type Workspace } from '../workspace.ts';
+import { ambiguousPlaceError, concurrencyOf, isUsable, newWorkspace, normalizePath, type Workspace } from '../workspace.ts';
 import { folderNameProblem, insideRoots, MANAGED_DIR, projectSlug } from '../directories.ts';
 import type { Machine } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
@@ -236,6 +236,14 @@ export interface PrepareLongLivedCommand {
   readonly actor?: Subject | null;
 }
 
+/**
+ * 认领冲突的统一说法（#233）：同一个目录已经属于别的项目时，绝不把现任挤掉。
+ * 并发认领的失败方未必有权看见现任项目，所以这里不点名——避免通过错误信息泄露归属。
+ */
+export function claimConflictError(): DomainError {
+  return conflict('这个目录已经分配给其他项目了。先在那边释放，或在那个项目里把它转移到本项目');
+}
+
 export async function prepareLongLivedWorkspaceUseCase(
   deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access' | 'repoAuth'>,
   command: PrepareLongLivedCommand
@@ -254,7 +262,14 @@ export async function prepareLongLivedWorkspaceUseCase(
     actor: command.actor ?? null
   });
   if (!prepared.ok) return prepared;
-  await deps.workspaces.link({ projectId: project.id, workspaceId: prepared.value.id, linkedBy: actorId(command.actor ?? null), linkedAt: deps.now() });
+  const claimed = await deps.workspaces.claim({
+    projectId: project.id,
+    workspaceId: prepared.value.id,
+    linkedBy: actorId(command.actor ?? null),
+    linkedAt: deps.now()
+  });
+  if (claimed.status === 'conflict') return err(claimConflictError());
+  if (claimed.status === 'ambiguous') return err(ambiguousPlaceError());
   return prepared;
 }
 
@@ -361,8 +376,10 @@ export async function prepareTeamWorkspace(
     now: deps.now()
   });
   if (!created.ok) return created;
-  await deps.workspaces.save(created.value);
-  return ok(created.value);
+  // 保存结果必须显式消费：撞到同位置唯一登记就复用它；历史重复 / 改目录撞车则拒绝，不能假装建成。
+  const saved = await deps.workspaces.save(created.value);
+  if (saved.status === 'ambiguous' || saved.status === 'place-taken') return err(ambiguousPlaceError());
+  return ok(saved.workspace);
 }
 
 export function actorId(actor: Subject | null): string | null {
@@ -443,8 +460,15 @@ export async function adoptLocalWorkspacesUseCase(
 ): Promise<number> {
   if (worker.origin !== 'local') return 0;
   const legacy = await deps.workspaces.onMachine(null);
-  for (const workspace of legacy) await deps.workspaces.save({ ...workspace, workerId: worker.workerId, updatedAt: deps.now() });
-  return legacy.length;
+  let changed = 0;
+  for (const workspace of legacy) {
+    const saved = await deps.workspaces.save({ ...workspace, workerId: worker.workerId, updatedAt: deps.now() });
+    if (saved.status === 'saved') changed += 1;
+    else if (saved.status !== 'existing') {
+      console.warn(`[domain] 迁移本机工作空间 ${workspace.id} 时目录已有登记，保留原行不覆盖`);
+    }
+  }
+  return changed;
 }
 
 /**

@@ -498,8 +498,10 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     void (async () => {
       try {
         for await (const event of session.events()) {
-          if (sessions.get(command.sessionId) === session) touch(command.sessionId);
+          if (sessions.get(command.sessionId) !== session) break;
+          touch(command.sessionId);
           const enriched = await withBytes(command.sessionId, event);
+          if (sessions.get(command.sessionId) !== session) break;
           send({ type: 'event', sessionId: command.sessionId, event: enriched as SessionEventDto });
           // ended 只是**这一轮**结束：进程留着（保活），下一句 prompt 直接发，只告诉 hub 它还活着。
           // 真结束（进程退出 / dispose_session / 空闲回收）才发 status:'ended'。
@@ -531,17 +533,28 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
   }
 
   /**
-   * 一条会话指令。`start_session` 先把 Promise 放进 `starting`，后续帧靠它串行等待；
-   * 失败由 frames 的 `handle` 统一收尾，这里保持抛出。
+   * 一条会话指令。`start_session` 先把自己接到同一会话的串行链尾，后续帧靠它等待
+   * **最近提交**的那次 start；失败由 frames 的 `handle` 统一收尾，这里保持抛出。
+   *
+   * 同一会话的 start 必须串行：A 还在等运行时拉起进程时，B 不能并发跑完并把进程塞进
+   * `sessions`——A 晚一步落地会把 B 顶掉（B 的进程泄漏，A 还会覆写 B 的状态）。串行后
+   * B 一定看到 A 的会话，走「先 dispose 旧进程再拉起新进程」的替换路径。不同会话互不等待。
    */
   async function run(command: SessionCommand): Promise<void> {
     if (command.kind === 'start_session') {
-      const started = startSession(command);
-      starting.set(command.sessionId, started.catch(() => undefined));
+      const sessionId = command.sessionId;
+      const previous = starting.get(sessionId);
+      const work = previous
+        ? previous.catch(() => undefined).then(() => startSession(command))
+        : startSession(command);
+      // 先登记链尾再 await：之后到达的普通指令要等这（最近一次）start，而不是等前一条。
+      const tail = work.catch(() => undefined);
+      starting.set(sessionId, tail);
       try {
-        await started;
+        await work;
       } finally {
-        starting.delete(command.sessionId);
+        // A 的 finally 可能在 B 已经登记链尾之后才跑：只清自己那条，别删掉 B 的等待点。
+        if (starting.get(sessionId) === tail) starting.delete(sessionId);
       }
       return;
     }
@@ -573,19 +586,25 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       prompting.add(sessionId);
       touch(sessionId);
       try {
-        const result = await session.prompt({ text: command.text, parts: command.parts });
+        const result = await session.prompt({
+          text: command.text,
+          parts: command.parts,
+          ...(command.deliveryId ? { deliveryId: command.deliveryId } : {})
+        });
         if (!result.ok) {
           send({
             type: 'event',
             sessionId,
             event: { kind: 'diagnostic', level: 'error', text: result.error.message }
           });
-          // 只报诊断的话这一轮永远不收尾：界面一直挂着「运行中」。补一条 ended，进程留着，下一句照常能发。
-          send({
-            type: 'event',
-            sessionId,
-            event: { kind: 'ended', outcome: 'failed', reason: `发送失败：${result.error.message}` }
-          });
+          // 通用错误不区分「没提交」和「提交后失联」；有投递 ID 时不能把它当停止证据。
+          if (!command.deliveryId) {
+            send({
+              type: 'event',
+              sessionId,
+              event: { kind: 'ended', outcome: 'failed', reason: `发送失败：${result.error.message}` }
+            });
+          }
         }
       } finally {
         prompting.delete(sessionId);

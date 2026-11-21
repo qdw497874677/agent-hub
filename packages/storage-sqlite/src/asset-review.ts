@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS asset_submissions (
   origin       TEXT NOT NULL,
   token_id     TEXT,
   target_scope TEXT,
+  target_team_id TEXT,
   status       TEXT NOT NULL,
   required     INTEGER NOT NULL,
   approvals    TEXT NOT NULL,
@@ -95,6 +96,7 @@ const toSubmission = (row: Row): AssetSubmission => ({
   origin: String(row['origin']) as AssetSubmission['origin'],
   tokenId: str(row['token_id']),
   targetScope: str(row['target_scope']) as AssetSubmission['targetScope'],
+  targetTeamId: str(row['target_team_id']),
   status: String(row['status']) as AssetSubmission['status'],
   required: Number(row['required']),
   approvals: JSON.parse(String(row['approvals'])) as AssetSubmission['approvals'],
@@ -128,8 +130,11 @@ export function createAssetReviewRepository(db: DatabaseSync): AssetReviewReposi
   // 老库补「团队免审」列（默认关）
   const settingCols = (db.prepare('PRAGMA table_info(asset_review_settings)').all() as Row[]).map((c) => String(c['name']));
   if (!settingCols.includes('team_no_review')) db.exec('ALTER TABLE asset_review_settings ADD COLUMN team_no_review INTEGER NOT NULL DEFAULT 0');
+  // 老库补「上架目标团队」列；旧提交为 NULL（不猜测、不回填）
+  const subCols = (db.prepare('PRAGMA table_info(asset_submissions)').all() as Row[]).map((c) => String(c['name']));
+  if (!subCols.includes('target_team_id')) db.exec('ALTER TABLE asset_submissions ADD COLUMN target_team_id TEXT');
   const putSub = db.prepare(upsertSql('asset_submissions', [
-    'id', 'asset_id', 'digest', 'previous', 'submitted_by', 'origin', 'token_id', 'target_scope', 'status', 'required', 'approvals', 'decided_by', 'reason', 'report', 'created_at', 'decided_at'
+    'id', 'asset_id', 'digest', 'previous', 'submitted_by', 'origin', 'token_id', 'target_scope', 'target_team_id', 'status', 'required', 'approvals', 'decided_by', 'reason', 'report', 'created_at', 'decided_at'
   ]));
   const getSub = db.prepare('SELECT * FROM asset_submissions WHERE id = ?');
   const allSubs = db.prepare('SELECT * FROM asset_submissions ORDER BY created_at DESC, rowid DESC');
@@ -149,7 +154,7 @@ export function createAssetReviewRepository(db: DatabaseSync): AssetReviewReposi
   const addGrant = db.prepare('INSERT OR IGNORE INTO access_grants (subject_id, permission, resource_type, resource_id, created_at) VALUES (?, ?, ?, ?, ?)');
 
   const saveSub = (s: AssetSubmission) =>
-    void putSub.run(s.id, s.assetId, s.digest, s.previous, s.submittedBy, s.origin, s.tokenId, s.targetScope, s.status, s.required,
+    void putSub.run(s.id, s.assetId, s.digest, s.previous, s.submittedBy, s.origin, s.tokenId, s.targetScope, s.targetTeamId, s.status, s.required,
       JSON.stringify(s.approvals), s.decidedBy, s.reason, JSON.stringify(s.report), s.createdAt, s.decidedAt);
   const saveRequest = (r: InstallRequest) =>
     void putRequest.run(r.id, r.assetId, r.workerId, r.requestedBy, r.status, r.decidedBy, r.reason, r.createdAt, r.decidedAt);

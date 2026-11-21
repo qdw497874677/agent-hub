@@ -221,9 +221,11 @@ test('改可调项：不在跑就先 resume，再 set_option；不写乐观值',
   assert.equal(changed.value.model, 'm1', '新值要等 agent 回报才落库');
 });
 
-test('换提供商：停掉旧进程、按新模型重新托管，并用 resume 接回历史', async () => {
+test('换提供商：不停旧回合，直接按新模型重新托管并用 resume 接回历史', async () => {
   const w = await world();
   const session = await derived(w);
+  // 老数据：派生后直接标了 running，但 journal 里没有任何回合证据（没有 prompt）。
+  // 这种 running 只是默认状态，不代表真有一轮在跑；切换不该为它发 interrupt。
   const running: Session = { ...session, status: 'running', agentSessionRef: 'agent-s-1', lastSeq: 7 };
   await w.deps.sessions.save(running);
   w.deps.hosting.clear();
@@ -234,7 +236,7 @@ test('换提供商：停掉旧进程、按新模型重新托管，并用 resume 
   assert.equal(switched.value.model, 'hub-gw/glm-5');
 
   const kinds = w.dispatched.map((command) => command.kind);
-  assert.ok(kinds.includes('interrupt'), '正在跑就先收尾旧回合');
+  assert.ok(!kinds.includes('interrupt'), '切换不靠打断回合：同 id 启动会让 Worker dispose 旧进程');
   const start = w.dispatched.filter((command) => command.kind === 'start_session').at(-1);
   assert.equal(start?.kind === 'start_session' ? start.options['model'] : null, 'hub-gw/glm-5');
   assert.deepEqual(

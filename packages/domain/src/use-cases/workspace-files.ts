@@ -15,7 +15,7 @@ import { asSessionId, newId } from '../ids.ts';
 import { invalid, notFound, unavailable, type DomainError } from '../errors.ts';
 import { groupLayout } from '../workspace-group.ts';
 import { err, ok, type Result } from '../result.ts';
-import { FILES_LIMITS, isBrowsablePath, isSensitivePath, OPEN_WORKSPACE_LIMITS } from '../workspace-files.ts';
+import { FILES_LIMITS, isBrowsablePath, isSensitivePath, OPEN_WORKSPACE_LIMITS, withoutSensitiveDiff } from '../workspace-files.ts';
 import { authorizeProject, authorizeSession, type AccessPolicy } from './authorization.ts';
 import { gitFor, routeOf } from './machine-dirs.ts';
 import { locationsOf, projectOfSession, type SessionLocation, type SessionLocationMember } from './workspaces.ts';
@@ -59,8 +59,10 @@ export interface WorktreeDiff {
   readonly files: readonly { readonly path: string; readonly status: string }[];
   /** 相对 HEAD 的 `git diff` 文本；无改动 = ''（不是错误）。 */
   readonly patch: string;
-  /** patch 超过上限被截断时 true。 */
+  /** patch 超过上限或被安全策略整段省略时 true。 */
   readonly truncated: boolean;
+  /** 受保护预览无法安全返回内容时的原因；没有省略就省略。 */
+  readonly notice?: string;
 }
 
 export interface FilesContextMember {
@@ -293,10 +295,28 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
       if (found.value.container) return err(invalid('这是组合工作空间的容器根（不是 git 仓库）：member 选一个成员仓库再取 diff'));
       const git = await gitFor({ git: deps.git, gateway: deps.gateway }, found.value.workerId);
       const maxBytes = opts.maxBytes === undefined || opts.maxBytes <= 0 || opts.maxBytes > OPEN_WORKSPACE_LIMITS.diffBytes ? OPEN_WORKSPACE_LIMITS.diffBytes : opts.maxBytes;
-      const preview = await git.preview(found.value.root, maxBytes);
+      const preview = await git.preview(found.value.root, maxBytes, { redactSensitive: true });
       if (!preview.ok) return preview;
       if (!preview.value.isGit) return err(invalid('这个工作空间不是 git 仓库（没有可对比的 HEAD）'));
-      return ok({ branch: preview.value.branch, files: preview.value.files, patch: preview.value.patch, truncated: preview.value.truncated });
+      // #269：旧 Worker 不返回合规标记，说明它不保证按敏感路径筛选。此时不再把文本过滤结果
+      // 当作“安全”返回——整段省略，并明确让调用方知道需要升级 Worker。
+      if (preview.value.redactedSensitive !== true) {
+        return ok({
+          branch: preview.value.branch,
+          files: [],
+          patch: '',
+          truncated: true,
+          notice: 'Worker 版本过旧，无法保证敏感路径过滤；本次未返回工作区 diff，请升级 Worker 后重试。'
+        });
+      }
+      // 适配器应该已经按同一份 git 清单剔过；这里再兜一次，防止实现漏掉普通文件规则。
+      return ok({
+        branch: preview.value.branch,
+        files: preview.value.files.filter((file) => !isSensitivePath(file.path)),
+        patch: withoutSensitiveDiff(preview.value.patch),
+        truncated: preview.value.truncated,
+        ...(preview.value.notice === undefined ? {} : { notice: preview.value.notice })
+      });
     },
     /**
      * 开放 API（MCP 工具 workspace_read_file）：按 256 KiB 上限读工作树内的文件。

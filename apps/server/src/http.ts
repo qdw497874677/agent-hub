@@ -147,7 +147,6 @@ import {
   unavailable,
   updateProjectReposUseCase,
   retryWorkspaceSetupUseCase,
-  asWorkspaceId,
   newId,
   principalOfSubject
 } from '@agent-hub/domain';
@@ -579,15 +578,11 @@ export function createApp(options: AppOptions): Hono {
     return current.ok ? c.json(projectDto(current.value)) : fail(c, current.error);
   });
 
-  // 重跑准备命令（docs/design/worktree.md §4）：只对准备失败的工作空间有效，要能改它所属的项目。
+  // 重跑准备命令（docs/design/worktree.md §4）：只对准备失败的工作空间有效。
+  // 授权（平台建的临时空间、所属项目的 project.update、机器的 worker.use）由用例统一判定。
   app.post('/api/workspaces/:workspaceId/setup/retry', async (c) => {
     const workspaceId = c.req.param('workspaceId');
     const subject = subjectOf(c);
-    const workspace = await deps.workspaces.byId(asWorkspaceId(workspaceId));
-    if (!workspace) return fail(c, notFound('工作空间不存在'));
-    const project = workspace.projectId ? await deps.projects.byId(workspace.projectId) : null;
-    const allowed = await authorizeProject(deps.access, subject, project, 'project.update');
-    if (!allowed.ok) return fail(c, allowed.error);
     const result = await retryWorkspaceSetupUseCase(deps, { workspaceId, actor: subject });
     if (result.ok) {
       const setup = result.value.setup;

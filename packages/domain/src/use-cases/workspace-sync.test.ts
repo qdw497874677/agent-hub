@@ -59,7 +59,6 @@ test('同步仓库：单仓项目里对不上的仓库不会自动克隆，说�
   });
   assert.ok(updated.ok, updated.ok ? '' : updated.error.message);
   w.git.remotes.set(w.workspace.path, 'https://example.com/core.git');
-  w.git.absent.add('/srv/work/agent-hub-workspaces/docs');
   const clonesBefore = w.git.calls.filter((call) => call.includes(':clone:')).length;
   const synced = await syncWorkspaceReposUseCase(w.deps, { workspaceId: w.workspace.id, actor: null });
   assert.ok(synced.ok, synced.ok ? '' : synced.error.message);
@@ -70,19 +69,64 @@ test('同步仓库：单仓项目里对不上的仓库不会自动克隆，说�
   assert.equal(w.git.calls.filter((call) => call.includes(':clone:')).length, clonesBefore);
 });
 
-test('同步仓库：非 git 同名目录跳过并说明原因，不改它', async () => {
+test('同步仓库：只检查登记的工作空间路径，同级目录即使匹配也不看', async () => {
+  const w = await world();
+  const updated = await updateProjectReposUseCase(w.deps, {
+    projectId: w.project.id,
+    repos: [{ name: 'docs', url: 'https://example.com/docs.git' }]
+  });
+  assert.ok(updated.ok, updated.ok ? '' : updated.error.message);
+  w.git.remotes.set(w.workspace.path, 'https://example.com/core.git');
+  // 同级目录里放一个「匹配」的仓库：旧实现会扫描并认领它，新实现必须连 inspect 都不做。
+  const sibling = '/srv/work/agent-hub-workspaces/docs';
+  w.git.repos.add(sibling);
+  w.git.remotes.set(sibling, 'https://example.com/docs.git');
+  const scans: string[] = [];
+  const listDirectories = w.deps.gateway.listDirectories;
+  w.deps.gateway.listDirectories = async (workerId, path) => {
+    scans.push(path);
+    return listDirectories(workerId, path);
+  };
+  const synced = await syncWorkspaceReposUseCase(w.deps, { workspaceId: w.workspace.id, actor: null });
+  assert.ok(synced.ok, synced.ok ? '' : synced.error.message);
+  assert.deepEqual(scans, [], '不得扫描工作空间的上级目录');
+  assert.deepEqual(synced.value.present, [], '不得认领同级目录');
+  assert.equal(synced.value.skipped[0]?.name, 'docs');
+  assert.match(synced.value.skipped[0]?.reason ?? '', /origin 和项目仓库对不上/);
+  assert.deepEqual(
+    w.git.calls.filter((call) => call.includes(':inspect:')),
+    [`remote-1:inspect:${w.workspace.path}`],
+    '只检查登记的工作空间路径'
+  );
+});
+
+test('同步仓库：工作空间目录不是 git 仓库时跳过并说明原因，不改它', async () => {
   const w = await world();
   const updated = await updateProjectReposUseCase(w.deps, {
     projectId: w.project.id,
     repos: [{ name: 'tools', url: 'https://example.com/tools.git' }]
   });
   assert.ok(updated.ok, updated.ok ? '' : updated.error.message);
-  w.git.remotes.set(w.workspace.path, 'https://example.com/core.git');
+  w.git.repos.delete(w.workspace.path);
   const synced = await syncWorkspaceReposUseCase(w.deps, { workspaceId: w.workspace.id, actor: null });
   assert.ok(synced.ok, synced.ok ? '' : synced.error.message);
   assert.equal(synced.value.added.length, 0);
-  assert.deepEqual(synced.value.skipped, [{ name: 'tools', reason: '同名目录存在但不是 git 仓库，没有动它' }]);
+  assert.deepEqual(synced.value.skipped, [{ name: 'tools', reason: '工作空间目录不是 git 仓库，没有动它' }]);
   assert.ok(!w.git.calls.some((call) => call.includes(':clone:https://example.com/tools.git')));
+});
+
+test('同步仓库：工作空间目录不存在时如实跳过，不克隆', async () => {
+  const w = await world();
+  w.git.remotes.set(w.workspace.path, 'https://example.com/core.git');
+  w.git.repos.delete(w.workspace.path);
+  w.git.absent.add(w.workspace.path);
+  const clonesBefore = w.git.calls.filter((call) => call.includes(':clone:')).length;
+  const synced = await syncWorkspaceReposUseCase(w.deps, { workspaceId: w.workspace.id, actor: null });
+  assert.ok(synced.ok, synced.ok ? '' : synced.error.message);
+  assert.deepEqual(synced.value.present, []);
+  assert.equal(synced.value.skipped[0]?.name, 'core');
+  assert.match(synced.value.skipped[0]?.reason ?? '', /不存在/);
+  assert.equal(w.git.calls.filter((call) => call.includes(':clone:')).length, clonesBefore);
 });
 
 test('同步仓库：组合工作空间不在这里处理', async () => {

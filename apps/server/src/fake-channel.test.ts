@@ -36,8 +36,26 @@ test('假渠道：出站记下平台 id，回声靠它被认出来（不误杀�
 test('假渠道：回合结束后回复进 outbox，由假投递端收下（入站→会话→出站）', async () => {
   const rows: ChannelOutboxMessage[] = [];
   const store = {
-    async claim(_d: unknown, _now: number, _lease: number) { return rows.find((r) => r.state === 'queued') ?? null; },
+    async claim(_d: unknown, _now: number, _lease: number) {
+      const hit = rows.find((r) => r.state === 'queued');
+      if (!hit) return null;
+      const claimed: ChannelOutboxMessage = { ...hit, state: 'sending', leaseUntil: 2 };
+      rows[rows.findIndex((r) => r.id === hit.id)] = claimed;
+      return claimed;
+    },
+    async insertIfAbsent(m: ChannelOutboxMessage) {
+      const existing = rows.find((r) => r.id === m.id);
+      if (existing) return { message: existing, inserted: false };
+      rows.push(m);
+      return { message: m, inserted: true };
+    },
     async save(m: ChannelOutboxMessage) { const i = rows.findIndex((r) => r.id === m.id); if (i >= 0) rows[i] = m; else rows.push(m); },
+    async settle(m: ChannelOutboxMessage, leaseUntil: number | null) {
+      const i = rows.findIndex((r) => r.id === m.id && r.state === 'sending' && r.leaseUntil === leaseUntil);
+      if (i < 0) return false;
+      rows[i] = m;
+      return true;
+    },
     async requeue() { return 0; }
   };
   const outbox = createFakeOutbound();
@@ -48,15 +66,37 @@ test('假渠道：回合结束后回复进 outbox，由假投递端收下（入�
   });
   const replies = createFakeReplies({
     enqueue: (input) => pump.enqueue({ ...input, target: input.target } as never),
+    eventsAfter: async () => [],
+    inFlight: async () => null,
     tail: async () => [
-      { event: { kind: 'prompt' } },
-      { event: { kind: 'text', delta: '子代理已' } },
-      { event: { kind: 'text', delta: '完成。' } }
+      { seq: 1, event: { kind: 'prompt' } },
+      { seq: 2, event: { kind: 'text', delta: '子代理已' } },
+      { seq: 3, event: { kind: 'text', delta: '完成。' } }
     ]
   });
   replies.remember('s1', 'b1');
-  assert.equal(await replies.finish('s1'), '子代理已完成。');
+  assert.equal(await replies.finish('s1', { seq: 3 }), '子代理已完成。');
   await pump.tick();
   assert.deepEqual(rows.map((r) => r.state), ['sent']);
   assert.equal(rows[0]!.externalMessageId, 'fake_1');
+});
+
+test('假渠道：keyed 回程按投递 seq 锚定，重置掉上一轮 ended 前的文字', async () => {
+  const entries = [
+    { seq: 3, event: { kind: 'text', delta: 'A 的尾巴' } },
+    { seq: 4, event: { kind: 'ended', outcome: 'done' } },
+    { seq: 5, event: { kind: 'text', delta: 'B 的回复。' } },
+    { seq: 6, event: { kind: 'ended', outcome: 'done', deliveryId: 'd1' } },
+    { seq: 7, event: { kind: 'text', delta: '结束后的迟到文字' } }
+  ];
+  const enqueued: unknown[] = [];
+  const replies = createFakeReplies({
+    enqueue: async (input) => { enqueued.push(input); return undefined; },
+    eventsAfter: async (_sessionId, afterSeq) => entries.filter((entry) => entry.seq > afterSeq) as never,
+    tail: async () => { throw new Error('keyed 回程不应该退回 tail'); },
+    inFlight: async (sessionId) => (sessionId === 's1' ? { id: 'd1', sessionId: 's1', seq: 2 } : null)
+  });
+  replies.remember('s1', 'b1');
+  assert.equal(await replies.finish('s1', { seq: 6, deliveryId: 'd1' }), 'B 的回复。');
+  assert.equal(enqueued.length, 1);
 });

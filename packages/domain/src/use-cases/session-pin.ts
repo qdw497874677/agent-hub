@@ -8,8 +8,7 @@ import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import type { Session } from '../session.ts';
 import type { Deps } from './deps.ts';
-import { authorizeSession } from './authorization.ts';
-import { projectOfSession } from './workspaces.ts';
+import { authorizeSession, projectOfSessionOrigin } from './authorization.ts';
 
 export interface PinSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'>,
   Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'> {
@@ -45,7 +44,7 @@ export async function pinSessionUseCase(
   if (!who.ok) return who;
   const session = await deps.sessions.byId(command.sessionId);
   if (!session) return err(notFound('会话不存在'));
-  const project = await projectOfSession(deps, session);
+  const project = await projectOfSessionOrigin(deps, session);
   const allowed = await authorizeSession(deps.access, who.value, project, session, 'session.prompt');
   if (!allowed.ok) return allowed;
   await deps.sessions.setPinned(command.sessionId, command.pinned, command.now);

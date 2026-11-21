@@ -53,6 +53,8 @@ export interface ConnectorWiring {
   readonly messageBus: ReturnType<typeof createMessageBus>;
   readonly groupChat: ReturnType<typeof createGroupChat>;
   readonly inbox: ReturnType<typeof createSessionInbox>;
+  /** 回合收尾时放行送达队列；带 ended 自带的 deliveryId，旧协议无 key 时留空。 */
+  readonly releaseDelivery: (sessionId: SessionId, deliveryId?: string) => Promise<unknown>;
   readonly persistentAgents: ReturnType<typeof createPersistentAgents>;
   readonly botOfSession: ReturnType<typeof createBotOfSession>;
   readonly subjectOf: (sessionId: SessionId) => Promise<Subject | null>;
@@ -122,15 +124,22 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
   });
   schedules.every(15_000, () => void groupChat.sweep().catch(() => undefined));
 
+  // 会话来件的送达队列收尾：expectedDeliveryId 由回合总闸从 ended 事件原样带下来。
+  // 旧协议没有 key 时只放行已排队的队首，不拿「当前 inFlight」替任何持久 sending 对账。
+  const releaseDelivery = (sessionId: SessionId, deliveryId?: string) =>
+    releaseAfterTurn({ ...deps, deliveries: store.deliveries }, sessionId, deliveryId);
+
   // 会话收件箱（#221 步骤 5）：各投递来源共用「占用」判断与回合结束归属。
-  // 顺序即优先级：P2P / 群聊先收（它们要在本轮文字上做判断），连接器与调度随后，最后才放开送达队列投下一条。
+  // 顺序即优先级：P2P / 群聊先收（它们要在本轮文字上做判断），连接器与调度随后。
+  // delivery 只保留占用判断；放行动作由回合总闸在所有 inbox 钩子之后单独调用，带上 ended 的 deliveryId。
   const inbox = createSessionInbox({
     sources: [
       { id: 'p2p', open: async (sid: string) => (await store.messages.deliveredTo(asSessionId(sid))).length > 0, end: async (sid, outcome) => { await messageBus.turnEnded(asSessionId(sid), outcome); } },
       { id: 'group', open: async (sid: string) => (await store.groups.deliveredTo(asSessionId(sid))).length > 0, end: async (sid, outcome, reason) => { await groupChat.turnEnded(asSessionId(sid), outcome, reason); } },
       { id: 'connector', open: async () => false, end: async (sid, outcome) => { await connectorHub.turnEnded(asSessionId(sid), outcome); } },
       { id: 'dispatch', open: async () => false, end: async (sid) => { await dispatcher.sessionEnded(asSessionId(sid)); } },
-      { id: 'delivery', open: async (sid: string) => (await store.deliveries.pendingFor(sid)).length > 0, end: async (sid) => { await releaseAfterTurn({ ...deps, deliveries: store.deliveries }, asSessionId(sid)); } }
+      // 顺序保持最后，占位语义不变；真正放行见 `releaseDelivery`（必须带 expected id）。
+      { id: 'delivery', open: async (sid: string) => (await store.deliveries.pendingFor(sid)).length > 0, end: async () => {} }
     ]
   });
   // 持久智能体（界面上叫 bot）：按条读写 bots 表；删除时从所有群移出。
@@ -214,7 +223,9 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
   const feishuReplies = feishuSink
     ? createFeishuTurnReplies({
       runs: store.connectors,
+      eventsAfter: (sessionId, afterSeq) => store.sessions.eventsAfter(sessionId as SessionId, afterSeq as never),
       tail: (sessionId, limit) => store.sessions.tail(sessionId as SessionId, limit),
+      inFlight: (sessionId) => store.deliveries.inFlight(sessionId as SessionId),
       enqueueReply: feishuSink.enqueueReply
     })
     : null;
@@ -223,7 +234,12 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
   const fakeChannel = readEnv('HUB_FAKE_CHANNEL') === '1' ? createFakeChannel() : null;
   const fakeOutbound = fakeChannel ? createFakeOutbound() : null;
   const fakeReplies = fakeChannel
-    ? createFakeReplies({ enqueue: (input) => fakeOutboxPump!.enqueue(input as never), tail: (sessionId, limit) => store.sessions.tail(sessionId as never, limit) })
+    ? createFakeReplies({
+      enqueue: (input) => fakeOutboxPump!.enqueue(input as never),
+      eventsAfter: (sessionId, afterSeq) => store.sessions.eventsAfter(sessionId as SessionId, afterSeq as never),
+      tail: (sessionId, limit) => store.sessions.tail(sessionId as never, limit),
+      inFlight: (sessionId) => store.deliveries.inFlight(sessionId as SessionId)
+    })
     : null;
   if (fakeChannel) log('假渠道已启用：connector=fake（仅测试用，不要在生产打开）');
   const connectorHub = createConnectorHub({
@@ -410,5 +426,5 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
     })();
   });
 
-  return { messageBus, groupChat, inbox, persistentAgents, botOfSession, subjectOf, githubClient, teamTokenOf, githubReposFor, pullRequestRepo, gitHostTokens, feishuReplies, fakeReplies, connectorHub, taskProgress, dispatcher, enqueueDispatch };
+  return { messageBus, groupChat, inbox, releaseDelivery, persistentAgents, botOfSession, subjectOf, githubClient, teamTokenOf, githubReposFor, pullRequestRepo, gitHostTokens, feishuReplies, fakeReplies, connectorHub, taskProgress, dispatcher, enqueueDispatch };
 }

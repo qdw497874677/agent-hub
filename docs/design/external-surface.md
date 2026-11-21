@@ -139,9 +139,9 @@ route('projects:write', { ... }, { skip: '会改项目描述，留给界面' })
 `MCP_MODULES` 用这些分组名做灰度；`MCP_READ_ONLY=1` 在 `tools/list` 与 `tools/call` 两边同时生效。
 
 `workspaces` 这组是给「外部 agent 自己管目录」用的（#236）：`create_workspace` / `remove_workspace` / `retry_workspace_setup`
-对应界面里的新建、移除与重试；`sync_workspace` 把 `project_repos` 后来加的仓库补克隆到已有工作空间的**同级目录**，
-「已经在了」按**远端地址**认（目录名可能和仓库名不同，例如工作空间目录叫项目名），单个仓库失败不打断其它仓库
-（返回 `failed`，可只重试失败的）。组合工作空间（`groupId` 非空）不在这里处理。`session_start` 的 `workspaceMode` 现在会真正生效：
+对应界面里的新建、移除与重试；`sync_workspace` 只验证已登记的单仓工作空间远端是否匹配项目仓库。
+它不会扫描、认领或修改同级目录。多仓请使用组合工作空间，由建组、加成员和重试准备流程管理。
+`session_start` 的 `workspaceMode` 现在会真正生效：
 `isolated` 一定新开 worktree，不再被长期目录静默顶替。
 
 `workspace_changes` 与 `activity` 以前没暴露、现在由 `'auto'` 带出来，它们的 handler 都补了项目/会话权限判定
@@ -259,7 +259,7 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 权限 `projects:write`，写工具开关同上一节）：
 
 - `repos[]`：`url`、`name`（可选）、`defaultBranch`（可选，`null` = 远端默认），最多 8 个，第 0 个是主仓库。
-- `credential` **只写不读**：非空存进密钥箱（`repo-git:<repoId>`）、空串清掉、省略不动。
+- `credential` **只写不读**：非空存进密钥箱（`repo-git:<projectId>:<repoId>`）、空串清掉、省略不动。旧的单段键 `repo-git:<repoId>` 归属不明，不再读取也不会被自动迁移/删除，升级后需要重新输入一次 `credential`。
   响应给 `hasToken: true|false`；`hasToken=false` 时还有 `tokenHint` 与项目级 `gitTokenHint`，提示用本工具写入 `credential`。明文永不回显、不进审计 detail、不进日志。
 - 存下之后，这条仓库的 clone / worktree / push 都由 hub 按 URL 或目录前缀自动取令牌下发，
   worker 端只拿到一次性的 `http.extraHeader`。

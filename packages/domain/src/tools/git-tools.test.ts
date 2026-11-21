@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Subject } from '../access.ts';
-import { conflict, forbidden } from '../errors.ts';
+import { conflict, forbidden, type DomainError } from '../errors.ts';
 import type { PullRequestLink } from '../ports/pull-requests.ts';
-import { err, ok } from '../result.ts';
+import type { ToolContext } from '../ports/tool-provider.ts';
+import { err, ok, type Result } from '../result.ts';
 import { DEFAULT_TOOL_SCOPES, TOOL_SCOPES, type ToolGrant } from '../tool.ts';
 import type { GitRunInput, GitRunOutcome, GitState } from '../use-cases/git-workflow.ts';
 import { createGitToolProvider, GIT_MESSAGE_MAX, GIT_PR_BODY_MAX, GIT_TOOLS, type GitWorkflow } from './git-tools.ts';
@@ -64,9 +65,17 @@ interface Seen {
   readonly workspace?: string;
 }
 
-function world(overrides: Partial<GitWorkflow> = {}, subjectResult: Subject | null = subject, peers = false) {
+type WriteGate = (sessionId: string, ctx: ToolContext) => Promise<Result<Subject, DomainError>>;
+
+function world(
+  overrides: Partial<GitWorkflow> = {},
+  subjectResult: Subject | null = subject,
+  peers = false,
+  writeGate: WriteGate | false = async () => ok(subject)
+) {
   const seen: Seen[] = [];
   const subjectCalls: string[] = [];
+  const gateCalls: { readonly sessionId: string; readonly ctx: ToolContext }[] = [];
   const workflow: GitWorkflow = {
     state: async (s, sessionId, workspace) => {
       seen.push({ op: 'state', subject: s, sessionId, ...(workspace === undefined ? {} : { workspace }) });
@@ -81,16 +90,25 @@ function world(overrides: Partial<GitWorkflow> = {}, subjectResult: Subject | nu
       return overrides.listForTask ? overrides.listForTask(s, taskId) : ok([link]);
     }
   };
+  const write = writeGate === false ? null : writeGate;
   const provider = createGitToolProvider({
     workflow,
     subjectOf: async (sessionId) => {
       subjectCalls.push(sessionId);
       return subjectResult;
     },
+    ...(write
+      ? {
+          writeSubjectOf: async (sessionId: string, ctx: ToolContext) => {
+            gateCalls.push({ sessionId, ctx });
+            return write(sessionId, ctx);
+          }
+        }
+      : {}),
     ...(peers ? { resolvePeer: async (_from: string, address: string) => (address === 'peer:verify' ? ok('s2' as never) : err(forbidden('denied: 没连线'))) } : {})
   });
   const ctx = (taskId = 't1') => ({ grant: { sessionId: 's1', taskId, scopes: ['git'] } as unknown as ToolGrant, now: 0 });
-  return { provider, seen, subjectCalls, ctx };
+  return { provider, seen, subjectCalls, gateCalls, ctx };
 }
 
 test('git 工具：scope=git、perMinute=10，默认授权能看到', () => {
@@ -180,6 +198,55 @@ test('subjectOf 返回 null 时工具照常工作，把 null 交给工作流', a
   const res = await provider.call('git.state', {}, ctx());
   assert.ok(res.ok);
   assert.equal(seen[0]?.subject, null);
+});
+
+test('#217：没装配写入闸时 commit / push / pr 全拒，只读工具照常', async () => {
+  const { provider, seen, ctx } = world({}, subject, false, false);
+  const writes: [string, Record<string, unknown>][] = [
+    ['git.commit', { message: 'm' }],
+    ['git.push', { message: 'm' }],
+    ['git.pr', { message: 'm' }]
+  ];
+  for (const [name, input] of writes) {
+    const res = await provider.call(name, input, ctx());
+    assert.equal(!res.ok && res.error.code, 'forbidden', name);
+  }
+  assert.equal(seen.length, 0, '拒绝的写不得到达工作流');
+
+  const state = await provider.call('git.state', {}, ctx());
+  assert.ok(state.ok);
+  const prs = await provider.call('git.pull_requests', {}, ctx());
+  assert.ok(prs.ok);
+});
+
+test('#217：写入闸拒绝时不用 subjectOf 回落，允许时用闸门主体', async () => {
+  const denied = world({}, subject, false, async () => err(forbidden('bot 会话不能写')));
+  const refused = await denied.provider.call('git.push', { message: 'm' }, denied.ctx());
+  assert.equal(!refused.ok && refused.error.code, 'forbidden');
+  assert.equal(denied.seen.length, 0);
+  assert.deepEqual(denied.subjectCalls, [], '拒绝写入不能读冻结的 createdBy / task owner');
+
+  const gateSubject = { user: { id: 'u-gate', email: 'gate@example.com' } } as unknown as Subject;
+  const allowed = world({}, subject, false, async () => ok(gateSubject));
+  const push = await allowed.provider.call('git.push', { message: 'm' }, allowed.ctx());
+  assert.ok(push.ok);
+  assert.equal(allowed.seen.at(-1)?.subject, gateSubject);
+  assert.equal(allowed.seen.at(-1)?.sessionId, 's1');
+  assert.deepEqual(allowed.subjectCalls, [], '写路径不经过 subjectOf');
+});
+
+test('#217：写入闸拿到当前 ToolGrant 上下文（冻结 actor 只作负面判据）', async () => {
+  const { provider, gateCalls } = world({}, subject, false, async () => err(forbidden('共享会话')));
+  const grant = {
+    sessionId: 's1',
+    taskId: 't1',
+    scopes: ['git'],
+    actor: { userId: 'u1', via: 'bot' }
+  } as unknown as ToolGrant;
+  await provider.call('git.commit', { message: 'm' }, { grant, now: 5 });
+  assert.equal(gateCalls[0]?.sessionId, 's1');
+  assert.equal(gateCalls[0]?.ctx.grant.actor?.via, 'bot');
+  assert.equal(gateCalls[0]?.ctx.now, 5);
 });
 
 test('会话通信 P1c：git.state 的 session 参数看已连线同伴，没连线拒，没装配时 invalid', async () => {

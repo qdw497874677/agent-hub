@@ -10,15 +10,18 @@ import {
   hasHighFinding,
   isMcpStdio,
   mcpRiskSummary,
+  MISSING_TARGET_TEAM,
   type McpRiskSummary,
   parseSecretKey,
   requiredApprovals,
+  reviewTeamId,
   scanAssetFiles,
   scriptFilesOf,
   secretKey,
   secretLookupOrder,
   skillAuditMeta,
   sourceTraceOf,
+  submissionDestinationMissing,
   type AssetReviewSettings,
   type AssetSubmission,
   type InstallRequest,
@@ -131,15 +134,18 @@ async function settingsFor(deps: Pick<AssetReviewDeps, 'review'>, scope: AssetSc
 /** 审这个资产时谁说了算：hub 管理员、资产团队的负责人、团队设置里仍在本团队的指定审核人。 */
 export async function reviewerContext(
   deps: Pick<AssetReviewDeps, 'review' | 'users' | 'teams'>,
-  asset: Pick<Asset, 'teamId'>
+  asset: Pick<Asset, 'teamId'>,
+  /** 覆盖按哪个团队审（上架到团队时传目标团队）；undefined = 按资产现在的团队。 */
+  teamId: string | null | undefined = undefined
 ): Promise<ReviewerContext> {
+  const teamKey = teamId === undefined ? asset.teamId : teamId;
   const admin = await deps.users.firstClusterAdmin();
-  const team = asset.teamId ? await deps.teams.byId(asset.teamId as TeamId) : null;
-  const settings = asset.teamId ? ((await deps.review.settings(asset.teamId)) ?? DEFAULT_REVIEW_SETTINGS) : DEFAULT_REVIEW_SETTINGS;
+  const team = teamKey ? await deps.teams.byId(teamKey as TeamId) : null;
+  const settings = teamKey ? ((await deps.review.settings(teamKey)) ?? DEFAULT_REVIEW_SETTINGS) : DEFAULT_REVIEW_SETTINGS;
   const reviewers: string[] = [];
   for (const id of settings.reviewers) {
     const user = await deps.users.byId(id as UserId);
-    if (user && user.teamId === asset.teamId && user.disabledAt === null && user.deletedAt === null) reviewers.push(user.id);
+    if (user && user.teamId === teamKey && user.disabledAt === null && user.deletedAt === null) reviewers.push(user.id);
   }
   const hubReviewers: string[] = [];
   for (const id of ((await deps.review.settings(HUB_REVIEW_KEY)) ?? DEFAULT_REVIEW_SETTINGS).reviewers) {
@@ -199,7 +205,8 @@ export async function buildReviewReport(
   asset: Asset,
   digest: string,
   previous: string,
-  targetScope: AssetScope | null = null
+  targetScope: AssetScope | null = null,
+  targetTeamId: string | null = null
 ): Promise<ReviewReport> {
   const revision = await deps.assets.revision(asset.id, digest);
   const before = previous ? await deps.assets.revision(asset.id, previous) : null;
@@ -220,7 +227,8 @@ export async function buildReviewReport(
       mcp = mcpAssetRiskSummary(config, await mcpAssetAt(deps, asset.id, previous));
       const admin = await deps.users.firstClusterAdmin();
       const stored = new Set((await deps.secrets.list()).map((secret) => secret.name));
-      const scoped = { ...asset, scope: targetScope ?? asset.scope };
+      // 上架到团队时按目标团队取密钥；目标缺失就不猜（不给团队层）
+      const scoped = { ...asset, scope: targetScope ?? asset.scope, teamId: targetScope === 'team' ? targetTeamId : asset.teamId };
       const refs = [...new Set(config.servers.flatMap((server) => mcpSecretRefs(server)))];
       secrets = refs.map((name) => {
         const hit = secretLookupOrder(scoped, name, admin?.id ?? null).find((step) => stored.has(step.key));
@@ -283,21 +291,26 @@ async function openSubmission(
   asset: Asset,
   digest: string,
   origin: SubmissionOrigin,
-  targetScope: AssetScope | null = null
+  targetScope: AssetScope | null = null,
+  targetTeamId: string | null = null
 ): Promise<Result<{ asset: Asset; submission: AssetSubmission }, DomainError>> {
+  if (targetScope === 'team' && targetTeamId === null) return err(invalid('上架到团队必须指定目标团队'));
   const pending = await deps.review.submissions({ assetId: asset.id, status: ['pending'] });
-  const same = pending.find((sub) => sub.digest === digest && sub.targetScope === targetScope);
+  const same = pending.find((sub) => sub.digest === digest && sub.targetScope === targetScope && sub.targetTeamId === targetTeamId);
   if (same) return ok({ asset, submission: same });
   const at = deps.now();
   for (const old of pending) {
-    if (old.targetScope !== targetScope) continue;
+    if (old.targetScope !== targetScope || old.targetTeamId !== targetTeamId) continue;
     await deps.review.updateSubmission({ ...old, status: 'superseded', decidedAt: at, reason: '被更新的提交取代' });
   }
   const scope = targetScope ?? asset.scope;
-  const report = await buildReviewReport(deps, asset, digest, asset.pinned, targetScope);
+  const report = await buildReviewReport(deps, asset, digest, asset.pinned, targetScope, targetTeamId);
   const mcpAsset = asset.kind === 'mcp' ? await mcpAssetAt(deps, asset.id, digest) : null;
   const config = mcpAsset?.servers.find((server) => server.transport === 'stdio') ?? mcpAsset?.servers[0] ?? null;
-  const settings = await settingsFor(deps, scope, asset.teamId);
+  // 审核设置按目标团队取：上架到团队不能沿用资产现在的团队设置
+  const settings = await settingsFor(deps, scope, targetScope === 'team' ? targetTeamId : asset.teamId);
+  // 高风险发现必须走一次人工确认：团队免审 / Git 巡检重放都不能替审核人点头。
+  const high = hasHighFinding(report);
   const submission: AssetSubmission = {
     id: newId(),
     assetId: asset.id,
@@ -307,8 +320,9 @@ async function openSubmission(
     origin,
     tokenId: actor?.via?.tokenId ?? null,
     targetScope,
+    targetTeamId: targetScope === 'team' ? targetTeamId : null,
     status: 'pending',
-    required: requiredApprovals(scope, isMcpStdio(asset.kind, config), settings),
+    required: requiredApprovals(scope, isMcpStdio(asset.kind, config), settings, high),
     approvals: [],
     decidedBy: null,
     reason: null,
@@ -319,12 +333,13 @@ async function openSubmission(
   await deps.review.addSubmission(submission);
   const what = targetScope === 'team' ? '申请上架到团队' : targetScope ? `申请提升到全局` : `版本 ${digest.slice(0, 12)}`;
   await audit(deps, actor, 'asset.submit', asset.name, `${label(asset)} 提交审核：${what}（${origin}）`, asset.teamId);
-  // 1A：个人资产免审，提交即发布
-  if (submission.required === 0) {
+  // 1A / 团队免审：0 票直接发布；团队范围有高风险发现时 requiredApprovals 已保证 >= 1，这里再兜一层
+  // （个人资产仍按 1A 自动发布：只装作者自己的机器，没有团队分发面）。
+  if (submission.required === 0 && !(scope !== 'personal' && hasHighFinding(submission.report))) {
     const published = await publish(deps, actor, asset, submission, scope === 'team' ? '团队免审' : '个人资产免审（1A）');
     return ok({ asset: published, submission: (await deps.review.submission(submission.id)) ?? submission });
   }
-  const ctx = await reviewerContext(deps, asset);
+  const ctx = await reviewerContext(deps, asset, reviewTeamId(asset, submission));
   const { ids, routedToHub } = eligibleReviewers(asset, submission, ctx);
   await notify(
     deps,
@@ -347,11 +362,14 @@ async function publish(
 ): Promise<Asset> {
   const revision = await deps.assets.revision(asset.id, submission.digest);
   const scope = submission.targetScope ?? asset.scope;
+  // 只有发布成功才换团队 / 作用域；上架到团队用提交时记下的目标团队
+  const teamId = submission.targetScope === 'team' && submission.targetTeamId !== null ? submission.targetTeamId : asset.teamId;
   const next: Asset = {
     ...asset,
     pinned: submission.digest,
     description: revision?.description ?? asset.description,
     scope,
+    teamId,
     projectId: scope === 'project' ? asset.projectId : null,
     updatedAt: deps.now()
   };
@@ -515,13 +533,8 @@ export async function promoteAssetToTeam(deps: AssetReviewDeps, actor: Principal
   if (!isPublished(asset)) return err(invalid('先让当前版本可用，再上架到团队'));
   const clash = await deps.assets.findInScope(asset.kind, asset.name, 'team', teamId);
   if (clash && clash.id !== asset.id) return err(conflict(`团队里已经有叫「${asset.name}」的${ASSET_KIND_LABEL[asset.kind]}了：改个名字再上架，或到那个资产传新版本`));
-  // 审核人、票数、密钥层都按作者现在的团队算（老数据的个人资产可能没记团队）
-  let target = asset;
-  if (asset.teamId !== teamId) {
-    target = { ...asset, teamId, updatedAt: deps.now() };
-    await deps.assets.update(target);
-  }
-  const opened = await openSubmission(deps, actor, target, target.pinned, actor.via ? 'token' : 'user', 'team');
+  // 审核人、票数、密钥层都按目标团队（作者现在的团队）算；资产本身在通过前不动（老数据的个人资产可能没记团队）
+  const opened = await openSubmission(deps, actor, asset, asset.pinned, actor.via ? 'token' : 'user', 'team', teamId);
   return opened.ok ? ok(opened.value.submission) : opened;
 }
 
@@ -589,13 +602,19 @@ export async function approveSubmission(
   const loaded = await loadSubmission(deps, submissionId);
   if (!loaded.ok) return loaded;
   const { submission, asset } = loaded.value;
-  const ctx = await reviewerContext(deps, asset);
+  const ctx = await reviewerContext(deps, asset, reviewTeamId(asset, submission));
   const checked = checkReviewer(asset, submission, reviewer(actor), ctx);
   if (!checked.ok) {
     if (checked.error.code === 'forbidden' && (actor.user.id === submission.submittedBy || actor.user.id === asset.ownerId)) {
       await audit(deps, actor, 'asset.approve', asset.name, `⛔ 自审被拦下：${label(asset)} ${submission.digest.slice(0, 12)}`, asset.teamId);
     }
     return checked;
+  }
+  // 旧数据没有目标团队：不拿资产现在的归属猜发布目的地，明确拦住（驳回 / 撤回仍可用）
+  if (submissionDestinationMissing(submission)) return err(invalid(MISSING_TARGET_TEAM));
+  // 上架只接受「个人资产 → 目标团队」：资产已经发布成团队资产后，旧的待审上架不能再把它搬去别的团队
+  if (submission.targetScope === 'team' && asset.scope !== 'personal') {
+    return err(conflict('资产已经不是个人资产了：这次上架不能通过'));
   }
   if (hasHighFinding(submission.report) && !options.acknowledgeHigh) return err(invalid('自动检查有高风险发现：逐条看过后勾选「我已确认高风险项」再通过'));
   const selfApproved = checked.value.selfApproved;
@@ -624,8 +643,11 @@ export async function approveSubmission(
     await notify(deps, others, [actor.user.id], 'review.requested', `还差一票：${label(asset)}`, `${actor.user.email} 已通过，需要第二位审核人`, reviewLink(submission.id));
     return ok({ submission: voted, published: false, selfApproved });
   }
-  if (submission.targetScope === 'team' && asset.teamId !== null) {
-    const clash = await deps.assets.findInScope(asset.kind, asset.name, 'team', asset.teamId);
+  if (submission.targetScope === 'team') {
+    const teamId = submission.targetTeamId;
+    if (teamId === null) return err(invalid(MISSING_TARGET_TEAM));
+    if (!(await deps.teams.byId(teamId as TeamId))) return err(invalid('目标团队不存在了：这次上架不能通过'));
+    const clash = await deps.assets.findInScope(asset.kind, asset.name, 'team', teamId);
     if (clash && clash.id !== asset.id) return err(conflict(`团队里已经有叫「${asset.name}」的${ASSET_KIND_LABEL[asset.kind]}了`));
   }
   if (submission.targetScope === 'global') {
@@ -658,7 +680,7 @@ export async function rejectSubmission(
   const loaded = await loadSubmission(deps, submissionId);
   if (!loaded.ok) return loaded;
   const { submission, asset } = loaded.value;
-  const ctx = await reviewerContext(deps, asset);
+  const ctx = await reviewerContext(deps, asset, reviewTeamId(asset, submission));
   const checked = checkDecider(asset, submission, reviewer(actor), ctx);
   if (!checked.ok) return checked;
   const changes = input.changesRequested === true;
@@ -709,7 +731,7 @@ export async function commentOnSubmission(
   const loaded = await loadSubmission(deps, submissionId);
   if (!loaded.ok) return loaded;
   const { submission, asset } = loaded.value;
-  const ctx = await reviewerContext(deps, asset);
+  const ctx = await reviewerContext(deps, asset, reviewTeamId(asset, submission));
   const reviewers = eligibleReviewers(asset, submission, ctx).ids;
   const involved = [submission.submittedBy, asset.ownerId, ...reviewers];
   if (!involved.includes(actor.user.id)) return err(forbidden('只有审核人、提交人和作者能评论'));
@@ -935,7 +957,7 @@ export async function reviewQueue(deps: AssetReviewDeps, actor: Principal): Prom
   for (const submission of pending) {
     const asset = await deps.assets.get(submission.assetId);
     if (!asset) continue;
-    const ctx = await reviewerContext(deps, asset);
+    const ctx = await reviewerContext(deps, asset, reviewTeamId(asset, submission));
     const { ids, routedToHub } = eligibleReviewers(asset, submission, ctx);
     if (!ids.includes(actor.user.id) || submission.approvals.some((vote) => vote.userId === actor.user.id)) continue;
     out.push({ submission, asset, submitter: await nameOf(deps, submission.submittedBy, cache), routedToHub });
@@ -964,12 +986,14 @@ export async function submissionDetail(deps: AssetReviewDeps, actor: Principal, 
   const loaded = await loadSubmission(deps, submissionId);
   if (!loaded.ok) return loaded;
   const { submission, asset } = loaded.value;
-  const ctx = await reviewerContext(deps, asset);
+  const ctx = await reviewerContext(deps, asset, reviewTeamId(asset, submission));
   const { ids } = eligibleReviewers(asset, submission, ctx);
   const involved = ids.includes(actor.user.id) || actor.user.id === submission.submittedBy || actor.user.id === asset.ownerId;
   if (!involved && !canSeeAsset(actor, asset)) return err(notFound('没有这次提交'));
   const cache = new Map<string, string>();
   const approve = checkReviewer(asset, submission, reviewer(actor), ctx);
+  const missingTarget = submissionDestinationMissing(submission);
+  const approveAllowed = approve.ok && !missingTarget;
   const comments = await deps.review.comments(submission.id);
   return ok({
     submission,
@@ -980,8 +1004,14 @@ export async function submissionDetail(deps: AssetReviewDeps, actor: Principal, 
     submitter: await nameOf(deps, submission.submittedBy, cache),
     approvers: await Promise.all(submission.approvals.map(async (vote) => ({ name: await nameOf(deps, vote.userId, cache), selfApproved: vote.selfApproved, at: vote.at }))),
     reviewers: await Promise.all(ids.map((id) => nameOf(deps, id, cache))),
-    canApprove: approve.ok && !actor.via,
-    approveBlocked: approve.ok ? null : submission.status === 'pending' ? approve.error.message : null,
+    canApprove: approveAllowed && !actor.via,
+    approveBlocked: missingTarget
+      ? MISSING_TARGET_TEAM
+      : approve.ok
+        ? null
+        : submission.status === 'pending'
+          ? approve.error.message
+          : null,
     canDecide: checkDecider(asset, submission, reviewer(actor), ctx).ok && !actor.via,
     canWithdraw: submission.status === 'pending' && (actor.user.id === submission.submittedBy || actor.user.id === asset.ownerId),
     needed: attainableApprovals(submission.required, ids.length)

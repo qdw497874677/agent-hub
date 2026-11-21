@@ -83,6 +83,50 @@ test('bot 会话往返：botId 不丢，后续保存不会把它清掉（#221）
   store.close();
 });
 
+test('容器会话的 originProjectId 往返无损，后续保存不能清掉或改掉（#243）', async () => {
+  const store = openSqliteStore(':memory:');
+  const w = await seeded(store);
+  const derived = deriveSession({ agentId: asAgentId('grok'), model: 'grok-4', now, originProjectId: w.project.id });
+  assert.ok(derived.ok);
+  const container = derived.value;
+  await store.sessions.save(container);
+  assert.deepEqual(await store.sessions.byId(container.id), container);
+
+  // 整行回写一份没有来源的旧快照 / 试图改来源：库里的第一次写入必须保持不动。
+  await store.sessions.save({ ...container, originProjectId: null, updatedAt: now + 1 });
+  assert.equal((await store.sessions.byId(container.id))?.originProjectId, w.project.id);
+  const other = createProject({ name: 'other', now, id: undefined });
+  assert.ok(other.ok);
+  await store.projects.save(other.value);
+  await store.sessions.save({ ...container, originProjectId: other.value.id, updatedAt: now + 2 });
+  assert.equal((await store.sessions.byId(container.id))?.originProjectId, w.project.id);
+  store.close();
+});
+
+test('sessions.origin_project_id 迁移：老库补列，旧数据保持 NULL（#243）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-hub-origin-migrate-'));
+  const file = join(dir, 'hub.db');
+  try {
+    const before = openSqliteStore(file);
+    const w = await seeded(before);
+    before.close();
+
+    // 模拟 #243 之前的老库：表里没有 origin_project_id。
+    const raw = new DatabaseSync(file);
+    raw.exec('ALTER TABLE sessions DROP COLUMN origin_project_id');
+    raw.close();
+
+    const store = openSqliteStore(file);
+    const columns = store.db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+    assert.ok(columns.some((column) => column.name === 'origin_project_id'));
+    // 不从长期工作空间 / 关联表反推历史来源。
+    assert.equal((await store.sessions.byId(w.session.id))?.originProjectId, undefined);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('sessions.bot_id 迁移幂等：同一个库连开两次不报错（#221）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agent-hub-bot-migrate-'));
   const file = join(dir, 'hub.db');

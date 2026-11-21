@@ -1,7 +1,9 @@
 import type { Asset, AssetKind } from './asset.ts';
 import type { AcquisitionStrategy } from './acquisition.ts';
-import { withExecutableArg } from './acquisition.ts';
+import { sameAcquisitionStrategies, withExecutableArg } from './acquisition.ts';
 import type { ComponentProvides } from './runtime-bundle.ts';
+import { invalid, type DomainError } from './errors.ts';
+import { err, ok, type Result } from './result.ts';
 
 /**
  * Hub 内置资产清单（随代码发版）。每一项写死来源和钉住的版本：
@@ -185,6 +187,48 @@ export function builtinComponentById(id: string): BuiltinComponent | undefined {
 export function builtinStrategiesFor(componentId: string, version: string): readonly AcquisitionStrategy[] | undefined {
   const item = builtinComponentById(componentId);
   return item && item.version === version ? item.strategies : undefined;
+}
+
+/** 目录项 / 任务里声明的制品来源；可执行策略只绑定内置包在 npm registry 上钉住的制品。 */
+export interface AcquisitionArtifactBinding {
+  readonly packageName: string;
+  readonly integrity: string;
+  readonly source: 'npm' | 'git';
+}
+
+/**
+ * 可执行获取策略的信任边界：只接受内置清单里「同 id、同版本」且「同 npm 包名、同钉住哈希」的策略，
+ * 并且实际执行时用内置值。id / version 只是目录标识，不能单独作为执行授权。
+ * - 普通 npm 包（不在内置清单里）不带策略：照常安装，不能自带执行步骤；
+ * - 内置组件：目录里没带策略 = 用内置值（兼容老目录项）；带了就必须和内置逐字段一致，否则明确拒绝；
+ * - 内置组件走 git 来源、或包名 / 完整性哈希对不上：拒绝，避免把内置 recipe 套到别的制品上；
+ * - 不允许管理员自定义执行策略（要开这个口子得先有明确的审批模型）。
+ */
+export function trustedAcquisitionStrategies(
+  componentId: string,
+  version: string,
+  supplied: readonly AcquisitionStrategy[] | undefined,
+  artifact: AcquisitionArtifactBinding
+): Result<readonly AcquisitionStrategy[] | undefined, DomainError> {
+  const builtin = builtinComponentById(componentId);
+  const recipes = builtin?.version === version ? builtin.strategies : undefined;
+  const hasSupplied = (supplied?.length ?? 0) > 0;
+  if (!builtin || !recipes) {
+    return hasSupplied
+      ? err(invalid(`${componentId}@${version}：可执行获取策略只接受内置清单（同 id、同版本）里的定义；普通组件只支持安装 npm 包`))
+      : ok(undefined);
+  }
+  if (artifact.source !== 'npm' || artifact.packageName !== builtin.packageName || artifact.integrity !== builtin.integrity) {
+    return err(
+      invalid(
+        `${componentId}@${version}：可执行获取策略只绑定内置包 ${builtin.packageName}@${builtin.version} 的钉住哈希（npm registry）；包名、哈希或来源对不上，已拒绝`
+      )
+    );
+  }
+  if (hasSupplied && !sameAcquisitionStrategies(recipes, supplied!)) {
+    return err(invalid(`${componentId}@${version}：目录里的获取策略和内置清单不一致，已拒绝（可执行策略只认内置值）`));
+  }
+  return ok(recipes);
 }
 
 export function builtinComponentForCapability(capability: string): BuiltinComponent | undefined {

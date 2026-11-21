@@ -26,7 +26,13 @@ export function createMcpReplays(db: DatabaseSync): McpReplayStore {
      WHERE (mcp_replays.status = 'pending' AND mcp_replays.created_at < ?)
         OR mcp_replays.created_at < ?`
   );
-  const release = db.prepare("DELETE FROM mcp_replays WHERE key = ? AND status = 'pending'");
+  // 带归属的落档：占位还是自己那次（created_at 没被接管改过）才写。
+  const commit = db.prepare(
+    `UPDATE mcp_replays SET body = ?, created_at = ?, status = 'done'
+     WHERE key = ? AND status = 'pending' AND created_at = ?`
+  );
+  const release = db.prepare('DELETE FROM mcp_replays WHERE key = ? AND status = ? AND created_at = ?');
+  const releaseAny = db.prepare('DELETE FROM mcp_replays WHERE key = ? AND status = ?');
   const prune = db.prepare('DELETE FROM mcp_replays WHERE created_at < ?');
   return {
     async get(key, now = Date.now(), ttlMs = RETENTION_MS) {
@@ -42,8 +48,15 @@ export function createMcpReplays(db: DatabaseSync): McpReplayStore {
     async claim(key, at, staleBefore, expiredBefore) {
       return Number(claim.run(key, at, staleBefore, expiredBefore).changes) > 0;
     },
-    async release(key) {
-      release.run(key);
+    async commit(key, body, at, claimedAt) {
+      const wrote = Number(commit.run(body, at, key, claimedAt).changes) > 0;
+      if (wrote) prune.run(at - RETENTION_MS);
+      return wrote;
+    },
+    async release(key, claimedAt) {
+      // 没给归属时间时保持老行为：删掉任何 pending 占位。
+      if (claimedAt === undefined) releaseAny.run(key, 'pending');
+      else release.run(key, 'pending', claimedAt);
     }
   };
 }

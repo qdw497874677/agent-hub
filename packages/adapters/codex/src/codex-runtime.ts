@@ -131,6 +131,23 @@ interface ApprovalBinding {
   readonly respond: (result: unknown) => void;
 }
 
+type EndedEvent = Extract<SessionEvent, { kind: 'ended' }>;
+
+/** 正在等 `turn/start` 响应 / 正在跑的这一轮；turnId 未回来之前是 null。 */
+interface InFlightPrompt {
+  readonly deliveryId?: string;
+  turnId: string | null;
+}
+
+/** 响应还没回来就先到的结束通知：按原生 turn id 暂存，等响应确认归属。 */
+interface HeldEnd {
+  readonly turnId: string;
+  readonly event: EndedEvent;
+}
+
+/** 暂存上限：只是为了挡住异常顺序下的无界增长。 */
+const MAX_HELD_ENDS = 8;
+
 class CodexSession implements RuntimeSession {
   readonly sessionId: StartSpec['sessionId'];
   private readonly spec: StartSpec;
@@ -148,7 +165,10 @@ class CodexSession implements RuntimeSession {
   private readonly exited: Promise<void>;
   private approvalSeq = 0;
   private threadId = '';
+  /** 当前这一轮的 Codex 原生 turn id（只由 prompt 响应或确认过的 started 绑定）。 */
   private activeTurn: string | null = null;
+  private inFlight: InFlightPrompt | null = null;
+  private readonly heldEnds: HeldEnd[] = [];
   private turnEnded = false;
   private disposed = false;
   private ended = false;
@@ -232,14 +252,28 @@ class CodexSession implements RuntimeSession {
     if (this.disposed || this.ended) return failed(unavailable('这条 Codex 会话已经结束了'));
     if (input.parts.length > 0) return failed(invalid('Codex 适配器暂时不支持附件，先把文字发过来'));
     if (input.text.trim() === '') return failed(invalid('消息不能为空'));
-    if (this.activeTurn !== null) return failed(invalid('上一轮还没跑完，等它结束再发'));
+    if (this.activeTurn !== null || this.inFlight !== null) return failed(invalid('上一轮还没跑完，等它结束再发'));
+    // 只有网关明确带来的送达 id 才在 ended 上回传；老协议不带，行为保持原样。
+    const deliveryId = textOf(input.deliveryId);
     this.turnEnded = false;
+    this.inFlight = deliveryId === '' ? { turnId: null } : { deliveryId, turnId: null };
     try {
       const response = await this.peer.request('turn/start', this.turnParams(input.text), TURN_START_TIMEOUT_MS);
       const turnId = textOf(asRecord(asRecord(response)['turn'])['id']);
-      if (turnId !== '') this.activeTurn = turnId;
+      if (turnId === '') {
+        // 拿不到原生 id：这一轮没法再归属任何结束，攒着的结束只能不带送达 id 放行。
+        this.inFlight = null;
+        this.releaseHeldEnds('');
+        return { ok: true, value: undefined };
+      }
+      if (this.inFlight !== null) this.inFlight.turnId = turnId;
+      this.activeTurn = turnId;
+      this.releaseHeldEnds(turnId);
       return { ok: true, value: undefined };
     } catch (error) {
+      // 请求失败 = 无法确认这一轮到底是哪个原生 turn：绝不拿它去确认送达。
+      this.inFlight = null;
+      this.releaseHeldEnds('');
       return failed(unavailable(`codex 没能开始这一轮：${this.withStderr(errorText(error))}`));
     }
   }
@@ -348,19 +382,76 @@ class CodexSession implements RuntimeSession {
   }
 
   private handleNotification(method: string, params: Record<string, unknown>): void {
-    for (const event of this.mapper.map({ method, params })) this.push(event);
-    if (method === 'turn/started') {
-      const turnId = textOf(asRecord(params['turn'])['id']);
-      if (turnId !== '') this.activeTurn = turnId;
-    }
-    if (method === 'turn/completed') {
-      this.activeTurn = null;
-      // 这一轮收尾了，还挂着的审批已经没有意义：撤掉卡片，别再等 180s。
-      for (const id of this.gate.pending()) {
-        this.gate.withdraw(id);
-        this.approvalBindings.delete(id);
+    const turnId = notificationTurnId(method, params);
+    if (method === 'turn/started') this.noteTurnStarted(turnId);
+    for (const event of this.mapper.map({ method, params })) {
+      if (event.kind === 'ended') {
+        this.handleEnded(event, turnId);
+        continue;
       }
+      this.push(event);
     }
+  }
+
+  /**
+   * `turn/started` 只在能对上「已由 prompt 响应绑定」的 turn id 时才生效：
+   * 等待响应期间、以及空闲时，都不能按到达顺序绑定一个可能迟到的旧轮。
+   */
+  private noteTurnStarted(turnId: string): void {
+    if (turnId === '' || this.inFlight === null) return;
+    if (this.inFlight.turnId === turnId) this.activeTurn = turnId;
+  }
+
+  private handleEnded(event: EndedEvent, turnId: string): void {
+    const pending = this.inFlight;
+    if (pending !== null && pending.turnId === null) {
+      // 响应还没回来：先按原生 turn id 暂存，等响应确认这一轮到底是哪个 id。
+      if (this.heldEnds.length >= MAX_HELD_ENDS) this.heldEnds.shift();
+      this.heldEnds.push({ turnId, event });
+      return;
+    }
+    if (turnId !== '') {
+      if (pending !== null) {
+        // 这一轮已经由响应绑定了原生 id：只有完全一致才算它的结束，别的一律是旧轮/别的轮。
+        if (pending.turnId === turnId) this.pushEnded(event, pending.deliveryId);
+        return;
+      }
+      if (this.activeTurn !== null && this.activeTurn !== turnId) {
+        // 结束的不是当前这一轮：迟到/重复通知，不能让它收掉新一轮。
+        return;
+      }
+      this.pushEnded(event, undefined);
+      return;
+    }
+    // 拿不到原生 turn id：身份不确定，只上报结束，不确认任何送达。
+    this.pushEnded(event, undefined);
+  }
+
+  /** 放行暂存的结束：只有 id 与刚绑定的这一轮完全一致才带送达 id，其余当旧轮丢弃。 */
+  private releaseHeldEnds(boundTurnId: string): void {
+    if (this.heldEnds.length === 0) return;
+    const deliveryId = this.inFlight?.deliveryId;
+    const held = this.heldEnds.splice(0);
+    for (const entry of held) {
+      if (boundTurnId !== '' && entry.turnId === boundTurnId) {
+        this.pushEnded(entry.event, deliveryId);
+        continue;
+      }
+      // 没有原生 id 的结束无法归属：照旧上报，但不确认任何送达。
+      if (entry.turnId === '') this.pushEnded(entry.event, undefined);
+    }
+  }
+
+  private pushEnded(event: EndedEvent, deliveryId: string | undefined): void {
+    this.inFlight = null;
+    this.activeTurn = null;
+    this.turnEnded = true;
+    // 这一轮收尾了，还挂着的审批已经没有意义：撤掉卡片，别再等 180s。
+    for (const id of this.gate.pending()) {
+      this.gate.withdraw(id);
+      this.approvalBindings.delete(id);
+    }
+    this.queue.push(deliveryId === undefined ? event : { ...event, deliveryId });
   }
 
   private handleServerRequest(
@@ -409,24 +500,33 @@ class CodexSession implements RuntimeSession {
   }
 
   private push(event: SessionEvent): void {
-    if (event.kind === 'ended') this.turnEnded = true;
+    // ended 一律走 pushEnded：它负责清 inFlight / activeTurn，并决定带不带送达 id。
     this.queue.push(event);
   }
 
   private async handleExit(code: number | null): Promise<void> {
     if (this.ended) return;
     this.ended = true;
+    const pending = this.inFlight;
+    const active = this.activeTurn;
+    this.inFlight = null;
     this.activeTurn = null;
+    this.heldEnds.length = 0;
     // 未决审批全部当拒绝（send 走的是已经死掉的 stdin，会静默失败）。
     await this.gate.close();
-    if (!this.turnEnded) {
-      const reason =
-        this.disposed || code === 0
-          ? undefined
-          : `codex 进程退出了（code ${code ?? 'unknown'}）${this.lastStderr === '' ? '' : `：${this.lastStderr}`}`;
-      this.queue.push(
-        reason === undefined ? { kind: 'ended', outcome: 'stopped' } : { kind: 'ended', outcome: 'failed', reason }
-      );
+    const reason =
+      this.disposed || code === 0
+        ? undefined
+        : `codex 进程退出了（code ${code ?? 'unknown'}）${this.lastStderr === '' ? '' : `：${this.lastStderr}`}`;
+    const ended: EndedEvent =
+      reason === undefined ? { kind: 'ended', outcome: 'stopped' } : { kind: 'ended', outcome: 'failed', reason };
+    if (pending !== null) {
+      // 进程退出只有在「这一轮的 turn id 已确认、且就是当前轮」时才证明送达结束；
+       // 否则身份不确定，只上报不确认；Hub 保留该投递，不会因超时放行。
+      const certain = pending.turnId !== null && pending.turnId === active;
+      this.queue.push(certain && pending.deliveryId !== undefined ? { ...ended, deliveryId: pending.deliveryId } : ended);
+    } else if (!this.turnEnded) {
+      this.queue.push(ended);
     }
     this.queue.close();
   }
@@ -469,6 +569,16 @@ class EventQueue implements AsyncIterable<SessionEvent> {
       }
     };
   }
+}
+
+/**
+ * 通知里能拿到的原生 turn id：started/completed 在 `turn.id`，error 在 `turnId`。
+ * 拿不到就是空串——调用方必须把它当成「身份不确定」，不能退回上一次记住的 id。
+ */
+function notificationTurnId(method: string, params: Record<string, unknown>): string {
+  if (method === 'turn/started' || method === 'turn/completed') return textOf(asRecord(params['turn'])['id']);
+  if (method === 'error') return textOf(params['turnId']);
+  return '';
 }
 
 function applyCodexOption(

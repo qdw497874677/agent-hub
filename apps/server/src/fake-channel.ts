@@ -1,5 +1,12 @@
 import type { ConnectorBinding, InboundEvent, InboundSource } from '@agent-hub/domain';
 import type { OutboxDeliver } from '@agent-hub/domain';
+import {
+  isKnownSyntheticTurnEnd,
+  turnReplyText,
+  turnReplyWindow,
+  type TurnReplyEnd,
+  type TurnReplyJournalDeps
+} from '@agent-hub/connector-feishu';
 
 /**
  * 假渠道（#221 步骤 8）：不连任何外部平台，用来把「入站 → 目标 → 出站 → 回声去重」整条链跑通。
@@ -61,26 +68,22 @@ export interface FakeReplyRoute {
  * 假渠道的回程（步骤 8）：会话回合结束后，把这一轮的最后一段文字投进出站队列，
  * 由 `createFakeOutbound` 收下来 —— 这样「入站 → 会话 → 出站」整条链在没有真实 IM 时也能跑。
  */
-export function createFakeReplies(deps: {
+export function createFakeReplies(deps: TurnReplyJournalDeps & {
   enqueue(input: { target: { kind: 'external'; id: string }; body: string; author: { kind: 'agent'; name: string }; origin: 'reply'; replyToExternalId: string | null; externalConversationId: string | null }): Promise<unknown>;
-  tail(sessionId: string, limit: number): Promise<readonly { event: { kind: string; delta?: string } }[]>;
 }) {
   const routes = new Map<string, FakeReplyRoute>();
-  const lastTurnText = async (sessionId: string): Promise<string> => {
-    const entries = await deps.tail(sessionId, 500);
-    let lastPrompt = -1;
-    entries.forEach((entry, index) => { if (entry.event.kind === 'prompt') lastPrompt = index; });
-    return entries.slice(lastPrompt + 1).map((entry) => (entry.event.kind === 'text' ? entry.event.delta ?? '' : '')).join('').trim();
-  };
   return {
     remember(sessionId: string, bindingId: string) {
       routes.set(sessionId, { bindingId, conversation: bindingId, replyToExternalId: null });
     },
     forget(sessionId: string) { routes.delete(sessionId); },
-    async finish(sessionId: string): Promise<string | null> {
+    async finish(sessionId: string, end: TurnReplyEnd): Promise<string | null> {
+      if (isKnownSyntheticTurnEnd(end)) return null;
       const route = routes.get(sessionId);
       if (!route) return null;
-      const body = await lastTurnText(sessionId);
+      const window = await turnReplyWindow(deps, sessionId, end);
+      if (!window) return null;
+      const body = turnReplyText(window.entries, { anchorSeq: window.anchorSeq, endedSeq: end.seq });
       if (body === '') return null;
       await deps.enqueue({
         target: { kind: 'external', id: `fake:${route.conversation}` },

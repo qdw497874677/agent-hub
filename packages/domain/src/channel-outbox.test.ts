@@ -24,6 +24,20 @@ class MemoryOutbox implements OutboxStore {
 
   async save(message: ChannelOutboxMessage): Promise<void> { this.rows.set(message.id, message); }
 
+  async insertIfAbsent(message: ChannelOutboxMessage): Promise<{ message: ChannelOutboxMessage; inserted: boolean }> {
+    const existing = this.rows.get(message.id);
+    if (existing) return { message: existing, inserted: false };
+    this.rows.set(message.id, message);
+    return { message, inserted: true };
+  }
+
+  async settle(next: ChannelOutboxMessage, leaseUntil: number | null): Promise<boolean> {
+    const current = this.rows.get(next.id);
+    if (!current || current.state !== 'sending' || current.leaseUntil !== leaseUntil) return false;
+    this.rows.set(next.id, next);
+    return true;
+  }
+
   async byId(id: string): Promise<ChannelOutboxMessage | null> { return this.rows.get(id) ?? null; }
 
   async expiring(now: number): Promise<ChannelOutboxMessage[]> {
@@ -184,6 +198,49 @@ test('租约过期的行由 tick 收回并重投；enqueue 落 queued', async ()
   assert.equal(fresh.leaseUntil, null);
   assert.equal(fresh.nextAttemptAt, 2_000);
   assert.equal(fresh.createdAt, 2_000);
+});
+
+test('insertIfAbsent：同 id 只插一次，已存在时保留原行（sent 不会被重置）', async () => {
+  const store = new MemoryOutbox();
+  const first = message({ id: 'run-1' });
+  assert.deepEqual(await store.insertIfAbsent(first), { message: first, inserted: true });
+  await store.save({ ...first, state: 'sent', externalMessageId: 'ext-1', updatedAt: 2_000 });
+
+  const again = await store.insertIfAbsent(message({ id: 'run-1', body: '重放' }));
+  assert.equal(again.inserted, false);
+  assert.equal(again.message.state, 'sent');
+  assert.equal(again.message.externalMessageId, 'ext-1');
+  assert.equal(store.rows.get('run-1')!.state, 'sent');
+  assert.equal(store.rows.get('run-1')!.body, 'hello', '已存在的行不被覆盖');
+
+  const other = await store.insertIfAbsent(message({ id: 'run-2' }));
+  assert.equal(other.inserted, true);
+  assert.equal(store.rows.size, 2);
+});
+
+test('结算租约 CAS：租约过期被重领后，旧结算作废、不覆盖新状态', async () => {
+  let clock = 1_000;
+  const store = new MemoryOutbox();
+  queued(store, { id: 'm1', nextAttemptAt: 1_000 });
+  const pump = createOutboxPump({
+    store,
+    now: () => clock,
+    leaseMs: 500,
+    deliver: async (claimed) => {
+      // 模拟 deliver 期间租约过期：另一个泵在 5_000 重领并成功投递、结算。
+      const reclaimed = { ...claimed, leaseUntil: 5_000, updatedAt: 5_000 };
+      store.rows.set('m1', reclaimed);
+      assert.equal(await store.settle({ ...reclaimed, state: 'sent', leaseUntil: null, externalMessageId: 'other', updatedAt: 5_000 }, 5_000), true);
+      clock = 5_000;
+      // 本泵的投递也成功（平台侧可能已经重复发送——这里不承诺 exactly-once）。
+      return { ok: true, externalMessageId: 'mine' };
+    }
+  });
+  assert.equal(await pump.tick(), 1);
+  const row = store.rows.get('m1')!;
+  assert.equal(row.state, 'sent');
+  assert.equal(row.externalMessageId, 'other', '旧租约的结算不能覆盖新泵的结果');
+  assert.equal(row.updatedAt, 5_000);
 });
 
 test('externalId 拆分与「裸 messageId / 带 chat 前缀」对齐（#219 C3 出站回声）', () => {

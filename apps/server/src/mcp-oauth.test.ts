@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { McpOAuth } from '@agent-hub/domain';
 import { createMcpOAuth } from './mcp-oauth.ts';
+import { createMcpEgress } from './mcp-egress.ts';
 
 const base: McpOAuth = {
   tokenUrl: 'https://auth.example.test/token',
@@ -110,6 +111,44 @@ test('MCP OAuth：expires_in 提前 60 秒过期；缺省按 300 秒', async () 
   assert.equal(defaults.length, 2);
 });
 
+test('MCP OAuth：token 地址只允许 HTTPS 公网 URL，拒绝后才发请求', async () => {
+  for (const tokenUrl of [
+    'http://auth.example.test/token',
+    'https://user:secret@auth.example.test/token',
+    'https://127.0.0.1/token',
+    'https://[::1]/token',
+    'https://auth.internal/token'
+  ]) {
+    const { calls, impl } = fakeFetch(() => tokenResponse({ access_token: 'never' }));
+    const oauth = createMcpOAuth({ fetch: impl });
+    const result = await oauth.authorization({ ...base, tokenUrl });
+    assert.ok(!result.ok, tokenUrl);
+    assert.match(result.error.message, /MCP OAuth/);
+    assert.equal(calls.length, 0, tokenUrl);
+  }
+});
+
+test('MCP OAuth：HTTP 运维例外也不放宽 token 地址（必须 HTTPS）', async () => {
+  const { calls, impl } = fakeFetch(() => tokenResponse({ access_token: 'never' }));
+  const egress = createMcpEgress({
+    policy: { allowPrivateHosts: [], allowHttpHosts: ['auth.example.test'] },
+    resolve: async () => [{ address: '93.184.216.34', family: 4 }],
+    fetchImpl: impl
+  });
+  const oauth = createMcpOAuth({ egress, fetch: impl });
+  const result = await oauth.authorization({ ...base, tokenUrl: 'http://auth.example.test/token' });
+  assert.ok(!result.ok);
+  assert.match(result.error.message, /HTTPS/);
+  assert.equal(calls.length, 0);
+  await egress.close();
+});
+
+test('MCP OAuth：请求强制 redirect=error', async () => {
+  const { calls, impl } = fakeFetch(() => tokenResponse({ access_token: 'tok-redirect', expires_in: 3600 }));
+  const oauth = createMcpOAuth({ fetch: impl });
+  assert.ok((await oauth.authorization(base)).ok);
+  assert.equal(calls[0]?.init.redirect, 'error');
+});
 test('MCP OAuth：失败返回中文错误、含状态码，且不带 client secret', async () => {
   const logged: string[] = [];
   const { impl } = fakeFetch(() => tokenResponse({ error: 'invalid_client', access_token: 'leaked' }, 401));

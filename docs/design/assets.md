@@ -100,6 +100,8 @@
 - 展开只发生在 `prepare()`，结果只进 Worker 启动配置；不写 `session_assets`、不写日志、不写错误消息。
 - `environmentRevision` 的 MCP 部分只记 env 的 digest（已有 `SessionEnvironmentRevisionInputs.mcp`）。
 - 审计：`asset.mcp.expand` 记 `{sessionId, mcpName, secretNames}`，不记值。
+- 远端 http MCP / OAuth 取 token 统一走 hub 的 MCP 出口策略：HTTPS 默认、连接时校验 DNS 解析、
+  只允许精确主机名例外，见 `docs/design/mcp-egress.md`。
 
 ## 8. 观测
 

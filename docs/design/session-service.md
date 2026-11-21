@@ -42,7 +42,7 @@ export interface SessionService {
   readonly root: string;             // 绝对路径，必须在 WORKER_ROOTS 内
   readonly command: string;          // /bin/sh -lc，长度 ≤ 2000
   readonly port: number | null;      // 1024–65535，null = 未声明
-  readonly env: Readonly<Record<string, string>>; // 白名单键，≤ 20 个
+  readonly envKeys: readonly string[]; // 仅键名，≤ 20 个
   readonly restart: 'always' | 'on-demand' | 'never';
   readonly state: 'starting' | 'running' | 'failed' | 'stopped';
   readonly pid: number | null;       // running 时才有
@@ -54,6 +54,10 @@ export interface SessionService {
 
 存储：`session_services`（上表列 + `log_tail TEXT` 最近 8 KiB）。`state` 只由 Worker 上报推进，
 hub 不做乐观状态（避免「显示 running 实际已死」）。
+
+Hub 只在 `env_keys` 保存环境变量键名；值从创建请求直接发送给 Worker。旧库升级把 `env`
+转换为键名列表并清空旧值。迁移不清理历史备份、WAL 或 SQLite 空闲页；不要将它当作秘密擦除。
+若以前存入过敏感值，应轮换这些值，并按保留策略处理受影响的备份。
 
 ## 4. 协议
 
@@ -79,6 +83,7 @@ Worker 事件（worker → hub）：`service_state` `{ serviceId, state, pid?, d
 - `port` 声明后，Worker 在 30 秒内轮询 `/proc/net/tcp` 等它监听，成功即 `running`；超时 `failed('30 秒内没有监听端口')`。
 - 服务进程退出：`restart === 'always'` 时退避重拉（1s/5s/30s，上限 5 次），其它情况 `stopped`/`failed`。
 - Worker 重启：读本地 `services.json`（`<root>/../.agent-hub/services.json`），按 `restart` 决定是否重拉；
+  如果服务带环境变量，文件中只有占位符，必须重新启动服务并提供变量值；
   hub 重连后用 `ws.service.list` 对账，找不到的标 `failed('机器重启后没有拉起来')`。
 
 ## 5. 权限与审计

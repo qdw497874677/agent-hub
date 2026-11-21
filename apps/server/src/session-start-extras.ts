@@ -9,7 +9,7 @@ import {
   linkSessionsUseCase,
   notFound,
   ok,
-  projectOfSession,
+  projectOfSessionOrigin,
   type Deps,
   type DomainError,
   type MessageBus,
@@ -51,7 +51,7 @@ export async function checkStartExtras(
   if (!task) return err(notFound('任务不存在'));
   for (const raw of new Set(extras.linkWith)) {
     const other = await deps.sessions.byId(asSessionId(raw));
-    const project = other ? await projectOfSession(deps, other) : null;
+    const project = other ? await projectOfSessionOrigin(deps, other) : null;
     if (!other || !project || project.id !== task.projectId) return err(notFound(`linkWith 里的会话 ${raw} 不存在或不在同一个项目里`));
     if (other.settledAt) return err(conflict(`archived: 会话 ${raw} 已收起，不能再连线`));
     if (deps.access) {
