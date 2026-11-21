@@ -44,12 +44,13 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
 
   // 首页是门厅：左栏是「在哪儿干」，右栏是「接着干哪条」
   const nav = page.getByRole('complementary', { name: '首页侧栏' });
-  await expect(nav.getByText('agent-hub')).toBeVisible();
+  // 招牌是整页的 h1（页头里），侧栏只剩「在哪儿干」这一列。
+  await expect(page.getByRole('heading', { level: 1, name: /agent-hub/ })).toBeVisible();
   await expect(nav.getByText('项目', { exact: true })).toBeVisible();
 
   // M1：指一个本地目录（打字也行，点选也行——点选见下一条用例）
   await nav.getByTitle('新建项目').click();
-  const panel = page.getByLabel('新建项目');
+  const panel = page.getByRole('region', { name: '新建项目' });
   // 建项目只要名字：不选机器、不选目录（项目只是 hub 里的一条记录）
   await expect(panel.getByLabel('目录', { exact: true })).toHaveCount(0);
   await panel.getByLabel('项目名').fill(PROJECT_NAME);

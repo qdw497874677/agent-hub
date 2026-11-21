@@ -248,8 +248,22 @@ export const api = {
   activity: (sessionId: string) => call<SessionActivityDto[]>(`/api/sessions/${sessionId}/activity`),
   provenance: (sessionId: string) => call<ProvenanceDto | null>(`/api/sessions/${sessionId}/provenance`),
   attention: () => call<AttentionDto>('/api/attention'),
-  ackAttention: (item: { sessionId: string; phase: string; since: number }) =>
-    post<{ ok: true }>('/api/attention/ack', { sessionId: item.sessionId, phase: item.phase, since: item.since }),
+  /**
+   * acked 省略 = 记下（老行为）；acked:false = 撤回收起，精确到 session+phase+since 这一条，
+   * 并带上记下时返回的 ackedAt 收据。返回 houskeeping 回执：ackedAt（记下成功）或 undone（撤销是否真生效）。
+   */
+  ackAttention: (
+    item: { sessionId: string; phase: string; since: number },
+    acked = true,
+    ackedAt?: number
+  ) =>
+    post<{ ok: true; ackedAt?: number; undone?: boolean }>('/api/attention/ack', {
+      sessionId: item.sessionId,
+      phase: item.phase,
+      since: item.since,
+      acked,
+      ...(ackedAt === undefined ? {} : { ackedAt })
+    }),
   events: (sessionId: string, after = 0) =>
     call<JournalEntryDto[]>(`/api/sessions/${sessionId}/events${after > 0 ? `?after=${after}` : ''}`),
   search: (projectId: string, q: string) =>

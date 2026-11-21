@@ -22,8 +22,10 @@ import {
 import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from '../surfaces/workbench/workspace-chooser.tsx';
 import { harnessReason } from './harness.tsx';
+import { Icon } from '../atoms/icons.tsx';
 import { agentNote, canSelectMachine, emptyModelOption, hubCovers, startHint } from './harness-gate.ts';
 import { ModelPicker } from '../atoms/model-picker.tsx';
+import { useNarrow } from './device.ts';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
 import { cloneErrorHint } from '../surfaces/workbench/project-repos.ts';
 import { groupStateNote, memberStateLabel, failedGroupIdFromWorkspaces, type WorkspaceGroupView } from '../surfaces/workbench/workspace-group.ts';
@@ -125,6 +127,11 @@ export function DeriveDialog({
   const [model, setModel] = useState(agent?.defaultModel ?? '');
   const [profileId, setProfileId] = useState('');
   const [profilesOpen, setProfilesOpen] = useState(false);
+  // 手机上先说清「给哪条任务、在哪台机器上开」，再收起不常用的高级项；
+  // 桌面上这些区块照旧全部展开（见下面的 max-md:order-*）。
+  const narrow = useNarrow();
+  const [agentSectionOpen, setAgentSectionOpen] = useState(false);
+  const [assetsSectionOpen, setAssetsSectionOpen] = useState(false);
   const profiles = useQuery({ queryKey: ['agent-profiles'], queryFn: () => api.agentProfiles(), retry: false });
   const workers = useWorkers();
   // 运行面板（workspaces.md §9.3）：先选机器，再选工作目录；不预选，没选之前「开始」是灰的
@@ -207,6 +214,12 @@ export function DeriveDialog({
     selectedProfile.model !== '' &&
     offered.models.length > 0 &&
     !offered.models.includes(selectedProfile.model);
+  // 手机顶上那张「给谁开、在哪开」的摘要；桌面上不渲染（md:hidden）
+  const taskTitle = canvas.tasks.find((task) => task.id === taskId)?.title ?? '这条任务';
+  const agentLabel = agent?.label ?? (agentId === '' ? '还没选 agent' : agentId);
+  const machineLabel = machine === null ? '还没选机器' : (workers.byId(machine)?.label ?? '这台机器');
+  // agent / 模型这块什么时候自己打开：模型没选或配置对不上时，别让人猜「开始」为什么是灰的
+  const modelNeedsAttention = model === '' || profileModelUnavailable || unsupportedProfileOptions.length > 0;
   const queryClient = useQueryClient();
   const projectId = canvas.project.id;
   /** 建组失败后把那一组找回来（见 failedGroupIdFromWorkspaces）；找不回来就只留错误，不再抛新错盖住它。 */
@@ -359,9 +372,18 @@ export function DeriveDialog({
         </div>
       }
     >
-        <p className="mb-3 text-head text-primary">开始会话</p>
+        <div className="flex flex-col">
+        <p className="mb-3 text-head text-primary max-md:hidden">开始会话</p>
+        {/* 手机上先给一句「给哪条任务开、在哪台机器上开」：标题不长，但省得翻上去对任务 */}
+        <section data-testid="derive-target" className="mb-3 max-md:order-2 md:hidden">
+          <p className="text-meta text-tertiary">为这条任务开一条新会话</p>
+          <p className="mt-0.5 text-body text-primary">{taskTitle}</p>
+          <p className="mt-0.5 text-meta text-secondary">
+            {canvas.project.name} · {machineLabel} · {agentLabel}
+          </p>
+        </section>
         {canvas.agents.length === 0 ? (
-          <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
+          <p className="mb-3 max-md:order-3 border-l border-rust pl-2 text-meta text-secondary">
             还没有在线的机器。
             <button
               className="ml-2 text-link underline-offset-2 hover:underline"
@@ -371,7 +393,7 @@ export function DeriveDialog({
             </button>
           </p>
         ) : null}
-        <div data-testid="derive-workspace-region">
+        <div data-testid="derive-workspace-region" className="max-md:order-5">
           <WorkspaceChooser
             canvas={canvas}
             taskId={taskId}
@@ -390,7 +412,7 @@ export function DeriveDialog({
             groups
           />
         </div>
-        <div className="mb-3">
+        <div className="mb-3 max-md:order-6">
           <div className="mb-1 flex items-center justify-between gap-2">
             <label className="block text-meta text-secondary" htmlFor="derive-profile">启动预设（可选）</label>
             <button type="button" className="text-meta text-link underline-offset-2 hover:underline" onClick={() => setProfilesOpen(true)}>
@@ -431,7 +453,24 @@ export function DeriveDialog({
             </p>
           ) : null}
         </div>
-        <div className="mb-4 grid grid-cols-1 gap-x-3 sm:grid-cols-2">
+        <details
+          data-testid="derive-agent-section"
+          className="group max-md:order-7 max-md:mb-3 max-md:rounded-md max-md:border max-md:border-hair"
+          open={narrow ? agentSectionOpen || modelNeedsAttention : true}
+          onToggle={(event) => {
+            if (narrow) setAgentSectionOpen(event.currentTarget.open);
+          }}
+        >
+          <summary className="hidden min-h-[44px] cursor-pointer list-none items-center justify-between gap-2 px-3 max-md:flex [&::-webkit-details-marker]:hidden">
+            <span className="shrink-0 text-body text-primary">agent 与模型</span>
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="truncate text-meta text-tertiary">
+                {agentLabel} · {model === '' ? '还没选模型' : model}
+              </span>
+              <Icon name="chevron-down" size={14} className="shrink-0 text-tertiary transition-transform group-open:rotate-180" />
+            </span>
+          </summary>
+        <div className="mb-4 grid grid-cols-1 gap-x-3 sm:grid-cols-2 max-md:mb-0 max-md:px-3 max-md:pb-3">
         <div>
         <label className="mb-1 block text-meta text-secondary" htmlFor="derive-agent">agent</label>
         <select
@@ -482,8 +521,26 @@ export function DeriveDialog({
           </p>
         )}
         </div>
+        </details>
         {/* 资产：这一趟要带哪些技能 / 指令 / MCP（默认全选，取消即不带）。手机上换行不横向滚。 */}
-        <div className="mb-3" data-testid="derive-assets">
+        <details
+          data-testid="derive-assets-section"
+          className="group max-md:order-8 max-md:mb-3 max-md:rounded-md max-md:border max-md:border-hair"
+          open={narrow ? assetsSectionOpen : true}
+          onToggle={(event) => {
+            if (narrow) setAssetsSectionOpen(event.currentTarget.open);
+          }}
+        >
+          <summary className="hidden min-h-[44px] cursor-pointer list-none items-center justify-between gap-2 px-3 max-md:flex [&::-webkit-details-marker]:hidden">
+            <span className="shrink-0 text-body text-primary">资产</span>
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="truncate text-meta text-tertiary">
+                {machine === null ? '选好机器后可以看会带哪些' : `这次带 ${includedAssetIds(assetEntries, selection).length} 项`}
+              </span>
+              <Icon name="chevron-down" size={14} className="shrink-0 text-tertiary transition-transform group-open:rotate-180" />
+            </span>
+          </summary>
+        <div className="mb-3 max-md:mb-0 max-md:px-3 max-md:pb-3" data-testid="derive-assets">
           <div className="mb-1 flex items-center justify-between gap-2">
             <span className="text-meta text-secondary">资产</span>
             {machine !== null && assetPlan.data !== undefined ? (
@@ -585,8 +642,9 @@ export function DeriveDialog({
             </ul>
           )}
         </div>
+        </details>
         {derive.error ? (
-          <div className="mb-2" data-testid="derive-error">
+          <div className="mb-2 max-md:order-4" data-testid="derive-error">
             <p className="text-meta text-rust">{(derive.error as Error).message}</p>
             {cloneErrorHint((derive.error as Error).message) !== null ? (
               <p className="mt-1 text-meta text-tertiary" data-testid="derive-error-hint">
@@ -596,7 +654,7 @@ export function DeriveDialog({
           </div>
         ) : null}
         {group !== null && choice?.type === 'new_group' && group.state !== 'ready' ? (
-          <div className="mb-2 border-l border-rust pl-2" data-testid="derive-group">
+          <div className="mb-2 max-md:order-9 border-l border-rust pl-2" data-testid="derive-group">
             <p className="text-meta text-rust">{groupStateNote(group) ?? '组合工作目录还没准备好'}</p>
             {group.members.length > 0 ? (
               <ul className="mt-1 space-y-0.5 text-meta text-tertiary">
@@ -623,6 +681,7 @@ export function DeriveDialog({
           </div>
         ) : null}
         {profilesOpen ? <AgentProfilesDialog agents={canvas.agents} onClose={() => setProfilesOpen(false)} /> : null}
+        </div>
     </DialogShell>
   );
 }

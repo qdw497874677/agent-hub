@@ -22,7 +22,8 @@ import { MessagesPage } from '../surfaces/im/messages.tsx';
 import { BotsPage } from '../surfaces/im/bots.tsx';
 import { ObservePage } from './observe.tsx';
 import { MarketPage } from './market/page.tsx';
-import { useNarrow } from './device.ts';
+import { modKeyLabel, useNarrow } from './device.ts';
+import { Sheet } from './dialog-shell.tsx';
 import { TaskDetail } from '../surfaces/workbench/task-detail.tsx';
 import type { View } from './route.ts';
 
@@ -321,7 +322,7 @@ function Workspace() {
             group: '操作',
             label: '收起 / 展开侧栏',
             icon: 'panel' as const,
-            keys: '⌘B',
+            keys: `${modKeyLabel()}B`,
             keywords: 'sidebar',
             run: () => window.dispatchEvent(new Event(TOGGLE_SIDEBAR_EVENT))
           }
@@ -380,15 +381,12 @@ function Workspace() {
   return (
     <div className="flex h-full">
       <div className="hidden h-full lg:flex">{sidebar()}</div>
+      {/* 手机/平板侧栏走同一个抽屉：Esc、焦点陷阱、外部点按关闭、关掉把焦点还给汉堡按钮。
+          以前是个普通 div，键盘用户按 Esc 关不掉，Tab 还能跑到被遮住的页面里。 */}
       {sidebarOpen ? (
-        <div
-          className="fixed inset-0 z-50 flex bg-canvas/60 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
-        >
-          <div className="h-full w-[min(86vw,320px)]" onClick={(event) => event.stopPropagation()}>
-            {sidebar(() => setSidebarOpen(false))}
-          </div>
-        </div>
+        <Sheet title="项目与导航" testId="nav-sheet" onClose={() => setSidebarOpen(false)}>
+          {sidebar(() => setSidebarOpen(false))}
+        </Sheet>
       ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ProjectBar project={project} view={view} canFocus={selectedSession !== null} stream={stream} onView={setView} />

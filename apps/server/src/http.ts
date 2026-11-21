@@ -62,8 +62,8 @@ import {
   workerInfoSchema
 } from '@agent-hub/contract';
 import type { SessionEnvironmentDto } from '@agent-hub/contract';
-import type { AuditAction, Deps, DomainError, LogAuthor, Principal, Project, Result, Subject, TaskStatus } from '@agent-hub/domain';
-import { systemSubject, isSystem, loadAttention, NEEDS_HUMAN, workerMcpConfigs } from '@agent-hub/domain';
+import type { AuditAction, Deps, DomainError, LogAuthor, Principal, Project, Result, Subject, TaskStatus, Phase } from '@agent-hub/domain';
+import { systemSubject, isSystem, loadAttention, markAttention, NEEDS_HUMAN, ATTENTION_SESSION_ID_MAX, workerMcpConfigs } from '@agent-hub/domain';
 import type { AttentionStore, PullRequestRepository } from '@agent-hub/domain';
 const NO_AUTH_SUBJECT = systemSubject('no-auth');
 import {
@@ -1223,12 +1223,39 @@ export function createApp(options: AppOptions): Hono {
     const subject = subjectOf(c);
     const att = options.attention;
     if (!att || !subject || isSystem(subject)) return c.json({ ok: true });
-    const body = (await c.req.json().catch(() => null)) as { sessionId?: unknown; phase?: unknown; since?: unknown } | null;
-    if (!body || typeof body.sessionId !== 'string' || typeof body.phase !== 'string' || !NEEDS_HUMAN.has(body.phase as never) || typeof body.since !== 'number') {
-      return c.json({ error: { code: 'invalid', message: '需要 sessionId / phase / since' } }, 400);
+    // 老前端只发 sessionId / phase / since（= 记下）；撤销时带 acked: false，可选带上次返回的 ackedAt 收据。
+    const raw = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    const sessionId = raw?.sessionId;
+    const phase = raw?.phase;
+    const since = raw?.since;
+    const acked = raw?.acked;
+    const ackedAt = raw?.ackedAt;
+    if (
+      !raw ||
+      typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > ATTENTION_SESSION_ID_MAX ||
+      typeof phase !== 'string' || !NEEDS_HUMAN.has(phase as Phase) ||
+      typeof since !== 'number' || !Number.isSafeInteger(since) || since < 0 ||
+      (acked !== undefined && typeof acked !== 'boolean') ||
+      (ackedAt !== undefined && (typeof ackedAt !== 'number' || !Number.isSafeInteger(ackedAt) || ackedAt < 0))
+    ) {
+      return c.json({ error: { code: 'invalid', message: '需要 sessionId / phase / since（since 必须是安全整数；ack 可选布尔，撤销可选带 ackedAt 收据）' } }, 400);
     }
-    await att.store.ack(subject.user.id, { sessionId: body.sessionId, phase: body.phase as never, since: body.since }, Date.now());
-    return c.json({ ok: true });
+    const result = await markAttention(
+      { ...deps, attention: att.store, deliveries: deps.deliveries, pullRequests: att.pullRequests },
+      {
+        accountId: subject.user.id,
+        sessionId,
+        phase: phase as Phase,
+        since,
+        acked: acked !== false,
+        ...(typeof ackedAt === 'number' ? { receipt: ackedAt } : {}),
+        at: Date.now(),
+        include: await projectReader(deps.access, subject)
+      }
+    );
+    return c.json(acked === false
+      ? { ok: true, undone: result.undone === true }
+      : result.ackedAt === null ? { ok: true } : { ok: true, ackedAt: result.ackedAt });
   });
 
   // 任务来历（ADR 0031 D3）：谁、从哪、凭什么开的；只读。访问中间件按 session.read 守着。

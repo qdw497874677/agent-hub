@@ -476,10 +476,12 @@ export function AccountMenu({ placement = 'down' }: { placement?: 'down' | 'up' 
       <button
         aria-label="账号"
         aria-expanded={open}
-        className="flex h-7 w-7 items-center justify-center rounded-full bg-selected text-meta text-secondary hover:text-primary"
+        className="flex h-[44px] w-[44px] items-center justify-center text-meta text-secondary md:h-7 md:w-7"
         onClick={() => setOpen((value) => !value)}
       >
-        {account.displayName.slice(0, 1).toUpperCase()}
+        <span className="flex h-[26px] w-[26px] items-center justify-center rounded-full bg-selected hover:text-primary md:h-[22px] md:w-[22px]">
+          {account.displayName.slice(0, 1).toUpperCase()}
+        </span>
       </button>
       {open && (
         <div className={`absolute z-40 w-56 rounded-lg border border-strong bg-overlay p-3 text-meta shadow-overlay ${placement === 'up' ? 'bottom-9 right-0 lg:left-0 lg:right-auto' : 'right-0 top-9'}`} data-testid="account-menu">

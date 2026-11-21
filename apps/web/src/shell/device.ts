@@ -44,3 +44,20 @@ export function useCompact(): boolean {
 export function useWide(): boolean {
   return useMedia('(min-width: 1024px)');
 }
+
+/**
+ * 平台的主修饰键：Mac 写 ⌘，其他系统写 Ctrl。
+ *
+ * 快捷键本身两个键都收（event.metaKey || event.ctrlKey），但提示只该写一个——
+ * 在 Linux / Windows 上看到「⌘K」，没人知道该按什么。
+ */
+export function modKeyLabel(platform: string = platformName()): string {
+  return /mac|iphone|ipad|ipod/i.test(platform) ? '⌘' : 'Ctrl';
+}
+
+/** 浏览器里的平台名；没有 navigator 的环境当成非 Mac。 */
+function platformName(): string {
+  if (typeof navigator === 'undefined') return '';
+  const data = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+  return data?.platform || navigator.platform || '';
+}

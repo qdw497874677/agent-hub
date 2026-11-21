@@ -16,7 +16,7 @@ export function NotificationBell({ placement = 'down' }: { placement?: 'down' | 
         aria-label={unread ? `通知（${unread} 条未读）` : '通知'}
         aria-expanded={open}
         data-testid="notification-bell"
-        className="relative flex h-7 w-7 items-center justify-center rounded-md text-meta text-tertiary hover:bg-hover hover:text-primary"
+        className="relative flex h-[44px] w-[44px] items-center justify-center rounded-md text-meta text-tertiary hover:bg-hover hover:text-primary md:h-7 md:w-7"
         onClick={() => {
           setOpen(!open);
           if (!open && unread) read.mutate();

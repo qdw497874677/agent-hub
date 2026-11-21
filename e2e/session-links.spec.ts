@@ -46,7 +46,7 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
 
   const nav = page.getByRole('complementary', { name: '首页侧栏' });
   await nav.getByTitle('新建项目').click();
-  const panel = page.getByLabel('新建项目');
+  const panel = page.getByRole('region', { name: '新建项目' });
   await panel.getByLabel('项目名').fill(PROJECT_NAME);
   await panel.getByRole('button', { name: '创建' }).click();
   await expect(page.getByRole('button', { name: '新建任务' }).first()).toBeVisible();

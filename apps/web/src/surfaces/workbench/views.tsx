@@ -11,6 +11,7 @@ import { NoTasksHint } from './empty-tasks.tsx';
 import { resolveWorker, useWorkers, WorkerChip } from '../../shell/workers.tsx';
 import { workspaceName } from '../../atoms/workspace-format.ts';
 import { Icon } from '../../atoms/icons.tsx';
+import { modKeyLabel } from '../../shell/device.ts';
 import { filterActions, type PaletteAction } from './palette.ts';
 export type { PaletteAction } from './palette.ts';
 
@@ -51,6 +52,8 @@ export function ListView({
 
   return (
     <div className="h-full overflow-y-auto px-3 py-4 md:px-6" data-testid="list-view">
+      {/* 列表是扫读用的，不是文章：行可以比首页宽，但别宽到 1440 上从 228 一路拉到 1370。 */}
+      <div className="mx-auto w-full max-w-[1080px]">
       <div className="mb-3 border-b border-hair pb-2" data-testid="list-context">
         <div className="flex items-baseline gap-2">
           <span className="shrink-0 text-meta text-tertiary">项目</span>
@@ -142,6 +145,7 @@ export function ListView({
             </span>
           ))}
         </div>
+      </div>
       </div>
     </div>
   );
@@ -285,7 +289,7 @@ export function SearchPalette({
         <p className="hidden items-center gap-3 border-t border-hair px-3 py-1.5 text-[11px] text-tertiary sm:flex">
           <span>↑↓ 选择</span>
           <span>↵ 打开</span>
-          <span>⌘K 开关</span>
+          <span>{modKeyLabel()}K 开关</span>
         </p>
       </div>
     </div>

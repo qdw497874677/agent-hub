@@ -1,5 +1,6 @@
 import { shortPath, workspaceName } from '../../atoms/workspace-format.ts';
 import { Notice } from '../../atoms/notice.tsx';
+import { Icon } from '../../atoms/icons.tsx';
 export { shortPath, workspaceName };
 import { LinkWorkspaces } from './link-workspaces.tsx';
 import { useEffect, useMemo, useState } from 'react';
@@ -9,6 +10,7 @@ import { DirectoryPicker } from './directory-picker.tsx';
 import { WorkerChip, WorkerPicker, resolveWorker } from '../../shell/workers.tsx';
 import { RecheckButton, harnessHint, harnessReason } from '../../shell/harness.tsx';
 import { canSelectMachine } from '../../shell/harness-gate.ts';
+import { useNarrow } from '../../shell/device.ts';
 
 /**
  * 运行面板的核心（docs/design/workspaces.md §9.3）：「在哪台机器、哪个工作目录干活？」
@@ -101,6 +103,9 @@ export function WorkspaceChooser({
   const views = useWorkspaceViews(canvas.project.id);
   // 「这台机器没有 git 基座」时那个动作按钮：加一就让下面的关联面板展开并滚进视野
   const [linkSignal, setLinkSignal] = useState(0);
+  // 手机上把「组合工作目录 / 关联已有目录」收进一行摘要里：选过一次就敞开，别把已选项藏起来
+  const narrow = useNarrow();
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const agentLabel = canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId;
   const local = resolveWorker(workers, null);
   const offers = (worker: WorkerInfoDto) => (worker.agentIds ?? [agentId]).includes(agentId);
@@ -150,6 +155,20 @@ export function WorkspaceChooser({
   ).length;
 
   const machineName = machines.find((worker) => worker.workerId === machine)?.label ?? '这台机器';
+  const groupSelected = choice?.type === 'new_group';
+  const groupNode =
+    groups && Boolean(canvas.project.primaryRepoId) && canvas.project.repos.length > 1 ? (
+      <NewGroup canvas={canvas} machineName={machineName} choice={choice} onChoice={onChoice} />
+    ) : null;
+  const linkNode = (
+    <LinkWorkspaces
+      projectId={canvas.project.id}
+      linked={(views.data ?? []).map(({ workspace }) => workspace.id)}
+      workerId={machine}
+      expandSignal={linkSignal}
+      onLinked={(workspaceId) => onChoice({ type: 'existing', workspaceId })}
+    />
+  );
 
   return (
     <section aria-label="工作目录" className="mb-3">
@@ -254,14 +273,6 @@ export function WorkspaceChooser({
               onSelect={() => onChoice({ type: 'new_worktree' })}
               onFixGit={() => setLinkSignal((value) => value + 1)}
             />
-            {groups && Boolean(canvas.project.primaryRepoId) && canvas.project.repos.length > 1 ? (
-              <NewGroup
-                canvas={canvas}
-                machineName={machineName}
-                choice={choice}
-                onChoice={onChoice}
-              />
-            ) : null}
             <NewLongLived
               canvas={canvas}
               machine={machine}
@@ -269,15 +280,37 @@ export function WorkspaceChooser({
               choice={choice}
               onChoice={onChoice}
             />
+            {/* 手机：常用三种排在前面，不常用的两种折起来，别插在中间打断比较。 */}
+            {narrow ? (
+              <details
+                data-testid="ws-advanced"
+                open={advancedOpen || groupSelected}
+                onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+                className="group rounded-sm border border-hair"
+              >
+                <summary className="flex min-h-[44px] cursor-pointer list-none items-center justify-between gap-2 px-2 text-meta text-secondary [&::-webkit-details-marker]:hidden">
+                  <span>更多创建方式</span>
+                  <span className="flex min-w-0 items-center gap-1">
+                    <span className="truncate text-right text-meta text-tertiary">
+                      {groupSelected ? '已选：组合工作目录' : '多仓组合、关联已有目录'}
+                    </span>
+                    <Icon name="chevron-down" size={14} className="shrink-0 text-tertiary transition-transform group-open:rotate-180" />
+                  </span>
+                </summary>
+                <div className="flex flex-col gap-1.5 p-1">
+                  {groupNode}
+                  {linkNode}
+                </div>
+              </details>
+            ) : null}
           </div>
           {/* 关联入口放在所有 radio 之后：单选组要连续，它是组外的补充（样式也就轻一层）。 */}
-          <LinkWorkspaces
-            projectId={canvas.project.id}
-            linked={(views.data ?? []).map(({ workspace }) => workspace.id)}
-            workerId={machine}
-            expandSignal={linkSignal}
-            onLinked={(workspaceId) => onChoice({ type: 'existing', workspaceId })}
-          />
+          {narrow ? null : (
+            <>
+              {groupNode}
+              {linkNode}
+            </>
+          )}
         </>
       )}
     </section>

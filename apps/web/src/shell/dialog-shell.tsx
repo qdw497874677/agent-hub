@@ -8,6 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from 'react';
+import { createPortal } from 'react-dom';
 import { useNarrow } from './device.ts';
 import { useModalFocus } from './focus-trap.ts';
 
@@ -247,7 +248,7 @@ export function Sheet({
   const motion = useSheetMotion(onClose);
   // 进框和还焦点 useSheetMotion 已经做了；这里只补「Tab 不出框」
   useModalFocus(motion.panelRef, { initial: false, restore: false });
-  return (
+  return createPortal(
     <div className={`fixed inset-0 overflow-hidden ${zClassName}`}>
       <div
         data-testid="dialog-scrim"
@@ -291,7 +292,7 @@ export function Sheet({
           {footer === undefined ? null : (
             <div
               data-testid={testId === undefined ? undefined : `${testId}-footer`}
-              className="shrink-0 border-t border-hair bg-overlay px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+              className="shrink-0 border-t border-hair bg-overlay px-4 pt-2 shadow-[0_-10px_18px_-14px_rgba(0,0,0,0.55)] pb-[max(0.75rem,env(safe-area-inset-bottom))]"
             >
               {footer}
             </div>
@@ -299,7 +300,8 @@ export function Sheet({
         </div>
         {overlay}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -503,7 +505,8 @@ function DesktopDialog({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose, isTop]);
 
-  return (
+  // portal 到 body：画布里带 transform 的祖先会把 fixed 的参照系换掉，留在原地弹窗就会被裁。
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/55 backdrop-blur-[2px] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:items-center sm:pb-0"
       onClick={onClose}
@@ -539,22 +542,23 @@ function DesktopDialog({
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">{children}</div>
             <div
               data-testid={testId === undefined ? undefined : `${testId}-footer`}
-              className="shrink-0 border-t border-hair px-4 pb-3 pt-2"
+              className="shrink-0 border-t border-hair bg-overlay px-4 pb-3 pt-2 shadow-[0_-10px_18px_-14px_rgba(0,0,0,0.55)]"
             >
               {footer}
             </div>
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
 export const INPUT =
   'min-h-11 w-full rounded-control border border-hair bg-card px-2.5 py-2 text-body text-primary outline-none placeholder:text-tertiary focus:border-ring disabled:text-tertiary md:min-h-0';
 export const SECONDARY_BUTTON =
-  'min-h-11 rounded-control border border-strong px-3 py-1.5 text-sub text-primary hover:bg-hover md:min-h-0';
-export const PRIMARY_BUTTON = 'min-h-11 rounded-control bg-action px-3 py-1.5 text-sub font-medium text-action-fg hover:bg-action/90 disabled:opacity-40 md:min-h-0';
+  'min-h-[44px] rounded-control border border-strong px-3 py-1.5 text-sub text-primary hover:bg-hover md:min-h-0';
+export const PRIMARY_BUTTON = 'min-h-[44px] rounded-control bg-action px-3 py-1.5 text-sub font-medium text-action-fg hover:bg-action/90 disabled:opacity-40 md:min-h-0';
 /** 真会丢东西的操作：实心 rust 按钮 + 深色字，和普通确认拉开距离。 */
-export const DANGER_BUTTON = 'min-h-11 rounded-control bg-rust px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40 md:min-h-0';
+export const DANGER_BUTTON = 'min-h-[44px] rounded-control bg-rust px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40 md:min-h-0';
 export const SMALL_BUTTON = 'shrink-0 rounded-control border border-hair px-2 py-1 text-meta text-secondary hover:border-strong hover:text-primary disabled:opacity-40';

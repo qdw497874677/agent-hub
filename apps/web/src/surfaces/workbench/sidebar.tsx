@@ -8,13 +8,16 @@ import { MessagesEntry } from '../../atoms/messages-entry.tsx';
 import { NotificationBell } from '../../shell/market/notifications.tsx';
 import { WorkspacesDialog } from './workspaces-dialog.tsx';
 import { WorkersBadge } from '../../shell/workers.tsx';
-import { coarsePointer } from '../../shell/device.ts';
+import { coarsePointer, modKeyLabel } from '../../shell/device.ts';
 import { PHASE_DOT, activeSessions, elapsedLabel, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
 import { waitingForReply, type LiveMap } from '../../atoms/live.ts';
 import { sessionActionItems, type SessionActionId, type SessionActionItem } from '../../atoms/session-actions.ts';
 import { useSessionActions } from '../../atoms/use-session-actions.ts';
 import { DeleteSessionDialog } from '../../atoms/delete-session-dialog.tsx';
 import { SessionRowMenu } from './session-row-menu.tsx';
+
+/** 平台修饰键（⌘ / Ctrl）：提示写对，快捷键本身两个都收。 */
+const MOD = modKeyLabel();
 
 /** 桌面侧栏的收起开关事件：⌘K 面板派发，侧栏监听。 */
 export const TOGGLE_SIDEBAR_EVENT = 'agent-hub:toggle-sidebar';
@@ -274,7 +277,7 @@ export function ProjectSidebar({
   if (collapsed) {
     return (
       <aside className="flex h-full w-14 shrink-0 flex-col items-center gap-1 border-r border-hair bg-panel py-2" aria-label="项目导航" data-testid="project-sidebar" data-collapsed="true">
-        <button className={GHOST_ICON} aria-label="展开侧栏" title="展开侧栏（⌘B）" onClick={toggleCollapsed}>
+        <button className={GHOST_ICON} aria-label="展开侧栏" title={`展开侧栏（${MOD}B）`} onClick={toggleCollapsed}>
           <Icon name="panel" />
         </button>
         <button
@@ -289,7 +292,7 @@ export function ProjectSidebar({
         <button className={GHOST_ICON} aria-label="新建任务" title="新建任务" onClick={onNewTask}>
           <Icon name="plus" />
         </button>
-        <button className={GHOST_ICON} aria-label="搜索" title="搜索（⌘K）" onClick={onSearch}>
+        <button className={GHOST_ICON} aria-label="搜索" title={`搜索（${MOD}K）`} onClick={onSearch}>
           <Icon name="search" />
         </button>
         <div className="my-1 h-px w-6 bg-hair" />
@@ -338,7 +341,7 @@ export function ProjectSidebar({
             <Icon name="x" />
           </button>
         ) : (
-          <button className={GHOST_ICON} aria-label="收起侧栏" title="收起侧栏（⌘B）" onClick={toggleCollapsed}>
+          <button className={GHOST_ICON} aria-label="收起侧栏" title={`收起侧栏（${MOD}）`} onClick={toggleCollapsed}>
             <Icon name="panel" />
           </button>
         )}
@@ -352,7 +355,9 @@ export function ProjectSidebar({
         <button className={ROW} onClick={onSearch} title="搜索任务与会话">
           <Icon name="search" className="text-tertiary" />
           <span className="flex-1">搜索</span>
-          {coarsePointer() ? null : <kbd className="font-sans text-meta text-tertiary">⌘K</kbd>}
+          {coarsePointer() ? null : (
+            <kbd className="font-sans text-meta text-tertiary">{MOD}K</kbd>
+          )}
         </button>
       </div>
 

@@ -3,13 +3,17 @@ import { AccountMenu } from '../../shell/auth.tsx';
 import { NotificationBell } from '../../shell/market/notifications.tsx';
 import { AttentionBadge, AttentionInbox } from '../../atoms/attention.tsx';
 import { TaskQueue } from './task-queue.tsx';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, RecentSessionDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
 import { WorkersBadge } from '../../shell/workers.tsx';
 import { DeleteProjectDialog, TrashList } from './delete-project.tsx';
 import { GlobalNav } from '../../shell/global-nav.tsx';
+import { ProjectListSheet, ProjectRow } from './project-list.tsx';
+import { UndoToast } from '../../atoms/undo-toast.tsx';
+import { Icon } from '../../atoms/icons.tsx';
+import { DialogShell, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 
 /**
  * 首页。
@@ -28,6 +32,12 @@ export function HomePage({
   const [creating, setCreating] = useState(false);
   const [filter, setFilter] = useState('');
   const [deleting, setDeleting] = useState<ProjectDto | null>(null);
+  const [sheet, setSheet] = useState(false);
+  /** 标题被截断时用这个看全文：native title 在触屏和键盘上都摸不到。 */
+  const [titleView, setTitleView] = useState<RecentSessionDto | null>(null);
+  const [announcement, setAnnouncement] = useState('');
+  const queryClient = useQueryClient();
+  const searchRef = useRef<HTMLInputElement>(null);
   const home = useQuery({ queryKey: ['home'], queryFn: api.home, refetchInterval: 10_000 });
 
   const projects = home.data?.projects ?? [];
@@ -45,95 +55,137 @@ export function HomePage({
   const groups = useMemo(() => groupByDay(shown), [shown]);
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
 
+  // 过滤结果给读屏播报一句就够，而且等手停下来再说：每个键都念会把输入打断。
+  useEffect(() => {
+    if (needle === '') {
+      setAnnouncement('');
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setAnnouncement(shown.length === 0 ? `没有匹配「${filter.trim()}」的会话` : `找到 ${shown.length} 条会话`);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [filter, needle, shown.length]);
+
   function open(session: RecentSessionDto): void {
     const project = projectById.get(session.projectId);
     if (project) onOpen(project, session.sessionId);
   }
 
-  return (
-    // 窄屏只有一个滚动源（就是这层）：以前上段 max-h-[40dvh] 自带滚动、下段 main 又滚一次，
-    // 手指在上半屏滚不到会话，40dvh 也不跟 --app-height 收（键盘弹起时下段被压到几乎没有）。
-    <div data-testid="home-root" className="flex h-full flex-col overflow-y-auto md:flex-row md:overflow-visible">
-      <aside
-        className="flex w-full shrink-0 flex-col border-b border-hair px-3 py-4 md:w-[220px] md:overflow-y-auto md:border-b-0 md:border-r"
-        aria-label="首页侧栏"
-      >
-        {/* 窄屏顺序：招牌 → 导航 → 项目；md 起（侧栏成 220px 固定栏）仍是招牌 → 项目 → 导航，DOM 不动、只换 order。 */}
-        <div className="order-1 mb-4 flex items-start justify-between gap-2">
-          <div>
-            <p className="text-head text-primary">agent-hub</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <AttentionBadge compact onClick={() => document.querySelector('[data-testid="attention-inbox"]')?.scrollIntoView({ behavior: 'smooth' })} />
-            <MessagesEntry />
-            <NotificationBell />
-            <AccountMenu />
-          </div>
-        </div>
+  // 项目行现在走「⋯」菜单（见 project-list.tsx），删除后给一条真能还原的撤销条。
+  const [undo, setUndo] = useState<{ project: ProjectDto } | null>(null);
+  const restore = useMutation({
+    mutationFn: (project: ProjectDto) => api.restoreProject(project.id),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['home'] }),
+        queryClient.invalidateQueries({ queryKey: ['trash'] }),
+        queryClient.invalidateQueries({ queryKey: ['projects'] })
+      ]);
+      setUndo(null);
+    }
+  });
 
-        <div className="order-3 mb-1 flex items-baseline justify-between md:order-2">
-          <p className="text-meta text-tertiary">项目</p>
+  const projectList = (
+    <ul className="space-y-0.5" data-testid="home-project-list">
+      {projects.map((project, index) => (
+        <li
+          key={project.id}
+          data-testid="project-row"
+          // 360 以下连预览行也收起：再挤，首屏就一条会话都不剩了。
+          className={
+            index < MOBILE_PROJECTS ? 'max-md:max-[360px]:hidden md:contents' : 'max-md:hidden md:contents'
+          }
+        >
+          <ProjectRow project={project} onOpen={() => onOpen(project)} onDelete={() => setDeleting(project)} />
+        </li>
+      ))}
+      {projects.length > MOBILE_PROJECTS ? (
+        <li className="md:hidden">
           <button
-            className="text-meta text-secondary hover:text-primary"
-            onClick={() => setCreating((open) => !open)}
-            title="新建项目"
+            className="flex min-h-[44px] w-full items-center rounded-sm px-2 text-meta text-link hover:bg-card"
+            onClick={() => setSheet(true)}
+            data-testid="all-projects"
           >
-            ＋
+            全部 {projects.length} 个项目
           </button>
-        </div>
+        </li>
+      ) : null}
+      {home.data !== undefined && projects.length === 0 ? (
+        <li className="px-2 text-meta text-tertiary">还没有项目</li>
+      ) : null}
+    </ul>
+  );
 
-        <ul className="order-4 mb-4 space-y-0.5 md:order-3">
-          {projects.map((project) => (
-            <li key={project.id} className="group flex items-start">
-              <button
-                className="min-w-0 flex-1 rounded-sm px-2 py-1 text-left hover:bg-card"
-                onClick={() => onOpen(project)}
-              >
-                <span className="block truncate text-body text-secondary">{project.name}</span>
-                <span className="block text-meta text-tertiary">
-                  {project.taskCount} 任务 · {ago(project.lastActivityAt)}
-                </span>
-              </button>
-              <button
-                className="shrink-0 rounded-sm px-2 py-1 text-meta text-tertiary hover:text-rust sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
-                onClick={() => setDeleting(project)}
-                title="删除项目"
-                aria-label={`删除项目 ${project.name}`}
-              >
-                删除
-              </button>
-            </li>
-          ))}
-          {/* 数据还没到就说「还没有项目」是在撒谎，所以等它到 */}
-          {home.data !== undefined && projects.length === 0 ? (
-            <li className="px-2 text-meta text-tertiary">还没有项目</li>
-          ) : null}
-        </ul>
-
-        <div className="order-2 mb-3 md:order-4">
-          <GlobalNav />
+  return (
+    // 手机一个滚动源（这层）；md 起变成「220px 侧栏 + 内容」两栏网格，每栏自己滚。
+    // DOM 顺序就是手机上的阅读顺序：招牌 → 导航 → 待办/搜索/会话 → 项目 → 回收站/机器。
+    // 项目在会话后面（键盘 Tab 与眼睛看到的一致），桌面靠 grid 把项目放回左栏。
+    <div
+      data-testid="home-root"
+      className="flex h-full flex-col overflow-y-auto md:grid md:h-full md:grid-cols-[220px_minmax(0,1fr)] md:grid-rows-[auto_auto_minmax(0,1fr)_auto_auto] md:overflow-hidden"
+    >
+      <header className="order-1 flex items-center justify-between gap-2 px-3 pb-3 pt-4 max-md:border-b max-md:border-hair md:col-start-1 md:row-start-1 md:px-3 md:py-3">
+        <h1 className="min-w-0 truncate text-head text-primary">
+          agent-hub<span className="sr-only"> · 首页</span>
+        </h1>
+        <div className="flex shrink-0 items-center gap-1">
+          {/* 手机上项目排在会话后面，这个入口让「全部项目」不用滚到底。桌面侧栏一直在，所以隐藏。 */}
+          <button
+            type="button"
+            data-testid="projects-entry"
+            aria-haspopup="dialog"
+            aria-label={`所有项目（${projects.length}）`}
+            title="所有项目"
+            className="flex size-[44px] items-center justify-center rounded-sm text-tertiary hover:text-primary md:hidden"
+            onClick={() => setSheet(true)}
+          >
+            <Icon name="folder" />
+          </button>
+          <AttentionBadge
+            compact
+            onClick={() => {
+              // 收件箱已经整块在屏上就别动（点一下角标把页面甩走很烦）；露出半截或整块在下面才滚过去。
+              const inbox = document.querySelector<HTMLElement>('[data-testid="attention-inbox"]');
+              if (!inbox) return;
+              const rect = inbox.getBoundingClientRect();
+              const visible = rect.top >= 0 && rect.bottom <= window.innerHeight;
+              if (!visible) inbox.scrollIntoView({ block: 'start', behavior: 'smooth' });
+              // 滚完把焦点也交过去：读屏用户点角标后应该从收件箱标题念起，而不是留在顶栏。
+              const heading = inbox.querySelector<HTMLElement>('[data-testid="attention-title"]');
+              (heading ?? inbox).focus({ preventScroll: true });
+            }}
+          />
+          <MessagesEntry />
+          <NotificationBell />
+          <AccountMenu />
         </div>
+      </header>
 
-        <div className="order-5">
-          <TrashList />
-        </div>
-        {deleting ? <DeleteProjectDialog project={deleting} onClose={() => setDeleting(null)} /> : null}
-        <div className="order-6 mt-auto border-t border-hair pt-3">
-          <WorkersBadge placement="up" />
-        </div>
-      </aside>
+      <div className="order-2 mb-3 px-3 md:col-start-1 md:row-start-2 md:px-3 md:pb-2">
+        <GlobalNav />
+      </div>
 
-      <main className="min-w-0 flex-none overflow-visible md:flex-1 md:overflow-y-auto">
+      <main
+        id="home-main"
+        aria-labelledby="home-title"
+        className="order-3 min-w-0 md:col-start-2 md:row-start-1 md:row-span-5 md:min-h-0 md:overflow-y-auto md:border-l md:border-hair"
+      >
+        <h2 id="home-title" className="sr-only">
+          首页
+        </h2>
         <div className="mx-auto w-full max-w-[760px] px-4 py-6 md:px-8">
           {creating ? null : (
-            <AttentionInbox
-              onOpen={(item) => {
-                const project = projectById.get(item.projectId);
-                if (project) onOpen(project, item.sessionId);
-              }}
-            />
+            <div className="mb-1">
+              <AttentionInbox
+                onOpen={(item) => {
+                  const project = projectById.get(item.projectId);
+                  if (project) onOpen(project, item.sessionId);
+                }}
+              />
+              <TaskQueue />
+            </div>
           )}
-          {creating ? null : <TaskQueue />}
           {creating ? (
             <CreateProjectPanel
               onCancel={() => setCreating(false)}
@@ -143,77 +195,147 @@ export function HomePage({
               }}
             />
           ) : (
-            <div className="mb-5 flex items-center gap-2 rounded-md border border-hair bg-card px-3 py-2">
+            <div className="mb-5 flex items-center gap-2 rounded-md border border-hair bg-card px-3 py-1 max-md:min-h-[44px] md:py-2">
               <span className="text-tertiary">⌕</span>
               <input
-                className="w-full bg-transparent text-body text-primary outline-none placeholder:text-tertiary"
+                ref={searchRef}
+                className="min-w-0 flex-1 bg-transparent text-body text-primary outline-none placeholder:text-tertiary"
                 placeholder="搜会话、任务或项目"
                 value={filter}
                 onChange={(event) => setFilter(event.target.value)}
               />
               {filter === '' ? null : (
-                <button className="text-meta text-tertiary hover:text-secondary" onClick={() => setFilter('')}>
+                // 44 是手指能稳稳点到的最小边；whitespace-nowrap + shrink-0 防它在窄屏被压成竖排两字。
+                <button
+                  aria-label="清除搜索"
+                  className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm text-meta text-tertiary hover:text-secondary md:min-h-0 md:min-w-0 md:px-1"
+                  onClick={() => {
+                    setFilter('');
+                    searchRef.current?.focus();
+                  }}
+                >
                   清除
                 </button>
               )}
             </div>
           )}
 
-          {home.isPending ? (
-            <div aria-label="读取中" className="mb-5 space-y-2">
-              {[0, 1, 2].map((row) => (
-                <div key={row} className="h-7 animate-pulse rounded-sm bg-card" />
-              ))}
-            </div>
-          ) : null}
-          {home.error ? (
-            <p className="mb-4 border-l border-rust pl-2 text-meta text-secondary">
-              读不到会话：{(home.error as Error).message}
-              <button className="ml-2 text-link hover:underline" onClick={() => void home.refetch()}>
-                重试
-              </button>
-            </p>
-          ) : null}
-
-          {groups.map(([label, sessions]) => (
-            <section key={label} className="mb-5">
-              <h2 className="mb-1 px-1 text-meta text-tertiary">{label}</h2>
-              <ul>
-                {sessions.map((session) => (
-                  <li key={session.sessionId} data-settled={settled(session) ? 'true' : undefined}>
-                    <button
-                      className={`flex w-full items-center gap-2.5 rounded-sm px-1 py-1.5 text-left hover:bg-card ${settled(session) ? 'opacity-60' : ''}`}
-                      onClick={() => open(session)}
-                    >
-                      <span
-                        className={`size-1.5 shrink-0 rounded-full ${settled(session) ? 'border border-tertiary' : dotClass(session.status)}`}
-                      />
-                      <span className="min-w-0 flex-1 truncate text-body text-primary">
-                        {session.taskTitle}
-                      </span>
-                      <span className="shrink-0 text-meta text-secondary">{session.agentId}</span>
-                      {settled(session) ? <span className="shrink-0 text-meta text-tertiary">已收起</span> : null}
-                      <span className="shrink-0 text-meta text-tertiary">{session.projectName}</span>
-                      <span className="w-16 shrink-0 text-right text-meta text-tertiary">
-                        {ago(session.updatedAt)}
-                      </span>
-                    </button>
-                  </li>
+          <section aria-labelledby="recent-title">
+            <h2 id="recent-title" className="sr-only">
+              最近的会话
+            </h2>
+            {home.isPending ? (
+              <div aria-label="读取中" className="mb-5 space-y-2">
+                {[0, 1, 2].map((row) => (
+                  <div key={row} className="h-7 animate-pulse rounded-sm bg-card" />
                 ))}
-              </ul>
-            </section>
-          ))}
+              </div>
+            ) : null}
+            {home.error ? (
+              <p className="mb-4 border-l border-rust pl-2 text-meta text-secondary">
+                读不到会话：{(home.error as Error).message}
+                <button className="ml-2 text-link hover:underline" onClick={() => void home.refetch()}>
+                  重试
+                </button>
+              </p>
+            ) : null}
 
-          {!home.isPending && !home.error && shown.length === 0 ? (
-            <p className="rounded-md border border-hair bg-panel px-4 py-6 text-body text-secondary">
-              {needle === ''
-                ? '还没有会话。选一个项目，建一条任务，点任务卡上的「＋ 会话」派生第一条会话。'
-                : `没有匹配「${filter}」的会话。`}
+            {groups.map(([label, sessions]) => (
+              <div key={label} className="mb-5" role="group" aria-labelledby={`day-${label}`}>
+                <h3 id={`day-${label}`} className="mb-1 px-1 text-meta text-tertiary">
+                  {label}
+                </h3>
+                <ul>
+                  {sessions.map((session) => (
+                    <li key={session.sessionId} data-settled={settled(session) ? 'true' : undefined}>
+                      <RecentSessionRow
+                        session={session}
+                        isSettled={settled(session)}
+                        onOpen={() => open(session)}
+                        onShowTitle={() => setTitleView(session)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+
+            {!home.isPending && !home.error && shown.length === 0 ? (
+              <p className="rounded-md border border-hair bg-panel px-4 py-6 text-body text-secondary">
+                {needle === ''
+                  ? '还没有会话。选一个项目，建一条任务，点任务卡上的「＋ 会话」派生第一条会话。'
+                  : `没有匹配「${filter}」的会话。`}
+              </p>
+            ) : null}
+            <p role="status" aria-live="polite" data-testid="search-status" className="sr-only">
+              {announcement}
             </p>
-          ) : null}
-
+          </section>
         </div>
       </main>
+
+      <aside
+        className="order-6 mt-2 px-4 pb-2 md:col-start-1 md:row-start-3 md:mt-0 md:min-h-0 md:overflow-y-auto md:px-3"
+        aria-label="首页侧栏"
+      >
+        <div className="mb-1 flex items-center justify-between">
+          <h2 className="text-meta text-tertiary">项目</h2>
+          <button
+            className="-mr-2 flex size-[44px] items-center justify-center rounded-sm text-body text-secondary hover:text-primary md:mr-0 md:h-8 md:w-8 md:text-meta"
+            onClick={() => setCreating((open) => !open)}
+            title="新建项目"
+            aria-label="新建项目"
+            data-testid="new-project"
+          >
+            ＋
+          </button>
+        </div>
+        {projectList}
+      </aside>
+
+      <div className="order-7 px-4 md:col-start-1 md:row-start-4 md:px-3">
+        <TrashList />
+      </div>
+      <div className="order-8 mt-auto border-t border-hair px-4 pb-4 pt-3 md:col-start-1 md:row-start-5 md:mt-0 md:border-t-0 md:px-3 md:py-3">
+        <WorkersBadge placement="up" />
+      </div>
+
+      {deleting ? (
+        <DeleteProjectDialog
+          project={deleting}
+          onClose={() => setDeleting(null)}
+          onDeleted={() => setUndo({ project: deleting })}
+        />
+      ) : null}
+      {sheet ? (
+        <ProjectListSheet
+          projects={projects}
+          onOpen={(project) => onOpen(project)}
+          onDelete={(project) => setDeleting(project)}
+          onCreate={() => setCreating(true)}
+          onClose={() => setSheet(false)}
+        />
+      ) : null}
+      {undo ? (
+        <UndoToast
+          message={`「${undo.project.name}」已移到回收站`}
+          pending={restore.isPending}
+          error={restore.error ? (restore.error as Error).message : null}
+          onAction={() => restore.mutate(undo.project)}
+          onDismiss={() => setUndo(null)}
+        />
+      ) : null}
+      {titleView ? (
+        <SessionTitleDialog
+          session={titleView}
+          onClose={() => setTitleView(null)}
+          onOpen={() => {
+            const session = titleView;
+            setTitleView(null);
+            open(session);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -341,6 +463,9 @@ function CreateProjectPanel({
 
 const DAY = 24 * 60 * 60 * 1000;
 
+/** 窄屏项目预览的条数：项目是「换个地方干活」的次要入口，不该把会话挤到第二屏。 */
+const MOBILE_PROJECTS = 3;
+
 /** 「今天 / 昨天 / 更早」比一串日期好看，也正好对上「昨天那条跑完没有」这个问法。 */
 function groupByDay(sessions: readonly RecentSessionDto[]): Array<[string, RecentSessionDto[]]> {
   const today = new Date();
@@ -381,4 +506,134 @@ function ago(at: number | null): string {
   if (delta < 2 * DAY) return '昨天';
   if (delta < 30 * DAY) return `${Math.floor(delta / DAY)} 天前`;
   return new Date(at).toLocaleDateString('zh-CN');
+}
+
+/** 标题这一格到底有没有被截掉：单行看宽、两行（line-clamp）看高。 */
+function useTruncated<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+  const [truncated, setTruncated] = useState(false);
+  useEffect(() => {
+    const node = ref.current;
+    if (node === null) return;
+    const measure = () => {
+      const over = node.scrollWidth > node.clientWidth + 1 || node.scrollHeight > node.clientHeight + 1;
+      setTruncated(over);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    // 字体晚到时宽度会变；resize 和字体就绪都再量一次
+    window.addEventListener('resize', measure);
+    void document.fonts?.ready.then(measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, []);
+  return [ref, truncated] as const;
+}
+
+/**
+ * 一条最近会话。
+ *
+ * 窄屏两行：第一行 状态点 + 标题（最多两行）+ 时间，第二行 agent · 项目；桌面回到一行四列。
+ * 时间列 whitespace-nowrap：以前 w-16 被压到 52px，「18 分钟前」折成两行，行高从 30 涨到 44。
+ *
+ * 标题真的被截掉时，行尾多一个「全文」按钮（行按钮的兄弟节点，不嵌在里面）：
+ * native title 只在悬停时出来，触屏和键盘用户都摸不到完整标题。
+ */
+function RecentSessionRow({
+  session,
+  isSettled,
+  onOpen,
+  onShowTitle
+}: {
+  session: RecentSessionDto;
+  isSettled: boolean;
+  onOpen: () => void;
+  onShowTitle: () => void;
+}) {
+  const [titleRef, truncated] = useTruncated<HTMLSpanElement>();
+  return (
+    <div className="flex items-stretch gap-1">
+      <button
+        data-testid="home-session-row"
+        className={`grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5 rounded-sm px-1 py-1.5 text-left hover:bg-card md:grid-cols-[auto_minmax(0,1fr)_auto_auto] ${isSettled ? 'opacity-60' : ''}`}
+        onClick={onOpen}
+        title={session.taskTitle}
+      >
+        <span
+          className={`col-start-1 row-start-1 mt-1.5 size-1.5 shrink-0 self-start rounded-full md:mt-0 md:self-center ${
+            isSettled ? 'border border-tertiary' : dotClass(session.status)
+          }`}
+        />
+        <span
+          ref={titleRef}
+          className="col-start-2 row-start-1 min-w-0 truncate text-body text-primary max-md:line-clamp-2 max-md:whitespace-normal"
+        >
+          {session.taskTitle}
+        </span>
+        <span
+          data-testid="home-session-time"
+          className="col-start-3 row-start-1 whitespace-nowrap text-right text-meta tabular-nums text-tertiary md:col-start-4"
+        >
+          {ago(session.updatedAt)}
+        </span>
+        <span className="col-span-2 col-start-2 row-start-2 flex min-w-0 items-center gap-1.5 text-meta text-tertiary md:col-span-1 md:col-start-3 md:row-start-1">
+          <span className="truncate">
+            {session.agentId} · {session.projectName}
+          </span>
+          {isSettled ? <span className="shrink-0">已收起</span> : null}
+        </span>
+      </button>
+      {truncated ? (
+        <button
+          type="button"
+          data-testid="home-session-full-title"
+          aria-label={`查看「${session.taskTitle}」的完整标题`}
+          className="flex w-[44px] shrink-0 items-center justify-center rounded-sm text-meta text-tertiary underline decoration-tertiary/60 decoration-dotted underline-offset-[3px] hover:bg-card hover:text-primary md:w-8"
+          onClick={onShowTitle}
+        >
+          全文
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** 标题被截断时的全文：不占行内的位置，触屏和键盘都能打开。 */
+function SessionTitleDialog({
+  session,
+  onClose,
+  onOpen
+}: {
+  session: RecentSessionDto;
+  onClose: () => void;
+  onOpen: () => void;
+}) {
+  return (
+    <DialogShell
+      title="完整标题"
+      testId="session-title-dialog"
+      onClose={onClose}
+      footer={
+        <div className="flex justify-end gap-2">
+          <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>
+            关闭
+          </button>
+          <button type="button" className={SECONDARY_BUTTON} onClick={onOpen}>
+            打开会话
+          </button>
+        </div>
+      }
+    >
+      <p data-testid="session-title-dialog-text" className="mb-2 break-words text-body text-primary">
+        {session.taskTitle}
+      </p>
+      <p className="text-meta text-tertiary">
+        {session.agentId} · {session.projectName} · {ago(session.updatedAt)}
+        {settled(session) ? ' · 已收起' : ''}
+      </p>
+    </DialogShell>
+  );
 }

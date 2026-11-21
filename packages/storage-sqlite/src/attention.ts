@@ -7,10 +7,23 @@ export function createSqliteAttention(db: DatabaseSync): AttentionStore {
     account_id TEXT NOT NULL, session_id TEXT NOT NULL, phase TEXT NOT NULL, since INTEGER NOT NULL, acked_at INTEGER NOT NULL,
     PRIMARY KEY (account_id, session_id, phase, since))`);
   const insert = db.prepare('INSERT OR IGNORE INTO attention_ack (account_id, session_id, phase, since, acked_at) VALUES (?,?,?,?,?)');
+  const receipt = db.prepare('SELECT acked_at FROM attention_ack WHERE account_id = ? AND session_id = ? AND phase = ? AND since = ?');
+  const remove = db.prepare('DELETE FROM attention_ack WHERE account_id = ? AND session_id = ? AND phase = ? AND since = ?');
+  const removeWithReceipt = db.prepare('DELETE FROM attention_ack WHERE account_id = ? AND session_id = ? AND phase = ? AND since = ? AND acked_at = ?');
   const list = db.prepare('SELECT session_id, phase, since FROM attention_ack WHERE account_id = ? AND acked_at > ?');
   return {
     async ack(accountId, a, at) {
       insert.run(accountId, a.sessionId, a.phase, a.since, at);
+      // 重复记时 INSERT OR IGNORE 不覆盖，返回原来那次的收据（前端撤销要用）。
+      const row = receipt.get(accountId, a.sessionId, a.phase, a.since) as { acked_at: number } | undefined;
+      return row?.acked_at ?? at;
+    },
+    async unack(accountId, a, receiptAt) {
+      const result =
+        receiptAt === undefined
+          ? remove.run(accountId, a.sessionId, a.phase, a.since)
+          : removeWithReceipt.run(accountId, a.sessionId, a.phase, a.since, receiptAt);
+      return Number(result.changes) > 0;
     },
     async acks(accountId) {
       return (list.all(accountId, Date.now() - 30 * 24 * 3600_000) as { session_id: string; phase: string; since: number }[])

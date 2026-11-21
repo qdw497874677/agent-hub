@@ -55,7 +55,7 @@ export function GlobalNav({ layout = 'list' }: { layout?: 'list' | 'rail' }) {
   }
 
   return (
-    <nav aria-label="全站导航" data-testid="global-nav" className="grid grid-cols-4 gap-0.5 lg:flex lg:flex-col">
+    <nav aria-label="全站导航" data-testid="global-nav" className="grid grid-cols-4 gap-0.5 md:grid-cols-2 lg:flex lg:flex-col">
       {items.map((item) => {
         const on = item.id === active;
         return (

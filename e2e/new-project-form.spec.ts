@@ -13,7 +13,8 @@ async function open(page: Page, width: number) {
   await page.setViewportSize({ width, height: 844 });
   await page.goto('/');
   await page.getByRole('complementary', { name: '首页侧栏' }).getByTitle('新建项目').click();
-  return page.getByLabel('新建项目');
+  // 面板本身是 region；「＋」按钮也叫「新建项目」，按标签取会撞上两个元素。
+  return page.getByRole('region', { name: '新建项目' });
 }
 
 for (const width of [1280, 390]) {
