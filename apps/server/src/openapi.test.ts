@@ -5,10 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { addTeamMember, fakeAssetSets, fakeSessionLinks, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps, type FakeGit } from '@agent-hub/domain/testing';
 import {
   asAgentId,
+  asSessionId,
   BUILTIN_CHROMIUM,
   createAccessPolicy,
   createMessageBus,
   createTask,
+  defaultHandle,
   deriveSession,
   newWorkspace,
   permissionsOf,
@@ -29,7 +31,8 @@ import { projectSchema, sessionSchema, taskSchema } from '@agent-hub/contract';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { buildSpecApp, openApiInfo } from './openapi/app.ts';
-import { mcpTools, mcpToolsFor, projectEvents } from './openapi/mcp.ts';
+import { clientRequestIdSchema, mcpTools, mcpToolsFor, projectEvents } from './openapi/mcp.ts';
+import { sessionWithHandleSchema } from './openapi/routes/schemas.ts';
 import { workbenchSkillManifest, workbenchSkillZip } from './workbench-skill.ts';
 import { createRepoAuth } from './repo-auth.ts';
 
@@ -61,6 +64,7 @@ function memoryAgentDefaults() {
 /** 消息总线的内存 MessageStore（和 domain messaging.test.ts 里的同一份实现）。 */
 function memoryMessages(): MessageStore & { all: Map<string, AgentMessage> } {
   const all = new Map<string, AgentMessage>();
+  const handles = new Map<string, string>();
   const list = () => [...all.values()].sort((a, b) => a.createdAt - b.createdAt);
   return {
     all,
@@ -79,10 +83,13 @@ function memoryMessages(): MessageStore & { all: Map<string, AgentMessage> } {
     spawnOf: async () => null,
     spawnsForRole: async () => [],
     pendingTargets: async () => [],
-    setHandle: async () => true,
-    handleOf: async () => null,
+    setHandle: async (record) => {
+      handles.set(record.sessionId, record.handle);
+      return true;
+    },
+    handleOf: async (sessionId) => handles.get(sessionId) ?? null,
     toAddress: async (address, after, limit) => list().filter((m) => m.to === address && m.createdAt > after).slice(0, limit),
-    sessionByHandle: async () => null,
+    sessionByHandle: async (_taskId, handle) => ([...handles].find(([, value]) => value === handle)?.[0] ?? null) as ReturnType<typeof asSessionId> | null,
     audit: async () => undefined,
     auditByTrace: async () => []
   };
@@ -897,6 +904,171 @@ test('MCP 委派：写工具默认不出现，MCP_WRITE 打开后可建任务，
   // 只读闸门压过写开关。
   const readOnly = await rpc({ jsonrpc: '2.0', id: 5, method: 'tools/list', params: {} }, { readOnly: true });
   assert.ok(!readOnly.result.tools.some((t: { name: string }) => t.name === 'task_create'));
+});
+
+test('MCP tools/list：所有写工具顶层 required clientRequestId，且与运行时校验同一份规则', async () => {
+  const { david, mint, app } = await setup();
+  const scopes = ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read', 'assets:submit', 'assets:read', 'assets:write', 'assets:publish', 'providers:read', 'providers:use', 'providers:manage', 'groups:write', 'files:read', 'memory:read', 'memory:write', 'tokens:manage'];
+  const token = (await mint(david, scopes)).token;
+  const list = await app.fetch(
+    new Request('http://hub/openapi/v1/mcp', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
+    }),
+    { mcpPolicy: { readOnly: false, writes: true } }
+  );
+  const body = (await list.json()) as { result: { tools: { name: string; description: string; inputSchema: { properties?: Record<string, any>; required?: string[] }; annotations?: { readOnlyHint?: boolean } }[] } };
+  const tools = body.result.tools;
+  const writes = tools.filter((tool) => tool.annotations?.readOnlyHint === false);
+  const reads = tools.filter((tool) => tool.annotations?.readOnlyHint === true);
+  assert.ok(writes.length > 0 && reads.length > 0);
+  for (const tool of writes) {
+    assert.ok(tool.inputSchema.required?.includes('clientRequestId'), `${tool.name}: tools/list 顶层 required 缺 clientRequestId`);
+    const property = tool.inputSchema.properties?.['clientRequestId'];
+    assert.equal(property?.type, 'string', `${tool.name}: clientRequestId 必须是字符串`);
+    assert.equal(property?.minLength, 1, `${tool.name}: clientRequestId 不能为空`);
+    assert.equal(property?.maxLength, 200, `${tool.name}: clientRequestId 上限应为 200`);
+    assert.equal(typeof property?.pattern, 'string', `${tool.name}: clientRequestId 要带 HTTP 安全字符的 pattern`);
+    // 必须是顶层参数：nested body 工具不能把它塞进 body。
+    assert.equal(tool.inputSchema.properties?.['body']?.properties?.['clientRequestId'], undefined, `${tool.name}: clientRequestId 不该藏在 body 里`);
+  }
+  for (const tool of reads) {
+    assert.equal(tool.inputSchema.properties?.['clientRequestId'], undefined, `${tool.name}: 只读工具不该要 clientRequestId`);
+    assert.ok(!tool.inputSchema.required?.includes('clientRequestId'), `${tool.name}: 只读工具 required 不该有 clientRequestId`);
+  }
+  // session_reply 的 clientMessageId 是消息去重键，独立于 clientRequestId（可选，保留在原有位置）。
+  const reply = writes.find((tool) => tool.name === 'session_reply');
+  assert.ok(reply);
+  assert.ok(reply.inputSchema.properties?.['clientMessageId'], 'session_reply 仍有 clientMessageId');
+  assert.ok(!reply.inputSchema.required?.includes('clientMessageId'), 'clientMessageId 仍然是可选的');
+  assert.ok(reply.inputSchema.required?.includes('clientRequestId'), 'session_reply 也要 clientRequestId');
+  assert.match(reply.description, /clientRequestId 是整个工具调用的重试键/);
+  assert.match(reply.description, /clientMessageId 是这条消息的去重键/);
+  // handle 的默认值写进 API 文档，避免调用方以为不传就没有短名。
+  const start = tools.find((tool) => tool.name === 'session_start');
+  const get = tools.find((tool) => tool.name === 'get_session');
+  assert.match(String(start?.description), /没显式传 handle 时用默认短名/);
+  assert.match(String(get?.description), /没显式设 handle 时是默认短名/);
+});
+
+test('MCP clientRequestId：非字符串 / 空值 / 超长直接拒绝且不截断；trim 后同键重试回放', async () => {
+  const { david, mint, api, app } = await setup();
+  const project = (await david('/api/projects', post({ name: 'client-request-id' }))).body as { id: string };
+  const token = (await mint(david, ['projects:read', 'projects:write'])).token;
+  const rest = api(token);
+  const replays = replayStore();
+  const rpc = async (arguments_: Record<string, unknown>) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'task_create', arguments: arguments_ } })
+      }),
+      { mcpReplays: replays, mcpPolicy: { modules: new Set(['tasks']), readOnly: false, writes: true } }
+    );
+    return (await response.json()) as any;
+  };
+  const base = { projectId: project.id, title: '重试键' };
+  const rejected: [string, unknown, RegExp][] = [
+    ['缺省', undefined, /clientRequestId/],
+    ['数字', 42, /必须是字符串/],
+    ['null', null, /必须是字符串/],
+    ['对象', { id: 'x' }, /必须是字符串/],
+    ['空串', '', /不能为空/],
+    ['纯空白', '   ', /不能为空/],
+    ['超长', 'x'.repeat(201), /最多 200/],
+    ['换行', 'line\r\nbreak', /HTTP 头/],
+    ['非 Latin-1', 'key-🔑', /HTTP 头/]
+  ];
+  for (const [label, clientRequestId, pattern] of rejected) {
+    const result = await rpc({ ...base, ...(clientRequestId === undefined ? {} : { clientRequestId }) });
+    assert.equal(result.result.isError, true, `${label}: 应该被拒绝`);
+    assert.match(result.result.content[0].text, pattern, `${label}: 报错要说清原因`);
+  }
+  // 拒绝发生在转成 v1 请求之前：一条任务都没建。
+  assert.equal(((await rest(`/tasks?projectId=${project.id}`)).body as unknown[]).length, 0);
+  // 生成层和运行时同一份规则：换行、非 ByteString 直接拒绝；正常标点仍然可以当键。
+  for (const bad of ['line\r\nbreak', 'key-🔑']) {
+    assert.equal(clientRequestIdSchema.safeParse(bad).success, false, `${JSON.stringify(bad)} 应该被 schema 拒绝`);
+  }
+  const punctuationKey = 'retry:2026-11-21/a_b.c~!';
+  assert.equal(clientRequestIdSchema.safeParse(punctuationKey).success, true, '标点组成的键应该仍然可用');
+  const punctuation = await rpc({ ...base, title: '标点键', clientRequestId: punctuationKey });
+  assert.equal(punctuation.result.isError, false, JSON.stringify(punctuation.result));
+
+  // trim 后同一个键：真正重试返回同一份结果。
+  const first = await rpc({ ...base, clientRequestId: '  same-key  ' });
+  assert.equal(first.result.isError, false, JSON.stringify(first.result));
+  const second = await rpc({ ...base, clientRequestId: 'same-key' });
+  assert.equal(second.result.isError, false, JSON.stringify(second.result));
+  assert.deepEqual(second.result.structuredContent, first.result.structuredContent);
+  const other = await rpc({ ...base, clientRequestId: 'other-key' });
+  assert.notEqual(other.result.structuredContent.id, first.result.structuredContent.id);
+
+  // 同一个键换了请求体：沿用幂等中间件的 409 语义，既不回放旧结果，也不重新执行。
+  const conflictFirst = await rpc({ ...base, title: '冲突 A', clientRequestId: 'conflict-key' });
+  assert.equal(conflictFirst.result.isError, false, JSON.stringify(conflictFirst.result));
+  const conflictSecond = await rpc({ ...base, title: '冲突 B', clientRequestId: 'conflict-key' });
+  assert.equal(conflictSecond.result.isError, true);
+  assert.match(conflictSecond.result.content[0].text, /HTTP 409/);
+  assert.match(conflictSecond.result.content[0].text, /不同的请求体/);
+  const replay = await rpc({ ...base, title: '冲突 A', clientRequestId: 'conflict-key' });
+  assert.deepEqual(replay.result.structuredContent, conflictFirst.result.structuredContent);
+  assert.equal(((await rest(`/tasks?projectId=${project.id}`)).body as unknown[]).length, 4);
+});
+
+test('session_start / get_session 的 handle 与 session_peers 同源（REST 与 MCP）', async () => {
+  const { david, mint, api, app, world, messaging } = await setup(undefined, undefined, true);
+  assert.ok(messaging, '这条用例要装消息总线');
+  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token;
+  const call = api(token);
+  const project = (await call('/projects', post({ name: 'handle' }))).body as { id: string };
+  const task = (await call('/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body as { id: string };
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online' } as never);
+  const ws = newWorkspace({ projectId: project.id as never, workerId: 'w1', path: '/srv/handle', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(ws.ok);
+  await world.deps.workspaces.save(ws.value);
+
+  const started = await call('/sessions', post({ taskId: task.id, agentId: 'fake', model: 'm1', workspaceId: ws.value.id, handle: 'dev' }));
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  assert.equal(started.body.handle, 'dev');
+  assert.equal(sessionWithHandleSchema.parse(started.body).handle, 'dev');
+  const got = await call(`/sessions/${started.body.id}`);
+  assert.equal(got.status, 200);
+  assert.equal(got.body.handle, 'dev');
+
+  // 没显式设短名：start/get 给默认短名（和 peers 展示的是同一个），不是 null。
+  const peer = await call('/sessions', post({ taskId: task.id, agentId: 'fake', model: 'm1', workspaceId: ws.value.id, linkWith: [started.body.id] }));
+  assert.equal(peer.status, 201, JSON.stringify(peer.body));
+  assert.equal(peer.body.handle, defaultHandle(peer.body));
+  assert.equal((await call(`/sessions/${peer.body.id}`)).body.handle, defaultHandle(peer.body));
+
+  // peer 列表里 dev 的 handle 与 start/get 完全一致。
+  const peers = await call(`/sessions/${peer.body.id}/peers`);
+  assert.equal(peers.status, 200, JSON.stringify(peers.body));
+  assert.equal(peers.body.peers.find((item: { address: string }) => item.address === `session:${started.body.id}`)?.handle, 'dev');
+
+  // MCP 的 session_start / get_session 走同一份响应。
+  const rpc = async (name: string, args: Record<string, unknown>, id = 1) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } })
+      }),
+      { mcpReplays: replayStore(), mcpPolicy: { modules: new Set(['sessions']), readOnly: false, writes: true } }
+    );
+    return (await response.json()) as any;
+  };
+  const viaMcp = await rpc('session_start', { taskId: task.id, agentId: 'fake', model: 'm1', workspaceId: ws.value.id, handle: 'mcp-dev', clientRequestId: 'mcp-handle-1' });
+  assert.equal(viaMcp.result.isError, false, JSON.stringify(viaMcp.result));
+  const mcpSession = JSON.parse(viaMcp.result.content[0].text) as { id: string; handle: string };
+  assert.equal(mcpSession.handle, 'mcp-dev');
+  assert.equal(sessionWithHandleSchema.parse(mcpSession).handle, 'mcp-dev');
+  const mcpGet = await rpc('get_session', { sessionId: mcpSession.id }, 2);
+  assert.equal(mcpGet.result.isError, false, JSON.stringify(mcpGet.result));
+  assert.equal(JSON.parse(mcpGet.result.content[0].text).handle, 'mcp-dev');
 });
 
 const b64 = (text: string) => Buffer.from(text).toString('base64');

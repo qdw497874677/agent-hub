@@ -34,7 +34,8 @@ export const IDEMPOTENCY_PLACEHOLDER_MS = 30_000;
 export const IDEMPOTENCY_CONFLICT_CODE = 'idempotency_key_conflict';
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-const KEY_MAX = 200;
+/** 幂等键上限；MCP 的 clientRequestId 用同一上限，但超长直接报错（不静默截断）。 */
+export const IDEMPOTENCY_KEY_MAX = 200;
 
 export interface IdempotencyOptions {
   readonly store?: McpReplayStore | undefined;
@@ -54,7 +55,7 @@ interface Replayed {
 
 const keyOf = (c: Context): string | null => {
   const raw = (c.req.header(IDEMPOTENCY_HEADER) ?? c.req.header('x-idempotency-key') ?? '').trim();
-  return raw === '' ? null : raw.slice(0, KEY_MAX);
+  return raw === '' ? null : raw.slice(0, IDEMPOTENCY_KEY_MAX);
 };
 
 const digest = (text: string): string => createHash('sha256').update(text).digest('hex');

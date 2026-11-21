@@ -44,11 +44,18 @@ list_task_log { taskId }                       # 复盘它自己记的决策
 ```
 
 - `events` 的 structuredContent / HTTP 响应都是 `{ events: [...], nextAfter }`，不要把它当成数组或再拆 `result`。
-- 第一次用 `sinceTurn=session_reply 返回的 turn`；之后用 `after=nextAfter` 增量拉。本 turn 出现 `ended` 即结束。
+- 每次都传 `sinceTurn=session_reply 返回的 turn`；之后同时用 `after=nextAfter` 增量拉。空页也要保留服务端给的游标；断线从最后确认的游标读，不重新发 prompt。只认 `turn` 严格相等的 `ended`，再检查其 `outcome`。
 - `waitSec`（最长 50）会等到有**符合过滤条件**的事件或超时。会话启动留下的无 turn 旧事件不会让它立刻空返回。
-- 新回合开始（`turn` 增长）说明它在继续做，不是卡住；卡住看 `ended{failed}` 或 `diagnostic`。
+- `get_session` 的状态描述最新一轮，不能代替目标回合的事件。单次长轮询空返回不是完成；总等待到期时记录 `sessionId`、`turn` 和游标，之后可续查，不自动重发或取消。
 - 想打断：`session_cancel { sessionId }`（它可能已经在收尾，重复调用无副作用）。
 - 长任务不要自己短间隔空转——把「我去盯着」告诉用户，用 `waitSec` 长轮询，超时就报告现状。
+
+### 同一任务：隔离开发，固定空间验证
+
+1. 开发会话用 `repoId` 或 `workspaceMode: "isolated"` 建 worktree；验证会话显式传不同的固定 `workspaceId`，不要共享开发目录。
+2. 等开发回合成功结束，读取交付报告并核对开发 worktree 的完整 commit SHA（可交接的不是分支名，也不是仅有的 `done` 状态）。
+3. 把完整 SHA 交给验证会话；在固定空间从授权来源取得该提交，以 detached HEAD 检出，并确认 `git rev-parse HEAD` 与交付 SHA 完全一致。不改源码，不替开发会话提交。
+4. 用新端口和独立数据目录启动临时服务跑 E2E。记录命令、退出码和用例结果，确认服务停止、端口释放，再收尾任务。
 
 ## 3. 同一个仓库并行改两处
 

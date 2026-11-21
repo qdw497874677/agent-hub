@@ -9,7 +9,8 @@ import {
 } from '../../session-start-extras.ts';
 import { streamSSE } from 'hono/streaming';
 import type {
-  JournalEntry
+  JournalEntry,
+  Session
 } from '@agent-hub/domain';
 import {
   asSessionId,
@@ -55,6 +56,15 @@ import {
   lastJournalSeq,
   projectEvents
 } from '.././projection.ts';
+
+/**
+ * 对外会话对象统一补 handle：和 session_peers 同源，读消息总线的有效短名
+ * （显式设置的，或默认 <agentId>-<id 尾 4 位>）。只有没接消息总线时才为 null。
+ */
+const withHandle = async (rt: V1Runtime, session: Session) => ({
+  ...session,
+  handle: rt.messaging ? await rt.messaging.bus.handleOf(session) : null
+});
 
 /** installSessionsStart：注册顺序与拆分前一致（Hono 的路由匹配顺序敏感）。 */
 export function installSessionsStart(app: OpenAPIHono<Env>, rt: V1Runtime): void {
@@ -120,11 +130,14 @@ export function installSessionsStart(app: OpenAPIHono<Env>, rt: V1Runtime): void
       await recordSessionAction(rt.deps, rt.activity, c, actor, 'session.start', result.value.id, '');
       await noteProvenance(rt.deps, rt.activity, c, actor, result.value, 'api');
       await applyStartExtras(rt.deps, rt.messaging?.bus, result.value, extras, linkIds.value, actor.user.id);
-    } else if (bootstrap.install) {
+      // handle 要在 applyStartExtras 之后读：本次请求设的短名这时才落库。
+      return c.json(await withHandle(rt, result.value), 201);
+    }
+    if (bootstrap.install) {
       const { code, message } = result.error;
       return fail(c, { code, message: `${message}；已在 ${bootstrap.install.workerId} 上开始安装组件（任务 ${bootstrap.install.jobId}）：用 capability_status 查进度，装好后重试` });
     }
-    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+    return fail(c, result.error);
   });
 }
 
@@ -152,7 +165,8 @@ export function installSessions(app: OpenAPIHono<Env>, rt: V1Runtime): void {
       const limited = await rt.waitUntil(c, query.waitSec, async () => (await rt.deps.sessions.byId(id))?.status !== 'running');
       if (limited) return limited;
     }
-    return c.json((await rt.deps.sessions.byId(id)) ?? session);
+    const latest = (await rt.deps.sessions.byId(id)) ?? session;
+    return c.json(await withHandle(rt, latest));
   });
   on(routes.prompt, async (c) => {
     const actor = rt.principal(c);
