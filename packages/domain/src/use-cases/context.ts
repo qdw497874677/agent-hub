@@ -3,7 +3,6 @@ import type { ContextSettingsStore, ContextSetting } from '../ports/context-sett
 import type { Deps } from './deps.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
 import { isSideChannel } from '../event.ts';
-import { isContainerSession } from '../session.ts';
 import { openApprovals } from '../approval.ts';
 import { conflict } from '../errors.ts';
 
@@ -11,8 +10,7 @@ import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import { invalid, type DomainError } from '../errors.ts';
 import { asProjectId, asSessionId, newId } from '../ids.ts';
-import type { TaskId } from '../ids.ts';
-import { authorizeProject, authorizeSession } from './authorization.ts';
+import { authorizeProject, authorizeSession, projectOfSessionOrigin } from './authorization.ts';
 import { principalOfSubject, type Subject } from '../access.ts';
 import {
   BUILTIN_STRATEGIES,
@@ -41,7 +39,7 @@ export interface HubTransformResult {
   readonly events: readonly StrategyEvent[];
 }
 
-export interface ContextDeps extends Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'access' | 'now'> {
+export interface ContextDeps extends Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'workspaces' | 'workspaceGroups' | 'access' | 'now'> {
   readonly contextSettings: ContextSettingsStore;
   readonly audit: AuditLog;
   /** 会话属于哪个角色（ADR 0018 角色表）；没有就跳过角色层。 */
@@ -299,9 +297,8 @@ export function createContextService(deps: ContextDeps) {
 
   async function locate(sessionId: string) {
     const session = await deps.sessions.byId(asSessionId(sessionId));
-    // 容器会话（#221 步骤 7）没有任务，拿不到项目：角色层说明就按「没有」处理。
-    const task = session && !isContainerSession(session) ? await deps.tasks.byId(session.taskId as TaskId) : null;
-    const project = task ? await deps.projects.byId(task.projectId) : null;
+    // #243：容器会话按不可变来源项目定位；旧容器没有来源时失败关闭。
+    const project = session ? await projectOfSessionOrigin(deps, session) : null;
     return { session, project };
   }
 }

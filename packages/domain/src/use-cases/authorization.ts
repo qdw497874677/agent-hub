@@ -210,8 +210,46 @@ export type ResourceRef =
   | { readonly kind: 'session'; readonly id: string }
   | { readonly kind: 'workspace'; readonly id: string };
 
+/**
+ * 会话的「来源项目」（#243）：只认出生时定死、之后不能改的来源。
+ *
+ * - 有任务：跟着任务走；
+ * - 容器会话：创建时落定的 `originProjectId` 优先（#243：新数据唯一权威）；
+ * - 没有落定来源的容器会话：组合工作空间的项目在创建时固定，组没了就失败关闭，**不**退回工作空间；
+ * - 否则只认临时工作空间的项目（属于哪个任务时定死）。
+ *
+ * 长期工作空间的 `projectId` 只是「最早为哪个项目建的」记录，关联表（ProjectWorkspaceLink）
+ * 之后也能改；拿它们当授权依据等于允许事后把会话转手，所以一律不算来源，返回 null 由调用方拒绝。
+ *
+ * 授权专用：不要拿它做放置 / 列表归属（那仍走 `projectOfSession`）。
+ */
+export async function projectOfSessionOrigin(
+  deps: Pick<Deps, 'projects' | 'tasks' | 'workspaces' | 'workspaceGroups'>,
+  session: Session
+): Promise<Project | null> {
+  if (session.taskId !== null) {
+    const task = await deps.tasks.byId(session.taskId);
+    return task ? deps.projects.byId(task.projectId) : null;
+  }
+  // #243：新容器会话在派生时把已验证的项目写死；项目后来被删就失败关闭，不再从工作空间反推。
+  if (session.originProjectId) {
+    return deps.projects.byId(session.originProjectId);
+  }
+  if (session.groupId) {
+    const group = await deps.workspaceGroups.byId(session.groupId);
+    // 组在，项目就是建组时那个；组没了也不看工作空间——那是另一个（可能已被改过的）来源。
+    return group ? deps.projects.byId(group.projectId) : null;
+  }
+  if (session.workspaceId) {
+    const workspace = await deps.workspaces.byId(session.workspaceId);
+    // 临时空间的 projectId 在出生时定死；长期空间的只是记录，不能当来源。
+    if (workspace?.kind === 'temporary' && workspace.projectId !== null) return deps.projects.byId(workspace.projectId);
+  }
+  return null;
+}
+
 export async function projectOfRef(
-  deps: Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'workspaces'>,
+  deps: Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'workspaces' | 'workspaceGroups'>,
   ref: ResourceRef
 ): Promise<{ project: Project | null; session: Session | null }> {
   if (ref.kind === 'project') return { project: await deps.projects.byId(asProjectId(ref.id)), session: null };
@@ -221,17 +259,13 @@ export async function projectOfRef(
     const projectId = workspace.projectId ?? (await deps.workspaces.linksOf(workspace.id))[0]?.projectId ?? null;
     return { project: projectId ? await deps.projects.byId(projectId) : null, session: null };
   }
-  let taskId = ref.id;
-  let session: Session | null = null;
   if (ref.kind === 'session') {
-    session = await deps.sessions.byId(asSessionId(ref.id));
+    const session = await deps.sessions.byId(asSessionId(ref.id));
     if (!session) return { project: null, session: null };
-    // 容器会话没有任务，也就没有可推的项目——调用方按「无项目」处理（#221 步骤 7）。
-    if (session.taskId === null) return { project: null, session };
-    taskId = session.taskId;
+    return { project: await projectOfSessionOrigin(deps, session), session };
   }
-  const task = await deps.tasks.byId(asTaskId(taskId));
-  return { project: task ? await deps.projects.byId(task.projectId) : null, session };
+  const task = await deps.tasks.byId(asTaskId(ref.id));
+  return { project: task ? await deps.projects.byId(task.projectId) : null, session: null };
 }
 
 /** 列表过滤用：这个人能看的项目（回收站里的不算）。 */

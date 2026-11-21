@@ -21,14 +21,14 @@ export const workspaces = {
   syncWorkspace: route(
     'projects:write',
     {
-      method: 'post', path: `${V1}/workspaces/{workspaceId}/sync`, tags: ['workspaces'], summary: '把项目仓库同步到这个工作空间',
+      method: 'post', path: `${V1}/workspaces/{workspaceId}/sync`, tags: ['workspaces'], summary: '检查单仓工作空间的远端是否匹配项目',
       description:
-        '项目后来又加了仓库时，已有工作空间不会自动多出目录：调这里把缺的仓库补克隆到工作空间的**同级目录**（<上级目录>/<仓库名>），已经在的不重复克隆。\n' +
+        '只检查已登记的工作空间目录，不扫描同级目录，不克隆或拉取。项目绑定多个仓库时请新建组合工作空间。\n' +
         '参数：workspaceId。\n' +
-        '返回：workspace（更新后的登记）、added（这次克隆的）、present（本来就在的）、skipped（同名目录不是 git 等，带原因）。\n' +
+        '返回：workspace（原登记）、present（当前目录的远端匹配）、skipped（不匹配，带原因）；兼容字段 added、failed 保持为空。\n' +
         '限制：只处理单目录工作空间；组合工作空间（groupId 非空）成员由建组 / workspace_retry_setup 管理。\n' +
-        '下一步：派生或开会话前调一次即可；之后用 workspace_changes 看状态。\n' +
-        '错误：404 / 403 项目没有 project.update / 400 不是 git 空间或组合空间。',
+        '查看工作区改动请用 workspace_changes。\n' +
+        '错误：404 / 403 项目没有 project.update / 400 非 Git 工作空间、组合工作空间或多仓项目。',
       request: { params: workspaceId },
       responses: { 200: json(syncWorkspaceResultSchema) }
     },
@@ -68,10 +68,11 @@ export const workspaces = {
     {
       method: 'post', path: `${V1}/workspaces/{workspaceId}/setup/retry`, tags: ['workspaces'], summary: '重跑准备命令',
       description:
-        '只对 setup.state=failed 的工作空间有效；项目没配准备命令则 409。\n' +
+        '只对平台为任务建的临时工作空间、且 setup.state=failed 时有效；项目没配准备命令则 409。\n' +
+        '需要所属项目的 project.update，以及工作空间所在机器的 worker.use。\n' +
         '参数：workspaceId。\n' +
         '返回：workspace（setup 里是新的状态与输出）。\n' +
-        '错误：403 / 404 / 409 不需要重试或没配命令。',
+        '错误：403 / 404 / 409 不是平台建的临时空间、不需要重试或没配命令。',
       request: { params: workspaceId },
       responses: { 200: json(workspaceSchema) }
     },

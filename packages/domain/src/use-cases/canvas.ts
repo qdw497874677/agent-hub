@@ -7,6 +7,7 @@ import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound, notImplemented } from '../errors.ts';
 import type { JournalEntry } from '../event.ts';
 import type { CanvasProjection, Deps } from './deps.ts';
+import { projectOfSessionOrigin } from './authorization.ts';
 import { promptOpening } from '../messaging.ts';
 
 export interface LoadCanvasOptions {
@@ -77,7 +78,7 @@ export async function saveLayoutUseCase(
 
 /** 把两条会话连起来（无向，幂等）。关系是项目级资源；跨 owner 允许，消息权限另算。 */
 export async function linkSessionsUseCase(
-  deps: Pick<Deps, 'links' | 'now' | 'projects' | 'sessions' | 'workerPresence'>,
+  deps: Pick<Deps, 'links' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workerPresence' | 'workspaces' | 'workspaceGroups'>,
   projectId: string,
   one: string,
   other: string,
@@ -89,10 +90,14 @@ export async function linkSessionsUseCase(
   const a = asSessionId(one);
   const b = asSessionId(other);
   if (a === b) return err(invalid('不能把会话连到自己'));
-  const sessions = await deps.sessions.listByProject(project.id);
-  const first = sessions.find((session) => session.id === a);
-  const second = sessions.find((session) => session.id === b);
+  const first = await deps.sessions.byId(a);
+  const second = await deps.sessions.byId(b);
   if (!first || !second) return err(notFound('会话不在这个项目里'));
+  // #243：连线是跨会话授权，按不可变来源判项目；不能拿放置/列表归属（长期空间可转手）。
+  const [firstProject, secondProject] = await Promise.all([projectOfSessionOrigin(deps, first), projectOfSessionOrigin(deps, second)]);
+  if (!firstProject || firstProject.id !== project.id || !secondProject || secondProject.id !== project.id) {
+    return err(notFound('会话不在这个项目里'));
+  }
   if (deps.workerPresence) {
     const [firstOnline, secondOnline] = await Promise.all([
       deps.workerPresence.online(first.workerId ?? null),

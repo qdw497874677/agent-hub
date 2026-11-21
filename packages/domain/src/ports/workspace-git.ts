@@ -33,6 +33,12 @@ export interface GitStatus {
  */
 export interface GitAuth {
   readonly header: string;
+  /**
+   * hub 侧解析令牌时绑定的**预期 HTTPS 仓库地址**（`repo.url` 或显式凭据的目标地址）。
+   * Worker 只在这个地址与本次操作的目的地一致时才注入头；缺失 = 旧 hub 的未绑定令牌，
+   * 新 Worker 一律拒绝使用（失败关闭）。字段可选只为滚动升级时的 wire 兼容。
+   */
+  readonly url?: string;
 }
 
 export interface CloneInput {
@@ -84,6 +90,13 @@ export interface CommitPreview {
   readonly files: readonly { readonly path: string; readonly status: string }[];
   readonly patch: string;
   readonly truncated: boolean;
+  /**
+   * 受保护预览的合规标记：true = 这次结果已经按 #269 的敏感路径策略筛选过
+   * （可能因为无法保证筛选而整段省略，见 notice）。旧 Worker 不返回这个字段。
+   */
+  readonly redactedSensitive?: boolean;
+  /** 受保护预览无法安全返回内容时给人看的原因；没有省略就省略。 */
+  readonly notice?: string;
   /** 工作目录占用（du）；拿不到就省略。 */
   readonly sizeBytes?: number | null;
 }
@@ -111,7 +124,7 @@ export interface PushOutcome {
 export type GhRequest =
   | { readonly action: 'create'; readonly base: string; readonly head: string; readonly title: string; readonly body: string }
   | { readonly action: 'view'; readonly number: number }
-  | { readonly action: 'list'; readonly head: string };
+  | { readonly action: 'list'; readonly head: string; readonly repo?: string };
 export type GhOutcome =
   | { readonly ok: true; readonly pr: RemotePullRequest }
   | { readonly ok: true; readonly prs: readonly RemotePullRequest[] }
@@ -126,6 +139,13 @@ export interface RemotePullRequest {
   readonly mergedAt: number | null;
   /** PR 的目标分支；按分支列出 / 查详情都能带，拿不到（老 Worker）= undefined。 */
   readonly base?: string | null;
+  /**
+   * head 所在的仓库（owner/name，fork 时会和 origin 不同）。
+   * 自动认领要拿它证明「PR 的 head 就是这条任务 checkout 的 origin」；老 Worker / 老响应不带。
+   */
+  readonly repo?: string | null;
+  /** head 的分支名（`gh pr list --head` 可能带回同名分支的 fork PR）；老 Worker 不带。 */
+  readonly headRef?: string | null;
 }
 
 export type RemoveKind = 'worktree' | 'directory';
@@ -171,6 +191,12 @@ export interface RepoProbe {
   readonly message: string | null;
 }
 
+/** 预览选项：默认全量（Git 工作流要看见所有改动再决定提交）；`redactSensitive` 只给只读展示用。 */
+export interface PreviewOptions {
+  /** true = 敏感文件（#269）的路径与内容都不出现在 files / patch 里；旧 Worker 可能忽略。 */
+  readonly redactSensitive?: boolean;
+}
+
 /**
  * 工作空间的 git / 目录操作（docs/design/workspaces.md §3）。
  * 在目录所在的那台机器上执行：本机直接跑，远端 Worker 走 ws.* RPC。
@@ -186,8 +212,8 @@ export interface WorkspaceGit {
   status(path: string): Promise<Result<GitStatus, DomainError>>;
   /** 把所有改动（含未跟踪）提交成一个 WIP 提交，再 `push -u origin <当前分支>`。 */
   saveWip(path: string, message: string, auth?: GitAuth): Promise<Result<SaveWipOutcome, DomainError>>;
-  /** ADR 0027 §2：提交前预览（patch 截断到 maxPatchBytes）。只读本地，不需要令牌。 */
-  preview(path: string, maxPatchBytes: number): Promise<Result<CommitPreview, DomainError>>;
+  /** ADR 0027 §2：提交前预览（patch 截断到 maxPatchBytes）。只读本地，不需要令牌。默认不隐藏任何改动。 */
+  preview(path: string, maxPatchBytes: number, options?: PreviewOptions): Promise<Result<CommitPreview, DomainError>>;
   /** `add -A` + `commit --author`；没改动 = committed:false。 */
   commit(path: string, input: CommitInput): Promise<Result<CommitOutcome, DomainError>>;
   /** `push -u origin <当前分支>`；没 origin / 被拒 = pushed:false + 原因。 */

@@ -8,7 +8,7 @@ import { parseRepo } from '../project.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 import { adoptLocalWorkspacesUseCase, freeName, prepareLongLivedWorkspaceUseCase, workspaceViewsUseCase } from './workspaces.ts';
-import { newWorkspace } from '../workspace.ts';
+import { newWorkspace, type Workspace } from '../workspace.ts';
 
 const fake: AgentDescriptor = {
   id: asAgentId('fake'),
@@ -54,6 +54,66 @@ test('给了目录的新项目：目录登记成第一个持久工作空间（li
   assert.equal(workspace?.path, '/tmp/x');
   assert.equal(workspace?.source, 'linked');
   assert.equal(workspace?.kind, 'long_lived');
+});
+
+test('新建项目原子认领冲突：不写项目，目录仍归原项目（#233）', async () => {
+  const w = inMemoryDeps();
+  const first = await createProjectUseCase(w.deps, { name: 'first', rootPath: '/tmp/owned' });
+  assert.ok(first.ok);
+  const second = await createProjectUseCase(w.deps, { name: 'second', rootPath: '/tmp/owned' });
+  assert.equal(second.ok, false);
+  if (!second.ok) assert.match(second.error.message, /已经分配给其他项目/);
+  assert.deepEqual((await w.deps.projects.list()).map((p) => p.name), ['first']);
+  assert.equal((await w.deps.workspaces.byProject(first.value.id)).length, 1);
+});
+
+test('历史重复登记：预检/新建项目直接报重复，保留两条老行不覆盖（#233）', async () => {
+  const w = inMemoryDeps();
+  const project = await createProjectUseCase(w.deps, { name: 'Demo App' });
+  assert.ok(project.ok);
+  const a = newWorkspace({ projectId: null, teamId: null, workerId: 'local', path: '/tmp/dup', kind: 'long_lived', source: 'linked', now: 1 });
+  const b = newWorkspace({ projectId: null, teamId: null, workerId: 'local', path: '/tmp/dup', kind: 'long_lived', source: 'linked', now: 2 });
+  assert.ok(a.ok && b.ok);
+  const store = w.deps.workspaces as typeof w.deps.workspaces & { rows: Map<string, Workspace> };
+  store.rows.set(a.value.id, a.value);
+  store.rows.set(b.value.id, b.value);
+  const prepared = await prepareLongLivedWorkspaceUseCase(w.deps, {
+    projectId: project.value.id,
+    workerId: null,
+    plan: { mode: 'link', path: '/tmp/dup' },
+    home: '/home/me'
+  });
+  assert.equal(prepared.ok, false);
+  if (!prepared.ok) assert.match(prepared.error.message, /重复的工作空间登记/);
+  const created = await createProjectUseCase(w.deps, { name: 'dup', rootPath: '/tmp/dup' });
+  assert.equal(created.ok, false);
+  if (!created.ok) assert.match(created.error.message, /重复的工作空间登记/);
+  assert.equal(store.rows.size, 2, '两条历史登记都保留，没有新建/覆盖');
+});
+
+test('新建项目在工作空间保存前失败：不提交项目，也不留下错的项目行（#233）', async () => {
+  const w = inMemoryDeps();
+  const original = w.deps.workspaces.save.bind(w.deps.workspaces);
+  w.deps.workspaces.save = async () => ({ status: 'ambiguous', candidates: [] });
+  const created = await createProjectUseCase(w.deps, { name: 'blocked', rootPath: '/tmp/blocked' });
+  w.deps.workspaces.save = original;
+  assert.equal(created.ok, false);
+  if (!created.ok) assert.match(created.error.message, /重复的工作空间登记/);
+  assert.equal((await w.deps.projects.list()).length, 0, '项目没有先落库');
+});
+
+test('fake save：已删除登记在同一路径复活成长期时，不能新增第二条活跃登记（#233）', async () => {
+  const w = inMemoryDeps();
+  const live = newWorkspace({ projectId: null, teamId: null, workerId: null, path: '/tmp/revive', kind: 'long_lived', source: 'linked', now: 1 });
+  const dead = newWorkspace({ projectId: null, teamId: null, workerId: null, path: '/tmp/revive', kind: 'long_lived', source: 'linked', state: 'removed', now: 2 });
+  assert.ok(live.ok && dead.ok);
+  assert.equal((await w.deps.workspaces.save(live.value)).status, 'saved');
+  assert.equal((await w.deps.workspaces.save(dead.value)).status, 'saved');
+  const revived = await w.deps.workspaces.save({ ...dead.value, state: 'ready', updatedAt: 3 });
+  assert.equal(revived.status, 'place-taken');
+  if (revived.status === 'place-taken') assert.equal(revived.existing.id, live.value.id);
+  assert.equal((await w.deps.workspaces.byId(dead.value.id))?.state, 'removed');
+  assert.equal((await w.deps.workspaces.longLived()).length, 1);
 });
 
 test('新建持久工作空间：托管目录 <root>/agent-hub-workspaces/<slug>，被占就 -2；再选已有目录是 linked', async () => {

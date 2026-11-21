@@ -8,6 +8,7 @@ import type { AgentDto, RpcChannel, RpcOutcome, RpcPort, ServerToWorker, Session
 import {
   PROTOCOL_MISMATCH_CLOSE,
   PROTOCOL_VERSION,
+  WORKER_CAPABILITY_DURABLE_DELIVERY,
   WORKER_CAPABILITY_METRICS,
   WORKER_CAPABILITY_NATIVE_BRANCH,
   assetsSync,
@@ -247,6 +248,8 @@ interface Registered {
   channel: RpcChannel | null;
   /** 凭据允许的能力（ADR 0030 D3）；null = 不限（本机 / 共享令牌 / 老凭据前的行为）。 */
   capabilities: readonly string[] | null;
+  /** 这条连接的 Worker 声明了 durable_delivery 没有（#269）；每次 hello 重建。 */
+  durableDelivery: boolean;
   /** 这条连接做过终端对账没有（重连 / inventory 只做一次）。 */
   terminalReconciled: boolean;
   /** 这条连接做过服务对账没有。 */
@@ -445,6 +448,14 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     if (!entry?.socket) return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」不在线`) };
     const needed = commandCapability(command.kind);
     if (!canInvoke(entry.capabilities, needed)) return { ok: false, error: forbidden(capabilityDenied(needed as WorkerCapability)) };
+    // #269：老 Worker 不会在回合结束时回传投递号，Hub 无法确认这条投递已结束。
+    // 只拒这一帧（socket.send 之前返回，对端一个字节都收不到），连接与其它无键指令照常。
+    if (command.kind === 'prompt' && command.deliveryId && !entry.durableDelivery) {
+      return {
+        ok: false,
+        error: conflict(`Worker「${entry.label}」没有声明 durable_delivery，这条带投递号的指令没有发出；把这台机器的 Worker 更新到最新版后重试`)
+      };
+    }
     entry.socket.send(JSON.stringify(command));
     return { ok: true, value: undefined };
   }
@@ -813,6 +824,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
             : null,
           channel: null,
           capabilities: verdict.capabilities ?? null,
+          durableDelivery: frame.capabilities?.includes(WORKER_CAPABILITY_DURABLE_DELIVERY) === true,
           terminalReconciled: false,
           serviceReconciled: false,
           connection: { at: now(), address: clientAddress, version: build?.commit ?? null }
@@ -1170,7 +1182,16 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         addWorktree: (input) => call((c) => c.request(wsAddWorktree, { ...input, base: input.base ?? null, ...(input.auth ? { auth: input.auth } : {}) }, slow), '新开分支'),
         status: (path) => call((c) => c.request(wsStatus, { path }), '检查改动'),
         saveWip: (path, message, auth) => call((c) => c.request(wsSaveWip, { path, message, ...(auth ? { auth } : {}) }, slow), '提交并推送'),
-        preview: (path, maxPatchBytes) => call((c) => c.request(wsPreview, { path, maxPatchBytes }, { timeoutMs: 60_000 }), '读取改动'),
+        preview: (path, maxPatchBytes, options) =>
+          call(
+            (c) =>
+              c.request(
+                wsPreview,
+                { path, maxPatchBytes, ...(options?.redactSensitive ? { redactSensitive: true } : {}) },
+                { timeoutMs: 60_000 }
+              ),
+            '读取改动'
+          ),
         commit: (path, input) => call((c) => c.request(wsCommit, { path, ...input }, { timeoutMs: 120_000 }), '提交'),
         push: (path, auth) => call((c) => c.request(wsPush, { path, ...(auth ? { auth } : {}) }, slow), '推送'),
         gh: (path, request) => call((c) => c.request(wsGh, { path, request }, { timeoutMs: 120_000 }), 'gh 开 PR'),

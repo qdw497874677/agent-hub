@@ -29,17 +29,34 @@ import type {
   WorkspaceGroup,
   WorkspaceGroupId,
   WorkspaceGroupRepository,
-  WorkspaceRepository
+  WorkspaceClaim,
+  WorkspaceClaimOutcome,
+  WorkspaceRepository,
+  WorkspaceSaveOutcome,
+  WorkspaceTransfer,
+  WorkspaceTransferOutcome
 } from '../../index.ts';
-import { ok } from '../../index.ts';
+import { normalizePath, ok } from '../../index.ts';
 
 /** 各仓储的内存实现（projects / tasks / sessions / workspaces / …），语义与 SQLite 实现保持一致。 */
 
-export function fakeProjects(): ProjectRepository {
+export function fakeProjects(workspaces: Pick<WorkspaceRepository, 'claim' | 'unlink'> = fakeWorkspaces()): ProjectRepository {
   const rows = new Map<string, Project>();
   return {
     async save(project) {
       rows.set(project.id, project);
+    },
+    async saveWithWorkspaceClaim(project, claim) {
+      const outcome = await workspaces.claim(claim);
+      if (outcome.status === 'conflict') return { status: 'conflict', owner: outcome.owner };
+      if (outcome.status === 'ambiguous') return { status: 'ambiguous', candidates: outcome.candidates };
+      try {
+        rows.set(project.id, project);
+      } catch (error) {
+        if (outcome.status === 'claimed') await workspaces.unlink(claim.projectId, claim.workspaceId);
+        throw error;
+      }
+      return { status: 'saved', link: outcome.link };
     },
     async byId(id) {
       return rows.get(id) ?? null;
@@ -99,15 +116,59 @@ export function fakeWorkspaces(): WorkspaceRepository & { rows: Map<string, Work
   const rows = new Map<string, Workspace>();
   const links: ProjectWorkspaceLink[] = [];
   const all = () => [...rows.values()].sort((a, b) => a.createdAt - b.createdAt);
+  const placePeers = (workspace: Workspace): Workspace[] => {
+    const path = normalizePath(workspace.path);
+    return all().filter(
+      (peer) =>
+        peer.id !== workspace.id &&
+        peer.kind === 'long_lived' &&
+        peer.state !== 'removed' &&
+        peer.teamId === workspace.teamId &&
+        peer.workerId === workspace.workerId &&
+        normalizePath(peer.path) === path
+    );
+  };
+  const ambiguousAtPlace = (workspaceId: string): Workspace[] | null => {
+    const workspace = rows.get(workspaceId);
+    if (!workspace || workspace.kind !== 'long_lived' || workspace.state === 'removed') return null;
+    const peers = placePeers(workspace);
+    return peers.length > 0 ? [workspace, ...peers] : null;
+  };
   return {
     rows,
     links,
-    async save(workspace) {
-      const fresh = !rows.has(workspace.id);
-      rows.set(workspace.id, workspace);
-      if (fresh && workspace.kind === 'long_lived' && workspace.projectId !== null) {
-        links.push({ projectId: workspace.projectId, workspaceId: workspace.id, linkedBy: null, linkedAt: workspace.createdAt });
+    async save(workspace): Promise<WorkspaceSaveOutcome> {
+      const target = { ...workspace, path: normalizePath(workspace.path) };
+      const previous = rows.get(target.id) ?? null;
+      const fresh = previous === null;
+      const moved =
+        previous !== null &&
+        (previous.teamId !== target.teamId ||
+          previous.workerId !== target.workerId ||
+          normalizePath(previous.path) !== target.path);
+      const liveLongLived = target.kind === 'long_lived' && target.state !== 'removed';
+      const wasLiveLongLived = previous !== null && previous.kind === 'long_lived' && previous.state !== 'removed';
+      const becomingLive = liveLongLived && !wasLiveLongLived;
+      if (liveLongLived && (fresh || moved || becomingLive)) {
+        const peers = placePeers(target);
+        if (peers.length > 1) return { status: 'ambiguous', candidates: peers };
+        const peer = peers[0];
+        if (fresh && peer) return { status: 'existing', workspace: peer };
+        if (!fresh && peer) return { status: 'place-taken', existing: peer };
       }
+      let stored = target;
+      if (fresh && target.kind === 'long_lived' && target.projectId !== null) {
+        const current = links.filter((l) => l.workspaceId === target.id);
+        if (current.length === 0) {
+          links.push({ projectId: target.projectId, workspaceId: target.id, linkedBy: null, linkedAt: target.createdAt });
+        } else if (!current.some((l) => l.projectId === target.projectId)) {
+          // 和 SQLite 适配器一致：已有别的项目时按团队级工作空间保存，不留下矛盾的 project_id。
+          stored = { ...target, projectId: null };
+        }
+        // 同项目则视为已认领，元数据也不改。
+      }
+      rows.set(target.id, stored);
+      return { status: 'saved', workspace: stored };
     },
     async byId(id) {
       return rows.get(id) ?? null;
@@ -119,8 +180,52 @@ export function fakeWorkspaces(): WorkspaceRepository & { rows: Map<string, Work
     async longLived() {
       return all().filter((w) => w.kind === 'long_lived' && w.state !== 'removed');
     },
-    async link(link) {
-      if (!links.some((l) => l.projectId === link.projectId && l.workspaceId === link.workspaceId)) links.push(link);
+    async claim(claim: WorkspaceClaim): Promise<WorkspaceClaimOutcome> {
+      const ambiguous = ambiguousAtPlace(claim.workspaceId);
+      const current = links.filter((l) => l.workspaceId === claim.workspaceId);
+      if (ambiguous) {
+        if (current.length === 1 && current[0]!.projectId === claim.projectId) return { status: 'owned', link: current[0]! };
+        return { status: 'ambiguous', candidates: ambiguous };
+      }
+      const same = current.find((l) => l.projectId === claim.projectId);
+      if (same) return { status: 'owned', link: same };
+      if (current.length > 0) return { status: 'conflict', owner: current[0]! };
+      const link: ProjectWorkspaceLink = {
+        projectId: claim.projectId,
+        workspaceId: claim.workspaceId,
+        linkedBy: claim.linkedBy,
+        linkedAt: claim.linkedAt
+      };
+      links.push(link);
+      return { status: 'claimed', link };
+    },
+    async transfer(transfer: WorkspaceTransfer): Promise<WorkspaceTransferOutcome> {
+      const ambiguous = ambiguousAtPlace(transfer.workspaceId);
+      const current = links.filter((l) => l.workspaceId === transfer.workspaceId);
+      if (ambiguous) {
+        if (current.length === 1 && current[0]!.projectId === transfer.projectId) return { status: 'owned', link: current[0]! };
+        return { status: 'ambiguous', candidates: ambiguous };
+      }
+      const others = current.filter((l) => l.projectId !== transfer.projectId);
+      const expected = [...new Set(transfer.expectedProjectIds)].map(String).sort();
+      const actual = others.map((l) => String(l.projectId)).sort();
+      const sameSet = expected.length === actual.length && expected.every((id, i) => id === actual[i]);
+      if (!sameSet) return { status: 'stale', owner: others[0] ?? null };
+      const existing = current.find((l) => l.projectId === transfer.projectId);
+      if (others.length === 0 && existing) return { status: 'owned', link: existing };
+      for (const link of others) {
+        const i = links.indexOf(link);
+        if (i >= 0) links.splice(i, 1);
+      }
+      if (existing) return { status: 'transferred', link: existing };
+      const link: ProjectWorkspaceLink = {
+        projectId: transfer.projectId,
+        workspaceId: transfer.workspaceId,
+        linkedBy: transfer.linkedBy,
+        linkedAt: transfer.linkedAt
+      };
+      links.push(link);
+      return { status: 'transferred', link };
     },
     async unlink(projectId, workspaceId) {
       const i = links.findIndex((l) => l.projectId === projectId && l.workspaceId === workspaceId);
@@ -208,12 +313,19 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
       const existing = rows.get(session.id);
       // 常驻只经 setPinned 改：整行 save 不能把它冲掉（SQL 那边同样不写这一列）。
       const pinned = session.pinned ?? existing?.pinned;
-      rows.set(
-        session.id,
-        existing
-          ? { ...session, title: existing.title ?? null, ...(pinned === undefined ? {} : { pinned }) }
-          : session
-      );
+      if (!existing) {
+        rows.set(session.id, session);
+        return;
+      }
+      // #243：来源项目只在首次保存时写入；之后整行回写既不填也不清。
+      const merged: { -readonly [K in keyof Session]: Session[K] } = {
+        ...session,
+        title: existing.title ?? null,
+        ...(pinned === undefined ? {} : { pinned })
+      };
+      if (existing.originProjectId === undefined) delete merged.originProjectId;
+      else merged.originProjectId = existing.originProjectId;
+      rows.set(session.id, merged);
     },
     async setPinned(id, pinned, at) {
       const existing = rows.get(id);

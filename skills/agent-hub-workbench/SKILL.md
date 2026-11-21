@@ -78,7 +78,7 @@ message_inbox    { after }                                   → 所有回复（
 - `session_start` 的 `workspaceMode`：
   - 省略/`shared`：用项目已有的目录（推荐，默认）。
   - `isolated`：给这条会话新开单仓 worktree/分支，适合并行改同一个仓库。**即使项目有多个仓库，MCP 的 isolated 也不会自动建成组合工作空间。**
-- 项目后来又加了仓库：已有的**单目录**工作空间用 `sync_workspace { workspaceId }` 补克隆到同级目录。组合组用 `workspace_group_add_member { groupId, repoId }`，不要对组合组调 `sync_workspace`。
+- `sync_workspace { workspaceId }` 只检查已登记的单仓目录和项目远端是否匹配。项目新增仓库时，改用组合工作空间；已有组合组用 `workspace_group_add_member { groupId, repoId }`。
 - 私有仓库：`project_repos` 传 `credential`（非空存、空串清、省略不动）；之后 clone/push 自动带。
 - 想看会话改了什么：`workspace_changes { workspaceId }`（会话对象里有 workspaceId）。MCP 工具没有 `member` 参数，也没有按仓汇总工具。
 - 两个只读工具（令牌要有 `files:read`）：`workspace_diff { sessionId }` 返回该会话工作树相对 HEAD 的未提交 diff（无改动返回空 patch）；`workspace_read_file { sessionId, path }` 读工作树内的单个文件（相对路径，拒绝逃出工作树，单次上限 256 KiB）。
@@ -155,5 +155,5 @@ message_inbox    { after }                                   → 所有回复（
 ## 参考
 
 - `references/tools.md`：当前 MCP 工具的完整清单（scope、REST 对应、参数名），由 `npm run skill:tools` 生成——**以它为准，不要凭记忆编工具名**。
-- `references/workflows.md`：派开发任务、盯长任务、并行改同一仓库、换模型、只读盘点、后来加仓（`sync_workspace`）、多仓组合与验证交接。
+- `references/workflows.md`：派开发任务、盯长任务、并行改同一仓库、换模型、只读盘点、检查单仓远端（`sync_workspace`）、多仓组合与验证交接。
 - `references/errors.md`：错误码与恢复动作。

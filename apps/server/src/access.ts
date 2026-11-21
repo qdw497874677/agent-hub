@@ -1,10 +1,10 @@
 import type { Context, Hono } from 'hono';
 import type { Deps, Permission, ResourceRef, Subject } from '@agent-hub/domain';
-import { asWorkspaceId, authorizeProject, authorizeSession, authorizeWorker, authorizeWorkspace, projectOfRef } from '@agent-hub/domain';
+import { asWorkspaceId, authorizeProject, authorizeSession, authorizeWorker, authorizeWorkspace, notFound, projectOfRef } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
-type AccessDeps = Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'workspaces' | 'access'>;
+type AccessDeps = Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'workspaces' | 'workspaceGroups' | 'access'>;
 
 /**
  * HTTP 这一层的授权（ADR 0011）：只把路由上的 id 映射到资源、交给领域里的 can()，不自己比角色。
@@ -33,7 +33,12 @@ export function installAccess(app: Hono<any>, deps: AccessDeps, subjectOf: Subje
       return allowed.ok ? null : fail(c, allowed.error);
     }
     const { project, session } = await projectOfRef(deps, ref);
-    if (!project) return null; // 不存在的交给路由自己报 404（文案更准）
+    if (!project) {
+      // #243：已有会话但来源项目无法证明（容器会话只落在长期工作空间、或组合组已丢失）时必须失败关闭，
+      // 不能把「查不到项目」当成「资源不存在」交给路由。真正不存在的资源仍由路由自己报 404。
+      if (ref.kind === 'session' && session !== null) return fail(c, notFound('会话不存在'));
+      return null; // 不存在的交给路由自己报 404（文案更准）
+    }
     const onSession = session !== null && ref.kind === 'session' && SESSION_SCOPED.has(permission);
     const allowed = onSession
       ? await authorizeSession(policy, actor, project, session, permission)

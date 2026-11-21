@@ -151,7 +151,8 @@ export const workspaceDiffSchema = z.object({
   branch: z.string().nullable(),
   files: z.array(z.object({ path: z.string(), status: z.string() })),
   patch: z.string(),
-  truncated: z.boolean()
+  truncated: z.boolean(),
+  notice: z.string().optional()
 });
 export const workspaceFileSchema = z.object({
   path: z.string(),

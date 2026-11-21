@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BUILTIN_CHROMIUM, type ComponentJobSpec } from '@agent-hub/domain';
@@ -210,8 +210,8 @@ function browserSpec(integrity: string): ComponentJobSpec {
     componentId: 'chromium',
     runtime: 'pi',
     packageName: 'playwright-core',
-    version: '0.55.0',
-    resolved: 'https://registry.example.com/playwright-core/-/playwright-core-0.55.0.tgz',
+    version: BUILTIN_CHROMIUM.version,
+    resolved: `https://registry.example.com/playwright-core/-/playwright-core-${BUILTIN_CHROMIUM.version}.tgz`,
     integrity,
     provides: [{ capability: 'browser:chromium', mode: 'machine-tool' }],
     strategies: [...BUILTIN_CHROMIUM.strategies],
@@ -223,6 +223,7 @@ function browserSpec(integrity: string): ComponentJobSpec {
 function plantNpm(opts: { cwd: string }, spec: ComponentJobSpec, integrity: string): void {
   mkdirSync(join(opts.cwd, 'node_modules', 'playwright-core'), { recursive: true });
   writeFileSync(join(opts.cwd, 'node_modules', 'playwright-core', 'package.json'), JSON.stringify({ name: 'playwright-core', version: spec.version }));
+  writeFileSync(join(opts.cwd, 'node_modules', 'playwright-core', 'cli.js'), '#!/usr/bin/env node\n');
   writeFileSync(join(opts.cwd, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/playwright-core': { version: spec.version, resolved: spec.resolved, integrity } } }));
 }
 
@@ -234,7 +235,7 @@ test('内置浏览器：系统 Chromium 能无头启动则走 detect-system-bina
   const chrome = join(bin, 'chromium');
   writeFileSync(chrome, '#!/bin/sh\n');
   chmodSync(chrome, 0o755);
-  const INTEGRITY = `sha512-${'A'.repeat(44)}==`;
+  const INTEGRITY = BUILTIN_CHROMIUM.integrity;
   const spec = browserSpec(INTEGRITY);
   const downloads: string[][] = [];
   const fake: ComponentInstallOptions = {
@@ -272,7 +273,7 @@ test('内置浏览器缺系统库：用户空间与轻量退路都缺库 → 安
   const home = mkdtempSync(join(tmpdir(), 'comp-deps-home-'));
   const browsers = mkdtempSync(join(tmpdir(), 'comp-browsers-')); // 相当于 PLAYWRIGHT_BROWSERS_PATH，隔离的假目录，不碰真实 ~/.cache/ms-playwright
   const lines: string[] = [];
-  const INTEGRITY = `sha512-${'A'.repeat(44)}==`;
+  const INTEGRITY = BUILTIN_CHROMIUM.integrity;
   const spec = browserSpec(INTEGRITY);
   let depsFixed = false;
   const fake: ComponentInstallOptions = {
@@ -286,12 +287,12 @@ test('内置浏览器缺系统库：用户空间与轻量退路都缺库 → 安
       if (args[0] === '-c') return depsFixed ? '' : '  libnss3.so => not found\n\tlibnspr4.so => not found';
       if (args.includes('chromium-headless-shell') || args.includes('--only-shell')) {
         mkdirSync(join(browsers, 'chromium_headless_shell-9', 'chrome-headless-shell-linux64'), { recursive: true });
-        writeFileSync(join(browsers, 'chromium_headless_shell-9', 'chrome-headless-shell-linux64', 'chrome-headless-shell'), '#!/bin/sh\n');
+        writeFileSync(join(browsers, 'chromium_headless_shell-9', 'chrome-headless-shell-linux64', 'chrome-headless-shell'), '#!/bin/sh\n', { mode: 0o755 });
         return '';
       }
       if (args.includes('chromium')) {
         mkdirSync(join(browsers, 'chromium-1234', 'chrome-linux'), { recursive: true });
-        writeFileSync(join(browsers, 'chromium-1234', 'chrome-linux', 'chrome'), '#!/bin/sh\n');
+        writeFileSync(join(browsers, 'chromium-1234', 'chrome-linux', 'chrome'), '#!/bin/sh\n', { mode: 0o755 });
         return '';
       }
       plantNpm(opts, spec, INTEGRITY);
@@ -317,4 +318,105 @@ test('内置浏览器缺系统库：用户空间与轻量退路都缺库 → 安
   assert.equal(ok.result.acquisition?.strategy, 'playwright');
   assert.equal(ok.result.acquisition?.type, 'user-space-install');
   assert.ok(ok.result.acquisition?.path?.endsWith(join('chromium-1234', 'chrome-linux', 'chrome')));
+});
+
+test('执行策略只认内置值：目录/任务带来的策略被改过就拒绝，且一次 runner 都不调用', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'comp-tamper-'));
+  const home = mkdtempSync(join(tmpdir(), 'comp-tamper-home-'));
+  const INTEGRITY = BUILTIN_CHROMIUM.integrity;
+  const spec = browserSpec(INTEGRITY);
+  const tampered = structuredClone([...BUILTIN_CHROMIUM.strategies]) as { id: string; args?: string[] }[];
+  tampered.find((item) => item.id === 'playwright')!.args = ['install', 'chromium', '--with-evil'];
+  const calls: string[][] = [];
+  const fake: ComponentInstallOptions = {
+    root,
+    node: process.execPath,
+    npm: '/fake/npm-cli.js',
+    env: { PATH: '', HOME: home, PLAYWRIGHT_BROWSERS_PATH: join(root, 'browsers') },
+    acquire: { includeListedPaths: false },
+    log: () => undefined,
+    run: async (_file, args) => {
+      calls.push([...args]);
+      return '';
+    }
+  };
+  const outcome = await installComponent(fake, { ...spec, strategies: tampered as unknown as ComponentJobSpec['strategies'] });
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.refused, true);
+  assert.match(outcome.message, /不一致/);
+  assert.deepEqual(calls, [], '拒绝必须发生在任何 npm / cli 调用之前');
+  assert.ok(!existsSync(join(root, 'pi', 'chromium')), '不创建任何版本目录');
+});
+
+test('获取策略绑定内置包名和钉住哈希：换包 / 换哈希 / 走 git 都拒绝，且一次 runner 都不调用', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'comp-bind-'));
+  const home = mkdtempSync(join(tmpdir(), 'comp-bind-home-'));
+  const spec = browserSpec(BUILTIN_CHROMIUM.integrity);
+  const commit = 'a'.repeat(40);
+  const cases: ComponentJobSpec[] = [
+    { ...spec, packageName: 'evil-playwright-core' },
+    { ...spec, integrity: `sha512-${'C'.repeat(86)}==` },
+    { ...spec, git: { url: 'https://example.com/playwright.git', commit }, integrity: `git:${commit}` }
+  ];
+  let calls = 0;
+  const fake: ComponentInstallOptions = {
+    root,
+    node: process.execPath,
+    npm: '/fake/npm-cli.js',
+    env: { PATH: '', HOME: home, PLAYWRIGHT_BROWSERS_PATH: join(root, 'browsers') },
+    acquire: { includeListedPaths: false },
+    log: () => undefined,
+    run: async () => {
+      calls += 1;
+      return '';
+    }
+  };
+  try {
+    for (const candidate of cases) {
+      const outcome = await installComponent(fake, candidate);
+      assert.equal(outcome.ok, false, JSON.stringify(candidate));
+      assert.equal(outcome.refused, true);
+      assert.match(outcome.message, /只绑定内置包/);
+      assert.ok(!existsSync(join(root, 'pi', 'chromium')), '拒绝发生在任何安装之前');
+    }
+    assert.equal(calls, 0, '拒绝必须发生在 npm / cli 调用之前');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('cli.js realpath 不在 npm 包目录里 → 不执行（符号链接逃逸被拒）', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'comp-cli-'));
+  const home = mkdtempSync(join(tmpdir(), 'comp-cli-home-'));
+  const browsers = mkdtempSync(join(tmpdir(), 'comp-cli-browsers-'));
+  const outside = join(root, 'outside-cli.js');
+  writeFileSync(outside, '#!/usr/bin/env node\n');
+  const INTEGRITY = BUILTIN_CHROMIUM.integrity;
+  const spec = browserSpec(INTEGRITY);
+  const cliRuns: string[] = [];
+  const fake: ComponentInstallOptions = {
+    root,
+    node: process.execPath,
+    npm: '/fake/npm-cli.js',
+    env: { PATH: '', HOME: home, PLAYWRIGHT_BROWSERS_PATH: browsers },
+    acquire: { includeListedPaths: false },
+    log: () => undefined,
+    run: async (_file, args, opts) => {
+      if (args[0] === '-c') return '';
+      if (args[0] !== '/fake/npm-cli.js') {
+        cliRuns.push(args[0] ?? '');
+        return '';
+      }
+      plantNpm(opts, spec, INTEGRITY);
+      const cli = join(opts.cwd, 'node_modules', 'playwright-core', 'cli.js');
+      unlinkSync(cli);
+      symlinkSync(outside, cli);
+      return '';
+    }
+  };
+  const outcome = await installComponent(fake, spec);
+  assert.equal(outcome.ok, false);
+  assert.deepEqual(cliRuns, [], '逃出包目录的 cli.js 不能被当成 node 脚本执行');
+  assert.ok(!existsSync(join(root, 'pi', 'chromium', 'current')));
 });

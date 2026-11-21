@@ -52,7 +52,8 @@ export function installProjectReposRoutes(app: Hono<any>, options: ProjectReposR
     if (!allowed.ok) return fail(c, allowed.error);
 
     // 形状 / 上限 / 重名与保存走同一套规则：检查的必须就是保存时会被记下的那份。
-    const normalized = normalizeRepos(parsed.data.repos);
+    // tokenSecret 由服务端按 (projectId, repoId) 生成，请求里带的一律忽略。
+    const normalized = normalizeRepos(parsed.data.repos, { acceptTokenSecret: false });
     if (!normalized.ok) return fail(c, normalized.error);
 
     const workers = await deps.gateway.status();
@@ -83,7 +84,7 @@ export function installProjectReposRoutes(app: Hono<any>, options: ProjectReposR
     // 只在 http(s) 地址上用；拿不到就不传，照旧靠机器自己的凭据（SSH key / agent）。
     const explicit = new Map<string, GitAuth>();
     for (const repo of parsed.data.repos) {
-      const auth = repoAuthFromCredential(repo.credential);
+      const auth = repoAuthFromCredential(repo.credential, repo.url);
       if (auth) explicit.set(repo.url, auth);
     }
     const saved = new Map<string, GitAuth>();

@@ -17,7 +17,7 @@ import {
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { fakeToolGrants, inMemoryDeps } from '@agent-hub/domain/testing';
 import { createRpcChannel, mcpMessage, type RpcChannel } from '@agent-hub/contract';
-import { serveMcpRelay, type RemoteClients, type RemoteMcpTarget } from './mcp-relay.ts';
+import { serveMcpRelay, createRemoteClients, type RemoteClients, type RemoteMcpTarget } from './mcp-relay.ts';
 import type { McpOAuthClient } from './mcp-oauth.ts';
 
 const fake = {
@@ -203,6 +203,37 @@ async function relayTo(
 }
 
 const target: RemoteMcpTarget = { url: 'https://mcp.example.test/mcp', headers: {} };
+
+test('远端 MCP 客户端：建连接前校验 URL 与 Host', async () => {
+  const clients = createRemoteClients();
+  await assert.rejects(() => clients.get({ url: 'https://127.0.0.1/mcp', headers: {} }), /内网/);
+  await assert.rejects(() => clients.get({ url: 'https://mcp.example.test/mcp', headers: { Host: 'evil.example' } }), /Host/);
+  await clients.close();
+});
+
+test('远端 MCP：私网地址 / 覆盖 Host 在连接上游前就被拒绝', async () => {
+  const privateRelay = await relayTo({ url: 'https://127.0.0.1/mcp', headers: {} });
+  const blocked = await privateRelay.worker.request(mcpMessage, { token: privateRelay.token, server: 'demo', message: call(1, 'tools/list') });
+  assert.equal(!blocked.ok && blocked.error.code, 'forbidden');
+  assert.match(!blocked.ok ? blocked.error.message : '', /内网/);
+  assert.equal(privateRelay.seen.headers.length, 0);
+  assert.deepEqual(privateRelay.seen.methods, []);
+
+  const hostRelay = await relayTo({ url: 'https://mcp.example.test/mcp', headers: { Host: 'evil.example' } });
+  const hostBlocked = await hostRelay.worker.request(mcpMessage, { token: hostRelay.token, server: 'demo', message: call(1, 'tools/list') });
+  assert.equal(!hostBlocked.ok && hostBlocked.error.code, 'forbidden');
+  assert.match(!hostBlocked.ok ? hostBlocked.error.message : '', /Host/);
+  assert.equal(hostRelay.seen.headers.length, 0);
+
+  const plaintextRelay = await relayTo({ url: 'http://mcp.example.test/mcp', headers: {} });
+  const plaintextBlocked = await plaintextRelay.worker.request(mcpMessage, {
+    token: plaintextRelay.token,
+    server: 'demo',
+    message: call(1, 'tools/list')
+  });
+  assert.equal(!plaintextBlocked.ok && plaintextBlocked.error.code, 'forbidden');
+  assert.match(!plaintextBlocked.ok ? plaintextBlocked.error.message : '', /HTTPS/);
+});
 
 test('远端 MCP：resources / prompts 的五个请求都转发给上游并带回结果', async () => {
   const { worker, token, seen } = await relayTo(target);

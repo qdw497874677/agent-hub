@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { DomainError, McpOAuth, Result } from '@agent-hub/domain';
 import { err, ok, unavailable } from '@agent-hub/domain';
+import { checkMcpEgressUrl, defaultMcpEgress, mcpEgressPolicyFromEnv, type McpEgress } from './mcp-egress.ts';
 
 /**
  * 远端 MCP 的 OAuth 客户端凭据（client_credentials）：hub 取 token，放进发往上游的
@@ -15,6 +16,8 @@ export interface McpOAuthClient {
 
 export interface McpOAuthOptions {
   readonly fetch?: typeof fetch;
+  /** 出口策略 / 安全 fetch（relay 传入同一实例）；缺省用 hub 共享的安全出口。 */
+  readonly egress?: McpEgress;
   readonly now?: () => number;
   readonly log?: (message: string) => void;
 }
@@ -31,7 +34,9 @@ interface CachedToken {
 }
 
 export function createMcpOAuth(options: McpOAuthOptions = {}): McpOAuthClient {
-  const fetchImpl = options.fetch ?? fetch;
+  const egress = options.egress;
+  const policy = egress?.policy ?? mcpEgressPolicyFromEnv();
+  const fetchImpl = options.fetch ?? egress?.fetch ?? defaultMcpEgress().fetch;
   const now = options.now ?? (() => Date.now());
   const log = options.log ?? (() => undefined);
   const cache = new Map<string, CachedToken>();
@@ -51,6 +56,13 @@ export function createMcpOAuth(options: McpOAuthOptions = {}): McpOAuthClient {
   };
 
   async function fetchToken(oauth: McpOAuth): Promise<Result<CachedToken, DomainError>> {
+    // OAuth 凭据只走 HTTPS，且先按出口策略校验展开后的 token URL。
+    const checked = checkMcpEgressUrl(oauth.tokenUrl, policy, { requireHttps: true });
+    if (!checked.ok) {
+      const message = `MCP OAuth：token 地址不合法（${checked.error.message}）`;
+      log(message);
+      return err(unavailable(message));
+    }
     const body = new URLSearchParams({ grant_type: 'client_credentials' });
     if (oauth.scope !== undefined && oauth.scope !== '') body.set('scope', oauth.scope);
     if (oauth.audience !== undefined && oauth.audience !== '') body.set('audience', oauth.audience);
@@ -69,10 +81,11 @@ export function createMcpOAuth(options: McpOAuthOptions = {}): McpOAuthClient {
 
     let response: Response;
     try {
-      response = await fetchImpl(oauth.tokenUrl, {
+      response = await fetchImpl(checked.value.href, {
         method: 'POST',
         headers,
         body: body.toString(),
+        redirect: 'error',
         signal: AbortSignal.timeout(TIMEOUT_MS)
       });
     } catch (error) {

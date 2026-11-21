@@ -14,13 +14,14 @@ import type { SessionEvent } from '../event.ts';
 import type { Deps } from './deps.ts';
 import { ensureHosted } from './hosting.ts';
 import { startSessionUseCase } from './start-session.ts';
-import type { ProviderProtocol } from '../provider.ts';
+import { parseHubModel, type ProviderProtocol } from '../provider.ts';
+import type { DeliveryQueue } from '../ports/delivery-queue.ts';
 import { mergeAgentRef, type AgentRef } from '../agent-ref.ts';
 import { checkModelOn, placeSession } from '../worker.ts';
 import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
-import { defaultWorkspaceFor, locationOf, projectOfSession, usableByProject } from './workspaces.ts';
-import { authorizeSession, authorizeWorker } from './authorization.ts';
+import { defaultWorkspaceFor, locationOf, usableByProject } from './workspaces.ts';
+import { authorizeSession, authorizeWorker, projectOfSessionOrigin } from './authorization.ts';
 import { agentProfileForUse } from './agent-profiles.ts';
 import { resolveDefaultAgent } from './resolve-default-agent.ts';
 
@@ -193,6 +194,8 @@ export async function deriveSessionUseCase(
     workerId: placed.value,
     workspaceId: workspace.id,
     groupId,
+    // #243：容器会话的来源项目在建会话时定死，后续工作空间/组怎么变都不改授权归属。
+    originProjectId: task === null ? project.id : undefined,
     ...(reserved || !reservedId ? {} : { id: asSessionId(reservedId) }),
     createdBy: command.createdBy !== undefined ? command.createdBy : principalOfSubject(command.actor)?.user.id ?? null,
     botId: command.botId ?? null,
@@ -390,16 +393,32 @@ export async function recordSessionOptions(
   const session = await deps.sessions.byId(asSessionId(command.sessionId));
   if (!session) return err(notFound('会话不存在'));
   const values: Record<string, string | boolean> = {};
+  let reportedModel: string | null = null;
   for (const option of command.options) {
     // 模型不跟 agent 的回报走：回报的是「这次启动它自己解析出来的默认值」，
     // 会被机器上的插件 / 配置影响，也可能随版本变。把它钉进会话之后，下次启动
     // 就会拿这个旧值去覆盖运行时的真实默认——机器上换了配置，会话却还指着一个不再用的模型。
     // 只有用户显式选过（session.model 非空）才写；否则留给运行时每次启动自己决定。
-    if (option.id === 'model' && session.model === '') continue;
+    //
+    // 注意：不能在这里用「回报值 != session.model」判定陈旧。同一提供商里换模型
+    // （changeSessionOption → set_option）走的正是这条回报：hub 不写乐观值，等 agent
+    // 回报新值才落库；一刀切跳过会把合法的 A→B 改动静默丢掉。
+    if (option.id === 'model') {
+      if (session.model === '') continue;
+      if (typeof option.current === 'string') {
+        // 跨提供商切换会重启进程。模型和选项来自同一快照，不能部分接受旧进程的回报。
+        if (parseHubModel(session.model)?.slug !== parseHubModel(option.current)?.slug) return ok(session);
+        reportedModel = option.current;
+      }
+    }
     values[option.id] = option.current;
   }
-  const next = {
+  const next: Session = {
     ...withOptions(session, values, deps.now()),
+    // `Session.options` 的注释写明「模型仍以 model 字段为准」，所以运行中换模型不能只改
+    // options.model / optionSpec：界面和下一次 start_session 都读 model 字段，漏了它就会
+    // 停在旧模型。只有用户显式选过（非空）才同步，留空的会话仍由运行时每次决定。
+    ...(reportedModel !== null && reportedModel !== session.model ? { model: reportedModel } : {}),
     optionSpec: command.options
   };
   await deps.sessions.save(next);
@@ -450,12 +469,73 @@ export async function changeSessionOption(
 }
 
 /**
+ * 这条会话是否真的还有一回合没结束。
+ *
+ * 证据按优先级：
+ * 1. 送达队列里精确的 `sending`——和 `session.status` 无关；状态帧把它写成
+ *    interrupted / done 也照样算在跑；
+ * 2. status 不是 running：视为已停止（与送达门的 `turnInProgress` 一致）。用户中断、
+ *    掉线降级之后应当允许重启恢复，否则「非 running、journal 尾部却留着半截 prompt」
+ *    的会话会永远切不了；
+ * 3. status 是 running：退回 journal 尾部，最后一条 prompt 之后没有 ended 才算在跑。
+ *    但还没派发的 prompt（对应送达记录 queued / undelivered / cancelled）不算开局——
+ *    机器离线时发出的消息可以排队很久，不能拿它把切换永远堵死。尾部被截断时证明不了
+ *    已经结束，按仍在跑处理（fail closed）。
+ *
+ * 这里刻意不 import `delivery.ts` 的 `turnInProgress`：那个模块反过来依赖本模块的
+ * 事件写入，直接引会形成循环；这里的判断只服务于「能不能安全重启」。
+ *
+ * 送达侧现在把 `attemptDelivery` 也放在同一条 per-session 队列里，所以 `claimSend`
+ * （把 queued 翻成 sending）不会在切换持锁期间插进来；`claimPrompt` 的入队写入仍在
+ * 队列外，但它只产生 queued 行，不占回合。若送达侧的串行化退化，这里读到的就只是
+ * 检查那一刻的快照。
+ */
+async function turnStillRunning(
+  deps: Pick<Deps, 'sessions'> & { readonly deliveries?: DeliveryQueue },
+  session: Session
+): Promise<boolean> {
+  if (deps.deliveries && (await deps.deliveries.inFlight(session.id))) return true;
+  if (session.status !== 'running') return false;
+  // queued = 还没认领；undelivered = 已放弃；cancelled = 用户撤回。三种都还没开局。
+  const notStarted = new Set(
+    deps.deliveries
+      ? (await deps.deliveries.recent(session.id, 200))
+          .filter(
+            (delivery) =>
+              delivery.kind === 'prompt' &&
+              (delivery.state === 'queued' || delivery.state === 'undelivered' || delivery.state === 'cancelled')
+          )
+          .map((delivery) => delivery.seq)
+      : []
+  );
+  const tail = await deps.sessions.tail(session.id, 2_000);
+  const truncated = tail.length >= 2_000 && tail[0]!.seq > 1;
+  for (let i = tail.length - 1; i >= 0; i--) {
+    const entry = tail[i]!;
+    if (entry.event.kind === 'ended') return false;
+    if (entry.event.kind !== 'prompt') continue;
+    if (notStarted.has(entry.seq)) continue;
+    // 没有送达记录的老 prompt，或记录已是 sending / delivered：都在等结束证据。
+    return true;
+  }
+  return truncated;
+}
+
+/**
  * 换模型提供商（或 hub 模型 ↔ agent 原生模型）：这不是一个「选项值」，
  * 因为提供商的 Base URL 与密钥是在 agent 启动时写进配置里的，运行中改不了。
  *
- * 做法是停掉这条会话的进程，按新模型重新托管，靠 `start_session(resume)` 的
- * `session/load` 把对话接回来（见 `ensureHosted`）。代价是切换瞬间会中断正在跑的
- * 那一回合，并且思考过程/子代理会断一次；历史本身不丢。
+ * 做法是丢掉托管记录，按新模型重新托管，靠 `start_session(resume)` 的
+ * `session/load` 把对话接回来（见 `ensureHosted`）。Worker 同 id 启动会先 dispose
+ * 旧进程，所以这里**不**先发 interrupt：中途打断一轮会把正在写的回合切成半截，
+ * 而回合没结束时我们干脆拒绝切换，让调用方决定是等还是先中断。
+ *
+ * 整个「读 → 判断 → 写 → 重新托管」都在 per-session 队列里（和 journal 写入、其它
+ * 切换同一条队列），否则两个快速切换会交错，最后落库的模型和最后下发的 start_session
+ * 可能不是一个。送达侧现在也把 attemptDelivery / claimSend 放进这条队列；claimPrompt
+ * 的入队写入仍在队列外，但只产生 queued 行（本用例按「还没开局」放行）。队列里的
+ * `ensureHosted` 不会重入队列：启动回执是 `dispatch` 的同步返回值，Worker 事件走异步
+ * 消息入口，之后才排队。
  *
  * 校验新模型能不能用是调用方的事（hub 提供商要看团队与权限，原生模型要看运行时
  * 上报名单）——这里只管「换、重启、接回」。
@@ -476,30 +556,40 @@ export async function switchSessionModel(
     | 'workspaceGroups'
     | 'workspaces'
   > &
-    Partial<Pick<Deps, 'environment' | 'toolGrants'>>,
+    Partial<Pick<Deps, 'environment' | 'toolGrants' | 'deliveries'>>,
   command: { readonly sessionId: string; readonly model: string }
 ): Promise<Result<Session, DomainError>> {
-  const session = await deps.sessions.byId(asSessionId(command.sessionId));
-  if (!session) return err(notFound('会话不存在'));
-  if (session.model === command.model) return ok(session);
+  return deps.queue.run(command.sessionId, async () => {
+    // 队列里重新读：等锁期间可能有新事件落库，拿旧快照 save 会把它们盖回去。
+    const session = await deps.sessions.byId(asSessionId(command.sessionId));
+    if (!session) return err(notFound('会话不存在'));
+    if (session.model === command.model) return ok(session);
 
-  // 正在跑就先收尾：不停的话，旧进程会在新进程起来之后继续往这条会话里写事件。
-  if (session.status === 'running') {
-    const stopped = await interruptSessionUseCase(deps, session.id);
-    if (!stopped.ok) return stopped;
-  }
+    if (await turnStillRunning(deps, session)) {
+      return err(
+        conflict(
+          '这条会话还有一轮没结束（正在回复，或刚发的消息还没送到运行时），现在切换模型会打断它。等这一轮结束，或者先中断，再切换。'
+        )
+      );
+    }
 
-  const optionSpec = session.optionSpec.map((entry) =>
-    entry.id === 'model' ? { ...entry, current: command.model } : entry
-  );
-  const next: Session = { ...session, model: command.model, options: { ...session.options, model: command.model }, optionSpec };
-  await deps.sessions.save(next);
+    const optionSpec = session.optionSpec.map((entry) =>
+      entry.id === 'model' ? { ...entry, current: command.model } : entry
+    );
+    const next: Session = {
+      ...session,
+      model: command.model,
+      options: { ...session.options, model: command.model },
+      optionSpec
+    };
+    await deps.sessions.save(next);
 
-  // 丢掉托管记录，下一次 ensureHosted 会按 session.model 重新算提供商配置并带 resume 启动。
-  deps.hosting.drop(session.id);
-  const hosted = await ensureHosted(deps, next);
-  if (!hosted.ok) return err(hosted.error);
-  return ok((await deps.sessions.byId(session.id)) ?? next);
+    // 丢掉托管记录，下面的 ensureHosted 会按 session.model 重新算提供商配置并带 resume 启动。
+    deps.hosting.drop(session.id);
+    const hosted = await ensureHosted(deps, next);
+    if (!hosted.ok) return err(hosted.error);
+    return ok((await deps.sessions.byId(session.id)) ?? next);
+  });
 }
 
 export interface SetSessionMcpDisabledCommand {
@@ -522,7 +612,7 @@ export async function setSessionMcpDisabledUseCase(
 ): Promise<Result<Session, DomainError>> {
   const session = await deps.sessions.byId(asSessionId(command.sessionId));
   if (!session) return err(notFound('会话不存在'));
-  const project = await projectOfSession(deps, session);
+  const project = await projectOfSessionOrigin(deps, session);
   const allowed = await authorizeSession(deps.access, command.actor, project, session, 'session.prompt');
   if (!allowed.ok) return allowed;
 

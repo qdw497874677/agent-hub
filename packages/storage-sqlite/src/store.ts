@@ -9,7 +9,8 @@ import type {
   Seq,
   Session,
   SessionEvent,
-  Task
+  Task,
+  WorkspaceClaim
 } from '@agent-hub/domain';
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
@@ -44,7 +45,7 @@ import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
 import { createAssetReviewRepository, createNotificationRepository } from './asset-review.ts';
 import { createAgentDefaultsStore } from './agent-defaults.ts';
 import { createSqliteAssetSets } from './asset-sets.ts';
-import { WORKSPACE_SCHEMA, createWorkspaceRepository, ensureSingleWorkspaceOwner, migrateSharedWorkspaces, migrateWorkspaces, upgradeWorkspaceTable } from './workspaces.ts';
+import { WORKSPACE_SCHEMA, claimWorkspaceInTransaction, createWorkspaceRepository, ensureSingleWorkspaceOwner, migrateSharedWorkspaces, migrateWorkspaces, upgradeWorkspaceTable } from './workspaces.ts';
 import { createSqliteWorkspaceGroups } from './workspace-groups.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
@@ -193,6 +194,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!columns.some((column) => column.name === 'workspace_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN workspace_id TEXT');
   }
+  // #243：容器会话创建时落定的来源项目；只加列，老数据保持 NULL（不从工作空间反推）。
+  if (!columns.some((column) => column.name === 'origin_project_id')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN origin_project_id TEXT');
+  }
   // ADR 0017：会话创建者（说话 / 中断只给他）。老会话从审计里的 session.start / session.fork 回填。
   const addedCreatedBy = !columns.some((column) => column.name === 'created_by');
   if (addedCreatedBy) db.exec('ALTER TABLE sessions ADD COLUMN created_by TEXT');
@@ -310,8 +315,8 @@ export function openSqliteStore(file: string): SqliteStore {
   const updateTaskBranch = db.prepare('UPDATE tasks SET branch = ? WHERE id = ? AND ? IS NOT NULL');
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, asset_ids, asset_set_ids, mcp_disabled, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, origin_project_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, asset_ids, asset_set_ids, mcp_disabled, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, ' +
       // 状态跟着 last_seq 单调走：并发写回一个更旧的会话对象（比如上一轮读到的 running）
       // 不能把已经 done 的状态又翻回去，也不能把游标倒退。
@@ -456,33 +461,46 @@ export function openSqliteStore(file: string): SqliteStore {
       : ['derive', null, null];
   }
 
+  const writeProject = (project: Project): void => {
+    const primary = project.repos[0] ?? null;
+    insertProject.run(
+      project.id,
+      project.name,
+      '',
+      null,
+      '{}',
+      // 双写：老列只留给还没看 repos 的读路径（worker / 前端过渡期），新列是权威。
+      primary?.url ?? null,
+      primary?.defaultBranch ?? null,
+      JSON.stringify(project.repos),
+      project.primaryRepoId ?? null,
+      project.description,
+      project.worktree ? JSON.stringify(project.worktree) : null,
+      project.previewPort ?? null,
+      JSON.stringify(project.checks),
+      project.assetSetIds == null ? null : JSON.stringify(project.assetSetIds),
+      project.defaultAgent == null ? null : JSON.stringify(project.defaultAgent),
+      project.submodules === 'recursive' ? 'recursive' : 'off',
+      project.createdAt,
+      project.teamId,
+      project.createdBy,
+      JSON.stringify(project.members),
+      project.deletedAt
+    );
+  };
+
   const projects = {
     async save(project: Project): Promise<void> {
-      const primary = project.repos[0] ?? null;
-      insertProject.run(
-        project.id,
-        project.name,
-        '',
-        null,
-        '{}',
-        // 双写：老列只留给还没看 repos 的读路径（worker / 前端过渡期），新列是权威。
-        primary?.url ?? null,
-        primary?.defaultBranch ?? null,
-        JSON.stringify(project.repos),
-        project.primaryRepoId ?? null,
-        project.description,
-        project.worktree ? JSON.stringify(project.worktree) : null,
-        project.previewPort ?? null,
-        JSON.stringify(project.checks),
-        project.assetSetIds == null ? null : JSON.stringify(project.assetSetIds),
-        project.defaultAgent == null ? null : JSON.stringify(project.defaultAgent),
-        project.submodules === 'recursive' ? 'recursive' : 'off',
-        project.createdAt,
-        project.teamId,
-        project.createdBy,
-        JSON.stringify(project.members),
-        project.deletedAt
-      );
+      writeProject(project);
+    },
+    async saveWithWorkspaceClaim(project: Project, claim: WorkspaceClaim) {
+      return inTransaction(db, () => {
+        const outcome = claimWorkspaceInTransaction(db, claim);
+        if (outcome.status === 'conflict') return { status: 'conflict' as const, owner: outcome.owner };
+        if (outcome.status === 'ambiguous') return { status: 'ambiguous' as const, candidates: outcome.candidates };
+        writeProject(project);
+        return { status: 'saved' as const, link: outcome.link };
+      });
     },
     async listDeleted(): Promise<Project[]> {
       return selectDeletedProjects.all().map((row) => toProject(row));
@@ -553,6 +571,7 @@ export function openSqliteStore(file: string): SqliteStore {
         JSON.stringify(session.optionSpec),
         session.workerId,
         session.workspaceId,
+        session.originProjectId ?? null,
         session.environmentRevision ?? null,
         session.createdBy ?? null,
         session.title ?? null,

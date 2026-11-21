@@ -4,7 +4,11 @@ import {
   PROJECT_REPOS_MAX,
   REPO_TOKEN_PREFIX,
   createProject,
+  isCanonicalRepoTokenKey,
   isHttpRepoUrl,
+  isHttpsRepoUrl,
+  legacyRepoTokenKey,
+  parseRepoTokenName,
   repoIdOfTokenName,
   repoTokenKey,
   deriveRepoId,
@@ -106,13 +110,54 @@ test('normalizeRepos：保留 tokenSecret（trim），空串 / 没给就不写�
   assert.equal('tokenSecret' in absent.value[0]!, false);
 });
 
-test('repoTokenKey / repoIdOfTokenName / isHttpRepoUrl：密钥名与地址判定', () => {
-  assert.equal(repoTokenKey('repo_deadbeef'), 'repo-git:repo_deadbeef');
+test('normalizeRepos：acceptTokenSecret: false 时忽略调用方塞的 tokenSecret', () => {
+  const ignored = normalizeRepos(
+    [{ name: 'api', url: 'https://x.test/a.git', tokenSecret: 'repo-git:project_other:repo_deadbeef' }],
+    { acceptTokenSecret: false }
+  );
+  assert.ok(ignored.ok);
+  assert.equal('tokenSecret' in ignored.value[0]!, false);
+});
+
+test('repoTokenKey / parseRepoTokenName / isCanonicalRepoTokenKey：新键按项目 + 仓库双作用域', () => {
+  assert.equal(repoTokenKey('project_a', 'repo_deadbeef'), 'repo-git:project_a:repo_deadbeef');
+  assert.equal(legacyRepoTokenKey('repo_deadbeef'), 'repo-git:repo_deadbeef');
   assert.equal(REPO_TOKEN_PREFIX, 'repo-git:');
+
+  assert.deepEqual(parseRepoTokenName('repo-git:project_a:repo_deadbeef'), {
+    projectId: 'project_a',
+    repoId: 'repo_deadbeef',
+    legacy: false
+  });
+  assert.deepEqual(parseRepoTokenName('repo-git:repo_deadbeef'), {
+    projectId: null,
+    repoId: 'repo_deadbeef',
+    legacy: true
+  });
+  assert.equal(parseRepoTokenName('repo-git:project_a:a:b'), null, '多余的冒号不认');
+  assert.equal(parseRepoTokenName('repo-git::repo_deadbeef'), null);
+  assert.equal(parseRepoTokenName('repo-git:project_a:'), null);
+  assert.equal(parseRepoTokenName('repo-git:'), null);
+  assert.equal(parseRepoTokenName('asset-git:a1'), null);
+
+  assert.equal(repoIdOfTokenName('repo-git:project_a:repo_deadbeef'), 'repo_deadbeef');
   assert.equal(repoIdOfTokenName('repo-git:repo_deadbeef'), 'repo_deadbeef');
   assert.equal(repoIdOfTokenName('asset-git:a1'), null);
+
+  assert.equal(isCanonicalRepoTokenKey('project_a', 'repo_deadbeef', 'repo-git:project_a:repo_deadbeef'), true);
+  assert.equal(isCanonicalRepoTokenKey('project_a', 'repo_deadbeef', 'repo-git:project_b:repo_deadbeef'), false);
+  assert.equal(isCanonicalRepoTokenKey('project_a', 'repo_deadbeef', 'repo-git:repo_deadbeef'), false, '旧格式不认');
+  assert.equal(isCanonicalRepoTokenKey('project_a', 'repo_deadbeef', null), false);
+});
+
+test('isHttpRepoUrl / isHttpsRepoUrl：地址判定', () => {
   assert.equal(isHttpRepoUrl('https://gitlab.test/me/api.git'), true);
   assert.equal(isHttpRepoUrl(' http://gitlab.test/me/api.git '), true);
   assert.equal(isHttpRepoUrl('git@gitlab.test:me/api.git'), false);
   assert.equal(isHttpRepoUrl('/srv/repos/api.git'), false);
+  assert.equal(isHttpsRepoUrl('https://gitlab.test/me/api.git'), true);
+  assert.equal(isHttpsRepoUrl(' HTTPS://gitlab.test/me/api.git '), true);
+  assert.equal(isHttpsRepoUrl('http://gitlab.test/me/api.git'), false);
+  assert.equal(isHttpsRepoUrl('git@gitlab.test:me/api.git'), false);
+  assert.equal(isHttpsRepoUrl('/srv/repos/api.git'), false);
 });

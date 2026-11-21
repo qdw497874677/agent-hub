@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentDescriptor } from '../agent.ts';
 import { asAgentId } from '../ids.ts';
+import { deriveSession } from '../session.ts';
+import { newWorkspace } from '../workspace.ts';
 import { inMemoryDeps, fakeSessionLinks } from '../testing/in-memory.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
@@ -115,4 +117,31 @@ test('画布：不能连接自己，也不能连接别的项目的会话', async
   assert.equal((await linkSessionsUseCase(w.deps, project.value.id, one.value.id, one.value.id, 'alice')).ok, false);
   assert.equal((await linkSessionsUseCase(w.deps, project.value.id, one.value.id, away.value.id, 'alice')).ok, false);
   assert.equal((await linkSessionsUseCase(w.deps, project.value.id, one.value.id, two.value.id, 'alice')).ok, true);
+});
+
+test('#243：连线按不可变来源项目判；容器会话有来源可连，旧容器失败关闭', async () => {
+  const w = inMemoryDeps({ links: fakeSessionLinks() });
+  w.agents.push(agent);
+  const project = await createProjectUseCase(w.deps, { name: 'origin-links', rootPath: '/tmp/origin-links' });
+  assert.ok(project.ok);
+  const task = await createTaskUseCase(w.deps, { projectId: project.value.id, title: '连线' });
+  assert.ok(task.ok);
+  const taskSession = await deriveSessionUseCase(w.deps, { taskId: task.value.id, agentId: 'fake', model: 'm1' });
+  assert.ok(taskSession.ok);
+  // 长期工作空间可以没有 projectId：来源只认会话自己落定的 originProjectId。
+  const ws = newWorkspace({ projectId: null, workerId: 'local', path: '/tmp/origin-links-unowned', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(ws.ok);
+  await w.deps.workspaces.save(ws.value);
+  const input = { agentId: asAgentId('fake'), model: 'm1', now: 1, workspaceId: ws.value.id };
+  const origin = deriveSession({ ...input, originProjectId: project.value.id });
+  const legacy = deriveSession(input);
+  assert.ok(origin.ok && legacy.ok);
+  await w.deps.sessions.save(origin.value);
+  await w.deps.sessions.save(legacy.value);
+
+  const linked = await linkSessionsUseCase(w.deps, project.value.id, taskSession.value.id, origin.value.id, 'alice');
+  assert.ok(linked.ok, linked.ok ? '' : linked.error.message);
+  const denied = await linkSessionsUseCase(w.deps, project.value.id, taskSession.value.id, legacy.value.id, 'alice');
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'not_found');
 });

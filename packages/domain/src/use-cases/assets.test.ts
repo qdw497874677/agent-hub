@@ -510,6 +510,81 @@ test('允许清单：候选资产没装在这台机器时，靠 ensure 预热后
   assert.match(named.blocked ?? '', /去「资产」/);
 });
 
+test('允许清单：预热成功后的 digest 是权威，缺/空就整次拦住（#233）', async () => {
+  const { deps } = inMemoryAssets();
+  const made = await uploadAsset(deps, { kind: 'skill', files: skill() });
+  assert.ok(made.ok);
+  const id = made.value.id;
+  const old = made.value.pinned;
+  const next = await uploadAssetRevision(deps, id, skill('say hello'));
+  assert.ok(next.ok);
+  const pinned = await pinAssetRevision(deps, id, next.value.asset.latest);
+  assert.ok(pinned.ok);
+  const fresh = pinned.value.pinned;
+  assert.notEqual(fresh, old);
+
+  // 看板还是预热前的旧版本：ensure 返回新版本，必须用新的（否则会话拿到旧 digest）。
+  deps.board.set({ workerId: 'w1', state: 'synced', root: '/r', installed: { [id]: old }, error: null, at: 1 });
+  const resolved = await resolveSessionAssets(deps, {
+    sessionId: 's1',
+    workerId: 'w1',
+    projectId: null,
+    ensure: async (_workerId, assetIds) => Object.fromEntries(assetIds.map((assetId) => [assetId, fresh]))
+  });
+  assert.deepEqual(resolved.assetIds, [id]);
+  assert.equal(resolved.entries[0]?.digest, fresh, '预热返回的 digest 覆盖旧看板');
+
+  // 反过来也一样：预热说这台机器实际落地的是旧版，就以预热为准。
+  deps.board.set({ workerId: 'w1', state: 'synced', root: '/r', installed: { [id]: fresh }, error: null, at: 2 });
+  const older = await resolveSessionAssets(deps, {
+    sessionId: 's1',
+    workerId: 'w1',
+    projectId: null,
+    ensure: async () => ({ [id]: old })
+  });
+  assert.equal(older.entries[0]?.digest, old);
+
+  // 部分映射 = 预热契约失败：请求过的文件类候选没回报 digest 就整次拦住，
+  // 不能回落到看板（那可能正是刚被替换掉的旧 digest）。
+  const second = await uploadAsset(deps, { kind: 'skill', files: skill('x', 'other-tool') });
+  assert.ok(second.ok);
+  deps.board.set({
+    workerId: 'w1',
+    state: 'synced',
+    root: '/r',
+    installed: { [id]: old, [second.value.id]: second.value.pinned },
+    error: null,
+    at: 3
+  });
+  const partial = await resolveSessionAssets(deps, {
+    sessionId: 's1',
+    workerId: 'w1',
+    projectId: null,
+    ensure: async () => ({ [id]: fresh })
+  });
+  assert.deepEqual(partial.assetIds, []);
+  assert.deepEqual(partial.entries, []);
+  assert.match(partial.blocked ?? '', new RegExp(`「${second.value.name}」没能装到这台机器（机器没有回报装好）`));
+
+  // 空串同样算「没落地」，不留半份清单。
+  const empty = await resolveSessionAssets(deps, {
+    sessionId: 's1',
+    workerId: 'w1',
+    projectId: null,
+    ensure: async () => ({ [id]: '', [second.value.id]: second.value.pinned })
+  });
+  assert.deepEqual(empty.assetIds, []);
+  assert.deepEqual(empty.entries, []);
+  assert.match(empty.blocked ?? '', new RegExp(`「${made.value.name}」没能装到这台机器`));
+
+  // 没有 ensure 的旧语义不受影响：仍以看板为准。
+  await deps.assets.install('w1', id, 1);
+  await deps.assets.install('w1', second.value.id, 1);
+  const legacy = await resolveSessionAssets(deps, { sessionId: 's1', workerId: 'w1', projectId: null });
+  assert.equal(legacy.entries.find((entry) => entry.assetId === id)?.digest, old);
+  assert.equal(legacy.entries.find((entry) => entry.assetId === second.value.id)?.digest, second.value.pinned);
+});
+
 test('允许清单：MCP 资产不需要预热（不下发到机器），不会因为「没落地」拦住启动', async () => {
   const { deps } = inMemoryAssets();
   const json = (value: unknown) => [{ path: 'mcp.json', data: enc(JSON.stringify(value)) }];

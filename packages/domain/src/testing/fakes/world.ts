@@ -56,6 +56,7 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
   const agents: AgentDescriptor[] = [];
   const workers: WorkerStatus[] = [{ workerId: 'local', label: '本机', origin: 'local', state: 'online' }];
   const tasks = fakeTasks();
+  const workspaces = fakeWorkspaces();
   const git = fakeGit();
   const gateway: NodeGateway = {
     git: (workerId) => git.on(workerId),
@@ -73,11 +74,11 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
   };
   let clock = 1_700_000_000_000;
   const deps = {
-    projects: fakeProjects(),
+    projects: fakeProjects(workspaces),
     tasks,
     workLog: fakeWorkLog(),
     sessions: fakeSessions(tasks.rows),
-    workspaces: fakeWorkspaces(),
+    workspaces,
     workspaceGroups: fakeWorkspaceGroups(),
     artifacts: fakeArtifacts(),
     layout: fakeLayout(),

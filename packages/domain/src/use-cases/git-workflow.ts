@@ -139,7 +139,9 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     if (!preview.remoteUrl) return '没有 origin 远端，只能提交';
     if (!githubRepoOf(preview.remoteUrl)) return 'origin 不是 GitHub，推送后请到托管平台上开 PR';
     if (!preview.branch) return '当前不在分支上（detached HEAD）';
-    if (preview.defaultBranch && preview.branch === preview.defaultBranch) {
+    // base 只信 origin 报的默认分支；拿不到就不能开 PR，绝不替用户写死 main
+    if (!preview.defaultBranch) return '取不到 origin 的默认分支（先 fetch origin），不能凭空选 base';
+    if (preview.branch === preview.defaultBranch) {
       return workspace?.kind === 'temporary' ? '临时工作空间不该在默认分支上' : `长期工作空间在默认分支 ${preview.branch} 上，不能对它自己开 PR；先切到功能分支`;
     }
     return null;
@@ -249,7 +251,8 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     let link: string | null = null;
     if (input.action === 'pr' && branch) {
       const repo = githubRepoOf(preview.value.remoteUrl)!;
-      const base = preview.value.defaultBranch ?? 'main';
+      // prBlocked 已确认 defaultBranch 存在；这里只做类型收窄，不再回落 main
+      const base = preview.value.defaultBranch!;
       const title = input.title!.trim().slice(0, GIT_LIMITS.titleChars);
       const body = (input.body ?? '').slice(0, GIT_LIMITS.bodyChars);
       const team = await teamOf(project);
@@ -356,10 +359,16 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     return due.length;
   }
 
-  /** 按分支认领的候选：仓库 + 分支 + 用 gh 兴的地方（token 路径不需要 root）。 */
+  /**
+   * 按分支认领的候选：仓库 + 分支 + 本地 HEAD。
+   * 仓库和分支都来自那个目录实际的 origin / 检出（不信任工作空间登记的历史值），
+   * `head` 是认领时唯一的本地证据：PR 的 head_sha 必须正好是它。
+   */
   interface BranchCandidate {
     readonly repo: string;
     readonly branch: string;
+    readonly head: string;
+    readonly defaultBranch: string | null;
     readonly workerId: string | null;
     readonly root: string | null;
     readonly workspaceId: string | null;
@@ -369,47 +378,64 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
   /** 打开任务时的按分支发现节流：和普通同步一样最多 1 分钟一次，避免连点打爆 GitHub；refresh 立刻来。 */
   const lastBranchScanAt = new Map<string, number>();
 
-  /** 任务下有哪些会话分支可能在 GitHub 上有 PR：临时工作空间记的分支 + 会话工作区实时分支（agent 可能切过）。 */
+  /** owner/name 大小写不敏感（GitHub 仓库名就是），比较 / 去重都用它。 */
+  const repoKey = (repo: string): string => repo.toLowerCase();
+
+  /**
+   * 任务下有哪些 checkout 可能在 GitHub 上有 PR：每个目录只 preview 一次，用真实 origin + HEAD 当证据。
+   * 登记表里的 repoUrl / branch 可能是历史值（agent 换过分支、仓库改过 remote），不能拿来认领。
+   */
   async function branchCandidates(subject: Subject | null, taskId: string, project: Project, knownBranches: ReadonlySet<string>): Promise<BranchCandidate[]> {
     const found: BranchCandidate[] = [];
     const seen = new Set<string>();
-    const add = (candidate: BranchCandidate | null): void => {
-      // 默认分支上的 PR 不会是这条任务的（也不该被自动认领）
-      if (!candidate || candidate.branch === 'main' || candidate.branch === 'master') return;
-      const key = `${candidate.repo}#${candidate.branch}`;
-      if (knownBranches.has(key) || seen.has(key)) return; // 已落库的分支：普通同步会去管它
+    const spots = new Map<string, { workerId: string | null; root: string; workspaceId: string | null; sessionId: string | null }>();
+    // 同一目录可能被工作空间行和会话同时看到：有会话就有会话（PR 要挂到会话上）
+    const addSpot = (spot: { workerId: string | null; root: string; workspaceId: string | null; sessionId: string | null }): void => {
+      const key = `${spot.workerId ?? ''}:${spot.root}`;
+      const previous = spots.get(key);
+      if (!previous || (previous.sessionId === null && spot.sessionId !== null)) spots.set(key, spot);
+    };
+    const add = (candidate: BranchCandidate): void => {
+      // 默认分支上的 PR 不会是这条任务的（也不该被自动认领）。defaultBranch 拿不到时才退回名字兜底，不凭空写 main。
+      if (candidate.defaultBranch !== null ? candidate.branch === candidate.defaultBranch : candidate.branch === 'main' || candidate.branch === 'master') return;
+      const branchKey = `${repoKey(candidate.repo)}#${candidate.branch}`;
+      if (knownBranches.has(branchKey)) return; // 已落库的分支：普通同步会去管它
+      // 同仓库同分支在不同目录可能有不同的 HEAD（例如同一任务的两个 checkout）：
+      // 去重要带上 HEAD，否则先扫到的那条会把后一条真正匹配 PR 的候选吞掉（#269）。
+      const key = `${branchKey}#${candidate.head}`;
+      if (seen.has(key)) return;
       seen.add(key);
       found.push(candidate);
     };
-    // 临时工作空间记着分支：最可靠的来源
+    // 任务自己的工作空间（临时 worktree）：目录还可用就去看它的 HEAD
     for (const workspace of await deps.workspaces.byTask(asTaskId(taskId))) {
-      if (workspace.state === 'removed' || workspace.branch === null) continue;
-      const repo = githubRepoOf(workspace.repoUrl);
-      if (repo) add({ repo, branch: workspace.branch, workerId: workspace.workerId, root: workspace.path, workspaceId: workspace.id, sessionId: null });
+      if (workspace.state === 'removed') continue;
+      addSpot({ workerId: workspace.workerId, root: workspace.path, workspaceId: workspace.id, sessionId: null });
     }
-    // 会话：工作空间记的分支 + 机器上现在的分支（同一目录只问一次）
+    // 会话的工作区 / 组合工作空间成员（同一目录只问一次）
     for (const session of await deps.sessions.listByTask(asTaskId(taskId))) {
       if (!(await authorizeSession(deps.access, subject, project, session, 'session.read')).ok) continue;
-      const spots = new Map<string, { workerId: string | null; root: string; workspaceId: string | null }>();
       const workspace = session.workspaceId ? await deps.workspaces.byId(session.workspaceId) : null;
       if (workspace && workspace.state !== 'removed') {
-        const repo = githubRepoOf(workspace.repoUrl);
-        if (repo && workspace.branch !== null) add({ repo, branch: workspace.branch, workerId: workspace.workerId, root: workspace.path, workspaceId: workspace.id, sessionId: session.id });
-        spots.set(`${workspace.workerId ?? ''}:${workspace.path}`, { workerId: workspace.workerId, root: workspace.path, workspaceId: workspace.id });
+        addSpot({ workerId: workspace.workerId, root: workspace.path, workspaceId: workspace.id, sessionId: session.id });
       }
       const location = await locationsOf(deps, project, session).catch(() => null);
       if (location?.group) {
         // 组合工作空间：git 在成员仓库里，逐个成员看当前分支
-        for (const member of location.members) spots.set(`${location.workerId ?? ''}:${member.root}`, { workerId: location.workerId, root: member.root, workspaceId: member.workspaceId });
+        for (const member of location.members) addSpot({ workerId: location.workerId, root: member.root, workspaceId: member.workspaceId, sessionId: session.id });
       } else if (location && location.root !== '') {
-        spots.set(`${location.workerId ?? ''}:${location.root}`, { workerId: location.workerId, root: location.root, workspaceId: session.workspaceId ?? null });
+        addSpot({ workerId: location.workerId, root: location.root, workspaceId: session.workspaceId ?? null, sessionId: session.id });
       }
-      for (const spot of spots.values()) {
-        const preview = await (await gitFor(deps, spot.workerId)).preview(spot.root, 0).catch(() => null);
-        if (!preview?.ok || !preview.value.isGit) continue;
-        const repo = githubRepoOf(preview.value.remoteUrl);
-        if (repo && preview.value.branch) add({ repo, branch: preview.value.branch, workerId: spot.workerId, root: spot.root, workspaceId: spot.workspaceId, sessionId: session.id });
-      }
+    }
+    for (const spot of spots.values()) {
+      const preview = await (await gitFor(deps, spot.workerId)).preview(spot.root, 0).catch(() => null);
+      if (!preview?.ok || !preview.value.isGit) continue;
+      const repo = githubRepoOf(preview.value.remoteUrl);
+      const branch = preview.value.branch;
+      const head = preview.value.head;
+      // 缺 origin / 分支 / HEAD 就没有认领的资格：宁可少认，不能把别的任务的 PR 串过来
+      if (!repo || !branch || !head) continue;
+      add({ repo, branch, head, defaultBranch: preview.value.defaultBranch, workerId: spot.workerId, root: spot.root, workspaceId: spot.workspaceId, sessionId: spot.sessionId });
     }
     return found;
   }
@@ -422,7 +448,7 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     }
     if (candidate.root !== null) {
       const git = await gitFor(deps, candidate.workerId);
-      const r = await git.gh(candidate.root, { action: 'list', head: candidate.branch }).catch(() => null);
+      const r = await git.gh(candidate.root, { action: 'list', head: candidate.branch, repo: candidate.repo }).catch(() => null);
       if (r?.ok && r.value.ok && 'prs' in r.value) return { ok: true, prs: r.value.prs, via: 'gh' };
       if (r?.ok && !r.value.ok) return r.value;
       if (r && !r.ok) return { ok: false, reason: r.error.message };
@@ -446,8 +472,8 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     // 只有扫过一次之后才节流（fake 时钟的 now 可能远小于 60_000，不能用 0 当「没扫过」）
     if (!options?.refresh && lastScanAt !== undefined && now - lastScanAt < 60_000) return [];
     lastBranchScanAt.set(taskId, now);
-    const knownBranches = new Set(listed.map((link) => `${link.repo}#${link.branch}`));
-    const knownNumbers = new Set(listed.map((link) => `${link.repo}#${link.number}`));
+    const knownBranches = new Set(listed.map((link) => `${repoKey(link.repo)}#${link.branch}`));
+    const knownNumbers = new Set(listed.map((link) => `${repoKey(link.repo)}#${link.number}`));
     const candidates = await branchCandidates(subject, taskId, project, knownBranches);
     if (candidates.length === 0) return [];
     const team = await teamOf(project);
@@ -461,9 +487,21 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
         continue;
       }
       for (const pr of remote.prs) {
+        // 自动认领只收「开着的、且能证明 head 就是这次 checkout」的 PR：
+        // - closed / merged 是历史 PR（合并收敛由 syncOne 的 state 同步与 ADR 0027 §3 的清理路径负责，不在这里补认）
+        // - head_sha 必须等于本地 HEAD：同仓库同分支名的另一条任务不会被串进来
+        // - head 仓库 / 分支名必须对上（gh 按分支列可能带回 fork / 近似分支）；老 Worker 不带这两项，一律跳过
+        // - base 只信 PR 自己报的或 preview 的 defaultBranch，绝不回落写死的 main
+        if (pr.state !== 'open') continue;
+        if (!pr.headSha || pr.headSha !== candidate.head) continue;
+        if (!pr.headRef || pr.headRef !== candidate.branch) continue;
+        if (!pr.repo || repoKey(pr.repo) !== repoKey(candidate.repo)) continue;
+        const base = pr.base ?? candidate.defaultBranch;
+        if (!base || base === candidate.branch) continue;
         // 同一 repo#number 只认一次（库里已有 / 同一轮已认的都跳过）
-        if (knownNumbers.has(`${candidate.repo}#${pr.number}`)) continue;
-        knownNumbers.add(`${candidate.repo}#${pr.number}`);
+        const numberKey = `${repoKey(candidate.repo)}#${pr.number}`;
+        if (knownNumbers.has(numberKey)) continue;
+        knownNumbers.add(numberKey);
         const link: PullRequestLink = {
           id: newId(),
           taskId,
@@ -475,7 +513,7 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
           number: pr.number,
           url: pr.url,
           branch: candidate.branch,
-          base: pr.base ?? 'main',
+          base,
           state: pr.state,
           headSha: pr.headSha,
           mergedAt: pr.mergedAt,

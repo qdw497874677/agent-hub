@@ -6,6 +6,7 @@ import { deriveSession, isContainerSession } from './session.ts';
 import { inMemoryDeps } from './testing/in-memory.ts';
 import { promptSessionUseCase } from './use-cases/conversation.ts';
 import { createProjectUseCase } from './use-cases/projects.ts';
+import { createTaskUseCase } from './use-cases/tasks.ts';
 import { deriveSessionUseCase, forkSessionUseCase } from './use-cases/sessions.ts';
 import { startCommand } from './use-cases/start-session.ts';
 import { createTaskToolProvider } from './tools/task-tools.ts';
@@ -54,6 +55,9 @@ test('派生容器会话：只给 projectId 也能建、能跑一轮，不合成
   assert.ok(made.ok, JSON.stringify(made));
   assert.equal(made.value.taskId, null);
   assert.equal(isContainerSession(made.value), true);
+  // #243：容器会话把已验证的项目落成不可变来源，长期工作空间也能继续用。
+  assert.equal(made.value.originProjectId, w.project.id);
+  assert.equal((await w.deps.sessions.byId(made.value.id))?.originProjectId, w.project.id);
   // 不再为它造任务：任务表还是空的。
   assert.equal((await w.deps.tasks.listByProject(w.project.id)).length, 0);
   // 一次都没派发过（deriveSessionUseCase 会先启动会话，这里确认启动命令没带任务）
@@ -67,6 +71,28 @@ test('派生容器会话：只给 projectId 也能建、能跑一轮，不合成
   assert.ok(after);
   assert.equal(after.taskId, null);
   assert.ok(after.lastSeq > 0);
+});
+
+test('#243 容器会话在长期工作空间上派生：originProjectId 落定；任务会话不重复记来源', async () => {
+  const w = await world();
+  const [workspace] = await w.deps.workspaces.byProject(w.project.id);
+  assert.ok(workspace);
+  assert.equal(workspace.kind, 'long_lived');
+  const made = await deriveSessionUseCase(w.deps, {
+    projectId: w.project.id,
+    agentId: 'fake',
+    model: 'm1',
+    workspaceId: workspace.id
+  });
+  assert.ok(made.ok, JSON.stringify(made));
+  assert.equal(made.value.workspaceId, workspace.id);
+  assert.equal(made.value.originProjectId, w.project.id);
+
+  const task = await createTaskUseCase(w.deps, { projectId: w.project.id, title: '任务会话' });
+  assert.ok(task.ok);
+  const withTask = await deriveSessionUseCase(w.deps, { taskId: task.value.id, agentId: 'fake', model: 'm1' });
+  assert.ok(withTask.ok, JSON.stringify(withTask));
+  assert.equal(withTask.value.originProjectId, undefined);
 });
 
 test('task.* 工具：容器会话被拒，错误话说得清', async () => {

@@ -22,6 +22,7 @@ import {
   changeSessionOption,
   switchSessionModel,
   projectOfSession,
+  projectOfSessionOrigin,
   defaultWorkspaceFor,
   deriveSessionUseCase,
   forbidden,
@@ -230,8 +231,8 @@ export function installSessions(app: OpenAPIHono<Env>, rt: V1Runtime): void {
     const sessionId = asSessionId(c.req.param('sessionId') ?? '');
     const target = await rt.deps.sessions.byId(sessionId);
     if (!target) return fail(c, notFound('会话不存在'));
-    // #243：容器会话没有任务，installAccess 的 projectOfRef 会放行；这里按归属反推项目再判 project.read。
-    const project = await projectOfSession(rt.deps, target);
+    // #243：容器会话没有任务，按不可变来源项目判 session.read。
+    const project = await projectOfSessionOrigin(rt.deps, target);
     const allowed = await authorizeProject(rt.deps.access, actor, project, 'session.read');
     if (!allowed.ok) return fail(c, allowed.error);
     const query = valid<{ after?: number; sinceTurn?: number; waitSec?: number }>(c, 'query');
@@ -266,7 +267,7 @@ export function installSessionsLive(app: OpenAPIHono<Env>, rt: V1Runtime): void 
     const session = await rt.deps.sessions.byId(sessionId);
     if (!session) return fail(c, notFound('会话不存在'));
     if (rt.deps.access) {
-      const allowed = await authorizeSession(rt.deps.access, actor, await projectOfSession(rt.deps, session), session, 'session.read');
+      const allowed = await authorizeSession(rt.deps.access, actor, await projectOfSessionOrigin(rt.deps, session), session, 'session.read');
       if (!allowed.ok) return fail(c, allowed.error);
     }
     return c.json(rt.activity ? await sessionActivity(rt.activity, sessionId) : []);

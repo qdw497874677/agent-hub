@@ -12,13 +12,13 @@ test('GitHub REST：开 PR 带 token 头；合并状态；报错不回显 token'
     base: 'https://gh.example/',
     fetch: (async (url: string, init: RequestInit) => {
       calls.push({ url, init });
-      if (init.method === 'POST') return Response.json({ number: 12, html_url: 'https://github.com/o/r/pull/12', state: 'open', head: { sha: 'abc' }, merged_at: null }, { status: 201 });
+      if (init.method === 'POST') return Response.json({ number: 12, html_url: 'https://github.com/o/r/pull/12', state: 'open', head: { sha: 'abc', ref: 'feat/x', repo: { full_name: 'o/r' } }, merged_at: null }, { status: 201 });
       if (url.endsWith('/13')) return Response.json({ message: `Bad credentials ${TOKEN}` }, { status: 401 });
-      return Response.json({ number: 12, html_url: 'https://github.com/o/r/pull/12', state: 'closed', head: { sha: 'def' }, merged_at: '2026-11-01T00:00:00Z' });
+      return Response.json({ number: 12, html_url: 'https://github.com/o/r/pull/12', state: 'closed', head: { sha: 'def', ref: 'feat/x', repo: { full_name: 'o/r' } }, merged_at: '2026-11-01T00:00:00Z' });
     }) as typeof fetch
   });
   const created = await api.createPullRequest({ token: TOKEN, repo: 'o/r', base: 'main', head: 'feat/x', title: 'T', body: 'B' });
-  assert.deepEqual(created, { ok: true, pr: { number: 12, url: 'https://github.com/o/r/pull/12', state: 'open', headSha: 'abc', mergedAt: null, base: null } });
+  assert.deepEqual(created, { ok: true, pr: { number: 12, url: 'https://github.com/o/r/pull/12', state: 'open', headSha: 'abc', mergedAt: null, base: null, repo: 'o/r', headRef: 'feat/x' } });
   assert.equal(calls[0]!.url, 'https://gh.example/repos/o/r/pulls');
   assert.equal((calls[0]!.init.headers as Record<string, string>)['authorization'], `Bearer ${TOKEN}`);
   assert.deepEqual(JSON.parse(String(calls[0]!.init.body)), { title: 'T', body: 'B', head: 'feat/x', base: 'main' });
@@ -37,8 +37,10 @@ test('GitHub REST：按分支列 PR（认领没走会话开的，#262）', async
     fetch: (async (url: string, init: RequestInit) => {
       calls.push({ url, init });
       return Response.json([
-        { number: 21, html_url: 'https://github.com/o/r/pull/21', state: 'open', head: { sha: 'h1' }, merged_at: null, base: { ref: 'main' } },
-        { number: 9, html_url: 'https://github.com/o/r/pull/9', state: 'closed', head: { sha: 'h0' }, merged_at: '2026-11-02T00:00:00Z' }
+        { number: 21, html_url: 'https://github.com/o/r/pull/21', state: 'open', head: { sha: 'h1', ref: 'feat/x', repo: { full_name: 'o/r' } }, merged_at: null, base: { ref: 'main' } },
+        { number: 9, html_url: 'https://github.com/o/r/pull/9', state: 'closed', head: { sha: 'h0', ref: 'feat/x', repo: { full_name: 'someone/r' } }, merged_at: '2026-11-02T00:00:00Z' },
+        // 老响应 / 缺头信息：repo 与 headRef 只能是 null，域层会拒绝自动认领
+        { number: 30, html_url: 'https://github.com/o/r/pull/30', state: 'open', head: { sha: 'h9' }, merged_at: null, base: { ref: 'main' } }
       ]);
     }) as typeof fetch
   });
@@ -46,11 +48,12 @@ test('GitHub REST：按分支列 PR（认领没走会话开的，#262）', async
   assert.deepEqual(listed, {
     ok: true,
     prs: [
-      { number: 21, url: 'https://github.com/o/r/pull/21', state: 'open', headSha: 'h1', mergedAt: null, base: 'main' },
-      { number: 9, url: 'https://github.com/o/r/pull/9', state: 'merged', headSha: 'h0', mergedAt: Date.parse('2026-11-02T00:00:00Z'), base: null }
+      { number: 21, url: 'https://github.com/o/r/pull/21', state: 'open', headSha: 'h1', mergedAt: null, base: 'main', repo: 'o/r', headRef: 'feat/x' },
+      { number: 9, url: 'https://github.com/o/r/pull/9', state: 'merged', headSha: 'h0', mergedAt: Date.parse('2026-11-02T00:00:00Z'), base: null, repo: 'someone/r', headRef: 'feat/x' },
+      { number: 30, url: 'https://github.com/o/r/pull/30', state: 'open', headSha: 'h9', mergedAt: null, base: 'main', repo: null, headRef: null }
     ]
   });
-  assert.equal(calls[0]!.url, `https://gh.example/repos/o/r/pulls?head=${encodeURIComponent('o:feat/x')}&state=all&sort=created&direction=desc&per_page=20`);
+  assert.equal(calls[0]!.url, `https://gh.example/repos/o/r/pulls?head=${encodeURIComponent('o:feat/x')}&state=open&sort=created&direction=desc&per_page=20`);
   assert.equal((calls[0]!.init.headers as Record<string, string>)['authorization'], `Bearer ${TOKEN}`);
 });
 

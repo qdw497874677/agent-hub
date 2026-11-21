@@ -43,7 +43,8 @@ export function createGitHubApi(options: { base?: string; fetch?: typeof fetch; 
     getPullRequest: ({ token, repo, number }) => call(token, 'GET', `/repos/${repo}/pulls/${number}`),
     listPullRequestsByHead: async ({ token, repo, head }) => {
       const owner = repo.split('/')[0] ?? '';
-      const result = await request(token, 'GET', `/repos/${repo}/pulls?head=${encodeURIComponent(`${owner}:${head}`)}&state=all&sort=created&direction=desc&per_page=20`);
+      // 只查开着的：自动认领不接受 closed / merged 的历史 PR（#269）。
+      const result = await request(token, 'GET', `/repos/${repo}/pulls?head=${encodeURIComponent(`${owner}:${head}`)}&state=open&sort=created&direction=desc&per_page=20`);
       if (!result.ok) return result;
       const items = Array.isArray(result.json) ? (result.json as Record<string, unknown>[]) : [];
       return { ok: true, prs: items.map(toPr) };
@@ -53,7 +54,7 @@ export function createGitHubApi(options: { base?: string; fetch?: typeof fetch; 
 
 function toPr(json: Record<string, unknown>): RemotePullRequest {
   const merged = typeof json['merged_at'] === 'string' ? Date.parse(json['merged_at']) : null;
-  const head = json['head'] as { sha?: string } | undefined;
+  const head = json['head'] as { sha?: string; ref?: string; repo?: { full_name?: string } | null } | undefined;
   const base = json['base'] as { ref?: string } | undefined;
   return {
     number: Number(json['number']),
@@ -61,6 +62,9 @@ function toPr(json: Record<string, unknown>): RemotePullRequest {
     state: merged ? 'merged' : json['state'] === 'closed' ? 'closed' : 'open',
     headSha: head?.sha ?? null,
     mergedAt: merged,
-    base: typeof base?.ref === 'string' && base.ref ? base.ref : null
+    base: typeof base?.ref === 'string' && base.ref ? base.ref : null,
+    // head.repo 是 fork 的仓库，自动认领靠它确认 PR 的 head 就是本任务的 origin（#269）
+    repo: typeof head?.repo?.full_name === 'string' && head.repo.full_name ? head.repo.full_name : null,
+    headRef: typeof head?.ref === 'string' && head.ref ? head.ref : null
   };
 }

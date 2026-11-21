@@ -90,8 +90,8 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined, gitOpt
   port.handle(wsRunSetup, async (input) => unwrap(await need().runSetup(input)));
   port.handle(wsStatus, async ({ path }) => unwrap(await need().status(path)));
   port.handle(wsSaveWip, async ({ path, message, auth }) => unwrap(await need().saveWip(path, message, auth)));
-  port.handle(wsPreview, async ({ path, maxPatchBytes }) => {
-    const preview = unwrap(await need().preview(path, maxPatchBytes));
+  port.handle(wsPreview, async ({ path, maxPatchBytes, redactSensitive }) => {
+    const preview = unwrap(await need().preview(path, maxPatchBytes, redactSensitive ? { redactSensitive: true } : undefined));
     return { ...preview, files: [...preview.files] };
   });
   port.handle(wsCommit, async ({ path, ...input }) => unwrap(await need().commit(path, input)));

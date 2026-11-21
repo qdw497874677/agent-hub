@@ -31,6 +31,130 @@ export function isSensitivePath(path: string): boolean {
   return SENSITIVE.some((pattern) => pattern.test(name));
 }
 
+const DIFF_SECTION_PREFIXES = ['diff --git ', 'diff --cc ', 'diff --combined '] as const;
+const DIFF_META_PREFIXES = [
+  ...DIFF_SECTION_PREFIXES,
+  'rename from ',
+  'rename to ',
+  'copy from ',
+  'copy to ',
+  'Binary files ',
+  '--- ',
+  '+++ '
+] as const;
+
+/** git 的 C 风格引号：`"a/sub/\303\274nicode.txt"`。 */
+function decodeGitQuoted(raw: string): string {
+  const bytes: number[] = [];
+  let i = 1;
+  const simple: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '\\': 92, '"': 34 };
+  while (i < raw.length) {
+    const ch = raw[i]!;
+    if (ch === '"') break;
+    if (ch !== '\\') {
+      const code = ch.codePointAt(0)!;
+      for (const byte of new TextEncoder().encode(String.fromCodePoint(code))) bytes.push(byte);
+      i += code > 0xffff ? 2 : 1;
+      continue;
+    }
+    i += 1;
+    const escaped = raw[i];
+    if (escaped === undefined) break;
+    if (simple[escaped] !== undefined) {
+      bytes.push(simple[escaped]!);
+      i += 1;
+      continue;
+    }
+    if (/[0-7]/.test(escaped)) {
+      let octal = '';
+      while (octal.length < 3 && i < raw.length && /[0-7]/.test(raw[i]!)) {
+        octal += raw[i];
+        i += 1;
+      }
+      bytes.push(parseInt(octal, 8) & 0xff);
+      continue;
+    }
+    bytes.push(escaped.charCodeAt(0));
+    i += 1;
+  }
+  return new TextDecoder().decode(Uint8Array.from(bytes));
+}
+
+/** 把一行 diff 元数据拆成路径候选；未加引号的部分按空白拆，够 isSensitivePath 只看文件名。 */
+function pathTokens(text: string): string[] {
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === '"') {
+      let end = i + 1;
+      while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+      tokens.push(decodeGitQuoted(text.slice(i, Math.min(end + 1, text.length))));
+      i = end + 1;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      i += 1;
+      continue;
+    }
+    let end = i;
+    while (end < text.length && !/\s/.test(text[end]!) && text[end] !== '"') end += 1;
+    tokens.push(text.slice(i, end));
+    i = end;
+  }
+  return tokens;
+}
+
+function diffMetaRest(line: string): string | null {
+  for (const prefix of DIFF_META_PREFIXES) {
+    if (line.startsWith(prefix)) return line.slice(prefix.length);
+  }
+  return null;
+}
+
+/** 这一节 diff 是否碰到敏感文件：改名/复制的源和目标、`---`/`+++`、`Binary files`、`diff --git` 都算。 */
+function sectionHasSensitivePath(section: readonly string[]): boolean {
+  let inHunk = false;
+  for (const line of section) {
+    if (line.startsWith('@@')) {
+      inHunk = true;
+      continue;
+    }
+    if (inHunk) continue;
+    const rest = diffMetaRest(line);
+    if (rest !== null && pathTokens(rest).some((token) => isSensitivePath(token))) return true;
+  }
+  return false;
+}
+
+/**
+ * 从 unified diff 里整段剔除敏感文件（#269）：`.env`、私钥等已跟踪文件的内容不能进整树 patch。
+ * 改名 / 复制只要源或目标命中就整节丢弃；路径可能是 git 的 C 风格引号，先解码再按文件名判断。
+ * 正常文件原样保留；引号 / 空格 / 非 ASCII 路径不影响判断。
+ */
+export function withoutSensitiveDiff(patch: string): string {
+  if (patch === '') return '';
+  // 旧 Worker 的未跟踪文件只以名字进 patch；名字本身敏感时整行去掉，别让路径漏出去。
+  const lines = patch.split('\n').filter((line) => {
+    const untracked = line.startsWith('新文件：') ? line.slice('新文件：'.length) : null;
+    return untracked === null || !isSensitivePath(untracked);
+  });
+  const starts: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (DIFF_SECTION_PREFIXES.some((prefix) => lines[i]!.startsWith(prefix))) starts.push(i);
+  }
+  // 正常 git diff 一定有 diff --git 头；没有就整体保守判断，避免把拼不出来的内容当安全。
+  if (starts.length === 0) return sectionHasSensitivePath(lines) ? '' : lines.join('\n');
+  const kept: string[] = lines.slice(0, starts[0]!);
+  for (let i = 0; i < starts.length; i++) {
+    const from = starts[i]!;
+    const to = i + 1 < starts.length ? starts[i + 1]! : lines.length;
+    const section = lines.slice(from, to);
+    if (!sectionHasSensitivePath(section)) for (const line of section) kept.push(line);
+  }
+  return kept.join('\n');
+}
+
 /** 前 8 KB 里有 NUL 就当二进制。 */
 export function looksBinary(bytes: Uint8Array): boolean {
   const end = Math.min(bytes.length, 8192);

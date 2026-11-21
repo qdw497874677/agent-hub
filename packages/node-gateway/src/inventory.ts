@@ -1,7 +1,15 @@
 import { existsSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { type AcquisitionResolution, type InventoryCapability, type InventoryComponent, type InventoryRuntime, type RuntimeProvision, type WorkerInventory } from '@agent-hub/domain';
-import { readAcquisition } from './acquire.ts';
+import {
+  trustedAcquisitionStrategies,
+  type AcquisitionResolution,
+  type InventoryCapability,
+  type InventoryComponent,
+  type InventoryRuntime,
+  type RuntimeProvision,
+  type WorkerInventory
+} from '@agent-hub/domain';
+import { readAcquisition, trustedRecordedAcquisition } from './acquire.ts';
 
 /**
  * Worker 侧的套件清单采集（ADR 0021 §7）。只读：不改任何文件、不跑任何命令。
@@ -18,6 +26,8 @@ export interface InventorySources {
   readonly now?: () => number;
   /** 能接组件任务（P2）。 */
   readonly componentInstall?: boolean;
+  /** 读侧复核内置获取结果时用的环境；默认 process.env。 */
+  readonly env?: Record<string, string>;
 }
 
 const SAFE = /^[A-Za-z0-9@._+-]{1,214}$/;
@@ -66,7 +76,7 @@ function externalPi(dir: string): InventoryComponent[] {
   return out;
 }
 
-function managed(root: string): { components: InventoryComponent[]; capabilities: InventoryCapability[]; acquisitions: AcquisitionResolution[] } {
+function managed(root: string, env: Record<string, string>): { components: InventoryComponent[]; capabilities: InventoryCapability[]; acquisitions: AcquisitionResolution[] } {
   const components: InventoryComponent[] = [];
   const capabilities: InventoryCapability[] = [];
   const acquisitions: AcquisitionResolution[] = [];
@@ -88,7 +98,15 @@ function managed(root: string): { components: InventoryComponent[]; capabilities
         continue;
       }
       if (!SAFE.test(version)) continue;
-      const meta = readJson(join(root, runtime, id, version, '.component.json')) as { integrity?: unknown; enabled?: unknown; provides?: unknown; version?: unknown; acquisition?: unknown } | null;
+      const meta = readJson(join(root, runtime, id, version, '.component.json')) as {
+        packageName?: unknown;
+        integrity?: unknown;
+        source?: unknown;
+        enabled?: unknown;
+        provides?: unknown;
+        version?: unknown;
+        acquisition?: unknown;
+      } | null;
       // P2 的版本目录叫 v-<uuid>，真实版本记在 .component.json 里
       const reported = typeof meta?.version === 'string' && SAFE.test(meta.version) ? meta.version : version;
       components.push({
@@ -115,7 +133,17 @@ function managed(root: string): { components: InventoryComponent[]; capabilities
       }
       if (meta?.enabled !== false) {
         const acquired = readAcquisition(meta);
-        if (acquired) acquisitions.push({ ...acquired, componentId: acquired.componentId ?? id });
+        // 旧元数据里的路径不能直接当可执行文件用：内置 recipe 只绑同包名、同钉住哈希的 npm 制品，
+        // 然后路径还必须能按内置 locate 复核出来。目录 id 比元数据里的 componentId 可信。
+        const recipes = trustedAcquisitionStrategies(id, reported, undefined, {
+          packageName: typeof meta?.packageName === 'string' ? meta.packageName : '',
+          integrity: typeof meta?.integrity === 'string' ? meta.integrity : '',
+          source: typeof meta?.source === 'string' && meta.source.startsWith('git') ? 'git' : 'npm'
+        });
+        const trusted = acquired && recipes.ok
+          ? trustedRecordedAcquisition({ ...acquired, componentId: id }, recipes.value, { env })
+          : null;
+        if (trusted) acquisitions.push(trusted);
       }
     }
   }
@@ -128,7 +156,10 @@ export function collectInventory(sources: InventorySources): WorkerInventory {
     if (provision.source === 'missing') continue;
     runtimes.push({ agentId, version: provision.version ?? 'unknown', source: provision.source });
   }
-  const hub = managed(sources.componentsRoot);
+  const hub = managed(
+    sources.componentsRoot,
+    sources.env ?? Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined))
+  );
   const external = sources.piAgentDir && sources.provisions.has('pi') ? externalPi(sources.piAgentDir) : [];
   return {
     runtimes,

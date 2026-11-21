@@ -55,6 +55,8 @@ export interface FakeGit {
   failNext: string | null;
   /** 路径 → 提交预览（ADR 0027 §2）；没登记的 = 干净、无 origin。commit 会清空 files、ahead+1。 */
   readonly previews: Map<string, CommitPreview>;
+  /** 模拟旧 Worker：忽略 redactSensitive，也不返回合规标记。 */
+  legacyPreview: boolean;
   /** gh 的行为：null = 没装；否则建出来的 PR 编号从这里递增；listed = 按分支 list 返回的已有 PR。 */
   gh: { next: number; state: RemotePullRequest['state']; listed?: readonly RemotePullRequest[] } | null;
   /** 准备命令的结果；没登记 = 成功（exit 0、无输出），'*' = 所有路径的默认值。 */
@@ -85,6 +87,7 @@ export function fakeGit(): FakeGit {
     remotes,
     failNext: null,
     previews,
+    legacyPreview: false,
     gh: null,
     setups,
     repoChecks,
@@ -150,9 +153,11 @@ export function fakeGit(): FakeGit {
           statuses.set(path, { ...status, dirty: false, untracked: 0, unpushed: 0, upstream: `origin/${status.branch}` });
           return ok({ committed, pushed: true, branch: status.branch, reason: null });
         },
-        preview: async (path, maxPatchBytes) => {
+        preview: async (path, maxPatchBytes, options) => {
           calls.push(`${machine}:preview:${path}`);
-          const found = previews.get(path) ?? { isGit: true, branch: 'main', defaultBranch: 'main', remoteUrl: null, upstream: null, ahead: 0, head: 'h0', files: [], patch: '', truncated: false };
+          const stored = previews.get(path) ?? { isGit: true, branch: 'main', defaultBranch: 'main', remoteUrl: null, upstream: null, ahead: 0, head: 'h0', files: [], patch: '', truncated: false };
+          // 假实现支持受保护预览：测试工作流仍能拿到数据，workspace_diff 则必须看到合规标记。
+          const found = options?.redactSensitive && !state.legacyPreview ? { ...stored, redactedSensitive: true } : stored;
           if (found.patch.length > maxPatchBytes) return ok({ ...found, patch: found.patch.slice(0, maxPatchBytes), truncated: true });
           return ok(found);
         },

@@ -371,7 +371,7 @@ async function comboWorld() {
     const base = newWorkspace({ projectId: designated.value.id, repoUrl: repo.url, workerId: 'remote-1', path: `/srv/work/${repo.name}`, kind: 'long_lived', source: 'cloned', isGit: true, now: 1 });
     assert.ok(base.ok);
     await deps.workspaces.save(base.value);
-    await deps.workspaces.link({ projectId: designated.value.id, workspaceId: base.value.id, linkedBy: null, linkedAt: 1 });
+    await deps.workspaces.claim({ projectId: designated.value.id, workspaceId: base.value.id, linkedBy: null, linkedAt: 1 });
   }
   const built = await buildWorkspaceGroupUseCase(deps, { projectId: designated.value.id, taskId: task.value.id, workerId: 'remote-1', home: '/home/me' });
   assert.ok(built.ok, built.ok ? '' : built.error.message);

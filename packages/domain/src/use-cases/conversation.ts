@@ -13,7 +13,7 @@ import type { AttachmentInput, PromptPart, StoredAttachment } from '../attachmen
 import { attachmentPath, base64Bytes, validateAttachments } from '../attachment.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
-import { attemptDelivery } from './delivery.ts';
+import { attemptDelivery, findDeliveryEnded } from './delivery.ts';
 import { ensureHosted } from './hosting.ts';
 import { projectOfSession } from './workspaces.ts';
 import { recordEvent, recordSessionOptions } from './sessions.ts';
@@ -350,15 +350,55 @@ async function withBytes(
   return bytes === null ? event : { ...event, bytes };
 }
 
-/** worker 推上来一条事件：补字节数，然后按会话串行落盘（并发会撞 seq，见 ADR 0004）。 */
+/**
+ * worker 推上来一条事件：补字节数，然后按会话串行落盘（并发会撞 seq，见 ADR 0004）。
+ *
+ * `ended` 是唯一会推进回合 / 触发收尾钩子的事件，所以在会话锁里先过一道送达闸门：
+ * - 有在途送达时，不带 `deliveryId` 的 ended 一律丢弃（旧 Worker / 状态帧不能提前收回合）。
+ * - 带 `deliveryId` 的 ended 只接受和当前在途 id 完全相同、且 journal 里还没有同 id 终态的那一条；
+ *   迟到 A 收不掉 B，重复帧也不会落第二次。
+ * - 在途送达不会在这里收掉：fake / Feishu / checkpoint 等收尾钩子挂在 ended 的 stream 上，
+ *   必须等它们跑完、`inbox` 调 `releaseAfterTurn` 时才由那里 `finishSending` 放行下一句。
+ * - 没有在途送达时仍放行未带 id 的 ended；但如果最近一条 delivered 已经有自己的 keyed 终态，
+ *   说明它只是生命周期重复帧，不再改状态 / 触发钩子。
+ * 直接调用或未启用队列（没有 `deliveries`）仍走原来的无闸门路径。
+ */
 export function ingestWorkerEvent(
-  deps: Pick<Deps, 'artifacts' | 'fs' | 'gateway' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots'>,
+  deps: Pick<Deps, 'artifacts' | 'deliveries' | 'fs' | 'gateway' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots'>,
   sessionId: SessionId,
   event: SessionEvent
 ): Promise<Result<Session, DomainError>> {
-  return deps.queue.run(sessionId, async () =>
-    recordEvent(deps, { sessionId, event: await withBytes(deps, sessionId, event) })
-  );
+  return deps.queue.run(sessionId, async () => {
+    const session = await deps.sessions.byId(sessionId);
+    if (!session) return err(notFound('会话不存在'));
+
+    const deliveries = deps.deliveries;
+    if (event.kind === 'ended' && deliveries) {
+      const inFlight = await deliveries.inFlight(sessionId);
+      if (event.deliveryId !== undefined) {
+        // 精确匹配才收：A 的迟到 ended 不能放掉 B。
+        if (!inFlight || inFlight.id !== event.deliveryId) return ok(session);
+        // 同 id 的 ended 已经落过盘、只是还没到 release：重复帧不再写第二遍。
+        if (await findDeliveryEnded(deps, inFlight)) return ok(session);
+      } else if (inFlight) {
+        // 旧协议 / 状态帧：有持久在途送达时，不能拿它推进回合或触发收尾。
+        return ok(session);
+      } else {
+        // 没有在途时，最近一条 delivered 若已有自己的 keyed 终态，裸 ended 只是
+        // 迟到的 idle / 生命周期帧；不能让它再改一次状态或跑一遍收尾钩子。
+        const recent = await deliveries.recent(sessionId, 200);
+        const lastDelivered = [...recent].reverse().find((d) => d.state === 'delivered');
+        if (lastDelivered && (await findDeliveryEnded(deps, lastDelivered))) return ok(session);
+      }
+    }
+
+    // 注意：这里不调用 finishSending。ended 落盘后先让 hooks 跑，显式 releaseAfterTurn
+    // 才精确收掉 sending 并放行下一句；否则 1s 泵可能在钩子完成前就送出 B。
+    return recordEvent(deps, {
+      sessionId,
+      event: await withBytes(deps, sessionId, event)
+    });
+  });
 }
 
 /**

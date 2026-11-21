@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { ChannelOutboxMessage, ConnectorBinding, InboundContext, InboundEvent, OutboxStore, TriggerRun } from '@agent-hub/domain';
 import { createFeishuSource, FEISHU_MAX_TEXT, feishuExternalId, feishuTargetId, parseFeishuText } from './index.ts';
 import type { FeishuClient } from './client.ts';
-import { createFeishuSink, createFeishuTurnReplies } from './sink.ts';
+import { createFeishuSink, createFeishuTurnReplies, feishuReplyOutboxId } from './sink.ts';
 
 const binding = (id: string, chatId?: string, patch: Partial<ConnectorBinding> = {}): ConnectorBinding => ({
   id,
@@ -60,14 +60,23 @@ const fakeClient = (fail?: unknown) => {
 
 const memoryOutbox = () => {
   const saved: ChannelOutboxMessage[] = [];
+  const rows = new Map<string, ChannelOutboxMessage>();
   const outbox = {
     claim: async () => null,
     echoCandidates: async () => [],
     expiring: async () => [],
-    save: async (message: ChannelOutboxMessage) => { saved.push(message); },
+    insertIfAbsent: async (message: ChannelOutboxMessage) => {
+      const existing = rows.get(message.id);
+      if (existing) return { message: existing, inserted: false };
+      rows.set(message.id, message);
+      saved.push(message);
+      return { message, inserted: true };
+    },
+    save: async (message: ChannelOutboxMessage) => { rows.set(message.id, message); },
+    byId: async (id: string) => rows.get(id) ?? null,
     requeue: async () => {}
   } as unknown as OutboxStore;
-  return { outbox, saved };
+  return { outbox, saved, rows };
 };
 
 test('parseFeishuText 解析正文、坏 JSON、mention 占位符', () => {
@@ -191,27 +200,147 @@ test('sink：出站正文超过 8000 字先截断', async () => {
   assert.ok(calls[0]!.text.endsWith('…'));
 });
 
-test('turnReplies：飞书触发的会话把这一轮回复投进出站队列', async () => {
+test('sink：同一 outboxId 重放保留已 sent 行，不同 run 各自插入', async () => {
+  const { outbox, saved, rows } = memoryOutbox();
+  const sink = createFeishuSink({ outbox, client: fakeClient().client, now: () => 1 });
+  const first = await sink.enqueueReply({ chatId: 'oc_1', replyToExternalId: 'om_9', body: '第一版', outboxId: 'feishu-reply:run-1' });
+  assert.equal(first.id, 'feishu-reply:run-1');
+  assert.equal(first.state, 'queued');
+
+  await outbox.save({ ...first, state: 'sent', externalMessageId: 'om_sent', updatedAt: 2_000 });
+  const replay = await sink.enqueueReply({ chatId: 'oc_1', replyToExternalId: 'om_9', body: '重放正文', outboxId: 'feishu-reply:run-1' });
+  assert.equal(replay.id, 'feishu-reply:run-1');
+  assert.equal(replay.state, 'sent', '已发出的行不能被重放打回 queued');
+  assert.equal(replay.externalMessageId, 'om_sent');
+  assert.equal(rows.get('feishu-reply:run-1')!.body, '第一版');
+  assert.equal(saved.length, 1, '重放不再插入');
+
+  const nextRun = await sink.enqueueReply({ chatId: 'oc_1', replyToExternalId: 'om_9', body: '下一轮', outboxId: 'feishu-reply:run-2' });
+  assert.equal(nextRun.state, 'queued');
+  assert.equal(saved.length, 2, '新 run 插入新行');
+});
+
+test('turnReplies：直聊回复用 run.id 的确定性 outbox 身份', async () => {
   const runs = {
     deliveredRunFor: async (sessionId: string): Promise<TriggerRun | null> => (
-      sessionId === 's1' ? { bindingId: 'b1', externalId: 'oc_1:om_9' } as TriggerRun : null
+      sessionId === 's1' ? { id: 'run-1', bindingId: 'b1', externalId: 'oc_1:om_9' } as TriggerRun : null
     ),
     binding: async (id: string) => (id === 'b1' ? binding('b1', 'oc_1') : null)
   } as never;
-  const enqueued: Array<{ chatId: string; replyToExternalId?: string | null; body: string }> = [];
+  const enqueued: Array<{ chatId: string; replyToExternalId?: string | null; body: string; outboxId?: string | null }> = [];
+  const entries = [
+    { seq: 2, event: { kind: 'text', delta: '收到' } },
+    { seq: 3, event: { kind: 'ended', outcome: 'done', deliveryId: 'd1' } }
+  ];
   const replies = createFeishuTurnReplies({
     runs,
-    tail: async () => [
-      { event: { kind: 'prompt', delta: 'ignored' } },
-      { event: { kind: 'prompt', delta: '【飞书】帮我看看' } },
-      { event: { kind: 'text', delta: '我看了，' } },
-      { event: { kind: 'text', delta: '没问题。' } }
-    ] as never,
+    eventsAfter: async (_sessionId, afterSeq) => entries.filter((entry) => entry.seq > afterSeq) as never,
+    tail: async () => { throw new Error('keyed 回程不应该退回 tail'); },
+    inFlight: async (sessionId) => (sessionId === 's1' ? { id: 'd1', sessionId: 's1', seq: 1 } : null),
     enqueueReply: async (input) => { enqueued.push(input); return {} as never; }
   });
-  await replies.finish('s1');
-  await replies.finish('s2');
-  assert.deepEqual(enqueued, [{ chatId: 'oc_1', replyToExternalId: 'om_9', body: '我看了，没问题。', sessionId: 's1' }]);
+  assert.equal(await replies.finish('s1', { seq: 3, deliveryId: 'd1' }), '收到');
+  assert.equal(enqueued[0]!.outboxId, 'feishu-reply:run-1');
+  assert.equal(feishuReplyOutboxId('run-1'), 'feishu-reply:run-1');
+  assert.equal(feishuReplyOutboxId(undefined), null);
+});
+
+test('turnReplies：飞书触发的会话把这一轮回复投进出站队列', async () => {
+  const runs = {
+    deliveredRunFor: async (sessionId: string): Promise<TriggerRun | null> => (
+      sessionId === 's1' ? { id: 'run-1', bindingId: 'b1', externalId: 'oc_1:om_9' } as TriggerRun : null
+    ),
+    binding: async (id: string) => (id === 'b1' ? binding('b1', 'oc_1') : null)
+  } as never;
+  const enqueued: Array<{ chatId: string; replyToExternalId?: string | null; body: string; outboxId?: string | null }> = [];
+  // B 的 prompt 先落盘（seq 2），A 的文字/ended 随后插进来（3-5），最后才是 B 的回复（6）。
+  const entries = [
+    { seq: 3, event: { kind: 'text', delta: 'A 的尾巴' } },
+    { seq: 4, event: { kind: 'text', delta: '（A 还没结束）' } },
+    { seq: 5, event: { kind: 'ended', outcome: 'done', deliveryId: 'dA' } },
+    { seq: 6, event: { kind: 'text', delta: '我看了，' } },
+    { seq: 7, event: { kind: 'text', delta: '没问题。' } },
+    { seq: 8, event: { kind: 'ended', outcome: 'done', deliveryId: 'd1' } },
+    { seq: 9, event: { kind: 'text', delta: '结束后的迟到文字' } }
+  ];
+  const replies = createFeishuTurnReplies({
+    runs,
+    eventsAfter: async (_sessionId, afterSeq) => entries.filter((entry) => entry.seq > afterSeq) as never,
+    tail: async () => { throw new Error('keyed 回程不应该退回 tail'); },
+    inFlight: async (sessionId) => (sessionId === 's1' ? { id: 'd1', sessionId: 's1', seq: 2 } : null),
+    enqueueReply: async (input) => { enqueued.push(input); return {} as never; }
+  });
+  await replies.finish('s1', { seq: 8, deliveryId: 'd1' });
+  await replies.finish('s2', { seq: 8, deliveryId: 'd1' });
+  assert.equal(enqueued.length, 1);
+  assert.equal(enqueued[0]!.chatId, 'oc_1');
+  assert.equal(enqueued[0]!.replyToExternalId, 'om_9');
+  assert.equal(enqueued[0]!.body, '我看了，没问题。', 'B 的窗口要排除 A 的尾巴，也不能越过 B 的 ended');
+  assert.equal(enqueued[0]!.outboxId, 'feishu-reply:run-1');
+});
+
+test('turnReplies：keyed 窗口不截断在 tail 的 500 条长度上', async () => {
+  const runs = {
+    deliveredRunFor: async (sessionId: string): Promise<TriggerRun | null> => (
+      sessionId === 's1' ? { id: 'run-1', bindingId: 'b1', externalId: 'oc_1:om_9' } as TriggerRun : null
+    ),
+    binding: async (id: string) => (id === 'b1' ? binding('b1', 'oc_1') : null)
+  } as never;
+  const entries = Array.from({ length: 620 }, (_, index) => ({
+    seq: 10 + index,
+    event: { kind: 'text', delta: index === 0 ? '长窗口开头' : index === 619 ? '长窗口结尾' : '' }
+  }));
+  let askedAfter = -1;
+  const enqueued: Array<{ body: string }> = [];
+  const replies = createFeishuTurnReplies({
+    runs,
+    eventsAfter: async (_sessionId, afterSeq) => {
+      askedAfter = afterSeq;
+      return entries.filter((entry) => entry.seq > afterSeq) as never;
+    },
+    tail: async () => { throw new Error('keyed 回程不应该退回 tail'); },
+    inFlight: async (sessionId) => (sessionId === 's1' ? { id: 'd1', sessionId: 's1', seq: 5 } : null),
+    enqueueReply: async (input) => { enqueued.push(input); return {} as never; }
+  });
+  const body = await replies.finish('s1', { seq: 629, deliveryId: 'd1' });
+  assert.equal(askedAfter, 5, '锚点是投递的 prompt seq');
+  assert.equal(body, '长窗口开头长窗口结尾');
+  assert.equal(enqueued[0]!.body, '长窗口开头长窗口结尾');
+});
+
+test('turnReplies：在途投递不匹配（无 key / 错 key）时不得回程', async () => {
+  const runs = {
+    deliveredRunFor: async (): Promise<TriggerRun | null> => ({ id: 'run-1', bindingId: 'b1', externalId: 'oc_1:om_9' } as TriggerRun),
+    binding: async (id: string) => (id === 'b1' ? binding('b1', 'oc_1') : null)
+  } as never;
+  const enqueued: unknown[] = [];
+  const replies = createFeishuTurnReplies({
+    runs,
+    eventsAfter: async () => { throw new Error('身份不匹配时不应读 journal'); },
+    tail: async () => { throw new Error('身份不匹配时不应退回 tail'); },
+    inFlight: async (sessionId) => (sessionId === 's1' ? { id: 'd1', sessionId: 's1', seq: 2 } : null),
+    enqueueReply: async (input) => { enqueued.push(input); return {} as never; }
+  });
+  assert.equal(await replies.finish('s1', { seq: 9 }), null, '无 key ended 不能归因给当前在途投递');
+  assert.equal(await replies.finish('s1', { seq: 9, deliveryId: 'd2' }), null, '错 key ended 不能归因给当前在途投递');
+  assert.deepEqual(enqueued, []);
+});
+
+test('turnReplies：平台补写的无 key 失败 ended 不回程', async () => {
+  const runs = {
+    deliveredRunFor: async (): Promise<TriggerRun | null> => ({ id: 'run-1', bindingId: 'b1', externalId: 'oc_1:om_9' } as TriggerRun),
+    binding: async (id: string) => (id === 'b1' ? binding('b1', 'oc_1') : null)
+  } as never;
+  const enqueued: unknown[] = [];
+  const replies = createFeishuTurnReplies({
+    runs,
+    eventsAfter: async () => { throw new Error('合成 ended 不应读 journal'); },
+    tail: async () => { throw new Error('合成 ended 不应读 journal'); },
+    inFlight: async () => null,
+    enqueueReply: async (input) => { enqueued.push(input); return {} as never; }
+  });
+  assert.equal(await replies.finish('s1', { seq: 9, reason: '未送达：worker 掉线' }), null);
+  assert.deepEqual(enqueued, []);
 });
 
 test('turnReplies：群目标的回复由群帖镜像回写，这里不再补一份（#230 重复发送）', async () => {
@@ -224,9 +353,11 @@ test('turnReplies：群目标的回复由群帖镜像回写，这里不再补一
   const enqueued: unknown[] = [];
   const replies = createFeishuTurnReplies({
     runs,
-    tail: async () => [{ event: { kind: 'text', delta: '群里已经发过了' } }] as never,
+    eventsAfter: async () => { throw new Error('群目标不应读 journal'); },
+    tail: async () => [{ seq: 1, event: { kind: 'text', delta: '群里已经发过了' } }],
+    inFlight: async () => null,
     enqueueReply: async (input) => { enqueued.push(input); return {} as never; }
   });
-  assert.equal(await replies.finish('s1'), null);
+  assert.equal(await replies.finish('s1', { seq: 2, deliveryId: 'd1' }), null);
   assert.deepEqual(enqueued, []);
 });

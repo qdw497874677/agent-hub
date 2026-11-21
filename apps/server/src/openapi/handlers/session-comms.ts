@@ -14,7 +14,7 @@ import {
   authorizeProject,
   authorizeSession,
   authorizeWorker,
-  projectOfSession,
+  projectOfSessionOrigin,
   notFound
 } from '@agent-hub/domain';
 import {
@@ -35,7 +35,7 @@ export function installSessionComms(app: OpenAPIHono<Env>, rt: V1Runtime): void 
   /** 另一条会话也要能 session.prompt（路径上那条由 installAccess 查过）。 */
   const otherSession = async (actor: Principal, otherId: string, projectId: string): Promise<{ ok: true; id: string } | { ok: false; error: import('@agent-hub/domain').DomainError }> => {
     const other = await rt.deps.sessions.byId(asSessionId(otherId));
-    const project = other ? await projectOfSession(rt.deps, other) : null;
+    const project = other ? await projectOfSessionOrigin(rt.deps, other) : null;
     if (!other || !project || project.id !== projectId) return { ok: false, error: notFound('两条会话不在同一个项目里') };
     if (rt.deps.access) {
       const allowed = await authorizeSession(rt.deps.access, actor, project, other, 'session.prompt');
@@ -45,7 +45,7 @@ export function installSessionComms(app: OpenAPIHono<Env>, rt: V1Runtime): void 
   };
   const pathSession = async (c: Context) => {
     const session = await rt.deps.sessions.byId(asSessionId(c.req.param('sessionId') ?? ''));
-    const project = session ? await projectOfSession(rt.deps, session) : null;
+    const project = session ? await projectOfSessionOrigin(rt.deps, session) : null;
     return session && project ? { session, project } : null;
   };
   on(routes.linkSession, async (c) => {
@@ -73,8 +73,8 @@ export function installSessionComms(app: OpenAPIHono<Env>, rt: V1Runtime): void 
     const actor = rt.principal(c);
     const target = await rt.deps.sessions.byId(asSessionId(c.req.param('sessionId') ?? ''));
     if (!target) return fail(c, notFound('会话不存在'));
-    // #243：容器会话按归属反推项目，再过 project.read（installAccess 对无任务会话放行）。
-    const project = await projectOfSession(rt.deps, target);
+    // #243：容器会话按不可变来源项目判；installAccess 已对无来源的旧会话失败关闭。
+    const project = await projectOfSessionOrigin(rt.deps, target);
     const allowed = await authorizeProject(rt.deps.access, actor, project, 'session.read');
     if (!allowed.ok) return fail(c, allowed.error);
     const peers = await rt.messaging.bus.peers(target.id);
@@ -85,8 +85,8 @@ export function installSessionComms(app: OpenAPIHono<Env>, rt: V1Runtime): void 
     const actor = rt.principal(c);
     const target = await rt.deps.sessions.byId(asSessionId(c.req.param('sessionId') ?? ''));
     if (!target) return fail(c, notFound('会话不存在'));
-    // #243：容器会话没有任务，installAccess 会放行；先按归属反推项目、按 session.prompt 判（和普通会话一致），再查机器。
-    const project = await projectOfSession(rt.deps, target);
+    // #243：容器会话没有任务，按不可变来源项目判 session.prompt（和普通会话一致），再查机器。
+    const project = await projectOfSessionOrigin(rt.deps, target);
     const allowed = await authorizeSession(rt.deps.access, actor, project, target, 'session.prompt');
     if (!allowed.ok) return fail(c, allowed.error);
     // 消息会让目标会话开新一轮：和 session_reply 一样，所在机器要过 authorizeWorker（本机 Worker 永远不对令牌开放）。

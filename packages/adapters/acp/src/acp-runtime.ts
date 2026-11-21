@@ -80,6 +80,11 @@ class AcpSession implements RuntimeSession {
   private current: readonly RuntimeOption[] = [];
   /** 这一轮 agent 有没有吐出过正文 / 思考 / 工具调用；一点没有就当失败报出来。 */
   private produced = false;
+  /**
+   * 正在飞的这一轮 session/prompt（没有就是 null）。ACP 一条会话同时只允许一轮；
+   * 也用它把 ended 精确挂到这一条的 deliveryId 上，不按到达顺序猜。
+   */
+  private turn: { readonly deliveryId: string | null } | null = null;
   private readonly stderr = new StderrTail();
   /** 这一轮最后一条 assistant 消息的 id（ADR 0028）；一轮结束、推 ended 之前报给 hub。 */
   private lastMessageId: string | null = null;
@@ -133,18 +138,28 @@ class AcpSession implements RuntimeSession {
         Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>
       )
     );
+    // 只有子进程真的退出才是会话终态。connection.closed 也会在 stdout 关掉而进程还活着时触发，
+    // 单凭事件流断掉推 ended 等于替 agent 编造一个它没给的终态（更不能挂 deliveryId）。
     child.once('exit', () => this.finish());
     void this.connection.closed.catch((error: unknown) => {
       this.queue.push({ kind: 'diagnostic', level: 'error', text: `ACP 事件流中断：${(error as Error).message}` });
-    }).finally(() => this.finish());
+    });
   }
 
   private finish(): void {
     this.finishCodec(this.disposed ? 'cancelled' : 'failed');
+    // 进程退出只有「这一轮真的在飞」时才算这一轮的终态；空闲退出 / 主动 dispose 是生命周期，不挂 deliveryId。
+    const turn = this.disposed ? null : this.turn;
+    this.turn = null;
     if (this.disposed) this.queue.push({ kind: 'ended', outcome: 'stopped' });
     else {
       const tail = this.stderr.tail();
-      this.queue.push({ kind: 'ended', outcome: 'failed', reason: `${this.config.label} 进程意外退出${tail.length > 0 ? `\n最近的 agent 日志：\n${tail.join('\n')}` : ''}` });
+      this.queue.push({
+        kind: 'ended',
+        outcome: 'failed',
+        reason: `${this.config.label} 进程意外退出${tail.length > 0 ? `\n最近的 agent 日志：\n${tail.join('\n')}` : ''}`,
+        ...(turn?.deliveryId ? { deliveryId: turn.deliveryId } : {})
+      });
     }
     this.queue.close();
   }
@@ -565,6 +580,10 @@ class AcpSession implements RuntimeSession {
   async prompt(input: PromptInput): Promise<Result<void, DomainError>> {
     const blocks = toAcpPrompt(input, this.promptCaps, this.config.label);
     if (!blocks.ok) return blocks;
+    // 一条 ACP 会话同时只允许一轮 session/prompt：并发会把两轮的 update 混在一起，
+    // 也会让「这条 ended 属于谁」重新变成按顺序猜。
+    if (this.turn !== null) return { ok: false, error: unavailable(`${this.config.label} 上一轮还没结束，不能并发发送`) };
+    this.turn = { deliveryId: input.deliveryId && input.deliveryId.length > 0 ? input.deliveryId : null };
     this.produced = false;
     this.lastMessageId = null;
     try {
@@ -572,6 +591,9 @@ class AcpSession implements RuntimeSession {
         sessionId: this.agentSessionId,
         prompt: blocks.value
       });
+      // 拿到这一条 session/prompt 的应答 = 这一轮的确切终态：现在才清 turn，并把它的 deliveryId 带下去。
+      const turn = this.turn;
+      this.turn = null;
       // 空回合时 agent 往往刚在 stderr 上写了原因：等一小会儿让管道里的那几行到齐
       if (!this.produced) await new Promise((resolve) => setTimeout(resolve, 200));
       if (this.lastMessageId) this.onTurnRef?.(this.lastMessageId);
@@ -579,12 +601,19 @@ class AcpSession implements RuntimeSession {
       // 让它们的 end 由真实信号（child_update 终态 / 父工具终态内容）决定。
       if (!this.keepAlive) this.finishCodec('completed');
       // ended 是**回合**事件：提示这一轮完了，不是进程完了。
-      this.queue.push(endedFromStopReason(result['stopReason'], { produced: this.produced, stderrTail: this.produced ? [] : this.stderr.tail() }));
+      this.queue.push(
+        endedFromStopReason(result['stopReason'], {
+          produced: this.produced,
+          stderrTail: this.produced ? [] : this.stderr.tail(),
+          ...(turn?.deliveryId ? { deliveryId: turn.deliveryId } : {})
+        })
+      );
       // 保活（默认）：队列不关，后续 session/update（比如后台子代理的进展）继续产出事件。
       // dispose() 仍是唯一真正关闭的路径；要回到「一轮一个进程」的老行为才传 keepAlive: false。
       if (!this.keepAlive) this.queue.close();
       return { ok: true, value: undefined };
     } catch (error) {
+      this.turn = null;
       return { ok: false, error: unavailable((error as Error).message) };
     }
   }

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Hono } from 'hono';
 import {
+  appendServiceLog,
   asProjectId,
   asTaskId,
   type ProcessInfo,
@@ -72,12 +73,21 @@ function repo(): SessionServiceRepository & { readonly rows: Map<ServiceId, Sess
     async updateState(service) {
       const current = rows.get(service.id);
       if (!current || current.updatedAt > service.updatedAt) return false;
-      rows.set(service.id, service);
+      // 和 SQLite 一样只写状态列，旧快照不能覆盖日志 / env。
+      rows.set(service.id, {
+        ...current,
+        state: service.state,
+        pid: service.pid,
+        detail: service.detail,
+        port: service.port,
+        startedAt: service.startedAt,
+        updatedAt: service.updatedAt,
+      });
       return true;
     },
-    async appendLogTail(id, logTail, updatedAt) {
+    async appendLogTail(id, chunk, updatedAt) {
       const current = rows.get(id);
-      if (current) rows.set(id, { ...current, logTail, updatedAt });
+      if (current) rows.set(id, { ...current, logTail: appendServiceLog(current.logTail, chunk), updatedAt });
     },
     async remove(id) {
       rows.delete(id);
@@ -147,8 +157,8 @@ test('建服务 201，列表能看到；body 按 serviceSchema 出，命令进�
   assert.equal(serviceSchema.parse(list.services?.[0]).id, service.id);
 });
 
-test('env 只回键名：创建 / 列表 / env-keys 都不含值', async () => {
-  const { app, sessionServices } = appWith();
+test('env 只回键名：创建 / 列表 / env-keys 都不含值，值只进 Worker 启动载荷', async () => {
+  const { app, sessionServices, starts } = appWith();
   const created = await app.request('/api/tasks/t-1/services', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -168,7 +178,13 @@ test('env 只回键名：创建 / 列表 / env-keys 都不含值', async () => {
   const keys = await app.request(`/api/services/${service.id}/env-keys`);
   assert.equal(keys.status, 200);
   assert.deepEqual((await keys.json()) as { keys?: string[] }, { keys: ['API_BASE', 'NODE_ENV'] });
-  assert.equal(sessionServices.rows.get(service.id as ServiceId)?.env.NODE_ENV, 'development');
+
+  // 值只出现在交给 Worker 的 start 载荷里；持久化形状只有键名。
+  const start = starts[0] as { env?: Record<string, string> };
+  assert.deepEqual(start.env, { NODE_ENV: 'development', API_BASE: 'https://example.test' });
+  const stored = sessionServices.rows.get(service.id as ServiceId);
+  assert.deepEqual(stored?.envKeys, ['API_BASE', 'NODE_ENV']);
+  assert.equal(stored !== undefined && 'env' in stored, false);
 });
 
 test('进程清单：按 worker 返回全部，按会话只留 workspace 根之下的，root 前缀相同但不在其内的排除', async () => {

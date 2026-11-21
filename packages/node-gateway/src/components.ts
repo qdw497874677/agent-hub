@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { BUILTIN_CHROMIUM, type AcquisitionResolution, type ComponentJobResult, type ComponentJobSpec } from '@agent-hub/domain';
+import { BUILTIN_CHROMIUM, trustedAcquisitionStrategies, type AcquisitionResolution, type ComponentJobResult, type ComponentJobSpec } from '@agent-hub/domain';
 import { acquisitionJobResult, runAcquisitionStrategies, type AcquireHooks } from './acquire.ts';
 
 /**
@@ -106,6 +106,14 @@ async function stageComponent(options: ComponentInstallOptions, spec: ComponentJ
   const previous = currentVersionDir(options.root, spec.runtime, spec.componentId);
   const refuse = (message: string): StageResult => ({ ok: false, outcome: { ok: false, refused: true, message, result: { durationMs: elapsed() } } });
   if (current !== spec.expectedCurrent) return refuse(`${spec.componentId}：机器上的版本（${current ?? '没装'}）和 hub 以为的（${spec.expectedCurrent ?? '没装'}）不一致，先刷新再试`);
+  // 执行策略只认内置清单：wire / 旧任务里带来的自定义步骤一律拒绝，绝不执行。
+  const trusted = trustedAcquisitionStrategies(spec.componentId, spec.version, spec.strategies, {
+    packageName: spec.packageName,
+    integrity: spec.integrity,
+    source: spec.git ? 'git' : 'npm'
+  });
+  if (!trusted.ok) return refuse(trusted.error.message);
+  const strategies = trusted.value;
   if (!options.npm) return refuse('这台机器的 Node 旁边没有 npm，没法装组件');
   if (spec.git && spec.integrity !== `git:${spec.git.commit}`) return refuse('git 来源的完整性标识不对');
 
@@ -148,13 +156,14 @@ async function stageComponent(options: ComponentInstallOptions, spec: ComponentJ
     const pkgDir = join(staging, 'node_modules', spec.packageName);
     const pkg = readJson(join(pkgDir, 'package.json'));
     if (pkg?.['name'] !== spec.packageName || pkg?.['version'] !== spec.version) throw new Error('装出来的 package.json 对不上');
-    if (!inside(staging, realpathSync(pkgDir))) throw new Error('包目录越出了暂存目录');
+    const pkgReal = realpathSync(pkgDir);
+    if (!inside(staging, pkgReal)) throw new Error('包目录越出了暂存目录');
     // 没执行的安装脚本：只是列出来（hub 记审计、提示可能用不了）
     scripts = scriptsInTree(staging, lock);
     if (scripts.length) options.log(`提示：${scripts.map((s) => `${s.package} ${s.script}`).join('、')} 声明了安装脚本，没有执行；依赖它的组件可能用不了`);
     // 目录项如果声明了获取策略：在已核对的包上按顺序执行（系统二进制 / 用户空间安装 / 轻量退路 / 要 root）。
     let acquisition: AcquisitionResolution | undefined;
-    if (spec.strategies?.length) {
+    if (strategies?.length) {
       const hooks: AcquireHooks = {
         env: { ...options.env },
         run: options.run,
@@ -164,12 +173,21 @@ async function stageComponent(options: ComponentInstallOptions, spec: ComponentJ
       const capability = spec.provides[0]?.capability;
       const resolved = await runAcquisitionStrategies({
         hooks,
-        strategies: spec.strategies,
+        strategies: strategies ?? [],
         componentId: spec.componentId,
         capability,
         cwd: staging,
         install: async (args) => {
-          await options.run(options.node, [join(pkgDir, 'cli.js'), ...args], { cwd: staging, env: { ...options.env } });
+          const cli = join(pkgDir, 'cli.js');
+          let cliReal: string;
+          try {
+            cliReal = realpathSync(cli);
+          } catch {
+            throw new Error('组件包里没有可用的 cli.js');
+          }
+          if (!statSync(cliReal).isFile()) throw new Error('cli.js 不是常规文件');
+          if (!inside(pkgReal, cliReal) && cliReal !== pkgReal) throw new Error('cli.js 越出了组件包目录');
+          await options.run(options.node, [cliReal, ...args], { cwd: staging, env: { ...options.env } });
         }
       });
       if (!resolved.ok) {

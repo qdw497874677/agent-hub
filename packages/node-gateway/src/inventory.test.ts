@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ComponentPin, RuntimeProvision } from '@agent-hub/domain';
+import { BUILTIN_CHROMIUM, type ComponentPin, type RuntimeProvision } from '@agent-hub/domain';
 import { collectInventory, parsePiPackage } from './inventory.ts';
 import { createServerGateway } from './server-gateway.ts';
 import { connectWorkerLink } from './worker-link.ts';
@@ -60,6 +60,47 @@ async function until(predicate: () => boolean): Promise<void> {
   }
 }
 
+test('获取策略绑定内置包名和钉住哈希：旧元数据换包 / 换哈希 / 走 git 都不算获取结果', () => {
+  const f = fixture();
+  try {
+    const browsers = join(f.dir, 'browsers');
+    const chrome = join(browsers, 'chromium-1234', 'chrome-linux', 'chrome');
+    mkdirSync(join(browsers, 'chromium-1234', 'chrome-linux'), { recursive: true });
+    writeFileSync(chrome, '#!/bin/sh\n', { mode: 0o755 });
+    const versionDir = 'v-00000000-0000-4000-8000-000000000003';
+    const dir = join(f.root, 'pi', 'chromium', versionDir);
+    mkdirSync(dir, { recursive: true });
+    symlinkSync(versionDir, join(f.root, 'pi', 'chromium', 'current'));
+    const base = {
+      version: BUILTIN_CHROMIUM.version,
+      packageName: BUILTIN_CHROMIUM.packageName,
+      integrity: BUILTIN_CHROMIUM.integrity,
+      enabled: true,
+      provides: [{ capability: 'browser:chromium', mode: 'machine-tool' }],
+      acquisition: { strategy: 'playwright', type: 'user-space-install', path: chrome, capability: 'browser:chromium', componentId: 'chromium' }
+    };
+    const read = () =>
+      collectInventory({
+        provisions: f.provisions,
+        componentsRoot: f.root,
+        piAgentDir: f.pi,
+        now: () => 5,
+        env: { HOME: join(f.dir, 'home'), PLAYWRIGHT_BROWSERS_PATH: browsers }
+      }).acquisitions;
+    writeFileSync(join(dir, '.component.json'), JSON.stringify(base));
+    assert.equal(read()?.length, 1, '同包名、同哈希的内置制品照常保留');
+
+    writeFileSync(join(dir, '.component.json'), JSON.stringify({ ...base, integrity: `sha512-${'C'.repeat(86)}==` }));
+    assert.equal(read(), undefined, '换哈希不能套内置 recipe');
+    writeFileSync(join(dir, '.component.json'), JSON.stringify({ ...base, packageName: 'evil-playwright-core' }));
+    assert.equal(read(), undefined, '换包名不能套内置 recipe');
+    writeFileSync(join(dir, '.component.json'), JSON.stringify({ ...base, source: 'git:https://example.com/x.git' }));
+    assert.equal(read(), undefined, 'git 来源不能套内置 recipe');
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
 test('清单经长连接上报，hub 算漂移：版本不一致的能力不可信，外部组件不算能力', async () => {
   const f = fixture();
   let pins: ComponentPin[] = [];
@@ -112,22 +153,64 @@ test('清单经长连接上报，hub 算漂移：版本不一致的能力不可�
   }
 });
 
-test('组件获取结果出现在清单 acquisitions 字段（只读 .component.json，不跑命令）', () => {
+test('组件获取结果出现在清单 acquisitions 字段（只读 .component.json，不跑命令；路径按内置 locate 复核）', () => {
   const f = fixture();
   try {
+    const browsers = join(f.dir, 'browsers');
+    const chrome = join(browsers, 'chromium-1234', 'chrome-linux', 'chrome');
+    mkdirSync(join(browsers, 'chromium-1234', 'chrome-linux'), { recursive: true });
+    writeFileSync(chrome, '#!/bin/sh\n', { mode: 0o755 });
     const dir = join(f.root, 'pi', 'chromium', 'v-00000000-0000-4000-8000-000000000001');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, '.component.json'), JSON.stringify({
-      version: '1.66.0-alpha-2026-11-09',
-      integrity: SHA,
+      version: BUILTIN_CHROMIUM.version,
+      packageName: BUILTIN_CHROMIUM.packageName,
+      integrity: BUILTIN_CHROMIUM.integrity,
       enabled: true,
       provides: [{ capability: 'browser:chromium', mode: 'machine-tool', mcp: { name: 'playwright', executableArg: '--executable-path' } }],
-      acquisition: { strategy: 'system', type: 'detect-system-binary', path: '/usr/bin/chromium', capability: 'browser:chromium', componentId: 'chromium' }
+      acquisition: { strategy: 'playwright', type: 'user-space-install', path: chrome, capability: 'browser:chromium', componentId: 'evil' }
     }));
     symlinkSync('v-00000000-0000-4000-8000-000000000001', join(f.root, 'pi', 'chromium', 'current'));
-    const inv = collectInventory({ provisions: f.provisions, componentsRoot: f.root, piAgentDir: f.pi, now: () => 5 });
-    assert.deepEqual(inv.acquisitions, [{ strategy: 'system', type: 'detect-system-binary', path: '/usr/bin/chromium', capability: 'browser:chromium', componentId: 'chromium' }]);
+    const inv = collectInventory({
+      provisions: f.provisions,
+      componentsRoot: f.root,
+      piAgentDir: f.pi,
+      now: () => 5,
+      env: { HOME: join(f.dir, 'home'), PLAYWRIGHT_BROWSERS_PATH: browsers }
+    });
+    assert.deepEqual(inv.acquisitions, [{ strategy: 'playwright', type: 'user-space-install', path: chrome, capability: 'browser:chromium', componentId: 'chromium' }]);
     assert.ok(inv.capabilities.some((c) => c.capability === 'browser:chromium' && c.via === 'chromium' && c.mcp?.name === 'playwright'));
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test('旧元数据里的任意可执行路径不会被当获取结果（不在内置 locate 布局就丢弃）', () => {
+  const f = fixture();
+  try {
+    const dir = join(f.root, 'pi', 'chromium', 'v-00000000-0000-4000-8000-000000000002');
+    mkdirSync(dir, { recursive: true });
+    const evil = join(f.dir, 'evil');
+    writeFileSync(evil, '#!/bin/sh\n', { mode: 0o755 });
+    writeFileSync(join(dir, '.component.json'), JSON.stringify({
+      version: BUILTIN_CHROMIUM.version,
+      packageName: BUILTIN_CHROMIUM.packageName,
+      integrity: BUILTIN_CHROMIUM.integrity,
+      enabled: true,
+      provides: [{ capability: 'browser:chromium', mode: 'machine-tool' }],
+      acquisition: { strategy: 'playwright', type: 'user-space-install', path: evil, capability: 'browser:chromium', componentId: 'chromium' }
+    }));
+    symlinkSync('v-00000000-0000-4000-8000-000000000002', join(f.root, 'pi', 'chromium', 'current'));
+    const browsers = join(f.dir, 'browsers');
+    mkdirSync(browsers);
+    const inv = collectInventory({
+      provisions: f.provisions,
+      componentsRoot: f.root,
+      piAgentDir: f.pi,
+      now: () => 5,
+      env: { HOME: join(f.dir, 'home'), PLAYWRIGHT_BROWSERS_PATH: browsers }
+    });
+    assert.equal(inv.acquisitions, undefined);
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }

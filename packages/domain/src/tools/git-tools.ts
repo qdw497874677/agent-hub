@@ -11,9 +11,12 @@ import type { GitAction, GitRunInput, GitWorkflowService } from '../use-cases/gi
  * 为什么不让 agent shell 出去跑 git/gh：那样会绕开 `git.push` 权限（access.ts）、
  * `git.commit` / `git.push` / `git.pr` 审计，以及 PR 落库后的 `task_pull_requests` 回填。
  *
- * 工具只有 ToolGrant，没有 principal；权限主体由装配层注入 `subjectOf`（会话 owner /
- * bot 背后的账号）。scope='git' 只决定「这条会话能不能看到这些工具」，
- * 真正的写入权限仍由工作流里的 `git.push` 与项目 / 工作流判定。
+ * 工具只有 ToolGrant，没有 principal；读工具的主体由装配层注入 `subjectOf`（会话 owner /
+ * bot 背后的账号）。scope='git' 只决定「这条会话能不能看到这些工具」。
+ *
+ * #217：commit / push / PR 是写操作，不能靠 `subjectOf` 回落到冻结的 createdBy / 任务 owner。
+ * 装配层必须再注入 `writeSubjectOf`，由它证明这条会话有可验证的人类身份；没有装配或判定失败
+ * 一律拒绝写入（fail closed）。读工具（state / pull_requests）继续走 `subjectOf`。
  */
 export const GIT_MESSAGE_MAX = 2_000;
 export const GIT_PR_TITLE_MAX = 200;
@@ -24,8 +27,13 @@ export type GitWorkflow = Pick<GitWorkflowService, 'state' | 'run' | 'listForTas
 
 export interface GitToolDeps {
   readonly workflow: GitWorkflow;
-  /** 会话的权限主体；null = 找不到人（工作流按匿名拒绝，不在这里崩）。 */
+  /** 读工具的权限主体；null = 找不到人（工作流按匿名拒绝，不在这里崩）。 */
   readonly subjectOf: (sessionId: SessionId) => Promise<Subject | null>;
+  /**
+   * 写工具的权限身份（#217 fail closed）：由装配层确认这条会话有可验证的人类身份。
+   * 不装配 = 写入一律拒绝；返回 err = 拒绝。绝不回落到 `subjectOf`。
+   */
+  readonly writeSubjectOf?: (sessionId: SessionId, ctx: ToolContext) => Promise<Result<Subject, DomainError>>;
   /** 会话通信 P1c：git.state 的 session 参数（看已连线同伴的 git 状态，只读）。 */
   readonly resolvePeer?: (fromSessionId: SessionId, address: string) => Promise<Result<SessionId, DomainError>>;
 }
@@ -145,16 +153,18 @@ export function createGitToolProvider(deps: GitToolDeps): ToolProvider {
       const unknown = Object.keys(args).filter((key) => !allowed.includes(key));
       if (unknown.length > 0) return err(invalid(`不认识的参数：${unknown.join(', ')}`));
 
-      const subject = await deps.subjectOf(ctx.grant.sessionId);
+      // 读工具照旧：主体可以回落到 bot 背后的账号，只读不涉及写审计。
       if (name === 'git.pull_requests') {
         // grant 不是 Session，保留 null 判据。
         if (ctx.grant.taskId === null) return err(forbidden('这条会话不属于任何任务，没有任务级的 PR 清单'));
+        const subject = await deps.subjectOf(ctx.grant.sessionId);
         return deps.workflow.listForTask(subject, ctx.grant.taskId);
       }
 
       const workspace = optionalWorkspace(args);
       if (!workspace.ok) return workspace;
       if (name === 'git.state') {
+        const subject = await deps.subjectOf(ctx.grant.sessionId);
         if (args['session'] === undefined) return deps.workflow.state(subject, ctx.grant.sessionId, workspace.value);
         const address = str(args['session']);
         if (!address || !deps.resolvePeer) return err(invalid('session 要写成 peer:<短名> 或 session:<id>'));
@@ -179,7 +189,12 @@ export function createGitToolProvider(deps: GitToolDeps): ToolProvider {
         if (args['body'].length > GIT_PR_BODY_MAX) return err(invalid(`body 最多 ${GIT_PR_BODY_MAX} 字`));
         run.body = args['body'];
       }
-      return deps.workflow.run(subject, ctx.grant.sessionId, run, workspace.value);
+
+      // #217：写操作只认装配层给出的可验证身份；不回落 subjectOf。
+      if (!deps.writeSubjectOf) return err(forbidden('这条会话没有可验证的人类身份，git commit/push/PR 已关闭'));
+      const writeSubject = await deps.writeSubjectOf(ctx.grant.sessionId, ctx);
+      if (!writeSubject.ok) return writeSubject;
+      return deps.workflow.run(writeSubject.value, ctx.grant.sessionId, run, workspace.value);
     }
   };
 }

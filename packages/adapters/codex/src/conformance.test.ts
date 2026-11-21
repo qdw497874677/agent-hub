@@ -190,3 +190,56 @@ test('conformance：下一轮重新开始，不沿用上一轮的 ended 状态',
 
   assert.equal(events.filter((event) => event.kind === 'ended').length, 2);
 });
+
+test('conformance：旧轮迟到的 completed 不会顶掉新一轮的 ended', () => {
+  const events = replay([
+    notification('turn/started', {
+      threadId: 'th_1',
+      turn: { id: 'turn_1', items: [], status: 'inProgress' }
+    }),
+    notification('turn/completed', {
+      threadId: 'th_1',
+      turn: { id: 'turn_1', items: [], status: 'completed' }
+    }),
+    notification('turn/started', {
+      threadId: 'th_1',
+      turn: { id: 'turn_2', items: [], status: 'inProgress' }
+    }),
+    // turn_1 的重复/迟到通知：这一轮已经结束过，不能再吃 turn_2 的结束状态。
+    notification('turn/completed', {
+      threadId: 'th_1',
+      turn: { id: 'turn_1', items: [], status: 'completed' }
+    }),
+    notification('turn/completed', {
+      threadId: 'th_1',
+      turn: { id: 'turn_2', items: [], status: 'completed' }
+    })
+  ]);
+
+  const ended = events.filter((event) => event.kind === 'ended');
+  assert.equal(ended.length, 2);
+});
+
+test('conformance：error 的 turn id 对不上当前轮 → 只诊断，不提前收尾', () => {
+  const events = replay([
+    notification('turn/started', {
+      threadId: 'th_1',
+      turn: { id: 'turn_2', items: [], status: 'inProgress' }
+    }),
+    notification('error', {
+      threadId: 'th_1',
+      turnId: 'turn_1',
+      error: { message: '旧轮的错误' },
+      willRetry: false
+    }),
+    notification('turn/completed', {
+      threadId: 'th_1',
+      turn: { id: 'turn_2', items: [], status: 'completed' }
+    })
+  ]);
+
+  assert.deepEqual(events.map((event) => event.kind), ['diagnostic', 'ended']);
+  const ended = events[1];
+  assert.ok(ended !== undefined && ended.kind === 'ended');
+  assert.equal(ended.outcome, 'done');
+});

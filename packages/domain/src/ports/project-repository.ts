@@ -1,8 +1,20 @@
 import type { ProjectId } from '../ids.ts';
 import type { Project } from '../project.ts';
+import type { ProjectWorkspaceLink, Workspace } from '../workspace.ts';
+import type { WorkspaceClaim } from './workspace-repository.ts';
+
+export type ProjectWorkspaceClaimOutcome =
+  | { status: 'saved'; link: ProjectWorkspaceLink }
+  | { status: 'conflict'; owner: ProjectWorkspaceLink }
+  | { status: 'ambiguous'; candidates: readonly Workspace[] };
 
 export interface ProjectRepository {
   save(project: Project): Promise<void>;
+  /**
+   * #233：建项目和认领已有工作空间在同一个 BEGIN IMMEDIATE 里。
+   * 冲突 / 历史重复时不写项目，任一步失败都整体回滚（工作空间本身可以保持未认领）。
+   */
+  saveWithWorkspaceClaim(project: Project, claim: WorkspaceClaim): Promise<ProjectWorkspaceClaimOutcome>;
   byId(id: ProjectId): Promise<Project | null>;
   /** 不含回收站里的。 */
   list(): Promise<Project[]>;

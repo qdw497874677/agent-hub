@@ -246,6 +246,7 @@ export function toSession(row: Row): Session {
   const originSession = nullableStr(row, 'origin_session');
   // #221 步骤 7：容器会话没有任务。空串是当年某些写入路径的哨兵，一起读成 null。
   const rawTaskId = nullableStr(row, 'task_id');
+  const originProjectId = nullableStr(row, 'origin_project_id');
   const originSeq = nullableNum(row, 'origin_seq');
   return {
     id: asSessionId(str(row, 'id')),
@@ -265,6 +266,8 @@ export function toSession(row: Row): Session {
     optionSpec: parseOptionSpec(nullableStr(row, 'option_spec')),
     workerId: nullableStr(row, 'worker_id'),
     workspaceId: nullableStr(row, 'workspace_id') as Session['workspaceId'],
+    // #243：只在有值时输出，任务会话 / 老容器会话保持和派生对象一样没有这个字段。
+    ...(originProjectId === null ? {} : { originProjectId: asProjectId(originProjectId) }),
     ...(nullableStr(row, 'environment_revision') !== null
       ? { environmentRevision: nullableStr(row, 'environment_revision') }
       : {}),

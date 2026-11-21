@@ -7,7 +7,7 @@ import { capabilityMatrix, available } from '../capability.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
 import { ok } from '../result.ts';
 import { isCheckpointPrefix, isCheckpointRef, type CheckpointStore, type TurnCheckpoint, type WorkspaceBrowser } from '../ports/workspace-browser.ts';
-import { isBrowsablePath, isSensitivePath, looksBinary, isCommitId } from '../workspace-files.ts';
+import { isBrowsablePath, isSensitivePath, looksBinary, isCommitId, withoutSensitiveDiff } from '../workspace-files.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
@@ -85,6 +85,100 @@ test('路径 / 敏感 / 二进制 / 提交号规则', () => {
   assert.ok(looksBinary(new Uint8Array([1, 0])));
   assert.ok(!looksBinary(new TextEncoder().encode('hi')));
   assert.ok(isCommitId('abc1234') && !isCommitId('HEAD') && !isCommitId('--output=x'));
+});
+
+test('withoutSensitiveDiff：整段剔除敏感文件与改名/复制源，正常改动保留（#269）', () => {
+  const allowed = [
+    'diff --git a/src/a.ts b/src/a.ts',
+    '--- a/src/a.ts',
+    '+++ b/src/a.ts',
+    '@@ -1 +1 @@',
+    '-old',
+    '+new'
+  ].join('\n');
+  assert.equal(withoutSensitiveDiff(''), '');
+  assert.equal(withoutSensitiveDiff(allowed), allowed);
+  assert.equal(withoutSensitiveDiff(`${allowed}\n`), `${allowed}\n`);
+
+  const secret = [
+    'diff --git a/.env b/.env',
+    '--- a/.env',
+    '+++ b/.env',
+    '@@ -1 +1 @@',
+    '-SECRET=old-not-real',
+    '+SECRET=new-not-real'
+  ].join('\n');
+  assert.equal(withoutSensitiveDiff(`${secret}\n${allowed}`), allowed);
+  assert.equal(withoutSensitiveDiff(`${allowed}\n${secret}`), allowed);
+  assert.equal(withoutSensitiveDiff(`${secret}\n${allowed}\n${secret}`), allowed);
+  // 旧 Worker 的未跟踪名单：敏感名字去掉，正常名字保留
+  assert.equal(withoutSensitiveDiff('新文件：.env'), '');
+  assert.equal(withoutSensitiveDiff(`${allowed}\n新文件：keys/id_rsa`), allowed);
+  assert.equal(withoutSensitiveDiff(`${allowed}\n新文件：notes.txt`), `${allowed}\n新文件：notes.txt`);
+
+  // 改名/复制：源或目标命中就丢整节（旧名可能在另一段）
+  const renameAway = [
+    'diff --git a/.env b/config.txt',
+    'similarity index 100%',
+    'rename from .env',
+    'rename to config.txt'
+  ].join('\n');
+  assert.equal(withoutSensitiveDiff(renameAway), '');
+  const renameInto = [
+    'diff --git a/config.txt b/keys/id_rsa',
+    'similarity index 80%',
+    'rename from config.txt',
+    'rename to keys/id_rsa'
+  ].join('\n');
+  assert.equal(withoutSensitiveDiff(renameInto), '');
+  const copyFrom = [
+    'diff --git a/.env b/notes.txt',
+    'similarity index 100%',
+    'copy from .env',
+    'copy to notes.txt'
+  ].join('\n');
+  assert.equal(withoutSensitiveDiff(copyFrom), '');
+
+  // 引号路径 / 空格 / 非 ASCII：解码后再按文件名判断；正常文件原样保留
+  const quoted = [
+    'diff --git "a/keys/server.pem" "b/keys/server.pem"',
+    '--- "a/keys/server.pem"',
+    '+++ "b/keys/server.pem"',
+    '@@ -1 +1 @@',
+    '-x',
+    '+y'
+  ].join('\n');
+  assert.equal(withoutSensitiveDiff(quoted), '');
+  const spaced = [
+    'diff --git a/has space.txt b/has space.txt',
+    '--- a/has space.txt\t',
+    '+++ b/has space.txt\t',
+    '@@ -1 +1 @@',
+    '-x',
+    '+y'
+  ].join('\n');
+  assert.equal(withoutSensitiveDiff(spaced), spaced);
+  const unicode = [
+    'diff --git "a/docs/\\303\\274ber.txt" "b/docs/\\303\\274ber.txt"',
+    '--- "a/docs/\\303\\274ber.txt"',
+    '+++ "b/docs/\\303\\274ber.txt"',
+    '@@ -1 +1 @@',
+    '-x',
+    '+y'
+  ].join('\n');
+  assert.equal(withoutSensitiveDiff(unicode), unicode);
+
+  // 非敏感近似名不误伤
+  const nearMiss = 'diff --git a/env.ts b/env.ts\n--- a/env.ts\n+++ b/env.ts\n@@ -1 +1 @@\n-x\n+y';
+  assert.equal(withoutSensitiveDiff(nearMiss), nearMiss);
+
+  // 没有 diff --git 头也保守处理（拼不出来就整体丢）
+  const headerless = '--- a/.env\n+++ b/.env\n@@ -1 +1 @@\n-x\n+y';
+  assert.equal(withoutSensitiveDiff(headerless), '');
+
+  // 大节不能因为 kept.push(...section) 撞上参数个数上限
+  const big = ['diff --git a/src/big.ts b/src/big.ts', '--- a/src/big.ts', '+++ b/src/big.ts', '@@ -0,0 +1 @@', ...Array(150_000).fill('+line')].join('\n');
+  assert.equal(withoutSensitiveDiff(big), big);
 });
 
 test('本机工作空间直接读；远端问那台 Worker；路径不合法先拦', async () => {

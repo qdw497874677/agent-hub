@@ -24,7 +24,7 @@ import {
   gitIntegrity,
   gitSpec
 } from '../component-catalog.ts';
-import { builtinStrategiesFor } from '../builtin-assets.ts';
+import { trustedAcquisitionStrategies } from '../builtin-assets.ts';
 import type { WorkerComponentPin } from '../component-catalog.ts';
 
 export interface ComponentDeps {
@@ -118,6 +118,13 @@ export async function submitComponent(
     const checked = checkArtifact(info, input.packageName, input.version);
     if (!checked.ok) return checked;
   }
+  // 执行策略只绑定内置包在 npm registry 上钉住的制品：同 id / 版本不够，包名、哈希和来源也要对上。
+  const trusted = trustedAcquisitionStrategies(input.id, input.version, input.strategies, {
+    packageName: input.packageName,
+    integrity: info.integrity,
+    source: input.git ? 'git' : 'npm'
+  });
+  if (!trusted.ok) return trusted;
   const required = Math.max(1, Math.min(3, Math.floor(deps.requiredApprovals ?? 1)));
   const item: CatalogComponent = {
     id: input.id,
@@ -130,7 +137,7 @@ export async function submitComponent(
     resolved: info.resolved,
     integrity: info.integrity,
     provides: input.provides.map((p) => ({ capability: p.capability, ...(p.mode ? { mode: p.mode } : {}), ...(p.mcp ? { mcp: p.mcp } : {}) })),
-    ...(input.strategies && input.strategies.length ? { strategies: input.strategies } : {}),
+    ...(trusted.value && trusted.value.length ? { strategies: trusted.value } : {}),
     scripts: info.scripts,
     dependencyCount: info.dependencyCount,
     status: 'pending',
@@ -183,9 +190,15 @@ export async function reviewComponent(
   return ok(next);
 }
 
-function specOf(item: CatalogComponent, from: string | null): ComponentJobSpec {
-  const strategies = item.strategies ?? builtinStrategiesFor(item.id, item.version);
-  return {
+function specOf(item: CatalogComponent, from: string | null): Result<ComponentJobSpec, DomainError> {
+  const trusted = trustedAcquisitionStrategies(item.id, item.version, item.strategies, {
+    packageName: item.packageName,
+    integrity: item.integrity,
+    source: item.source === 'git' ? 'git' : 'npm'
+  });
+  if (!trusted.ok) return trusted;
+  const strategies = trusted.value;
+  return ok({
     componentId: item.id,
     runtime: item.runtime,
     ...(item.source === 'git' && item.gitUrl && item.commit ? { git: { url: item.gitUrl, commit: item.commit } } : {}),
@@ -197,7 +210,7 @@ function specOf(item: CatalogComponent, from: string | null): ComponentJobSpec {
     ignoreScripts: true,
     expectedCurrent: from,
     ...(strategies && strategies.length ? { strategies } : {})
-  };
+  });
 }
 
 /**
@@ -234,7 +247,11 @@ export async function startBundleJob(
       }
       return err({ ...plan.error, message: `${wanted.componentId}：${plan.error.message}` });
     }
-    if (item) specs.push(specOf(item, plan.value.from));
+    if (item) {
+      const spec = specOf(item, plan.value.from);
+      if (!spec.ok) return err({ ...spec.error, message: `${item.id}：${spec.error.message}` });
+      specs.push(spec.value);
+    }
   }
   if (specs.length === 0) return err(conflict('选的组件都已经装好了'));
   const job: RuntimeJob = {
@@ -280,12 +297,14 @@ export async function startComponentJob(
   const plan = planComponentJob(worker, item, request.action, pin, busy);
   if (!plan.ok || !item) return plan.ok ? err(notFound('组件目录里没有这一项')) : plan;
   const install = request.action === 'install_component';
+  const spec = specOf(item, plan.value.from);
+  if (!spec.ok) return spec;
   const job: RuntimeJob = {
     jobId: (deps.newJobId ?? newId)(),
     agentId: item.runtime,
     action: request.action,
     version: install ? item.version : null,
-    component: specOf(item, plan.value.from),
+    component: spec.value,
     state: 'running',
     message: install ? `正在${plan.value.repair ? '修复' : '安装'}组件 ${item.id} ${item.version}` : `正在卸载组件 ${item.id}`,
     log: '',

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { addTeamMember, fakeAssetSets, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps, type FakeGit } from '@agent-hub/domain/testing';
+import { addTeamMember, fakeAssetSets, fakeSessionLinks, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps, type FakeGit } from '@agent-hub/domain/testing';
 import {
   asAgentId,
   BUILTIN_CHROMIUM,
@@ -150,6 +150,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     ...world.deps,
     access,
     agentDefaults,
+    links: fakeSessionLinks(),
     repoAuth: createRepoAuth({ projects: world.deps.projects, workspaces: world.deps.workspaces, secrets: world.deps.secrets })
   };
   // peers / messages 这几条开放路由要消息总线在场（#243）：轻量内存实现，不真的拉 agent。
@@ -163,6 +164,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
       workspaces: world.deps.workspaces,
       workspaceGroups: world.deps.workspaceGroups,
       tasks: world.deps.tasks,
+      links: deps.links,
       messages,
       bots: world.deps.bots,
       policy: access,
@@ -1744,10 +1746,21 @@ test('#243：容器会话在开放 API 上也按项目限定（events / messages
   const wsB = newWorkspace({ projectId: projectB.id as never, workerId: 'w1', path: '/srv/container-b', kind: 'long_lived', source: 'linked', now: 1 });
   assert.ok(wsB.ok);
   await world.deps.workspaces.save(wsB.value);
-  // 容器会话（没有任务）：落在项目 B 的机器和工作目录上，归属按 workspaceId 反推。
-  const container = deriveSession({ agentId: asAgentId('fake'), model: 'm1', now: 1, createdBy: me, workerId: 'w1', workspaceId: wsB.value.id });
+  // 长期空间可以没有 projectId（归属只作记录）；授权仍应认会话自己的来源项目。
+  const wsNoProject = newWorkspace({ projectId: null, workerId: 'w1', path: '/srv/container-unowned', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(wsNoProject.ok);
+  await world.deps.workspaces.save(wsNoProject.value);
+  // 新容器会话的归属来自创建时记录的项目，不是工作空间关联。
+  const sessionInput = { agentId: asAgentId('fake'), model: 'm1', now: 1, createdBy: me, workerId: 'w1', workspaceId: wsB.value.id };
+  const container = deriveSession({ ...sessionInput, originProjectId: wsB.value.projectId });
+  const unowned = deriveSession({ ...sessionInput, workspaceId: wsNoProject.value.id, originProjectId: projectB.id as never });
+  const legacy = deriveSession(sessionInput);
   assert.ok(container.ok);
+  assert.ok(unowned.ok);
+  assert.ok(legacy.ok);
   await world.deps.sessions.save(container.value);
+  await world.deps.sessions.save(unowned.value);
+  await world.deps.sessions.save(legacy.value);
 
   const scopedA = api((await mint(david, ['projects:read', 'sessions:read', 'sessions:write', 'workers:read'], { projectIds: [projectA.id] })).token);
   const scopedB = api((await mint(david, ['projects:read', 'sessions:read', 'sessions:write', 'workers:read'], { projectIds: [projectB.id] })).token);
@@ -1764,6 +1777,40 @@ test('#243：容器会话在开放 API 上也按项目限定（events / messages
   assert.equal((await scopedB(`${path}/peers`)).status, 200);
   const sent = await scopedB(`${path}/messages`, post({ kind: 'send', body: '你好' }));
   assert.equal(sent.status, 201, JSON.stringify(sent.body));
+
+  // 长期空间没有 projectId 也不影响授权：来源项目已经落在会话自己身上。
+  const unownedPath = `/sessions/${unowned.value.id}`;
+  await denied('events(unowned workspace)', await scopedA(`${unownedPath}/events`));
+  await denied('peers(unowned workspace)', await scopedA(`${unownedPath}/peers`));
+  await denied('messages(unowned workspace)', await scopedA(`${unownedPath}/messages`, post({ kind: 'send', body: '你好' })));
+  assert.equal((await scopedB(`${unownedPath}/events`)).status, 200);
+
+  // 同一来源项目的两条无归属长期空间会话：连线、同伴、消息、断开都要能真正跑通。
+  const other = deriveSession({ ...sessionInput, workspaceId: wsNoProject.value.id, originProjectId: projectB.id as never });
+  assert.ok(other.ok);
+  await world.deps.sessions.save(other.value);
+  const linked = await scopedB(`${unownedPath}/links`, post({ otherSessionId: other.value.id }));
+  assert.equal(linked.status, 201, JSON.stringify(linked.body));
+  const peers = await scopedB(`${unownedPath}/peers`);
+  assert.equal(peers.status, 200);
+  assert.ok(peers.body.peers.some((peer: { address: string }) => peer.address === `session:${other.value.id}`));
+  const unownedSent = await scopedB(`${unownedPath}/messages`, post({ kind: 'send', body: '来自无归属工作空间' }));
+  assert.equal(unownedSent.status, 201, JSON.stringify(unownedSent.body));
+  assert.equal((await scopedB(`${unownedPath}/unlink`, post({ otherSessionId: other.value.id }))).status, 200);
+
+  // 连线/断开也先按同一来源项目判；旧会话在进用例前就被拒。
+  assert.equal((await scopedB(`${path}/unlink`, post({ otherSessionId: legacy.value.id }))).status, 404);
+  assert.equal((await scopedB(`${path}/links`, post({ otherSessionId: legacy.value.id }))).status, 404);
+  assert.equal((await scopedB(`${unownedPath}/links`, post({ otherSessionId: legacy.value.id }))).status, 404);
+  assert.equal((await scopedB(`/sessions/${legacy.value.id}/unlink`, post({ otherSessionId: other.value.id }))).status, 404);
+  // 别的项目令牌也不能借同项目会话连线。
+  await denied('link(foreign project)', await scopedA(`${unownedPath}/links`, post({ otherSessionId: other.value.id })));
+
+  // 即使长期空间记录了项目 B，也不能据此为旧会话授予权限。
+  const legacyPath = `/sessions/${legacy.value.id}`;
+  assert.equal((await scopedB(`${legacyPath}/events`)).status, 404);
+  assert.equal((await scopedB(`${legacyPath}/peers`)).status, 404);
+  assert.equal((await scopedB(`${legacyPath}/messages`, post({ kind: 'send', body: '你好' }))).status, 404);
 });
 
 test('session_start：省略 model 按默认 Agent 层级解析；显式传的不被覆盖', async () => {
@@ -1896,6 +1943,32 @@ test('workspace_diff / workspace_read_file：diff、路径逃逸、敏感文件�
   assert.equal(diff.body.patch, preview.patch);
   assert.deepEqual(diff.body.files, preview.files);
   assert.equal(diff.body.branch, 'feat');
+
+  // 敏感文件只有改动时，workspace_diff 不返回路径 / 内容；FakeGit 返回合规标记，领域仍再兜一次。
+  fakeGit.previews.set(workspace.value.path, {
+    ...preview,
+    files: [{ path: '.env', status: 'M' }],
+    patch: 'diff --git a/.env b/.env\n+SECRET=not-real-269'
+  } as never);
+  const hidden = await call(`/sessions/${sessionId}/workspace/diff`);
+  assert.equal(hidden.status, 200, JSON.stringify(hidden.body));
+  assert.deepEqual(hidden.body.files, []);
+  assert.equal(hidden.body.patch, '');
+  assert.equal(hidden.body.truncated, false);
+
+  // 旧 Worker 没有合规标记：不能把文本过滤结果当安全内容，整段省略并说清原因。
+  fakeGit.legacyPreview = true;
+  try {
+    const legacy = await call(`/sessions/${sessionId}/workspace/diff`);
+    assert.equal(legacy.status, 200, JSON.stringify(legacy.body));
+    assert.deepEqual(legacy.body.files, []);
+    assert.equal(legacy.body.patch, '');
+    assert.equal(legacy.body.truncated, true);
+    assert.match(legacy.body.notice, /Worker 版本过旧/);
+  } finally {
+    fakeGit.legacyPreview = false;
+  }
+  fakeGit.previews.set(workspace.value.path, preview as never);
 
   // maxBytes：patch 超限截断并标 truncated
   const small = await call(`/sessions/${sessionId}/workspace/diff?maxBytes=8`);

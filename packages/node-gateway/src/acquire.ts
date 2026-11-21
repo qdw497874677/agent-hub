@@ -1,6 +1,6 @@
-import { accessSync, constants, existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, isAbsolute, join, sep } from 'node:path';
 import type {
   AcquisitionResolution,
   AcquisitionStrategy,
@@ -71,17 +71,51 @@ function defaultExecutable(path: string): boolean {
   }
 }
 
+function defaultRealpath(path: string): string | null {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+}
+
+function defaultIsFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function containedBy(root: string, path: string): boolean {
+  return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+
+/**
+ * 候选二进制里的平台标记（例如 chrome-linux/、chrome-mac-arm64/、chrome-win64/、*.exe）。
+ * 没有标记 = 各平台通用；同一路径声明了多个平台 = 保守地不采用。
+ */
+export function binarySupportsPlatform(relative: string, platform: NodeJS.Platform = process.platform): boolean {
+  const segments = relative.toLowerCase().split('/');
+  const has = (pattern: RegExp) => segments.some((segment) => pattern.test(segment));
+  const platforms = new Set<NodeJS.Platform>();
+  if (has(/(^|[-_.])(mac|macos|osx|darwin)([-_.]|$)/)) platforms.add('darwin');
+  if (has(/(^|[-_.])linux(\d+)?([-_.]|$)/)) platforms.add('linux');
+  if (has(/(^|[-_.])win(32|64)?([-_.]|$)/) || segments.some((segment) => segment.endsWith('.exe'))) platforms.add('win32');
+  return platforms.size === 0 || (platforms.size === 1 && platforms.has(platform));
+}
+
 export { readAcquisition };
 
 export function locateRoot(locate: BinaryLocate, hooks: Pick<AcquireHooks, 'env' | 'browsersRoot'>): string | null {
   if (hooks.browsersRoot) return hooks.browsersRoot;
   if (locate.envRoot) {
     const explicit = hooks.env[locate.envRoot];
-    if (explicit && explicit !== '0') return explicit;
+    if (explicit && explicit !== '0') return isAbsolute(explicit) ? explicit : null;
   }
   if (locate.homeSubdir) {
     const home = hooks.env['HOME'] ?? hooks.env['USERPROFILE'];
-    if (home) return join(home, locate.homeSubdir);
+    if (home && isAbsolute(home)) return join(home, locate.homeSubdir);
   }
   return null;
 }
@@ -92,8 +126,29 @@ function startsWithAny(value: string, prefixes: readonly string[] | undefined): 
   return prefixes.some((prefix) => lower.startsWith(prefix.toLowerCase()));
 }
 
+/** 记录下来的路径是否真的落在 locate 的布局里：版本目录前缀 + 声明的二进制相对路径 + 当前平台。 */
+function matchesLocate(
+  root: string,
+  locate: BinaryLocate,
+  path: string,
+  platform: NodeJS.Platform = process.platform
+): string | null {
+  const rootReal = defaultRealpath(root);
+  const pathReal = defaultRealpath(path);
+  if (!rootReal || !pathReal || !containedBy(rootReal, pathReal)) return null;
+  const relative = pathReal.slice(rootReal.length).split(sep).filter(Boolean);
+  if (relative.length < 2) return null;
+  const directory = relative[0]!;
+  const binary = relative.slice(1).join('/');
+  if (!startsWithAny(directory, locate.directoryPrefixes) || startsWithAny(directory, locate.excludeDirectoryPrefixes)) return null;
+  if (!locate.binaries.includes(binary) || !binarySupportsPlatform(binary, platform)) return null;
+  if (!defaultIsFile(pathReal) || !defaultExecutable(pathReal)) return null;
+  return pathReal;
+}
+
 export function findLocatedBinary(root: string, locate: BinaryLocate, exists: (path: string) => boolean = defaultExists): string | null {
   if (!exists(root)) return null;
+  const platform = process.platform;
   let entries: string[] = [];
   try {
     entries = readdirSync(root)
@@ -102,16 +157,23 @@ export function findLocatedBinary(root: string, locate: BinaryLocate, exists: (p
   } catch {
     return null;
   }
+  const binaries = locate.binaries.filter((relative) => binarySupportsPlatform(relative, platform));
   for (const entry of entries.reverse()) {
-    for (const rel of locate.binaries) {
+    for (const rel of binaries) {
       const path = join(root, entry, rel);
-      if (exists(path)) return path;
+      if (!exists(path)) continue;
+      // 只认 realpath 后仍在 locate 根目录里、且是常规可执行文件的路径（防符号链接逃逸）。
+      const canonical = matchesLocate(root, locate, path, platform);
+      if (canonical) return canonical;
     }
   }
   return null;
 }
 
-export function listSystemBinaryCandidates(strategy: Extract<AcquisitionStrategy, { type: 'detect-system-binary' }>, hooks: AcquireHooks): string[] {
+export function listSystemBinaryCandidates(
+  strategy: Extract<AcquisitionStrategy, { type: 'detect-system-binary' }>,
+  hooks: Pick<AcquireHooks, 'env' | 'paths' | 'includeListedPaths' | 'exists' | 'isExecutable' | 'platform'>
+): string[] {
   const exists = hooks.exists ?? defaultExists;
   const isExecutable = hooks.isExecutable ?? defaultExecutable;
   const platform = hooks.platform ?? process.platform;
@@ -120,13 +182,15 @@ export function listSystemBinaryCandidates(strategy: Extract<AcquisitionStrategy
   const add = (path: string) => {
     if (!path || seen.has(path)) return;
     seen.add(path);
-    if (exists(path) && isExecutable(path)) out.push(path);
+    if (!binarySupportsPlatform(path, platform)) return;
+    if (exists(path) && defaultIsFile(path) && isExecutable(path)) out.push(path);
   };
   for (const path of hooks.paths ?? []) add(path);
   if (hooks.includeListedPaths !== false) {
     for (const path of strategy.paths ?? []) {
-      const windows = path.includes('\\') || /^[A-Za-z]:/.test(path);
-      if (platform === 'win32' ? !windows : windows) continue;
+      // 保留旧的 Windows / 非 Windows 绝对路径分流：不要把另一套平台的写死路径当成本机候选。
+      const windowsPath = path.includes('\\') || /^[A-Za-z]:/.test(path);
+      if (platform === 'win32' ? !windowsPath : windowsPath) continue;
       add(path);
     }
   }
@@ -136,6 +200,42 @@ export function listSystemBinaryCandidates(strategy: Extract<AcquisitionStrategy
     for (const name of strategy.names ?? []) add(join(dir, name));
   }
   return out;
+}
+
+/**
+ * 读侧（worker 库存 / 会话链接）只信任内置清单能复核的获取结果：
+ * 没有内置策略、策略 id/type 对不上、路径不在内置 locate 布局或系统候选里，一律丢弃。
+ * 这样旧 `.component.json` 不能变成任意可执行路径。
+ */
+export function trustedRecordedAcquisition(
+  acquisition: AcquisitionResolution,
+  strategies: readonly AcquisitionStrategy[] | undefined,
+  options: { env: Record<string, string>; platform?: NodeJS.Platform }
+): AcquisitionResolution | null {
+  if (!strategies?.length) return null;
+  const strategy = strategies.find((item) => item.id === acquisition.strategy);
+  if (!strategy || strategy.type !== acquisition.type) return null;
+  const path = acquisition.path;
+  if (!path) return { ...acquisition };
+  if (path.includes('\0') || !isAbsolute(path)) return null;
+  const canonical = defaultRealpath(path);
+  if (!canonical || !defaultIsFile(canonical)) return null;
+  if (strategy.type === 'detect-system-binary') {
+    const candidates = listSystemBinaryCandidates(strategy, {
+      env: options.env,
+      includeListedPaths: true,
+      platform: options.platform ?? process.platform
+    });
+    if (!candidates.some((candidate) => defaultRealpath(candidate) === canonical)) return null;
+    return { ...acquisition, path: canonical };
+  }
+  if (strategy.type === 'user-space-install' || strategy.type === 'lighter-variant') {
+    const root = locateRoot(strategy.locate, { env: options.env });
+    if (!root) return null;
+    const matched = matchesLocate(root, strategy.locate, canonical, options.platform ?? process.platform);
+    return matched ? { ...acquisition, path: matched } : null;
+  }
+  return null;
 }
 
 export async function verifyBinary(hooks: AcquireHooks, executable: string, args: readonly string[]): Promise<boolean> {

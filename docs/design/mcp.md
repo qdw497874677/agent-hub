@@ -23,6 +23,9 @@ MCP 在本项目里有三个不同的位置，容易混：
 
 - **stdio**：命令在 worker 上以会话用户身份执行。密钥只展开进那个子进程的 env/args，不落库、不进日志。工具过滤**只能**靠配置里的 `tools` 在本机过滤（worker 侧执行），hub 看不到也不该看到这些服务器。
 - **http**：由 hub 代连（`remoteMcpTarget`），密钥留在 hub 内存，worker 只拿到本机中转地址。所以 hub 可以做工具过滤、OAuth、资源与提示词转发。
+- http 与 OAuth 的出口统一走 `apps/server/src/mcp-egress.ts`：默认只允许 HTTPS 公网目标，连接时校验
+  DNS 解析结果，不跟随重定向，不允许覆盖 `Host`；内网 / 明文 HTTP 只接受精确主机名的运维例外。
+  详见 `docs/design/mcp-egress.md`。
 
 ## 3. OAuth（client_credentials）
 

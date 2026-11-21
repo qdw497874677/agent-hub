@@ -9,7 +9,7 @@ import { conflict, invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { createDirectory, gitOn, parentOf, resolveMachine, rootsOf, type Machine } from './machine-dirs.ts';
-import { authorizeWorker } from './authorization.ts';
+import { authorizeProject, authorizeWorker } from './authorization.ts';
 import { MANAGED_DIR } from '../directories.ts';
 import { defaultWorkspaceFor, prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
 
@@ -276,24 +276,36 @@ export interface RetryWorkspaceSetupCommand {
   readonly actor?: Subject | null;
 }
 
-/** 重跑准备命令：只对 setup.state==='failed' 的工作空间有效（§4「重试」）。项目没配命令 = 没得重试。 */
+/**
+ * 重跑准备命令：只对 setup.state==='failed' 的工作空间有效（§4「重试」）。项目没配命令 = 没得重试。
+ *
+ * #243 防御：只有平台为任务建的临时空间才允许跑准备命令（长期空间是人自己的目录，
+ * linked 也不是平台建的）。并且先确认「所有者任务仍在这个项目里」、对该项目有 update、
+ * 对所在机器有 use，再读 / 执行项目配置的命令——避免拿别的项目或别的机器的配置当跳板。
+ */
 export async function retryWorkspaceSetupUseCase(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'tasks' | 'workspaces' | 'access'>,
   command: RetryWorkspaceSetupCommand
 ): Promise<Result<Workspace, DomainError>> {
   const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
   if (!workspace) return err(notFound('工作空间不存在'));
   if (workspace.state === 'removed') return err(conflict('工作空间已经删除了'));
-  if (workspace.setup?.state !== 'failed') return err(conflict('只有准备失败的工作空间可以重试'));
+  if (workspace.kind !== 'temporary' || workspace.source === 'linked') return err(conflict('只有平台创建的临时工作空间可以重试准备命令'));
+  if (!workspace.ownerTaskId) return err(conflict('这个工作空间不属于任何任务'));
   if (!workspace.projectId) return err(conflict('这个工作空间不属于任何项目'));
+  const task = await deps.tasks.byId(workspace.ownerTaskId);
+  if (!task || task.projectId !== workspace.projectId) return err(conflict('这个工作空间和所属任务对不上'));
   const project = await deps.projects.byId(workspace.projectId);
   if (!project) return err(notFound('项目不存在'));
-  const setup = project.worktree?.setup;
-  if (!setup) return err(conflict('这个项目没有配置准备命令'));
+  const allowedProject = await authorizeProject(deps.access, command.actor ?? null, project, 'project.update');
+  if (!allowedProject.ok) return allowedProject;
   const resolved = await resolveMachine(deps, workspace.workerId);
   if (!resolved.ok) return resolved;
   const allowed = await authorizeWorker(deps.access, command.actor ?? null, resolved.value.workerId);
   if (!allowed.ok) return allowed;
+  if (workspace.setup?.state !== 'failed') return err(conflict('只有准备失败的工作空间可以重试'));
+  const setup = project.worktree?.setup;
+  if (!setup) return err(conflict('这个项目没有配置准备命令'));
   return ok(await runWorkspaceSetup(deps, resolved.value, workspace, setup));
 }
 

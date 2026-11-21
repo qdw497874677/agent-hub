@@ -138,16 +138,28 @@ export function inMemoryDeliveries(): import('../../ports/delivery-queue.ts').De
   type D = import('../../delivery.ts').Delivery;
   const rows = new Map<string, D>();
   const pendingStates = new Set(['queued', 'sending', 'undelivered']);
-  const order = (a: D, b: D) => a.createdAt - b.createdAt || a.seq - b.seq;
+  const order = (a: D, b: D) => a.createdAt - b.createdAt || a.seq - b.seq || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const pendingFor = (sid: string) => [...rows.values()].filter((d) => d.sessionId === sid && d.kind === 'prompt' && pendingStates.has(d.state)).sort(order);
   return {
     rows,
     async save(d) { rows.set(d.id, d); },
     async claimSend(id, now) {
       const d = rows.get(id);
-      if (!d || (d.state !== 'queued' && d.state !== 'undelivered')) return false;
+      if (!d || d.kind !== 'prompt' || (d.state !== 'queued' && d.state !== 'undelivered')) return false;
+      const open = pendingFor(d.sessionId);
+      if (open[0]?.id !== d.id) return false;
+      if (open.some((row) => row.id !== d.id && row.state === 'sending')) return false;
       rows.set(id, { ...d, state: 'sending', updatedAt: now });
       return true;
+    },
+    async finishSending(sessionId, id, now) {
+      const d = rows.get(id);
+      if (!d || d.sessionId !== sessionId || d.state !== 'sending') return false;
+      rows.set(id, { ...d, state: 'delivered', attempt: d.attempt + 1, nextAt: null, lastError: null, updatedAt: now });
+      return true;
+    },
+    async inFlight(sessionId) {
+      return [...rows.values()].filter((d) => d.sessionId === sessionId && d.kind === 'prompt' && d.state === 'sending').sort(order)[0] ?? null;
     },
     async reschedule(id, now, nextAt) {
       const d = rows.get(id);
@@ -174,7 +186,6 @@ export function inMemoryDeliveries(): import('../../ports/delivery-queue.ts').De
     async held(sid, kind) { return [...rows.values()].filter((d) => d.sessionId === sid && d.kind === kind && d.state === 'held').at(-1) ?? null; },
     async recent(sid, limit) { return [...rows.values()].filter((d) => d.sessionId === sid && d.kind === 'prompt').sort(order).slice(-limit); },
     async deliveredBefore(cutoff, limit) { return [...rows.values()].filter((d) => d.kind === 'prompt' && d.state === 'delivered' && d.updatedAt <= cutoff).sort((a, b) => a.updatedAt - b.updatedAt).slice(0, limit); },
-    async wakeAll(now) { let n = 0; for (const d of rows.values()) if (d.kind === 'prompt' && d.state === 'queued' && (d.nextAt ?? 0) > now) { rows.set(d.id, { ...d, nextAt: now }); n++; } return n; },
-    async recoverSending(now) { let n = 0; for (const d of rows.values()) if (d.state === 'sending') { rows.set(d.id, { ...d, state: 'queued', nextAt: now, updatedAt: now }); n++; } return n; }
+    async wakeAll(now) { let n = 0; for (const d of rows.values()) if (d.kind === 'prompt' && d.state === 'queued' && (d.nextAt ?? 0) > now) { rows.set(d.id, { ...d, nextAt: now }); n++; } return n; }
   };
 }

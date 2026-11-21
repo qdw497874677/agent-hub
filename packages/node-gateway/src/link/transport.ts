@@ -2,6 +2,7 @@ import { WebSocket } from 'ws';
 import type { ServerToWorker, WorkerToServer } from '@agent-hub/contract';
 import {
   PROTOCOL_MISMATCH_CLOSE,
+  WORKER_CAPABILITY_DURABLE_DELIVERY,
   WORKER_CAPABILITY_METRICS,
   WORKER_CAPABILITY_NATIVE_BRANCH,
   createRpcChannel,
@@ -250,7 +251,8 @@ export function installTransport(ctx: LinkCtx): Transport {
           roots: [...(options.files?.roots ?? options.roots ?? [])],
           sessions: [...ctx.sessions.keys()],
           ...(options.build ? { build: options.build } : {}),
-          ...(options.resources ? { capabilities: [WORKER_CAPABILITY_METRICS] } : {}),
+          // durable_delivery 无条件声明：本版 Worker 一定认带 deliveryId 的 prompt。
+          capabilities: [...(options.resources ? [WORKER_CAPABILITY_METRICS] : []), WORKER_CAPABILITY_DURABLE_DELIVERY],
           ...(ctx.droppedReported > 0 ? { dropped: ctx.droppedReported } : {}),
           ...(trial ? { update: { id: trial.id, phase: 'trial' as const, inventory: trial.inventory } } : {})
         } satisfies WorkerToServer)

@@ -57,8 +57,10 @@ nextRetryAt(attempt, now) = now + min(2s · 2^(attempt-1), 60s) ± 10% 抖动
 
 - 自动重试：2s、4s、8s… 封顶 60s；连续失败 10 次（约 6 分钟）后停止自动重试，状态停在「未送达」，进入收件箱。
 - Worker 重连（ADR 0030 LinkState → live）时立即把该机器上的未送达消息重排，不等退避。
-- 同一会话**严格按序**：前一条没送达，后面的只「排队」，不会越过。
-- 幂等：每条消息有 `deliveryId`，Worker 侧按 id 去重，重试不会让 agent 收到两遍。
+- 同一会话**严格按序**：前一条派发后仍占用 `sending`，后续消息继续排队。只有 journal 落下同一 `deliveryId` 的已确认 `ended`，才可释放；派发成功、空闲状态、断线、超时或 Hub 重启都不是结束证据。
+- Hub 重启只对账已有结束证据，不把 `sending` 退回队列。Worker 侧按 `deliveryId` 去重是进程内保护，不能据此跨重启自动重送可能已经执行的消息。
+- 混合版本部署：先更新 Worker，再更新 Hub。新 Hub 只向当前连接声明 `durable_delivery` 的 Worker 发送带投递号的 prompt；老 Worker 仍可保持在线，但该条 prompt 会在发出前被拒绝，更新 Worker 后可重试。此声明是协议兼容性信号，不是权限授权。
+- 运行时也必须能确认回合归属。例如 Pi 的 RPC `prompt` 回执需提供 `data.disposition`；旧版回执缺少该字段时，不会把之后任意一条 `agent_settled` 当成该投递的终态。升级前先在测试会话验证实际运行时的回执；若结束证据缺失，后续消息会保持排队，不安全地自动重送并非恢复手段。
 
 **端口** `ports/delivery-queue.ts`：`enqueue / claimDue(now) / markDelivered / markFailed(nextAt, error) / cancel / pendingFor(sessionId)`。
 
@@ -75,7 +77,7 @@ CREATE INDEX message_delivery_due ON message_delivery(state, next_at);
 ```
 
 - **修 bug**：`rewind.ts` 的 `pendingBriefs` 改为写入 `message_delivery(kind='handoff_brief')`，hub 重启后启动时 `claimDue` 会接着送。
-- prompt 事件仍先记 journal（用户看到原话），送达状态是旁路，不改事件格式。
+- prompt 事件仍先记 journal（用户看到原话）；已确认的 `ended` 可带 `deliveryId`，用于在途投递对账。历史无标识事件不能证明某一条在途投递已结束。
 
 **UI**：气泡下方小字：
 - 排队中 · 等上一条送达（灰）

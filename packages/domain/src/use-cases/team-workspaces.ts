@@ -1,14 +1,14 @@
 import { principalOfSubject, type Subject } from '../access.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, forbidden, invalid, notFound } from '../errors.ts';
-import { asProjectId, asWorkspaceId } from '../ids.ts';
+import { asProjectId, asWorkspaceId, type WorkspaceId } from '../ids.ts';
 import type { Project } from '../project.ts';
 import { err, ok, type Result } from '../result.ts';
-import type { Workspace } from '../workspace.ts';
-import { authorizeProject, authorizeWorkspace, canManageTeamWorkspaces, projectReader } from './authorization.ts';
+import { ambiguousPlaceError, type Workspace } from '../workspace.ts';
+import { authorizeProject, authorizeWorkspace, canManageTeamWorkspaces, projectOfSessionOrigin, projectReader } from './authorization.ts';
 import type { Deps } from './deps.ts';
 import { removeWorkspaceUseCase, type RemoveWorkspaceCommand } from './workspace-cleanup.ts';
-import { actorId, prepareTeamWorkspace, projectOfSession, type LongLivedPlan } from './workspaces.ts';
+import { actorId, claimConflictError, prepareTeamWorkspace, projectOfSession, type LongLivedPlan } from './workspaces.ts';
 
 /**
  * 团队工作空间（ADR 0026）：长期工作空间属于团队，项目通过关联来用。
@@ -41,6 +41,29 @@ async function sameTeam(deps: Pick<Deps, 'access'>, a: string | null, b: string 
   if (!deps.access) return true;
   const hub = (await deps.access.context()).hubTeamId;
   return (a ?? hub) === (b ?? hub);
+}
+
+/**
+ * 忙碌保护要看会话的「出生来源」：任务会话看任务，新容器会话看不可变的 originProjectId。
+ * 老容器会话没有 originProjectId 时保留旧的宽松判定（组 / 工作空间登记的项目）；
+ * 两种来源都判不出来就记为 unknown，调用方保守拦截，不能因为判不出归属就放行。
+ */
+async function runningOwners(
+  deps: Pick<Deps, 'projects' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'sessions' | 'bots'>,
+  workspaceId: WorkspaceId
+): Promise<{ readonly projectIds: Set<string>; readonly unknown: number }> {
+  const projectIds = new Set<string>();
+  let unknown = 0;
+  for (const session of await deps.sessions.listByWorkspace(workspaceId)) {
+    if (session.status !== 'running') continue;
+    const origin = await projectOfSessionOrigin(deps, session);
+    // 老数据兼容：即使 origin 已能看到，也保留旧判定的结果，避免行为比之前更宽松。
+    const legacy = await projectOfSession(deps, session);
+    if (origin) projectIds.add(origin.id);
+    if (legacy) projectIds.add(legacy.id);
+    if (!origin && !legacy) unknown += 1;
+  }
+  return { projectIds, unknown };
 }
 
 export async function listTeamWorkspacesUseCase(deps: TeamDeps, actor: Subject | null): Promise<Result<TeamWorkspaceView[], DomainError>> {
@@ -119,17 +142,20 @@ export async function linkWorkspaceUseCase(deps: Pick<Deps, 'projects' | 'worksp
   if (!(await sameTeam(deps, workspace.teamId, project.value.teamId))) return err(notFound('工作空间不存在'));
   // 未认领的目录：目标项目的 project.update 就够（上面已判），不需要额外的可见性。
   // 已有认领者时仍走 authorizeWorkspace，避免对看不见的目录动手。
-  if ((await deps.workspaces.linksOf(workspace.id)).length > 0) {
+  const links = await deps.workspaces.linksOf(workspace.id);
+  if (links.length > 0) {
     const seen = await authorizeWorkspace(deps, command.actor, workspace, 'project.read');
     if (!seen.ok) return seen;
   }
-  // 独占：一个长期工作空间同一时间只能被一个项目认领。同一项目重复关联仍然幂等。
-  const other = (await deps.workspaces.linksOf(workspace.id)).find((link) => link.projectId !== project.value.id);
-  if (other) {
-    const owner = await deps.projects.byId(other.projectId);
-    return err(conflict(`这个目录已经分配给项目「${owner?.name ?? other.projectId}」。先在那边释放，或在那个项目里把它转移到本项目`));
-  }
-  await deps.workspaces.link({ projectId: project.value.id, workspaceId: workspace.id, linkedBy: actorId(command.actor), linkedAt: deps.now() });
+  // 独占：claim 在存储层同一事务里检查再写；并发认领只有一个成功，另一个拿到现任（#233）。
+  const claimed = await deps.workspaces.claim({
+    projectId: project.value.id,
+    workspaceId: workspace.id,
+    linkedBy: actorId(command.actor),
+    linkedAt: deps.now()
+  });
+  if (claimed.status === 'conflict') return err(claimConflictError());
+  if (claimed.status === 'ambiguous') return err(ambiguousPlaceError());
   return ok(workspace);
 }
 
@@ -156,8 +182,15 @@ export async function transferWorkspaceUseCase(
   }
   const others = links.filter((link) => link.projectId !== project.value.id);
   if (others.length === 0) {
-    if (links.length > 0) return ok(workspace); // 已经属于这个项目
-    await deps.workspaces.link({ projectId: project.value.id, workspaceId: workspace.id, linkedBy: actorId(command.actor), linkedAt: deps.now() });
+    // 没认领者 → 直接认领；已经是目标项目 → claim 返回 owned（幂等）。
+    const claimed = await deps.workspaces.claim({
+      projectId: project.value.id,
+      workspaceId: workspace.id,
+      linkedBy: actorId(command.actor),
+      linkedAt: deps.now()
+    });
+    if (claimed.status === 'conflict') return err(claimConflictError());
+    if (claimed.status === 'ambiguous') return err(ambiguousPlaceError());
     return ok(workspace);
   }
   // 源项目还在（没进回收站）时，调用者要对它也有 project.update
@@ -171,14 +204,26 @@ export async function transferWorkspaceUseCase(
       return err(forbidden('转移要同时能改这两个项目：先在源项目里请 owner / 管理员操作'));
     }
   }
-  const sourceIds = new Set(others.map((link) => link.projectId));
-  for (const session of await deps.sessions.listByWorkspace(workspace.id)) {
-    if (session.status !== 'running') continue;
-    const owner = await projectOfSession(deps, session);
-    if (owner !== null && sourceIds.has(owner.id)) return err(conflict('源项目还有会话在这个目录里运行，先停掉再转移'));
+  const sourceIds = new Set<string>(others.map((link) => link.projectId));
+  const running = await runningOwners(deps, workspace.id);
+  if (running.unknown > 0) return err(conflict('这个目录还有来源不明的运行中会话，先停掉再转移'));
+  if ([...running.projectIds].some((id) => sourceIds.has(id))) {
+    return err(conflict('源项目还有会话在这个目录里运行，先停掉再转移'));
   }
-  for (const link of others) await deps.workspaces.unlink(link.projectId, workspace.id);
-  await deps.workspaces.link({ projectId: project.value.id, workspaceId: workspace.id, linkedBy: actorId(command.actor), linkedAt: deps.now() });
+  // 原子转移：只有当前认领者仍与上面读到的一致才替换。期间有人认领 / 转移 → stale，
+  // 现任保持原样，让调用方刷新后重试（#233）。
+  const moved = await deps.workspaces.transfer({
+    projectId: project.value.id,
+    workspaceId: workspace.id,
+    linkedBy: actorId(command.actor),
+    linkedAt: deps.now(),
+    expectedProjectIds: others.map((link) => link.projectId)
+  });
+  if (moved.status === 'ambiguous') return err(ambiguousPlaceError());
+  if (moved.status === 'stale') {
+    // 不点名新的现任：并发失败方未必有权看见它，避免通过错误信息泄露归属。
+    return err(conflict('这个目录的归属刚刚变了，请刷新后重试'));
+  }
   return ok(workspace);
 }
 
@@ -191,11 +236,9 @@ export async function unlinkWorkspaceUseCase(
   const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
   const links = workspace ? await deps.workspaces.linksOf(workspace.id) : [];
   if (!workspace || !links.some((l) => l.projectId === project.value.id)) return err(notFound('这个项目没有关联这个工作空间'));
-  for (const session of await deps.sessions.listByWorkspace(workspace.id)) {
-    if (session.status !== 'running') continue;
-    const owner = await projectOfSession(deps, session);
-    if (owner?.id === project.value.id) return err(conflict('本项目还有会话在这个工作空间里运行，先停掉它'));
-  }
+  const running = await runningOwners(deps, workspace.id);
+  if (running.unknown > 0) return err(conflict('这个工作空间还有来源不明的运行中会话，先停掉再取消关联'));
+  if (running.projectIds.has(project.value.id)) return err(conflict('本项目还有会话在这个工作空间里运行，先停掉它'));
   await deps.workspaces.unlink(project.value.id, workspace.id);
   return ok(workspace);
 }

@@ -38,6 +38,7 @@ import { createTokenIssuer } from '@agent-hub/adapter-accounts';
 import { createGithubToolProvider, githubParams, parseIssueKey, type GithubClient } from '@agent-hub/connector-github';
 import type { SqliteStore } from '@agent-hub/storage-sqlite';
 import type { createBotOfSession } from './bot-session.ts';
+import { createGitWriteSubjectOf } from './git-write-identity.ts';
 import type { createGroupChat, createMessageBus } from '@agent-hub/domain';
 import type { createProviderWiring } from './providers.ts';
 import type { createWorkspaceFilesService } from '@agent-hub/domain';
@@ -68,6 +69,16 @@ export interface ToolWiringInput {
 /** 工具网关：把各工具 provider 按会话/项目权限接起来；main 只拿回网关给 worker 中转。 */
 export function wireTools(input: ToolWiringInput): ToolGateway {
   const { deps, store, readEnv, messageBus, groupChat, botOfSession, contextService, filesService, gitService, memoryService, providerWiring, githubClient, teamTokenOf, githubReposFor, subjectOf, enqueueDispatch } = input;
+  // #217：写工具的身份闸。共享会话（bot / 群 / 连接器 / 调度）没有可验证的当轮人类身份，直接拒写。
+  const gitWriteSubjectOf = createGitWriteSubjectOf({
+    sessions: deps.sessions,
+    botOfSession,
+    spawnOf: (sessionId) => store.messages.spawnOf(sessionId),
+    memberOfSession: (sessionId) => store.groups.memberOfSession(sessionId),
+    provenance: store.provenance,
+    dispatches: store.dispatches,
+    subjectOf
+  });
   return createToolGateway({
     now: deps.now,
     toolGrants: store.toolGrants,
@@ -75,7 +86,7 @@ export function wireTools(input: ToolWiringInput): ToolGateway {
     providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService),
       createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
       // issue #216：agent 不 shell git/gh 也能 commit / push / 开 PR；权限与审计走工作流。
-      createGitToolProvider({ workflow: gitService, subjectOf, resolvePeer: (from, address) => messageBus.resolvePeer(from, address) }),
+      createGitToolProvider({ workflow: gitService, subjectOf, writeSubjectOf: gitWriteSubjectOf, resolvePeer: (from, address) => messageBus.resolvePeer(from, address) }),
       // issue #216 P2：产物列表 / 引用登记与工作空间文件只读。
       createArtifactToolProvider({ sessions: deps.sessions, artifacts: deps.artifacts, tasks: deps.tasks, workLog: deps.workLog, now: deps.now }),
       // 会话通信 P1c：session 参数只读看已连线同伴；workspace.changes 复用 git 工作流的 state。

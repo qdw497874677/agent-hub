@@ -6,7 +6,7 @@ import type { Project, ProjectRepo } from '../project.ts';
 import { designatedPrimaryRepo, recurseSubmodules } from '../project.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import { err, ok, type Result } from '../result.ts';
-import { isUsable, markRemoved, newWorkspace, type Workspace } from '../workspace.ts';
+import { ambiguousPlaceError, isUsable, markRemoved, newWorkspace, type Workspace } from '../workspace.ts';
 import {
   WORKSPACE_GROUP_MEMBERS_MAX,
   WORKSPACE_GROUP_NAME,
@@ -21,7 +21,7 @@ import type { Deps } from './deps.ts';
 import { gitOn, resolveMachine, type Machine } from './machine-dirs.ts';
 import { branchSlug, originBranchRef, runWorkspaceSetup, sessionBranchSuffix, shortId } from './temporary-workspaces.ts';
 import { unsavedReason } from './workspace-cleanup.ts';
-import { actorId, prepareTeamWorkspace } from './workspaces.ts';
+import { actorId, claimConflictError, prepareTeamWorkspace } from './workspaces.ts';
 
 /**
  * 组合工作空间（docs/design/multi-repo.md §4–§6）：
@@ -185,7 +185,14 @@ async function baseForRepo(
     actor: command.actor
   });
   if (!prepared.ok) return prepared;
-  await deps.workspaces.link({ projectId: project.id, workspaceId: prepared.value.id, linkedBy: actorId(command.actor), linkedAt: deps.now() });
+  const claimed = await deps.workspaces.claim({
+    projectId: project.id,
+    workspaceId: prepared.value.id,
+    linkedBy: actorId(command.actor),
+    linkedAt: deps.now()
+  });
+  if (claimed.status === 'conflict') return err(claimConflictError());
+  if (claimed.status === 'ambiguous') return err(ambiguousPlaceError());
   return prepared;
 }
 

@@ -21,7 +21,7 @@ test('审核仓库：提交 / 评论 / 安装申请 / 通知往返；审核人�
     let store = openSqliteStore(path);
     const report = { findings: [], mcp: null, secrets: [], diffFiles: 0 } as never;
     const sub = {
-      id: 's1', assetId: 'a1', digest: 'd2', previous: 'd1', submittedBy: 'u1', origin: 'user', tokenId: null, targetScope: null, status: 'pending',
+      id: 's1', assetId: 'a1', digest: 'd2', previous: 'd1', submittedBy: 'u1', origin: 'user', tokenId: null, targetScope: null, targetTeamId: null, status: 'pending',
       required: 1, approvals: [], decidedBy: null, reason: null, report, createdAt: 5, decidedAt: null
     } as const;
     await store.assetReview.addSubmission(sub);
@@ -66,6 +66,50 @@ test('团队免审开关：老库补列（默认关），存取往返', async ()
     store.close();
     store = openSqliteStore(path);
     assert.equal((await store.assetReview.settings('t1'))?.teamNoReview, true);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('上架目标团队：老库补列（NULL，不回填），新提交存取往返', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-review-'));
+  try {
+    const path = join(dir, 'hub.db');
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE asset_submissions (
+      id TEXT PRIMARY KEY,
+      asset_id TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      previous TEXT NOT NULL,
+      submitted_by TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      token_id TEXT,
+      target_scope TEXT,
+      status TEXT NOT NULL,
+      required INTEGER NOT NULL,
+      approvals TEXT NOT NULL,
+      decided_by TEXT,
+      reason TEXT,
+      report TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      decided_at INTEGER
+    );
+    INSERT INTO asset_submissions VALUES ('old1', 'a1', 'd1', '', 'u1', 'user', NULL, 'team', 'pending', 1, '[]', NULL, NULL, '{"findings":[],"mcp":null,"secrets":[],"diffFiles":0}', 1, NULL);`);
+    old.close();
+    let store = openSqliteStore(path);
+    const migrated = await store.assetReview.submission('old1');
+    assert.equal(migrated?.targetScope, 'team');
+    assert.equal(migrated?.targetTeamId, null, '旧提交没有目标团队，保持 NULL，不猜资产现在的归属');
+    const report = { findings: [], mcp: null, secrets: [], diffFiles: 0 } as never;
+    await store.assetReview.addSubmission({
+      id: 'new1', assetId: 'a1', digest: 'd2', previous: 'd1', submittedBy: 'u1', origin: 'user', tokenId: null,
+      targetScope: 'team', targetTeamId: 't2', status: 'pending', required: 1, approvals: [], decidedBy: null,
+      reason: null, report, createdAt: 2, decidedAt: null
+    });
+    store.close();
+    store = openSqliteStore(path);
+    assert.equal((await store.assetReview.submission('new1'))?.targetTeamId, 't2');
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

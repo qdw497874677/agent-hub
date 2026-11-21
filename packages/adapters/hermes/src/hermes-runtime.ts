@@ -38,6 +38,9 @@ export const REQUIRED_FEATURES = ['run_submission', 'run_status', 'run_events_ss
 /** 结果未知的固定原因文字：界面认它给「重发 / 不用了」（outcome_unknown 是 Hermes 的说法）。 */
 export const UNKNOWN_OUTCOME_REASON = 'Hermes 这一轮的结果未知（outcome_unknown）';
 
+/** Hermes 明确报出的终态：只有这些能证明远端这一轮停了。 */
+const TERMINAL_RUN_STATUSES = ['completed', 'failed', 'cancelled', 'interrupted'] as const;
+
 export const CLARIFY_ANSWER = 'The user is not available to answer right now. Use your best judgment, state your assumption, and continue.';
 
 /**
@@ -351,6 +354,8 @@ export interface PendingTurn {
   readonly inputHash: string;
   readonly runId: string | null;
   readonly at: number;
+  /** 这一轮是从哪条送达来的：恢复后收到确认终态时，ended 要带回去才能精确收掉它。老记录没有。 */
+  readonly deliveryId?: string;
 }
 export const PENDING_FILE = 'ahub-pending.json';
 const hashInput = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 32);
@@ -359,7 +364,13 @@ export async function readPending(home: string): Promise<PendingTurn | null> {
   try {
     const value = JSON.parse(await readFile(join(home, PENDING_FILE), 'utf8')) as Partial<PendingTurn>;
     if (typeof value.key !== 'string' || typeof value.inputHash !== 'string') return null;
-    return { key: value.key, inputHash: value.inputHash, runId: typeof value.runId === 'string' ? value.runId : null, at: typeof value.at === 'number' ? value.at : 0 };
+    return {
+      key: value.key,
+      inputHash: value.inputHash,
+      runId: typeof value.runId === 'string' ? value.runId : null,
+      at: typeof value.at === 'number' ? value.at : 0,
+      ...(typeof value.deliveryId === 'string' && value.deliveryId ? { deliveryId: value.deliveryId } : {})
+    };
   } catch {
     return null;
   }
@@ -372,6 +383,15 @@ async function writePending(home: string, pending: PendingTurn | null): Promise<
   await rename(tmp, path);
 }
 
+/**
+ * 只有**确认的终态**才能把这一轮的 deliveryId 挂到 ended 上。
+ * 结果未知 / 事件流耗尽 / 网关进程退出都不证明远端那一轮停了；挂上 id 会让队首的
+ * `sending` 被提前放掉，下一句就可能和还在跑的 run 重叠。
+ */
+function tagEnded(event: SessionEvent, deliveryId: string | undefined): SessionEvent {
+  return deliveryId && event.kind === 'ended' ? { ...event, deliveryId } : event;
+}
+
 export class HermesSession implements RuntimeSession {
   readonly sessionId: SessionId;
   private readonly gateway: Gateway;
@@ -380,7 +400,13 @@ export class HermesSession implements RuntimeSession {
   private readonly log: (message: string) => void;
   private readonly queue = new AsyncQueue<SessionEvent>();
   private seq = 0;
-  private run: { id: string; abort: AbortController } | null = null;
+  /** 这一轮的事件流跟着；`following` 为 false 表示只剩本地闸门（对账结果未知时挡住下一句）。 */
+  private run: { id: string; abort: AbortController; following: boolean } | null = null;
+  /** 提交窗口的占位：`this.run` 要等 Hermes 回了 run_id 才能设，中间的 await 不能放第二句进来。 */
+  private submission: { key: string; inputHash: string; deliveryId?: string } | null = null;
+  private submitting = false;
+  /** pending 文件的读改写串行化：收尾清记录和新一轮落盘不能互相抢。 */
+  private pendingTail: Promise<void> = Promise.resolve();
   private disposed = false;
   private readonly home: string | null;
   /** 批准卡（ADR 0023）：人点了才回 Hermes；超时 / 会话关了一律拒绝。id → 这一轮的 run 和 Hermes 的请求号。 */
@@ -411,7 +437,11 @@ export class HermesSession implements RuntimeSession {
     this.log = log;
     gateway.child.once('exit', (code, signal) => {
       if (this.disposed) return;
+      // 网关进程退出不等于远端那一轮已经停了（Hermes 可能重启后继续跑）：这条 ended 不带
+      // deliveryId，hub 那边继续保持 sending、不会放行下一句。
       if (this.run) this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: `Hermes 网关退出了（${code ?? signal}）` });
+      // 进程没了就别再对着死端点重连；pending 还在，下次开会话由 reconcile 去查真实状态。
+      this.run?.abort.abort();
       this.run = null;
       this.queue.close();
     });
@@ -435,92 +465,172 @@ export class HermesSession implements RuntimeSession {
 
   async prompt(input: PromptInput): Promise<Result<void, DomainError>> {
     if (this.run) return err(conflict('上一轮还没结束'));
+    if (this.submitting) return err(conflict('上一轮还在提交'));
     // 幂等键：会话 + 轮次 + 随机数；重试只用同一个（§14：还要带同一个 X-Hermes-Session-Key）。
     // 记在 HERMES_HOME：上次同一条输入没确认收到（worker 中途重启），这次沿用那个键，不会多跑一轮。
     const text = hermesInput(input);
     const inputHash = hashInput(text);
-    const previous = this.home ? await readPending(this.home) : null;
-    const key = previous && previous.runId === null && previous.inputHash === inputHash ? previous.key : `ahub:${this.sessionId}:${++this.seq}:${randomBytes(6).toString('hex')}`;
-    await this.savePending({ key, inputHash, runId: null, at: Date.now() });
-    const body: Record<string, unknown> = {
-      session_id: this.gateway.endpoint.sessionKey,
-      input: text,
-      model: this.gateway.route ? routedModel(this.gateway.route, this.model) : this.model,
-      provider: 'custom',
-      ...(this.instructions ? { instructions: this.instructions } : {})
-    };
-    let runId: string;
-    try {
-      const submitted = await submitRun(this.gateway.endpoint, body, key);
-      runId = submitted.run_id;
-    } catch (error) {
-      if (error instanceof HermesHttpError && (error.status === 429 || error.status === 503)) return err(unavailable('Hermes 太忙（被限流），稍后再试'));
-      // 明确被拒（4xx）：这一轮肯定没跑，键不用留；连不上 / 超时的留着，重发同一条沿用这个键
-      if (error instanceof HermesHttpError && error.status >= 400 && error.status < 500) await this.savePending(null);
-      if (error instanceof HermesHttpError && error.status === 409) return err(conflict(`Hermes 拒绝了这一轮：${error.code}`));
-      return err(unavailable(`Hermes 不收这一轮：${(error as Error).message}`));
+    // 提交结果未知时只允许原样重发（同一个幂等键、同一条送达）：换内容可能和远端还在跑的
+    // 那轮叠上，换 deliveryId 会把结局记到别人的账上。
+    const held = this.submission;
+    if (held && held.inputHash !== inputHash) return err(conflict('上一次提交的结果还没确认，只能重发同一条'));
+    if (held?.deliveryId !== undefined && held.deliveryId !== input.deliveryId) {
+      return err(conflict('上一次提交对应的是另一条送达，只能用原来那条重发'));
     }
-    await this.savePending({ key, inputHash, runId, at: Date.now() });
-    const abort = new AbortController();
-    this.run = { id: runId, abort };
-    void this.follow(runId, abort);
-    return ok(undefined);
+    this.submitting = true;
+    try {
+      let key: string;
+      let deliveryId = held?.deliveryId ?? input.deliveryId;
+      if (held) {
+        key = held.key;
+      } else {
+        const previous = this.home ? await readPending(this.home) : null;
+        if (previous && previous.runId === null) {
+          // 上次只落盘、还没拿到 run_id：结果不确定，不能换一条把它覆盖掉。
+          if (previous.inputHash !== inputHash) {
+            this.submission = { key: previous.key, inputHash: previous.inputHash, ...(previous.deliveryId ? { deliveryId: previous.deliveryId } : {}) };
+            return err(conflict('上一次提交的结果还没确认，只能重发同一条'));
+          }
+          if (previous.deliveryId !== undefined && previous.deliveryId !== input.deliveryId) {
+            this.submission = { key: previous.key, inputHash, deliveryId: previous.deliveryId };
+            return err(conflict('上一次提交对应的是另一条送达，只能用原来那条重发'));
+          }
+          key = previous.key;
+          deliveryId = previous.deliveryId ?? input.deliveryId;
+        } else {
+          key = `ahub:${this.sessionId}:${++this.seq}:${randomBytes(6).toString('hex')}`;
+        }
+      }
+      // 预约记住这一轮归属的送达：之后重发既不能换内容，也不能换 deliveryId。
+      this.submission = { key, inputHash, ...(deliveryId ? { deliveryId } : {}) };
+      // deliveryId 跟着这一轮落盘：worker 重启后还能把确认终态归属回同一条送达。
+      const pending = { key, inputHash, ...(deliveryId ? { deliveryId } : {}) };
+      await this.savePending({ ...pending, runId: null, at: Date.now() });
+      const body: Record<string, unknown> = {
+        session_id: this.gateway.endpoint.sessionKey,
+        input: text,
+        model: this.gateway.route ? routedModel(this.gateway.route, this.model) : this.model,
+        provider: 'custom',
+        ...(this.instructions ? { instructions: this.instructions } : {})
+      };
+      let runId: string;
+      try {
+        const submitted = await submitRun(this.gateway.endpoint, body, key);
+        runId = submitted.run_id;
+      } catch (error) {
+        // 429 是明确的「没收下，稍后再来」，可以放下一句；503 可能是网关 / 中间层返回的，
+        // 分不清 Hermes 收没收到，按结果未知处理（预约留着，只放同一条重发）。
+        if (error instanceof HermesHttpError && error.status === 429) {
+          this.submission = null;
+          return err(unavailable('Hermes 太忙（被限流），稍后再试'));
+        }
+        if (error instanceof HermesHttpError && error.status >= 400 && error.status < 500) {
+          this.submission = null;
+          // 键不用留；连不上 / 超时的留着，重发同一条沿用这个键
+          await this.savePending(null);
+        }
+        if (error instanceof HermesHttpError && error.status === 409) return err(conflict(`Hermes 拒绝了这一轮：${error.code}`));
+        // 连不上 / 超时 / 5xx：Hermes 收没收到不确定。reservation 留着，只放同一条重发。
+        return err(unavailable(`Hermes 不收这一轮：${(error as Error).message}`));
+      }
+      await this.savePending({ ...pending, runId, at: Date.now() });
+      const abort = new AbortController();
+      // 先让 run 接管闸门，再松开提交占位：中间没有空窗。
+      this.run = { id: runId, abort, following: true };
+      this.submission = null;
+      void this.follow(runId, abort, deliveryId);
+      return ok(undefined);
+    } finally {
+      this.submitting = false;
+    }
   }
 
-  /** 只清这一轮自己的记录：收尾时下一轮可能已经记上了。 */
-  private async clearPendingFor(runId: string): Promise<void> {
-    if (!this.home) return;
-    const current = await readPending(this.home);
-    if (current?.runId === runId) await this.savePending(null);
+  /** 只清这一轮自己的记录：收尾时下一轮可能已经记上了。读改写串行，避免抢在别人落盘之后删掉新纪录。 */
+  private async clearPendingFor(runId: string | null): Promise<void> {
+    const home = this.home;
+    if (!home) return;
+    await this.serializePending(async () => {
+      const current = await readPending(home);
+      if (current?.runId === runId) await writePending(home, null);
+    }).catch((error: unknown) => this.log(`清不掉 Hermes 的进行中一轮：${(error as Error).message}`));
   }
 
   private async savePending(pending: PendingTurn | null): Promise<void> {
-    if (!this.home) return;
-    await writePending(this.home, pending).catch((error: unknown) => this.log(`记不下 Hermes 的进行中一轮：${(error as Error).message}`));
+    const home = this.home;
+    if (!home) return;
+    await this.serializePending(() => writePending(home, pending))
+      .catch((error: unknown) => this.log(`记不下 Hermes 的进行中一轮：${(error as Error).message}`));
+  }
+
+  private serializePending<T>(op: () => Promise<T>): Promise<T> {
+    const next = this.pendingTail.then(op, op);
+    this.pendingTail = next.then(() => undefined, () => undefined);
+    return next;
   }
 
   /**
    * 开会话时对账：上次 worker 停掉前有一轮没收尾（记了 run_id），查 Hermes 说清结局。
-   * 还在跑 → 接着跟；结果未知 → 交给人（界面上给「重发 / 不用了」）；已结束 → 记一条诊断。
-   * 只提交了、没拿到 run_id 的不动：下次发同一条会沿用同一个幂等键。
+   * 还在跑 → 接着跟；结果未知 → 交给人，记录留着、本地闸门挡着（点停也要查实终态才收）；
+   * 明确终态 → 有 deliveryId 就补一条带 id 的 ended（精确收掉 hub 那条送达），老记录只记诊断。
+   * 只提交了、没拿到 run_id 的不动（但占住提交位）：下次发同一条会沿用同一个幂等键。
    */
   async reconcile(): Promise<void> {
     if (!this.home) return;
     const pending = await readPending(this.home);
-    if (!pending?.runId) return;
+    if (!pending) return;
+    if (!pending.runId) {
+      this.submission = { key: pending.key, inputHash: pending.inputHash, ...(pending.deliveryId ? { deliveryId: pending.deliveryId } : {}) };
+      this.queue.push({ kind: 'diagnostic', level: 'warn', text: 'worker 重启前只提交了一半，不确定 Hermes 收没收到；只放同一条重发。' });
+      return;
+    }
     const status = await this.status(pending.runId);
     if (status && ['queued', 'running', 'waiting', 'waiting_for_approval'].includes(status.status)) {
       const abort = new AbortController();
-      this.run = { id: pending.runId, abort };
+      this.run = { id: pending.runId, abort, following: true };
       this.queue.push({ kind: 'diagnostic', level: 'info', text: 'worker 重启前的一轮 Hermes 还在跑，接着跟。' });
-      void this.follow(pending.runId, abort);
+      void this.follow(pending.runId, abort, pending.deliveryId);
       return;
     }
-    await this.savePending(null);
     if (!status || status.status === 'unknown') {
+      // 结果未知不证明停了：记录留着（下次还能再查），用本地闸门挡住下一句；用户只能重发，
+      // 点停也要等状态查询确认同一个 run 的终态才收。
+      this.run = { id: pending.runId, abort: new AbortController(), following: false };
       this.queue.push({ kind: 'diagnostic', level: 'warn', text: 'worker 重启前提交的一轮 Hermes，结果不确定；没有自动重试，请看工作区后决定是否重发。' });
       this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON });
       return;
     }
-    this.queue.push({ kind: 'diagnostic', level: 'info', text: `worker 重启前提交的一轮 Hermes 已经${status.status === 'completed' ? '完成' : status.status === 'failed' ? '失败' : '停止'}（${status.status}）。` });
+    if (pending.deliveryId && (TERMINAL_RUN_STATUSES as readonly string[]).includes(status.status)) {
+      const mapped = createHermesEventMapper()({ event: `run.${status.status}`, ...(status.error ? { error: status.error } : {}) });
+      for (const event of mapped.events) this.queue.push(tagEnded(event, pending.deliveryId));
+    } else {
+      this.queue.push({ kind: 'diagnostic', level: 'info', text: `worker 重启前提交的一轮 Hermes 已经${status.status === 'completed' ? '完成' : status.status === 'failed' ? '失败' : '停止'}（${status.status}）。` });
+    }
+    await this.clearPendingFor(pending.runId);
   }
 
-  /** 跟一轮的事件流直到终态；断线了查状态，没结束就重连（SSE 自带补发）。 */
-  private async follow(runId: string, abort: AbortController): Promise<void> {
+  /**
+   * 跟一轮的事件流直到终态；断线了查状态，没结束就重连（SSE 自带补发）。
+   *
+   * `terminal` 只认 Hermes 明确报出的终态（SSE 终态帧 / 状态查询确认 completed、failed、
+   * cancelled、interrupted）；`unknown` 是「查不到 / 结果未知 / 事件流耗尽」，它**不证明**
+   * 远端那一轮停了：这时 ended 不带 deliveryId，并且继续占着 `this.run` 的本地闸门。
+   */
+  private async follow(runId: string, abort: AbortController, deliveryId?: string): Promise<void> {
     const map = createHermesEventMapper();
     let terminal = false;
-    for (let attempt = 0; !terminal && !abort.signal.aborted && attempt < 20; attempt++) {
+    let unknown = false;
+    for (let attempt = 0; !terminal && !unknown && !abort.signal.aborted && attempt < 20; attempt++) {
       try {
         await streamRun(
           this.gateway.endpoint,
           runId,
           (raw) => {
-            if (terminal) return;
+            if (terminal || unknown) return;
             const mapped = map(raw);
             // 先放开「正在跑」再推终态：收到 ended 就马上发下一轮，不该撞上「上一轮还没结束」
             if (mapped.terminal && this.run?.id === runId) this.run = null;
             if (mapped.terminal) this.withdrawRun(runId);
-            for (const event of mapped.events) this.queue.push(event);
+            for (const event of mapped.events) this.queue.push(tagEnded(event, mapped.terminal ? deliveryId : undefined));
             if (mapped.control) void this.answer(runId, mapped.control);
             if (mapped.terminal) terminal = true;
           },
@@ -530,29 +640,38 @@ export class HermesSession implements RuntimeSession {
         if (abort.signal.aborted) break;
         this.log(`Hermes 事件流断了：${(error as Error).message}`);
       }
-      if (terminal || abort.signal.aborted) break;
+      if (terminal || unknown || abort.signal.aborted) break;
       const status = await this.status(runId);
       if (status?.status === 'unknown') {
-        // D3：结果未知不自动处理（不重放、不当成功），交给人
+        // D3：结果未知不自动处理（不重放、不当成功），交给人；也不能当成「已停」的证据。
         this.queue.push({ kind: 'diagnostic', level: 'warn', text: 'Hermes 重启过，这一轮是否执行完不确定；没有自动重试，请看工作区后决定是否重发。' });
         this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON });
-        terminal = true;
+        unknown = true;
         break;
       }
-      if (status && ['completed', 'failed', 'cancelled', 'interrupted'].includes(status.status)) {
-        // 流断在终态帧之前：按状态补一个结局
+      if (status && (TERMINAL_RUN_STATUSES as readonly string[]).includes(status.status)) {
+        // 流断在终态帧之前：状态查询确认了终态，可以按结局收尾并归属到这一条送达。
+        if (this.run?.id === runId) this.run = null;
+        this.withdrawRun(runId);
         const synthetic = map({ event: `run.${status.status}`, ...(status.error ? { error: status.error } : {}) });
-        for (const event of synthetic.events) this.queue.push(event);
+        for (const event of synthetic.events) this.queue.push(tagEnded(event, deliveryId));
         terminal = true;
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 10_000)));
     }
-    if (!terminal && !abort.signal.aborted) this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: '连不上 Hermes 的事件流' });
+    if (!terminal && !unknown && !abort.signal.aborted) {
+      // 重连用尽也没拿到终态：不证明这一轮停了，ended 不带 id。
+      this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: '连不上 Hermes 的事件流' });
+      unknown = true;
+    }
     // 有了结局（包括结果未知、已经交给人）就不用再对账；连不上 / 被 dispose 的留着，下次开会话再查
     this.withdrawRun(runId);
     if (terminal) await this.clearPendingFor(runId);
-    if (this.run?.id === runId) this.run = null;
+    // 只有确认的终态（或主动 dispose）才放开「上一轮还没结束」；未知结局继续 fail closed。
+    if ((terminal || abort.signal.aborted) && this.run?.id === runId) this.run = null;
+    // 流已经跟完了，但结局未知：留下本地闸门，等用户重发；点停也要先查实终态才收。
+    else if (unknown && this.run?.id === runId) this.run.following = false;
   }
 
   private async status(runId: string): Promise<{ status: string; execution_generation?: number; error?: string } | null> {
@@ -602,11 +721,43 @@ export class HermesSession implements RuntimeSession {
 
   async interrupt(): Promise<void> {
     const run = this.run;
-    if (!run) return;
+    if (!run) {
+      // 提交结果不确定、还没有 run id：不能当成「停了」把记录丢掉，否则远端真跑起来就没人收。
+      // 预约和 pending 都留着，只放同一条（同一个键、同一条送达）重发。
+      if (this.submission) {
+        this.queue.push({ kind: 'diagnostic', level: 'warn', text: '提交结果还不确定，不能直接丢掉这一轮；记录留着，只能用同一条重发。' });
+      }
+      return;
+    }
     // 不 abort 事件流：等 Hermes 自己发 run.cancelled，结局才准
     await hermesJson(this.gateway.endpoint, 'POST', `/v1/runs/${encodeURIComponent(run.id)}/stop`, {}).catch((error: unknown) => {
       this.log(`停 Hermes 这一轮失败：${(error as Error).message}`);
     });
+    // 还在跟事件流：终态由 follow 收，不在这里补。
+    if (run.following || this.run !== run) return;
+    // 只剩对账未知的本地闸门：停一下再查同一个 run，只有确认终态才算停了。
+    const status = await this.status(run.id);
+    if (this.run !== run) return;
+    if (!status || !(TERMINAL_RUN_STATUSES as readonly string[]).includes(status.status)) {
+      this.queue.push({ kind: 'diagnostic', level: 'warn', text: `停这一轮 Hermes 没得到确认（${status?.status ?? '查不到状态'}）；记录留着，下次对账再看。` });
+      return;
+    }
+    const pending = this.home ? await readPending(this.home) : null;
+    if (pending && pending.runId !== run.id) {
+      // 记录已经属于别的轮次：不动它，闸门也先留着，免得把别人的结局收错。
+      this.queue.push({ kind: 'diagnostic', level: 'warn', text: '本地记录已经换成另一轮了，这次停轮没有收掉任何送达。' });
+      return;
+    }
+    if (pending?.deliveryId) {
+      const mapped = createHermesEventMapper()({ event: `run.${status.status}`, ...(status.error ? { error: status.error } : {}) });
+      for (const event of mapped.events) this.queue.push(tagEnded(event, pending.deliveryId));
+    } else {
+      // 老记录没有 deliveryId：确认终态后照旧只记诊断（没有送达可收）。
+      this.queue.push({ kind: 'diagnostic', level: 'info', text: `worker 重启前提交的一轮 Hermes 已经${status.status === 'completed' ? '完成' : status.status === 'failed' ? '失败' : '停止'}（${status.status}）。` });
+    }
+    this.withdrawRun(run.id);
+    this.run = null;
+    await this.clearPendingFor(run.id);
   }
 
   /** 事件流断线重连在 follow 里自己做；这里不需要额外补发。 */

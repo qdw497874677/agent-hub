@@ -4,10 +4,8 @@ import type { DomainError } from '../errors.ts';
 import { invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Workspace } from '../workspace.ts';
-import type { WorkspaceGit } from '../ports/workspace-git.ts';
 import type { Deps } from './deps.ts';
 import { authorizeProject } from './authorization.ts';
-import { parentOf } from './machine-dirs.ts';
 import { sameRepoUrl } from '../repo-url.ts';
 
 export { sameRepoUrl } from '../repo-url.ts';
@@ -37,6 +35,7 @@ export interface SyncWorkspaceResult {
 /**
  * 查看已有（单仓）工作空间里，项目清单中的仓库是否已经在场。
  *
+ * 只看工作空间自己登记的目录：比对它的 origin 和项目仓库是不是同一个。
  * 多仓项目不再把缺的仓库克隆到工作空间的同级目录：那些目录不会登记进 Workspace 表，
  * 也不走组合工作空间（agent-hub-groups）的路径约定，容易写成「未登记的兄弟目录」。
  * 多个仓库请新建组合工作空间。已有的同级目录不动，单仓工作空间保持原样。
@@ -67,45 +66,25 @@ export async function syncWorkspaceReposUseCase(
   }
   const workerId = workspace.workerId;
   if (workerId === null) return err(invalid('这个工作空间和 hub 同机（没有 workerId），暂不支持同步'));
-  const baseDir = parentOf(workspace.path);
-  if (baseDir === null) return err(invalid('工作空间路径没有上级目录，无法确定仓库放哪'));
   const git = deps.gateway.git(workerId);
 
-  const known = new Map<string, string | null>([[workspace.path, await remoteOf(git, workspace.path)]]);
-  const listed = await deps.gateway.listDirectories(workerId, baseDir);
-  if (listed.ok) {
-    for (const entry of listed.value.entries) {
-      known.set(entry.path, await remoteOf(git, entry.path));
-    }
-  }
+  // 只检查登记的这个目录本身。不列上级目录、不碰任何同级目录（可能是别的项目）。
+  const inspected = await git.inspect(workspace.path);
+  if (!inspected.ok) return inspected;
 
+  const repo = repos[0]!;
   const present: WorkspaceRepoPlacement[] = [];
   const skipped: { name: string; reason: string }[] = [];
-  const claimed = new Set<string>();
-  for (const repo of repos) {
-    const match = [...known.entries()].find(([path, remote]) => !claimed.has(path) && remote !== null && sameRepoUrl(remote, repo.url));
-    if (match) {
-      claimed.add(match[0]);
-      present.push({ name: repo.name, path: match[0] });
-      continue;
-    }
-    const path = `${baseDir === '/' ? '' : baseDir}/${repo.name}`;
-    const inspected = await git.inspect(path);
-    if (!inspected.ok) return inspected;
-    if (inspected.value.exists) {
-      if (!inspected.value.isGit) {
-        skipped.push({ name: repo.name, reason: '同名目录存在但不是 git 仓库，没有动它' });
-        continue;
-      }
-      present.push({ name: repo.name, path });
-      continue;
-    }
-    skipped.push({ name: repo.name, reason: '仓库不在这个工作空间里；多仓请新建组合工作空间，这里不会自动克隆' });
+  if (!inspected.value.exists) {
+    skipped.push({ name: repo.name, reason: '工作空间的目录不存在，没有动任何目录；多个仓库请新建组合工作空间' });
+  } else if (!inspected.value.isGit) {
+    skipped.push({ name: repo.name, reason: '工作空间目录不是 git 仓库，没有动它' });
+  } else if (inspected.value.remoteUrl === null) {
+    skipped.push({ name: repo.name, reason: '工作空间目录没有 origin，无法确认仓库来源；多个仓库请新建组合工作空间' });
+  } else if (!sameRepoUrl(inspected.value.remoteUrl, repo.url)) {
+    skipped.push({ name: repo.name, reason: '工作空间目录的 origin 和项目仓库对不上，没有动任何目录；多个仓库请新建组合工作空间' });
+  } else {
+    present.push({ name: repo.name, path: workspace.path });
   }
   return ok({ workspace, added: [], present, skipped, failed: [] });
-}
-
-async function remoteOf(git: Pick<WorkspaceGit, 'inspect'>, path: string): Promise<string | null> {
-  const inspected = await git.inspect(path);
-  return inspected.ok && inspected.value.isGit ? inspected.value.remoteUrl : null;
 }

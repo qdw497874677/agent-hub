@@ -40,10 +40,9 @@ import type { Project } from '../project.ts';
 import { err, ok, type Result } from '../result.ts';
 import { isBusy, type Session } from '../session.ts';
 import { otherEnd } from '../session-link.ts';
-import { projectAsResource, type AccessPolicy } from './authorization.ts';
+import { projectAsResource, projectOfSessionOrigin, type AccessPolicy } from './authorization.ts';
 import type { Deps } from './deps.ts';
 import { loadBotConfig } from './bots.ts';
-import { projectOfSession } from './workspaces.ts';
 
 /**
  * 消息总线（ADR 0018 · P2P 内核）：
@@ -212,8 +211,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
   const sessionAndProject = async (sessionId: SessionId): Promise<{ session: Session; project: Project } | null> => {
     const session = await deps.sessions.byId(sessionId);
     if (!session) return null;
-    // 容器会话没有任务：按 bot 归属找回项目（#221 步骤 7）。
-    const project = await projectOfSession(deps, session);
+    // #243：身份只认不可变来源（任务 / originProjectId / 组 / 临时空间），不按放置反推。
+    const project = await projectOfSessionOrigin(deps, session);
     if (!project || project.deletedAt !== null) return null;
     return { session, project };
   };

@@ -2,6 +2,7 @@ import type { Asset, AssetKind, AssetScope } from './asset.ts';
 import type { McpConfig } from './mcp.ts';
 import { secretRefsIn } from './mcp.ts';
 import { forbidden, invalid, type DomainError } from './errors.ts';
+import { REPO_TOKEN_PREFIX } from './project.ts';
 import { err, ok, type Result } from './result.ts';
 
 /**
@@ -90,6 +91,8 @@ export interface AssetSubmission {
   readonly tokenId: string | null;
   /** 申请把作用域改成什么（提升到全局）；null = 只是新版本。 */
   readonly targetScope: AssetScope | null;
+  /** 上架到团队的目标团队；只在 targetScope === 'team' 时有值。null = 不换团队 / 旧数据。 */
+  readonly targetTeamId: string | null;
   readonly status: SubmissionStatus;
   readonly required: number;
   readonly approvals: readonly AssetApproval[];
@@ -178,6 +181,24 @@ export const reviewScope = (asset: Pick<Asset, 'scope'>, submission: Pick<AssetS
   submission.targetScope ?? asset.scope;
 
 /**
+ * 这次提交按哪个团队审、按哪个团队取团队级密钥。
+ * 上架到团队按提交时记下的目标团队；新版本 / 提升到全局按资产现在的团队。
+ * 旧提交没有记录目标团队时返回 null——不拿资产现在的归属来猜，见 submissionDestinationMissing。
+ */
+export const reviewTeamId = (
+  asset: Pick<Asset, 'teamId'>,
+  submission: Pick<AssetSubmission, 'targetScope' | 'targetTeamId'>
+): string | null => (submission.targetScope === 'team' ? submission.targetTeamId : asset.teamId);
+
+/** 上架到团队的旧提交没记目标团队：审核 / 发布都要显式拦住，不能静默猜到某个团队。 */
+export const submissionDestinationMissing = (
+  submission: Pick<AssetSubmission, 'targetScope' | 'targetTeamId'>
+): boolean => submission.targetScope === 'team' && submission.targetTeamId === null;
+
+export const MISSING_TARGET_TEAM =
+  '这次提交是旧数据，没有记录目标团队：不会按资产现在的归属猜发布目的地。让提交人撤回后重新上架，或驳回这次提交。';
+
+/**
  * 有资格审这次提交的人。
  * - 全局：hub 管理员（他自己提交也算，打自审标记）。
  * - 团队 / 项目：团队负责人 + 指定审核人，去掉提交人和作者；去完没人（单人团队、负责人自己提交）→ 转 hub 管理员。
@@ -234,11 +255,22 @@ export function checkDecider(
   return ids.includes(reviewer.id) ? ok(true) : err(forbidden('你不是这次提交的审核人'));
 }
 
-/** 需要几票（4A：默认 1；设置打开时全局 / MCP stdio 要 2）。个人资产 0（1A 免审）。 */
-export function requiredApprovals(scope: AssetScope, mcpStdio: boolean, settings: AssetReviewSettings): number {
+/**
+ * 需要几票（4A：默认 1；设置打开时全局 / MCP stdio 要 2）。个人资产 0（1A 免审）。
+ *
+ * 团队免审（teamNoReview）只在没有高风险发现时成立：扫描出 high 的版本必须由审核人看过并显式确认
+ * （approveSubmission 的 acknowledgeHigh）才能发布，不能被免审自动发布、也不能被 Git 巡检 / 重新提交这类
+ * 重放路径绕过去。个人资产仍按 1A 免审——它只能装到作者自己接入的机器上，没有团队分发面。
+ */
+export function requiredApprovals(
+  scope: AssetScope,
+  mcpStdio: boolean,
+  settings: AssetReviewSettings,
+  highFinding = false
+): number {
   if (scope === 'personal') return 0;
-  // 团队免审：stdio MCP 能在机器上跑任意命令，不免
-  if (scope === 'team' && settings.teamNoReview === true && !mcpStdio) return 0;
+  // 团队免审：stdio MCP 能在机器上跑任意命令，不免；高风险发现同样不免
+  if (scope === 'team' && settings.teamNoReview === true && !mcpStdio && !highFinding) return 0;
   if (scope === 'global' && settings.twoReviewers.global) return 2;
   if (mcpStdio && settings.twoReviewers.mcpStdio) return 2;
   return 1;
@@ -436,7 +468,7 @@ export function mcpRiskSummary(config: McpConfig, previous: McpConfig | null = n
 export const secretKey = (layer: 'hub' | 'team' | 'personal', name: string, ref: string | null = null): string =>
   layer === 'hub' ? name : `@${layer === 'team' ? 'team' : 'user'}:${ref ?? ''}:${name}`;
 export const isHubSecretKey = (key: string): boolean =>
-  !key.startsWith('@') && !key.startsWith('asset-git:');
+  !key.startsWith('@') && !key.startsWith('asset-git:') && !key.startsWith(REPO_TOKEN_PREFIX);
 export function parseSecretKey(key: string): { layer: 'hub' | 'team' | 'personal'; ref: string | null; name: string } {
   const match = /^@(team|user):([^:]*):(.+)$/.exec(key);
   if (!match) return { layer: 'hub', ref: null, name: key };

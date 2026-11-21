@@ -95,6 +95,11 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
   const outboxFields = ['id', 'target_kind', 'target_id', 'body', 'author_kind', 'author_name', 'reply_to_external_id', 'external_conversation_id',
     'external_thread_id', 'state', 'attempts', 'lease_until', 'next_attempt_at', 'external_message_id', 'origin', 'created_at', 'updated_at'] as const;
   const upO = db.prepare(upsertSql('channel_outbox', outboxFields));
+  const outboxCols = `(${outboxFields.join(', ')}) VALUES (${outboxFields.map(() => '?').join(',')})`;
+  const insO = db.prepare(`INSERT INTO channel_outbox ${outboxCols} ON CONFLICT(id) DO NOTHING`);
+  const selO = db.prepare('SELECT * FROM channel_outbox WHERE id = ?');
+  const settleO = db.prepare(`UPDATE channel_outbox SET state = ?, attempts = ?, lease_until = ?, next_attempt_at = ?,
+    external_message_id = ?, updated_at = ? WHERE id = ? AND state = 'sending' AND lease_until IS ?`);
   const oArgs = (m: ChannelOutboxMessage) => [m.id, m.target.kind, m.target.id, m.body, m.author.kind, m.author.name, m.replyToExternalId,
     m.externalConversationId, m.externalThreadId, m.state, m.attempts, m.leaseUntil, m.nextAttemptAt, m.externalMessageId, m.origin, m.createdAt, m.updatedAt] as const;
 
@@ -176,6 +181,22 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
       return row ? toO(row) : null;
     },
     async save(m) { upO.run(...oArgs(m)); },
+    /** 原子 insert-if-absent：已存在则返回原行（不覆盖 sent 等状态）。 */
+    async insertIfAbsent(m) {
+      const inserted = Number(insO.run(...oArgs(m)).changes) > 0;
+      const row = selO.get(m.id) as O | undefined;
+      if (!row) throw new Error('Outbox row is missing after insert-if-absent');
+      return { message: toO(row), inserted };
+    },
+    /**
+     * 租约 CAS 结算：只有行仍是 `sending` 且 lease_until 等于领取值时才写。
+     * 返回 false 表示租约已过期被重领或已结算，本次结果作废。
+     */
+    async settle(next, leaseUntil) {
+      const result = settleO.run(next.state, next.attempts, next.leaseUntil, next.nextAttemptAt,
+        next.externalMessageId, next.updatedAt, next.id, leaseUntil);
+      return Number(result.changes) > 0;
+    },
     async byId(id) {
       const row = db.prepare('SELECT * FROM channel_outbox WHERE id = ?').get(id) as O | undefined;
       return row ? toO(row) : null;

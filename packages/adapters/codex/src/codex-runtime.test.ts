@@ -8,6 +8,7 @@ import {
   asSessionId,
   asTaskId,
   type AgentRuntime,
+  type PromptInput,
   type RuntimeSession,
   type SessionEvent,
   type StartSpec
@@ -91,6 +92,14 @@ async function waitForExit(pid: number | null): Promise<void> {
     await sleep(10);
   }
   assert.fail(`codex 进程 ${pid} 还活着`);
+}
+
+function keyedPrompt(text: string, deliveryId: string): PromptInput {
+  return { text, parts: [], deliveryId };
+}
+
+function endedEvents(events: readonly SessionEvent[]): Extract<SessionEvent, { kind: 'ended' }>[] {
+  return events.filter((event): event is Extract<SessionEvent, { kind: 'ended' }> => event.kind === 'ended');
 }
 
 /** 起一条会话跑用例；无论断言成败都 dispose 并确认进程退出，测试之间不留进程。 */
@@ -304,6 +313,93 @@ test('descriptor 与 provider 拒绝', async () => {
       assert.equal(result.error.code, 'invalid');
       assert.match(result.error.message, /不支持 hub 模型提供商/);
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('送达确认：ended 带回本轮 prompt 的 deliveryId，旧轮的迟到完成不会顶掉新一轮', async () => {
+  const root = workdir();
+  try {
+    await withSession(makeRuntime(), spec(root), async (session, _pid, events) => {
+      // 第一轮：没有旧轮可重复，结束必须带上 d-1。
+      assert.ok((await session.prompt(keyedPrompt('stale 第一轮', 'd-1'))).ok);
+      const first = await waitFor(events, '第一轮 ended', (event) => event.kind === 'ended');
+      assert.ok(first.kind === 'ended');
+      assert.equal(first.deliveryId, 'd-1');
+
+      // 第二轮：假 codex 先补发 turn_1 的重复 completed，再正常结束 turn_2。
+      assert.ok((await session.prompt(keyedPrompt('stale 第二轮', 'd-2'))).ok);
+      const second = await waitFor(
+        events,
+        '第二轮 tagged ended',
+        (event) => event.kind === 'ended' && event.deliveryId === 'd-2'
+      );
+      assert.ok(second.kind === 'ended');
+      assert.equal(second.outcome, 'done');
+
+      // 旧轮的重复完成不能再发一条 ended，也不能把 d-2 抢走。
+      const ended = endedEvents(events);
+      assert.equal(ended.length, 2);
+      assert.deepEqual(
+        ended.map((event) => event.deliveryId),
+        ['d-1', 'd-2']
+      );
+      const text = events
+        .filter((event): event is Extract<SessionEvent, { kind: 'text' }> => event.kind === 'text')
+        .map((event) => event.delta)
+        .join('');
+      assert.match(text, /这一轮正常结束/);
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('送达确认：turn/completed 早于 turn/start 响应到达也能归属到本轮', async () => {
+  const root = workdir();
+  try {
+    await withSession(makeRuntime(), spec(root), async (session, _pid, events) => {
+      // 假 codex 在回 turn/start 之前就把 started / 文本 / completed 都推过来了。
+      assert.ok((await session.prompt(keyedPrompt('early 的回复', 'd-early'))).ok);
+      const ended = await waitFor(events, 'tagged ended', (event) => event.kind === 'ended');
+      assert.ok(ended.kind === 'ended');
+      assert.equal(ended.deliveryId, 'd-early');
+      assert.equal(ended.outcome, 'done');
+      assert.equal(endedEvents(events).length, 1);
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('送达确认：turn id 已确认后进程退出 → failed ended 仍带 deliveryId', async () => {
+  const root = workdir();
+  try {
+    await withSession(makeRuntime(), spec(root), async (session, _pid, events) => {
+      assert.ok((await session.prompt(keyedPrompt('die-mid 一下', 'd-die'))).ok);
+      const ended = await waitFor(events, '进程退出后的 ended', (event) => event.kind === 'ended');
+      assert.ok(ended.kind === 'ended');
+      assert.equal(ended.outcome, 'failed');
+      assert.equal(ended.deliveryId, 'd-die');
+      assert.match(ended.reason ?? '', /codex 进程退出了/);
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('送达确认：turn id 没确认进程就没了 → 不确认送达（ended 不带 deliveryId）', async () => {
+  const root = workdir();
+  try {
+    await withSession(makeRuntime(), spec(root), async (session, _pid, events) => {
+      // 假 codex 连 turn/start 响应都不回就退出：这一轮到底是不是 d-now 无法证明。
+      const result = await session.prompt(keyedPrompt('die-now 一下', 'd-now'));
+      assert.equal(result.ok, false);
+      const ended = await waitFor(events, '进程退出后的 ended', (event) => event.kind === 'ended');
+      assert.ok(ended.kind === 'ended');
+      assert.equal(ended.deliveryId, undefined);
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

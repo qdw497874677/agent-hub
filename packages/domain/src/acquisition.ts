@@ -105,14 +105,36 @@ export function readAcquisition(meta: unknown): AcquisitionResolution | null {
   };
 }
 
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const ABSOLUTE_PATH = /^([/\\]|[A-Za-z]:)/;
+
+/**
+ * locate 里的片段只能是可移植的相对路径：拒绝绝对路径、反斜杠、NUL、`.`/`..` 与空片段。
+ * 多段相对路径（例如 `chrome-linux/chrome`）仍然合法。
+ */
+function checkPortableRelative(value: string, where: string, singleSegment: boolean): Result<void, DomainError> {
+  if (value.length > 256) return err(invalid(`${where}：路径过长`));
+  if (value.includes('\u0000')) return err(invalid(`${where}：不能含 NUL`));
+  if (value.includes('\\')) return err(invalid(`${where}：只能用 / 分隔，不能有反斜杠`));
+  if (ABSOLUTE_PATH.test(value)) return err(invalid(`${where}：必须是相对路径`));
+  const segments = value.split('/');
+  if (singleSegment && segments.length !== 1) return err(invalid(`${where}：只能是单层名字`));
+  if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
+    return err(invalid(`${where}：路径片段不能为空、. 或 ..`));
+  }
+  return ok(undefined);
+}
+
 function checkLocate(locate: unknown, where: string): Result<void, DomainError> {
   if (!locate || typeof locate !== 'object') return err(invalid(`${where}：要写 locate`));
   const rec = locate as Record<string, unknown>;
-  if (rec['envRoot'] !== undefined && (typeof rec['envRoot'] !== 'string' || rec['envRoot'].length > 128)) {
+  if (rec['envRoot'] !== undefined && (typeof rec['envRoot'] !== 'string' || !ENV_NAME.test(rec['envRoot']))) {
     return err(invalid(`${where}：envRoot 不合法`));
   }
-  if (rec['homeSubdir'] !== undefined && (typeof rec['homeSubdir'] !== 'string' || rec['homeSubdir'].length > 256 || rec['homeSubdir'].includes('..'))) {
-    return err(invalid(`${where}：homeSubdir 不合法`));
+  if (rec['homeSubdir'] !== undefined) {
+    if (typeof rec['homeSubdir'] !== 'string' || rec['homeSubdir'].length === 0) return err(invalid(`${where}：homeSubdir 不合法`));
+    const home = checkPortableRelative(rec['homeSubdir'], `${where}.homeSubdir`, false);
+    if (!home.ok) return home;
   }
   if (!Array.isArray(rec['directoryPrefixes']) || rec['directoryPrefixes'].length === 0 || rec['directoryPrefixes'].length > 16) {
     return err(invalid(`${where}：directoryPrefixes 要有 1–16 项`));
@@ -120,11 +142,44 @@ function checkLocate(locate: unknown, where: string): Result<void, DomainError> 
   if (!Array.isArray(rec['binaries']) || rec['binaries'].length === 0 || rec['binaries'].length > 16) {
     return err(invalid(`${where}：binaries 要有 1–16 项`));
   }
-  const strings = [...rec['directoryPrefixes'], ...((rec['excludeDirectoryPrefixes'] as unknown[]) ?? []), ...rec['binaries']];
-  if (strings.some((item) => typeof item !== 'string' || item.length === 0 || item.length > 256)) {
-    return err(invalid(`${where}：locate 路径过长或不是字符串`));
+  const prefixes = rec['directoryPrefixes'] as unknown[];
+  const excluded = (rec['excludeDirectoryPrefixes'] as unknown[] | undefined) ?? [];
+  for (const [index, value] of prefixes.entries()) {
+    if (typeof value !== 'string' || value.length === 0) return err(invalid(`${where}：directoryPrefixes 不合法`));
+    const checked = checkPortableRelative(value, `${where}.directoryPrefixes[${index}]`, true);
+    if (!checked.ok) return checked;
+  }
+  if (rec['excludeDirectoryPrefixes'] !== undefined && !Array.isArray(rec['excludeDirectoryPrefixes'])) {
+    return err(invalid(`${where}：excludeDirectoryPrefixes 不合法`));
+  }
+  for (const [index, value] of excluded.entries()) {
+    if (typeof value !== 'string' || value.length === 0) return err(invalid(`${where}：excludeDirectoryPrefixes 不合法`));
+    const checked = checkPortableRelative(value, `${where}.excludeDirectoryPrefixes[${index}]`, true);
+    if (!checked.ok) return checked;
+  }
+  for (const [index, value] of (rec['binaries'] as unknown[]).entries()) {
+    if (typeof value !== 'string' || value.length === 0) return err(invalid(`${where}：binaries 不合法`));
+    const checked = checkPortableRelative(value, `${where}.binaries[${index}]`, false);
+    if (!checked.ok) return checked;
   }
   return ok(undefined);
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record)
+      .filter((key) => record[key] !== undefined)
+      .sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** 两份策略清单是否逐字段一致（顺序也一致，因为策略按顺序执行）。 */
+export function sameAcquisitionStrategies(a: readonly AcquisitionStrategy[], b: readonly AcquisitionStrategy[]): boolean {
+  return stableStringify(a) === stableStringify(b);
 }
 
 function checkArgs(args: unknown, where: string, required: boolean): Result<void, DomainError> {

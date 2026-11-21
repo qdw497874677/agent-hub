@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, writeFile, mkdir, readdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createGitWorkspace, mainWorktreeDir, networkEnv, resolveRemoteBase } from './git-workspace.ts';
+import { authScopeUrl, createGitWorkspace, mainWorktreeDir, networkEnv, parseTrackedDiffPlan, protectedDiff, pushDestination, resolveRemoteBase } from './git-workspace.ts';
 
 test('git-common-dir 的相对路径按 worktree 解析，不按进程 cwd', () => {
   const worktree = '/tmp/ws/agent-hub/.worktrees/demo-fix';
@@ -266,6 +266,169 @@ test('提交预览 → 提交（--author）→ 推送 -u（ADR 0027 阶段 2）'
   assert.ok(notRepo.ok && notRepo.value.isGit === false);
 });
 
+test('提交预览默认看见敏感改动；受保护预览不把内容和路径放进 diff 与元数据（#269）', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'p'), name: 'demo' });
+  assert.ok(cloned.ok);
+  const repo = cloned.value.path;
+  // 合成的假密钥，只用于验证过滤，不是真实凭据
+  await writeFile(join(repo, '.env'), 'SECRET=not-real-269-v1\n');
+  await writeFile(join(repo, 'server.pem'), 'not-a-real-key-269-v1\n');
+  await writeFile(join(repo, 'notes.md'), 'allowed notes 269\n');
+  sh(repo, 'add', '.env', 'server.pem', 'notes.md');
+  sh(repo, 'commit', '-qm', 'track fake secrets and notes');
+  // 从“未修改的敏感文件”复制出一个普通文件并 stage：只有 --find-copies-harder 能认出复制源。
+  await writeFile(join(repo, 'config-copy.txt'), 'SECRET=not-real-269-v1\n');
+  sh(repo, 'add', 'config-copy.txt');
+  await writeFile(join(repo, '.env'), 'SECRET=not-real-269-v2\n');
+  await writeFile(join(repo, 'server.pem'), 'not-a-real-key-269-v2\n');
+
+  // Git 工作流用的默认预览必须看得见敏感改动，否则提交门槛会误判“干净”。
+  const visibleOnly = await git.preview(repo, 64 * 1024);
+  assert.ok(visibleOnly.ok, visibleOnly.ok ? '' : visibleOnly.error.message);
+  assert.equal(visibleOnly.value.redactedSensitive, undefined);
+  const visiblePaths = visibleOnly.value.files.map((f) => f.path);
+  assert.ok(visiblePaths.includes('.env'), visiblePaths.join(','));
+  assert.ok(visiblePaths.includes('server.pem'), visiblePaths.join(','));
+  assert.ok(visiblePaths.includes('config-copy.txt'), visiblePaths.join(','));
+  assert.ok(visibleOnly.value.patch.includes('not-real-269-v2'), visibleOnly.value.patch);
+  assert.ok(visibleOnly.value.patch.includes('not-a-real-key-269-v2'), visibleOnly.value.patch);
+
+  // 只读展示用的受保护预览：只有敏感改动时元数据和 patch 都为空。
+  const hiddenOnly = await git.preview(repo, 64 * 1024, { redactSensitive: true });
+  assert.ok(hiddenOnly.ok, hiddenOnly.ok ? '' : hiddenOnly.error.message);
+  assert.deepEqual(hiddenOnly.value.files, []);
+  assert.equal(hiddenOnly.value.patch, '');
+  assert.equal(hiddenOnly.value.truncated, false);
+  assert.equal(hiddenOnly.value.redactedSensitive, true);
+
+  await writeFile(join(repo, 'README.md'), 'allowed change 269\n');
+  await mkdir(join(repo, 'src'));
+  await writeFile(join(repo, 'src', 'ok.ts'), 'export const ok = 269;\n');
+
+  const preview = await git.preview(repo, 64 * 1024, { redactSensitive: true });
+  assert.ok(preview.ok, preview.ok ? '' : preview.error.message);
+  const paths = preview.value.files.map((f) => f.path);
+  assert.ok(!paths.includes('.env'), paths.join(','));
+  assert.ok(!paths.includes('server.pem'), paths.join(','));
+  assert.ok(!paths.includes('config-copy.txt'), paths.join(','));
+  assert.ok(paths.includes('README.md'), paths.join(','));
+  assert.ok(paths.some((p) => p.startsWith('src')), paths.join(','));
+  assert.ok(!preview.value.patch.includes('not-real-269'), preview.value.patch);
+  assert.ok(!preview.value.patch.includes('not-a-real-key-269'), preview.value.patch);
+  assert.ok(preview.value.patch.includes('README.md'), preview.value.patch);
+  assert.ok(preview.value.patch.includes('allowed change 269'), preview.value.patch);
+
+  // 普通文件改名：两侧都在允许清单里，受保护预览要保留整段改名 diff。
+  sh(repo, 'mv', 'notes.md', 'moved.md');
+  const moved = await git.preview(repo, 64 * 1024, { redactSensitive: true });
+  assert.ok(moved.ok, moved.ok ? '' : moved.error.message);
+  assert.ok(moved.value.files.some((f) => f.path === 'moved.md'), moved.value.files.map((f) => f.path).join(','));
+  assert.ok(moved.value.patch.includes('moved.md'), moved.value.patch);
+  assert.ok(moved.value.patch.includes('rename from notes.md'), moved.value.patch);
+
+  // 仓库关掉改名识别也不能绕过受保护预览；敏感文件改名成普通名字时，旧名 / 新名都不出现。
+  sh(repo, 'config', 'status.renames', 'false');
+  sh(repo, 'config', 'diff.renames', 'false');
+  sh(repo, 'checkout', '--', '.env');
+  sh(repo, 'mv', '.env', 'config.txt');
+  const visibleRename = await git.preview(repo, 64 * 1024);
+  assert.ok(visibleRename.ok, visibleRename.ok ? '' : visibleRename.error.message);
+  assert.ok(visibleRename.value.files.some((f) => f.path === 'config.txt'), visibleRename.value.files.map((f) => f.path).join(','));
+  assert.ok(visibleRename.value.patch.includes('config.txt'), visibleRename.value.patch);
+
+  const renamed = await git.preview(repo, 64 * 1024, { redactSensitive: true });
+  assert.ok(renamed.ok, renamed.ok ? '' : renamed.error.message);
+  assert.ok(!renamed.value.files.some((f) => f.path === 'config.txt'), renamed.value.files.map((f) => f.path).join(','));
+  assert.ok(!renamed.value.files.some((f) => f.path === '.env'), renamed.value.files.map((f) => f.path).join(','));
+  assert.ok(!renamed.value.files.some((f) => f.path === 'config-copy.txt'), renamed.value.files.map((f) => f.path).join(','));
+  assert.ok(!renamed.value.patch.includes('config.txt'), renamed.value.patch);
+  assert.ok(!renamed.value.patch.includes('config-copy.txt'), renamed.value.patch);
+  assert.ok(!renamed.value.patch.includes('not-real-269'), renamed.value.patch);
+  assert.ok(renamed.value.patch.includes('README.md'), renamed.value.patch);
+  assert.ok(renamed.value.files.some((f) => f.path === 'moved.md'), renamed.value.files.map((f) => f.path).join(','));
+  assert.ok(renamed.value.patch.includes('moved.md'), renamed.value.patch);
+  assert.equal(renamed.value.redactedSensitive, true);
+});
+
+test('受保护清单：隐藏路径覆盖后续记录，diff 使用解析后的 HEAD，失败不兜底', async () => {
+  const plan = parseTrackedDiffPlan('R100\0.env\0config.txt\0M\0config.txt\0M\0src/ok.ts\0');
+  assert.ok(plan);
+  assert.deepEqual(plan.allowed, ['src/ok.ts']);
+  assert.deepEqual(plan.entries.map((entry) => entry.path), ['src/ok.ts']);
+  assert.equal(parseTrackedDiffPlan('R100\0.env\0'), null);
+
+  let seen: string[] = [];
+  const head = 'a'.repeat(40);
+  const ok = await protectedDiff({ raw: async (args: string[]) => { seen = args; return 'PATCH'; } } as never, head, plan);
+  assert.deepEqual(ok, { ok: true, patch: 'PATCH' });
+  assert.ok(seen.includes(head));
+  assert.equal(seen.includes('HEAD'), false);
+
+  const failed = await protectedDiff({ raw: async () => { throw new Error('boom'); } } as never, head, plan);
+  assert.deepEqual(failed, { ok: false });
+});
+
+test('受保护预览：路径清单失败时整段省略，不退回文本过滤', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'p'), name: 'demo' });
+  assert.ok(cloned.ok);
+  const repo = cloned.value.path;
+  const head = sh(repo, 'rev-parse', 'HEAD').trim();
+  await rm(join(repo, '.git', 'objects', head.slice(0, 2), head.slice(2)));
+
+  const preview = await git.preview(repo, 64 * 1024, { redactSensitive: true });
+  assert.ok(preview.ok, preview.ok ? '' : preview.error.message);
+  assert.deepEqual(preview.value.files, []);
+  assert.equal(preview.value.patch, '');
+  assert.equal(preview.value.truncated, true);
+  assert.equal(preview.value.redactedSensitive, true);
+  assert.match(preview.value.notice ?? '', /过滤清单读取失败/);
+});
+
+test('受保护预览：diff 读取失败时 patch 留空并标 notice', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'p'), name: 'demo' });
+  assert.ok(cloned.ok);
+  const repo = cloned.value.path;
+  // 合成一个必然失败的 textconv：--name-status 不需要内容，能成功；真正取 diff 时才失败。
+  await writeFile(join(repo, '.gitattributes'), '*.md diff=broken-269\n');
+  sh(repo, 'config', 'diff.broken-269.textconv', 'false');
+  await writeFile(join(repo, 'README.md'), 'changed with broken textconv\n');
+
+  const preview = await git.preview(repo, 64 * 1024, { redactSensitive: true });
+  assert.ok(preview.ok, preview.ok ? '' : preview.error.message);
+  assert.ok(preview.value.files.some((f) => f.path === 'README.md'), preview.value.files.map((f) => f.path).join(','));
+  assert.equal(preview.value.patch, '');
+  assert.equal(preview.value.truncated, true);
+  assert.equal(preview.value.redactedSensitive, true);
+  assert.match(preview.value.notice ?? '', /diff 读取失败/);
+});
+
+test('受保护预览：允许路径超过上限时整段省略 diff，不退回整树过滤', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'p'), name: 'demo' });
+  assert.ok(cloned.ok);
+  const repo = cloned.value.path;
+  await mkdir(join(repo, 'bulk'));
+  for (let i = 0; i < 1001; i++) await writeFile(join(repo, 'bulk', `${i}.txt`), 'x\n');
+  sh(repo, 'add', 'bulk');
+  sh(repo, 'commit', '-qm', 'bulk');
+  for (let i = 0; i < 1001; i++) await writeFile(join(repo, 'bulk', `${i}.txt`), 'y\n');
+
+  const preview = await git.preview(repo, 64 * 1024, { redactSensitive: true });
+  assert.ok(preview.ok, preview.ok ? '' : preview.error.message);
+  assert.ok(preview.value.files.length >= 1001);
+  assert.equal(preview.value.patch, '');
+  assert.equal(preview.value.truncated, true);
+  assert.equal(preview.value.redactedSensitive, true);
+  assert.match(preview.value.notice ?? '', /超过 1000/);
+});
+
 test('gh：没装 gh → 明确原因，不抛', async () => {
   const { root, url } = await origin();
   const git = createGitWorkspace();
@@ -277,6 +440,69 @@ test('gh：没装 gh → 明确原因，不抛', async () => {
     const r = await git.gh(cloned.value.path, { action: 'view', number: 1 });
     assert.ok(r.ok);
     assert.equal(r.value.ok, false);
+  } finally {
+    process.env.PATH = saved;
+  }
+});
+
+test('gh：列表只查 open，并带出 head 仓库 / 分支名（#269）', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'p'), name: 'demo' });
+  assert.ok(cloned.ok);
+  const bin = join(root, 'gh-bin');
+  await mkdir(bin, { recursive: true });
+  const log = join(root, 'gh-args');
+  const prs = JSON.stringify([
+    // gh 真实导出的常见形态：name 在 headRepository，owner 在 headRepositoryOwner
+    { number: 21, url: 'https://github.com/o/r/pull/21', state: 'OPEN', headRefOid: 'h1', headRefName: 'feat/x', headRepository: { id: 'R_1', name: 'r' }, headRepositoryOwner: { id: 'O_1', login: 'o' }, mergedAt: null, baseRefName: 'main' },
+    // fork：owner 不同
+    { number: 9, url: 'https://github.com/o/r/pull/9', state: 'OPEN', headRefOid: 'h0', headRefName: 'feat/x', headRepository: { id: 'R_2', name: 'r' }, headRepositoryOwner: { id: 'O_2', login: 'someone' }, mergedAt: null, baseRefName: 'main' },
+    // 老响应：只有 name，没有 owner → repo 只能是 null（调用方拒绝认领）
+    { number: 10, url: 'https://github.com/o/r/pull/10', state: 'OPEN', headRefOid: 'h2', headRefName: 'feat/x', headRepository: { id: 'R_3', name: 'r' }, mergedAt: null, baseRefName: 'main' }
+  ]);
+  await writeFile(join(bin, 'gh'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(log)}\ncat <<'EOF'\n${prs}\nEOF\n`, { mode: 0o755 });
+  const saved = process.env.PATH;
+  process.env.PATH = `${bin}:${saved}`;
+  try {
+    const r = await git.gh(cloned.value.path, { action: 'list', head: 'feat/x', repo: 'o/r' });
+    assert.ok(r.ok);
+    const value = r.value;
+    assert.ok(value.ok && 'prs' in value);
+    if (!value.ok || !('prs' in value)) throw new Error('expected prs');
+    assert.deepEqual(value.prs.map((pr) => [pr.number, pr.repo, pr.headRef, pr.headSha, pr.base]), [
+      [21, 'o/r', 'feat/x', 'h1', 'main'],
+      [9, 'someone/r', 'feat/x', 'h0', 'main'],
+      [10, null, 'feat/x', 'h2', 'main']
+    ]);
+    const args = (await readFile(log, 'utf8')).trim().split('\n');
+    assert.equal(args[args.indexOf('--state') + 1], 'open');
+    assert.equal(args[args.indexOf('--repo') + 1], 'o/r');
+    assert.ok(args.join(',').includes('headRepositoryOwner'));
+  } finally {
+    process.env.PATH = saved;
+  }
+});
+
+test('gh：view 的 headRepository 带 nameWithOwner 时直接用（新旧导出都认）', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'p'), name: 'demo' });
+  assert.ok(cloned.ok);
+  const bin = join(root, 'gh-bin');
+  await mkdir(bin, { recursive: true });
+  const pr = JSON.stringify({ number: 21, url: 'https://github.com/o/r/pull/21', state: 'OPEN', headRefOid: 'h1', headRefName: 'feat/x', headRepository: { id: 'R_1', name: 'r', nameWithOwner: 'o/r' }, headRepositoryOwner: { id: 'O_1', login: 'o' }, mergedAt: null, baseRefName: 'main' });
+  await writeFile(join(bin, 'gh'), `#!/bin/sh\ncat <<'EOF'\n${pr}\nEOF\n`, { mode: 0o755 });
+  const saved = process.env.PATH;
+  process.env.PATH = `${bin}:${saved}`;
+  try {
+    const r = await git.gh(cloned.value.path, { action: 'view', number: 21 });
+    assert.ok(r.ok);
+    const value = r.value;
+    assert.ok(value.ok && 'pr' in value);
+    if (!value.ok || !('pr' in value)) throw new Error('expected pr');
+    assert.equal(value.pr.repo, 'o/r');
+    assert.equal(value.pr.headRef, 'feat/x');
   } finally {
     process.env.PATH = saved;
   }
@@ -324,28 +550,173 @@ test('checkRepo：ls-remote 读默认分支和分支存在性；坏地址不抛'
   assert.ok((broken.value.message ?? '').length > 0);
 });
 
-test('networkEnv：有 auth 才注入 GIT_CONFIG_* 三条，没有就一条都不设', () => {
+test('networkEnv：令牌必须绑定 hub 给的 HTTPS 地址，并关掉重定向', () => {
   const header = 'Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2xwYXQtYWJj';
-  const withAuth = networkEnv({ header }, {});
-  assert.equal(withAuth.GIT_CONFIG_COUNT, '1');
-  assert.equal(withAuth.GIT_CONFIG_KEY_0, 'http.extraHeader');
+  const api = 'https://gitlab.test/me/api.git';
+  const withAuth = networkEnv({ header, url: api }, {}, api);
+  assert.equal(withAuth.GIT_CONFIG_COUNT, '2');
+  assert.equal(withAuth.GIT_CONFIG_KEY_0, `http.${api}.extraHeader`);
   assert.equal(withAuth.GIT_CONFIG_VALUE_0, header);
+  assert.equal(withAuth.GIT_CONFIG_KEY_1, 'http.followRedirects');
+  assert.equal(withAuth.GIT_CONFIG_VALUE_1, 'false');
   assert.equal(withAuth.GIT_TERMINAL_PROMPT, '0');
 
-  const without = networkEnv(undefined, {});
+  // auth.url 与目的地只有尾斜杠 / userinfo 差异时视为同一个仓库
+  assert.equal(networkEnv({ header, url: `${api}/` }, {}, api).GIT_CONFIG_KEY_0, `http.${api}.extraHeader`);
+  assert.equal(networkEnv({ header, url: 'https://user:pw@GitLab.test/me/api.git' }, {}, api).GIT_CONFIG_COUNT, '2');
+
+  // 目的地不可校验（没传 / 明文 http / ssh / 本地路径 / 带换行）→ 一条 GIT_CONFIG_* 都不设
+  for (const destination of [undefined, null, '', 'http://gitlab.test/me/api.git', 'ssh://git@gitlab.test/me/api.git', '/srv/repo', 'https://gitlab.test/me/api.git\nx']) {
+    const env = networkEnv({ header, url: api }, {}, destination);
+    assert.equal(env.GIT_CONFIG_COUNT, undefined, `destination=${String(destination)}`);
+    assert.equal(env.GIT_CONFIG_KEY_0, undefined);
+  }
+
+  // 目的地与 auth.url 不一致 → 拒绝把令牌带过去
+  for (const destination of ['https://evil.test/me/api.git', 'https://gitlab.test/me/other.git', 'https://gitlab.test/me/api.git-evil']) {
+    const env = networkEnv({ header, url: api }, {}, destination);
+    assert.equal(env.GIT_CONFIG_COUNT, undefined, `destination=${destination}`);
+  }
+
+  // 旧 hub 的 auth 没带 url = 未绑定令牌：新 Worker 不把它套到任何目的地（滚动升级时失败关闭）
+  for (const destination of [api, 'https://evil.test/me/api.git', null]) {
+    const env = networkEnv({ header }, {}, destination);
+    assert.equal(env.GIT_CONFIG_COUNT, undefined, `legacy destination=${String(destination)}`);
+    assert.equal(env.GIT_CONFIG_KEY_0, undefined);
+  }
+  // auth.url 本身不合法（明文 http）同样拒绝
+  assert.equal(networkEnv({ header, url: 'http://gitlab.test/me/api.git' }, {}, api).GIT_CONFIG_COUNT, undefined);
+
+  const without = networkEnv(undefined, {}, api);
   assert.equal(without.GIT_CONFIG_COUNT, undefined);
   assert.equal(without.GIT_CONFIG_KEY_0, undefined);
   assert.equal(without.GIT_CONFIG_VALUE_0, undefined);
 
   // 空白头等于没给（不让 git 收到一个空 extraHeader）
-  const blank = networkEnv({ header: '   ' }, {});
+  const blank = networkEnv({ header: '   ', url: api }, {}, api);
   assert.equal(blank.GIT_CONFIG_COUNT, undefined);
 
   // 机器自己的凭据照旧透传，令牌不进 argv 也不挤掉它们
-  const env = networkEnv({ header }, { GIT_SSH_COMMAND: 'ssh -i k', HOME: '/home/me', PATH: '/bin' });
+  const env = networkEnv({ header, url: api }, { GIT_SSH_COMMAND: 'ssh -i k', HOME: '/home/me', PATH: '/bin' }, api);
   assert.equal(env.GIT_SSH_COMMAND, 'ssh -i k');
   assert.equal(env.HOME, '/home/me');
   assert.equal(env.PATH, '/bin');
+});
+
+test('authScopeUrl：只接受可绑定的 HTTPS 地址，去掉 userinfo / 尾斜杠', () => {
+  assert.equal(authScopeUrl('https://gitlab.test/me/api.git'), 'https://gitlab.test/me/api.git');
+  assert.equal(authScopeUrl(' HTTPS://user:pw@GitLab.test:8443/me/api.git/ '), 'https://gitlab.test:8443/me/api.git');
+  assert.equal(authScopeUrl('https://gitlab.test/me/api.git?x=1#frag'), 'https://gitlab.test/me/api.git');
+  for (const bad of ['', '   ', 'http://gitlab.test/x', 'ssh://git@gitlab.test/x', '/srv/repo', 'file:///srv/repo', 'https://gitlab.test/x\nfoo', 'https://gitlab.test/x\r', 'not a url', 'https://']) {
+    assert.equal(authScopeUrl(bad), null, `input=${JSON.stringify(bad)}`);
+  }
+});
+
+test('networkEnv：真实 git 的 URL 匹配只给目标仓库加头（#233）', () => {
+  const header = 'Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2xwYXQtYWJj';
+  const api = 'https://gitlab.test/me/api.git';
+  const env = { ...process.env, ...networkEnv({ header, url: api }, {}, api) };
+  const match = (url: string): string => {
+    try {
+      return execFileSync('git', ['config', '--get-urlmatch', 'http.extraHeader', url], { encoding: 'utf8', env }).trim();
+    } catch {
+      return '';
+    }
+  };
+  assert.equal(match(api), header);
+  assert.equal(match(`${api}/info/refs?service=git-upload-pack`), header);
+  // 同 host 的兄弟路径（含前缀伪装）、别的 host、明文 http 都拿不到头
+  assert.equal(match('https://gitlab.test/me/api.git-evil'), '');
+  assert.equal(match('https://gitlab.test/me/other.git'), '');
+  assert.equal(match('https://evil.test/me/api.git'), '');
+  assert.equal(match('http://gitlab.test/me/api.git'), '');
+  // 带凭据时任何重定向都算错误
+  const redirects = execFileSync('git', ['config', '--get', 'http.followRedirects'], { encoding: 'utf8', env }).trim();
+  assert.equal(redirects, 'false');
+});
+
+test('insteadOf 改写不会扩大令牌 scope：配置里写什么就绑什么（#233）', async () => {
+  const root = realpathSync(await mkdtemp(join(tmpdir(), 'ws-scope-')));
+  sh(root, 'init', '-q', '-b', 'main');
+  sh(root, 'remote', 'add', 'origin', 'https://gitlab.test/me/api.git');
+  sh(root, 'config', 'url.https://evil.test/.insteadOf', 'https://gitlab.test/');
+  // git 实际使用的地址会被改写到 evil.test
+  assert.equal(sh(root, 'ls-remote', '--get-url', 'origin').trim(), 'https://evil.test/me/api.git');
+  // 但 scope 绑的是配置里的原始 HTTPS URL：改写后的地址匹配不到头（安全失败）
+  const configured = sh(root, 'config', '--get', 'remote.origin.url').trim();
+  const env = { ...process.env, ...networkEnv({ header: 'Authorization: Basic x', url: configured }, {}, configured) };
+  let leaked = 'unset';
+  try {
+    leaked = execFileSync('git', ['config', '--get-urlmatch', 'http.extraHeader', 'https://evil.test/me/api.git'], { encoding: 'utf8', env, cwd: root }).trim();
+  } catch {
+    leaked = '';
+  }
+  assert.equal(leaked, '');
+  await rm(root, { recursive: true, force: true });
+});
+
+test('pushDestination：pushurl 指向别的目的地时不绑定令牌；多条也拒绝', async () => {
+  const root = realpathSync(await mkdtemp(join(tmpdir(), 'ws-push-')));
+  sh(root, 'init', '-q', '-b', 'main');
+  sh(root, 'remote', 'add', 'origin', 'https://gitlab.test/me/api.git');
+  assert.equal(await pushDestination(root), 'https://gitlab.test/me/api.git');
+  // pushurl 与 url 指向同一目的地（尾斜杠不改变判定）→ 可以绑定
+  sh(root, 'config', 'remote.origin.pushurl', 'https://gitlab.test/me/api.git/');
+  assert.equal(await pushDestination(root), 'https://gitlab.test/me/api.git/');
+  const same = networkEnv({ header: 'Authorization: Basic x', url: 'https://gitlab.test/me/api.git' }, {}, await pushDestination(root));
+  assert.equal(same.GIT_CONFIG_KEY_0, 'http.https://gitlab.test/me/api.git.extraHeader');
+  // pushurl 指向另一个 host：不把令牌送到这个额外目的地
+  sh(root, 'config', 'remote.origin.pushurl', 'https://mirror.test/me/api.git');
+  assert.equal(await pushDestination(root), null);
+  assert.equal(networkEnv({ header: 'Authorization: Basic x', url: 'https://mirror.test/me/api.git' }, {}, await pushDestination(root)).GIT_CONFIG_COUNT, undefined);
+  // 多条 pushurl 时无法确定目的地，这一趟不带令牌
+  sh(root, 'config', '--add', 'remote.origin.pushurl', 'https://gitlab.test/me/api.git');
+  assert.equal(await pushDestination(root), null);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('有 auth 但绑定缺失 / 不匹配时，clone / check / fetch / push 全部失败关闭（#233）', async () => {
+  const git = createGitWorkspace();
+  const api = 'https://gitlab.test/me/api.git';
+  const header = 'Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2xwYXQtYWJj';
+  const root = realpathSync(await mkdtemp(join(tmpdir(), 'ws-bind-')));
+
+  // 旧 hub 只给 header、不给 url：新 Worker 不猜目的地，直接拒绝（不发起网络请求）
+  const cloned = await git.clone({ repoUrl: api, parent: root, name: 'demo', auth: { header } });
+  assert.equal(cloned.ok, false);
+  assert.match(cloned.ok ? '' : cloned.error.message, /旧版 hub|拒绝/);
+
+  const checked = await git.checkRepo(api, 'main', { header });
+  assert.equal(checked.ok, true, checked.ok ? '' : checked.error.message);
+  assert.equal(checked.ok ? checked.value.reachable : true, false);
+  assert.match(checked.ok ? (checked.value.message ?? '') : '', /拒绝/);
+
+  // 本地仓库 + 配置里的 HTTPS origin：fetch 目的地与 hub 预期不一致 → 拒绝
+  sh(root, 'init', '-q', '-b', 'main');
+  await writeFile(join(root, 'README.md'), 'hi\n');
+  sh(root, 'add', '.');
+  sh(root, 'commit', '-qm', 'init');
+  sh(root, 'remote', 'add', 'origin', api);
+  const added = await git.addWorktree({
+    repoPath: root,
+    path: join(root, 'wt'),
+    branch: 'agent-hub/bound',
+    auth: { header, url: 'https://evil.test/me/api.git' }
+  });
+  assert.equal(added.ok, false);
+  assert.match(added.ok ? '' : added.error.message, /不一致/);
+
+  // push 同样：目的地（pushurl 优先）绑不上就不推
+  const pushed = await git.push(root, { header });
+  assert.equal(pushed.ok, true, pushed.ok ? '' : pushed.error.message);
+  assert.equal(pushed.ok ? pushed.value.pushed : true, false);
+  assert.match(pushed.ok ? (pushed.value.reason ?? '') : '', /拒绝/);
+  sh(root, 'config', 'remote.origin.pushurl', 'https://mirror.test/me/api.git');
+  const mismatchedPush = await git.push(root, { header, url: api });
+  assert.equal(mismatchedPush.ok, true, mismatchedPush.ok ? '' : mismatchedPush.error.message);
+  assert.equal(mismatchedPush.ok ? mismatchedPush.value.pushed : true, false);
+  assert.match(mismatchedPush.ok ? (mismatchedPush.value.reason ?? '') : '', /不能用令牌|拒绝/);
+  await rm(root, { recursive: true, force: true });
 });
 
 /** 一个带 submodule 的本地 bare 远端（子模块也是本地 bare，不走网络）。 */

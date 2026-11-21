@@ -55,7 +55,7 @@
 | `message_get` | 读 | `session.read` | `/messages/{messageId}` | messageId, waitSec? | 外部发的一条消息与它的回复 |
 | `message_inbox` | 读 | `session.read` | `/inbox` | after?, limit? | 外部收件箱（回复） |
 | `activity` | 读 | `session.read` | `/sessions/{sessionId}/activity` | sessionId | 谁对这条会话做了什么 |
-| `sync_workspace` | 写 | `project.update` | `/workspaces/{workspaceId}/sync` | workspaceId | 把项目仓库同步到这个工作空间（写工具，要 `clientRequestId`） |
+| `sync_workspace` | 写 | `project.update` | `/workspaces/{workspaceId}/sync` | workspaceId | 检查单仓工作空间的远端是否匹配项目（写工具，要 `clientRequestId`） |
 | `create_workspace` | 写 | `project.update` | `/projects/{projectId}/workspaces` | projectId | 新建临时或长期工作空间 |
 | `remove_workspace` | 写 | `project.update` | `/workspaces/{workspaceId}/remove` | workspaceId, deleteDirectory?, force? | 移除工作空间（可连目录一起删）（写工具，要 `clientRequestId`） |
 | `retry_workspace_setup` | 写 | `project.update` | `/workspaces/{workspaceId}/setup/retry` | workspaceId | 重跑准备命令（写工具，要 `clientRequestId`） |

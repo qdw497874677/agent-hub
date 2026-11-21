@@ -57,10 +57,33 @@ export interface OutboxClaim {
  * `claim` 必须具备 CAS 语义：同一个 message 在任意时刻只能被一个调用者拿到，
  * 不论并发多高、实例有几个。
  */
+export interface OutboxInsertResult {
+  /** 实际存在于存储里的那一行：新插入的是入参，已存在的原样返回。 */
+  message: ChannelOutboxMessage;
+  /** true = 这次真的插入了；false = 同 id 已存在（返回的是已有行，未覆盖）。 */
+  inserted: boolean;
+}
+
 export interface OutboxStore {
-  /** 取一条 `next_attempt_at <= now` 的行，置 `sending` 并写租约；没有则 null。 */
+  /**
+   * 取一条 `next_attempt_at <= now` 的行，置 `sending` 并写租约；没有则 null。
+   * 返回的行一定带 `leaseUntil`——`settle` 拿它做 CAS 的期望值。
+   */
   claim(due: OutboxClaim, now: number, leaseMs: number): Promise<ChannelOutboxMessage | null>;
+  /**
+   * 幂等入队（原子 insert-if-absent）：同一个 id 只插一次。
+   *
+   * 已存在时**原样返回已有行、绝不覆盖**——这是飞书回合回复的保障：同一个 run 重放时
+   * 不能把已经 `sent` 的行打回 `queued` 再发一遍。是否重复以返回的 `inserted` 为准。
+   */
+  insertIfAbsent(message: ChannelOutboxMessage): Promise<OutboxInsertResult>;
   save(message: ChannelOutboxMessage): Promise<void>;
+  /**
+   * 租约 CAS 结算：只有该行仍是 `sending` 且 `lease_until` 仍等于领取时的值时，
+   * 才写入结算结果。租约过期被另一个泵重领、或已被别人结算时返回 false，
+   * 本次结算作废（平台侧可能已经发过，这里不承诺 exactly-once）。
+   */
+  settle(next: ChannelOutboxMessage, leaseUntil: number | null): Promise<boolean>;
   /** 按 id 取一行；入队前用它做幂等（同一帖同一轮只投一次）。 */
   byId(id: string): Promise<ChannelOutboxMessage | null>;
   /** 租约已过期、仍停在 `sending` 的行。 */
@@ -211,7 +234,7 @@ export interface OutboxDeliverResult {
 export type OutboxDeliver = (message: ChannelOutboxMessage) => Promise<OutboxDeliverResult>;
 
 export interface OutboxPumpDeps {
-  store: Pick<OutboxStore, 'claim' | 'save' | 'requeue'>;
+  store: Pick<OutboxStore, 'claim' | 'insertIfAbsent' | 'settle' | 'requeue'>;
   deliver: OutboxDeliver;
   now?: () => number;
   leaseMs?: number;
@@ -250,38 +273,39 @@ export function createOutboxPump(deps: OutboxPumpDeps): OutboxPump {
 
       const stamp = now();
       if (result.ok) {
-        await deps.store.save({
+        // 结算走租约 CAS：租约在 deliver 期间过期并被别的泵重领时，这次结果作废。
+        await deps.store.settle({
           ...message,
           state: 'sent',
           leaseUntil: null,
           externalMessageId: result.externalMessageId ?? message.externalMessageId,
           updatedAt: stamp
-        });
+        }, message.leaseUntil);
         return 1;
       }
 
       if (!isTransient(result.error)) {
-        await deps.store.save({ ...message, state: 'failed', leaseUntil: null, updatedAt: stamp });
+        await deps.store.settle({ ...message, state: 'failed', leaseUntil: null, updatedAt: stamp }, message.leaseUntil);
         return 1;
       }
 
       const attempts = message.attempts + 1;
       const exhausted = attempts >= maxAttempts;
-      await deps.store.save({
+      await deps.store.settle({
         ...message,
         attempts,
         state: exhausted ? 'failed' : 'queued',
         leaseUntil: null,
         nextAttemptAt: exhausted ? message.nextAttemptAt : stamp + backoffFor(attempts),
         updatedAt: stamp
-      });
+      }, message.leaseUntil);
       return 1;
     },
 
     async enqueue(input: NewOutboxMessage) {
       const message = newOutboxMessage(input, now());
-      await deps.store.save(message);
-      return message;
+      const { message: stored } = await deps.store.insertIfAbsent(message);
+      return stored;
     }
   };
 }

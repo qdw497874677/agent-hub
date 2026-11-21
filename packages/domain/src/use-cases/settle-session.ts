@@ -8,8 +8,7 @@ import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import type { Session } from '../session.ts';
 import type { Deps } from './deps.ts';
-import { authorizeSession } from './authorization.ts';
-import { projectOfSession } from './workspaces.ts';
+import { authorizeSession, projectOfSessionOrigin } from './authorization.ts';
 import { releaseSessionWorktrees, restoreSessionWorktrees, type SessionWorktreeDeps, type WorktreeCleanupItem } from './session-worktrees.ts';
 
 export interface SettleSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'>,
@@ -51,7 +50,7 @@ export async function settleSessionUseCase(
   if (!who.ok) return who;
   const session = await deps.sessions.byId(command.sessionId);
   if (!session) return err(notFound('会话不存在'));
-  const project = await projectOfSession(deps, session);
+  const project = await projectOfSessionOrigin(deps, session);
   const allowed = await authorizeSession(deps.access, who.value, project, session, 'session.settle');
   if (!allowed.ok) return allowed;
   const current = allowed.value;

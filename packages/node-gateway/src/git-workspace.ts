@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { execFile } from 'node:child_process';
 import type { CommitPreview, DomainError, GitAuth, GitStatus, RemotePullRequest, Result, WorkspaceGit } from '@agent-hub/domain';
-import { conflict, folderNameProblem, invalid, nonGitReason, unavailable, unsavedReason } from '@agent-hub/domain';
+import { conflict, folderNameProblem, invalid, isSensitivePath, nonGitReason, unavailable, unsavedReason } from '@agent-hub/domain';
 import { insideGroups } from './group-dir.ts';
 import { runSetupScript } from './setup-script.ts';
 
@@ -79,16 +79,20 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       const blocked = await guard(parent);
       if (blocked) return { ok: false, error: blocked };
       const target = join(resolve(parent), name);
+      const binding = bindAuth(auth, repoUrl);
+      if (!binding.ok) return { ok: false, error: invalid(binding.reason) };
       // 目标可以是空目录（人在目录选择器里刚「新建文件夹」的），git 本来就能 clone 进空目录
       const before = await lstat(target).catch(() => null);
       const emptyDir = before?.isDirectory() === true && (await readdir(target).catch(() => ['?'])).length === 0;
       if (before && !emptyDir) return { ok: false, error: conflict(`「${target}」已经存在且不是空目录`) };
       // 本地路径远端的子模块在 clone 后再 init（simple-git 不允许改 protocol.file.allow）。
-      const flags = [...(branch ? ['--branch', branch] : []), ...(recurseSubmodules && !isLocalGitUrl(repoUrl) ? ['--recurse-submodules'] : [])];
+      // 带令牌时不用 --recurse-submodules：子模块地址由仓库内容决定，不能继承这次凭据的环境。
+      const recurseInClone = recurseSubmodules && !isLocalGitUrl(repoUrl) && !hasAuth(binding.auth);
+      const flags = [...(branch ? ['--branch', branch] : []), ...(recurseInClone ? ['--recurse-submodules'] : [])];
       try {
         await mkdir(parent, { recursive: true });
         // 不让 git 弹交互式密码提示把进程挂住：没凭据就直接失败，原因回给人看
-        await networkGit(parent, undefined, auth).clone(repoUrl, name, flags);
+        await networkGit(parent, undefined, binding.auth, repoUrl).clone(repoUrl, name, flags);
       } catch (error) {
         // 失败要还原：本来没有就删掉，本来是空目录就清回空目录
         await rm(target, { recursive: true, force: true }).catch(() => undefined);
@@ -96,7 +100,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
         return failed('下载仓库', error);
       }
       if (recurseSubmodules) {
-        const sub = await initSubmodules(target, auth);
+        const sub = await initSubmodules(target);
         if (!sub.ok) {
           await rm(target, { recursive: true, force: true }).catch(() => undefined);
           if (emptyDir) await mkdir(target, { recursive: true }).catch(() => undefined);
@@ -109,9 +113,11 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
     async checkRepo(repoUrl, branch, auth) {
       const url = repoUrl.trim();
       if (url === '') return { ok: true, value: { reachable: false, defaultBranch: null, branchExists: false, message: '仓库地址不能为空' } };
+      const binding = bindAuth(auth, url);
+      if (!binding.ok) return { ok: true, value: { reachable: false, defaultBranch: null, branchExists: false, message: binding.reason } };
       try {
         // 只读：ls-remote 不进本地目录、不 clone。20 秒够了，慢网络 / 私有仓库也别把保存请求挂住。
-        const git = networkGit(tmpdir(), 20_000, auth);
+        const git = networkGit(tmpdir(), 20_000, binding.auth, url);
         const head = await git.raw(['ls-remote', '--symref', url, 'HEAD']);
         // 第一行形如 `ref: refs/heads/master\tHEAD`；没有 symref（裸提交号 / 老服务端）时按未知处理。
         const defaultBranch = /^ref:\s+refs\/heads\/(.+?)\s+HEAD$/m.exec(head)?.[1]?.trim() ?? null;
@@ -138,10 +144,15 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       }
       if (await lstat(path).catch(() => null)) return { ok: false, error: conflict(`「${path}」已经存在`) };
       return withRepoLock(repoPath, async () => {
-        const git = networkGit(repoPath, undefined, auth);
-        if (!(await git.checkIsRepo().catch(() => false))) return { ok: false, error: invalid(`「${repoPath}」不是 git 仓库`) };
-        const remotes = await git.getRemotes().catch(() => []);
+        const repoGit = simpleGit(repoPath);
+        if (!(await repoGit.checkIsRepo().catch(() => false))) return { ok: false, error: invalid(`「${repoPath}」不是 git 仓库`) };
+        const remotes = await repoGit.getRemotes().catch(() => []);
         const hasOrigin = remotes.some((remote) => remote.name === 'origin');
+        // 令牌只绑定 fetch 实际用的远端地址（配置里的原样 URL，不套 insteadOf），且必须与 hub 的预期地址一致
+        const destination = hasOrigin ? await fetchDestination(repoPath) : null;
+        const binding = bindAuth(auth, destination);
+        if (!binding.ok) return { ok: false, error: invalid(binding.reason) };
+        const git = networkGit(repoPath, undefined, binding.auth, destination);
         // 先 fetch，再按远端默认分支开，避免用本地过期的 master/main。
         if (hasOrigin) await git.fetch('origin').catch(() => undefined);
         const local = await git.raw(['branch', '--list', branch]).catch(() => '');
@@ -155,7 +166,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
           } catch (error) {
             return failed('检出分支', error);
           }
-          return finishWorktree(path, branch, recurseSubmodules, auth);
+          return finishWorktree(path, branch, recurseSubmodules);
         }
         if (local.trim() !== '') return { ok: false, error: conflict(`分支 ${branch} 已经存在：改用已有的那个工作空间`) };
         const remoteHas = hasOrigin && (await git.raw(['branch', '-r', '--list', `origin/${branch}`]).catch(() => '')).trim() !== '';
@@ -166,7 +177,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
         } catch (error) {
           return failed('新开分支', error);
         }
-        return finishWorktree(path, branch, recurseSubmodules, auth);
+        return finishWorktree(path, branch, recurseSubmodules);
       });
     },
 
@@ -185,7 +196,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       const blocked = await guard(path);
       if (blocked) return { ok: false, error: blocked };
       if (!(await exists(path))) return { ok: false, error: unavailable(`目录不存在：${path}`) };
-      const git = networkGit(path, undefined, auth);
+      const git = simpleGit(path);
       if (!(await git.checkIsRepo().catch(() => false))) return { ok: true, value: { committed: false, pushed: false, branch: null, reason: '不是 git 仓库' } };
       try {
         // symbolic-ref 在还没有提交的新仓库上也能用；detached HEAD 时失败
@@ -196,8 +207,12 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
         if (staged) await git.raw(['-c', 'user.name=Agent Hub', '-c', 'user.email=agent-hub@localhost', 'commit', '--no-verify', '-m', message]);
         const remotes = await git.getRemotes().catch(() => []);
         if (!remotes.some((remote) => remote.name === 'origin')) return { ok: true, value: { committed: staged, pushed: false, branch, reason: '没有 origin 远端' } };
+        // push 的目的地可能由 remote.origin.pushurl 覆盖，令牌只能绑在实际 push 的 URL 上
+        const destination = await pushDestination(path);
+        const binding = bindAuth(auth, destination);
+        if (!binding.ok) return { ok: true, value: { committed: staged, pushed: false, branch, reason: binding.reason } };
         try {
-          await git.raw(['push', '-u', 'origin', branch]);
+          await networkGit(path, undefined, binding.auth, destination).raw(['push', '-u', 'origin', branch]);
         } catch (error) {
           return { ok: true, value: { committed: staged, pushed: false, branch, reason: `推送失败：${gitMessage(error)}` } };
         }
@@ -207,12 +222,12 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       }
     },
 
-    async preview(path, maxPatchBytes) {
+    async preview(path, maxPatchBytes, options) {
       const blocked = await guard(path);
       if (blocked) return { ok: false, error: blocked };
       if (!(await exists(path))) return { ok: false, error: unavailable(`目录不存在：${path}`) };
       try {
-        return { ok: true, value: await previewOf(path, maxPatchBytes) };
+        return { ok: true, value: await previewOf(path, maxPatchBytes, options?.redactSensitive === true) };
       } catch (error) {
         return failed('读取改动', error);
       }
@@ -241,13 +256,16 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
     async push(path, auth) {
       const blocked = await guard(path);
       if (blocked) return { ok: false, error: blocked };
-      const git = networkGit(path, undefined, auth);
+      const git = simpleGit(path);
       const branch = (await git.raw(['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => '')).trim() || null;
       if (!branch) return { ok: true, value: { pushed: false, branch: null, reason: '当前不在任何分支上（detached HEAD）' } };
       const remotes = await git.getRemotes().catch(() => []);
       if (!remotes.some((remote) => remote.name === 'origin')) return { ok: true, value: { pushed: false, branch, reason: '没有 origin 远端' } };
+      const destination = await pushDestination(path);
+      const binding = bindAuth(auth, destination);
+      if (!binding.ok) return { ok: true, value: { pushed: false, branch, reason: binding.reason } };
       try {
-        await git.raw(['push', '-u', 'origin', branch]);
+        await networkGit(path, undefined, binding.auth, destination).raw(['push', '-u', 'origin', branch]);
         return { ok: true, value: { pushed: true, branch, reason: null } };
       } catch (error) {
         return { ok: true, value: { pushed: false, branch, reason: gitMessage(error) } };
@@ -266,7 +284,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
         const viewed = await viewPr(run, url);
         return { ok: true, value: viewed.ok ? viewed : { ok: true, pr: { number: Number(/\/pull\/(\d+)/.exec(url)?.[1] ?? 0), url, state: 'open' as const, headSha: null, mergedAt: null } } };
       }
-      if (request.action === 'list') return { ok: true, value: await listPr(run, request.head) };
+      if (request.action === 'list') return { ok: true, value: await listPr(run, request.head, request.repo) };
       return { ok: true, value: await viewPr(run, String(request.number)) };
     },
 
@@ -380,10 +398,14 @@ export async function addWorktreeOnNewBranch(input: {
 }): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>> {
   const { repoPath, path, branch, base, auth, recurseSubmodules } = input;
   return withRepoLock(repoPath, async () => {
-    const git = networkGit(repoPath, undefined, auth);
-    if (!(await git.checkIsRepo().catch(() => false))) return { ok: false, error: invalid(`「${repoPath}」不是 git 仓库`) };
-    const remotes = await git.getRemotes().catch(() => []);
+    const repoGit = simpleGit(repoPath);
+    if (!(await repoGit.checkIsRepo().catch(() => false))) return { ok: false, error: invalid(`「${repoPath}」不是 git 仓库`) };
+    const remotes = await repoGit.getRemotes().catch(() => []);
     const hasOrigin = remotes.some((remote) => remote.name === 'origin');
+    const destination = hasOrigin ? await fetchDestination(repoPath) : null;
+    const binding = bindAuth(auth, destination);
+    if (!binding.ok) return { ok: false, error: invalid(binding.reason) };
+    const git = networkGit(repoPath, undefined, binding.auth, destination);
     if (hasOrigin) await git.fetch('origin').catch(() => undefined);
     const local = await git.raw(['branch', '--list', branch]).catch(() => '');
     if (local.trim() !== '') return { ok: false, error: conflict(`分支 ${branch} 已经存在：改用已有的那个工作空间`) };
@@ -396,7 +418,7 @@ export async function addWorktreeOnNewBranch(input: {
     } catch (error) {
       return { ok: false, error: unavailable(`新开分支失败：${gitMessage(error)}`) };
     }
-    return finishWorktree(path, branch, recurseSubmodules, auth);
+    return finishWorktree(path, branch, recurseSubmodules);
   });
 }
 
@@ -418,40 +440,145 @@ async function detachWorktree(path: string, force: boolean): Promise<void> {
 /** 机器自己的 git 凭据要用到的变量（ssh agent、自定义 ssh 命令、askpass、代理），其余 GIT_* 不放行。 */
 const CREDENTIAL_ENV = ['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_ASKPASS', 'GIT_TERMINAL_PROMPT'] as const;
 /** 逐次传入的 HTTPS 令牌落在这里（git 的 `-c http.extraHeader=…` 环境写法），优先级高于机器自己的凭据。 */
-const AUTH_ENV = ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0'] as const;
+const AUTH_ENV = ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_CONFIG_KEY_1', 'GIT_CONFIG_VALUE_1'] as const;
 const PASS_THROUGH = ['PATH', 'HOME', 'USER', 'LANG', 'SSH_AUTH_SOCK', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy'];
 
 /**
- * 网络 git 的环境（导出只为测试）：机器自己的凭据变量 + 逐次令牌。
- * 有 `auth` 就多三条 `GIT_CONFIG_*`，等价 `git -c http.extraHeader=…`；没 `auth` 就一条都不设。
+ * 令牌要绑定的目标地址：只认能解析的 HTTPS URL。
+ * 去掉 userinfo / query / fragment / 尾斜杠，只留 `https://host[:port]/path`。
+ * 含空白或控制字符一律拒绝：`GIT_CONFIG_KEY_*` 会被 git 当成 config key，不能让它带换行。
  */
-export function networkEnv(auth?: GitAuth, source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+export function authScopeUrl(raw: string | null | undefined): string | null {
+  const rawValue = raw ?? '';
+  // 控制字符（含 CR/LF）在原始值里就拒绝，不靠 trim 抹掉
+  if (/[\u0000-\u001f\u007f]/.test(rawValue)) return null;
+  const value = rawValue.trim();
+  if (value === '' || /\s/.test(value)) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:' || url.host === '') return null;
+  return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+function hasAuth(auth: GitAuth | undefined): boolean {
+  return auth !== undefined && auth.header.trim() !== '';
+}
+
+type AuthBinding =
+  | { readonly ok: true; readonly auth: GitAuth | undefined }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * 令牌必须绑定到 hub 给的预期 HTTPS 地址，并且与本次操作实际的目的地一致。
+ * - 没有 auth / 空头：未认证操作，照常放行；
+ * - 有 auth 但没带 `url`：旧 hub 的未绑定令牌，新 Worker 拒绝使用（不把它硬套到任何目的地）；
+ * - 地址不合法或与目的地不一致：拒绝使用（失败关闭），不降级成「发给当前这个地址」。
+ */
+function bindAuth(auth: GitAuth | undefined, destination: string | null): AuthBinding {
+  if (!hasAuth(auth)) return { ok: true, auth: undefined };
+  const expected = authScopeUrl(auth?.url);
+  if (expected === null) return { ok: false, reason: '认证信息没有绑定有效的 HTTPS 仓库地址（旧版 hub？），已拒绝使用' };
+  const actual = authScopeUrl(destination);
+  if (actual === null) return { ok: false, reason: '本次操作的目标不是可校验的 HTTPS 地址，不能用令牌' };
+  if (actual !== expected) return { ok: false, reason: '本次操作的目标与令牌绑定的仓库不一致，已拒绝使用令牌' };
+  return { ok: true, auth };
+}
+
+/**
+ * 网络 git 的环境（导出只为测试）：机器自己的凭据变量 + 逐次令牌。
+ *
+ * 令牌只以 `http.<预期 HTTPS 地址>.extraHeader` 的形式注入，并且**只发给与 `auth.url` 一致的目的地**：
+ * 别的 host（子模块、重定向、`insteadOf` 改写后的地址）匹配不到这个 scope，拿不到头。
+ * 同时把 `http.followRedirects` 关掉：带凭据的请求不接受任何重定向。
+ * 没有 `auth`、或 `auth.url` 缺失 / 与 `destination` 不一致，就一条 `GIT_CONFIG_*` 都不设。
+ */
+export function networkEnv(auth?: GitAuth, source: NodeJS.ProcessEnv = process.env, destination?: string | null): Record<string, string> {
   const env: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' };
   for (const key of [...PASS_THROUGH, ...CREDENTIAL_ENV.slice(0, 3)]) {
     const value = source[key];
     if (value !== undefined) env[key] = value;
   }
-  if (auth !== undefined && auth.header.trim() !== '') {
-    env.GIT_CONFIG_COUNT = '1';
-    env.GIT_CONFIG_KEY_0 = 'http.extraHeader';
-    env.GIT_CONFIG_VALUE_0 = auth.header;
+  const binding = bindAuth(auth, destination ?? null);
+  const header = binding.ok ? (binding.auth?.header.trim() ?? '') : '';
+  const scope = header === '' ? null : authScopeUrl(destination);
+  if (scope !== null) {
+    env.GIT_CONFIG_COUNT = '2';
+    env.GIT_CONFIG_KEY_0 = `http.${scope}.extraHeader`;
+    env.GIT_CONFIG_VALUE_0 = header;
+    // false = 所有重定向都当错误；默认的 initial 会跟随首个重定向，可能把凭据带到别的地址。
+    env.GIT_CONFIG_KEY_1 = 'http.followRedirects';
+    env.GIT_CONFIG_VALUE_1 = 'false';
   }
   return env;
 }
 
 /**
  * 要走网络的 git（clone / fetch / ls-remote / push）：不许弹交互式密码提示把进程挂住，没凭据就直接失败。
- * `auth` 存在时用 `GIT_CONFIG_*` 注入 `http.extraHeader`（等价 `git -c http.extraHeader=…`）：
- * 令牌只出现在环境变量里，不进 argv（`ps` 看不见）、不进 stderr（git 不回显这个头）。
+ * `auth` 存在时只在 `destination` 是 HTTPS 的前提下注入 `http.<destination>.extraHeader`
+ * （等价 `git -c http.extraHeader=…`）：令牌只出现在环境变量里，不进 argv（`ps` 看不见）、
+ * 不进 stderr（git 不回显这个头），也不会被带到别的 host。
  */
+function networkGit(baseDir: string, timeoutMs?: number, auth?: GitAuth, destination?: string | null): SimpleGit {
+  const env = networkEnv(auth, process.env, destination);
+  const timeout = timeoutMs === undefined ? {} : { timeout: { block: timeoutMs } };
+  return simpleGit({ baseDir, allowEnvironment: [...CREDENTIAL_ENV, ...AUTH_ENV], ...timeout }).env(env);
+}
 
-/** 建好 checkout 后按项目开关递归初始化子模块；失败时由调用方决定是否清掉目录。 */
+/**
+ * 直接读仓库配置里的原始 URL，不用 `remote get-url`：后者会套 `insteadOf` 改写。
+ * 令牌的 scope 必须绑在**配置里写的**那个地址上；如果 git 之后把它改写到别处，
+ * 改写后的地址匹配不到 scope，就拿不到头（安全失败），而不是把令牌跟着改写走。
+ */
+async function rawRemoteUrls(path: string, key: 'url' | 'pushurl'): Promise<string[]> {
+  const raw = await simpleGit(path)
+    .raw(['config', '--get-all', `remote.origin.${key}`])
+    .catch(() => '');
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+}
+
+/** fetch 实际用的地址：`remote.origin.url` 必须恰好一条，否则绑定不了。 */
+async function fetchDestination(path: string): Promise<string | null> {
+  const urls = await rawRemoteUrls(path, 'url');
+  return urls.length === 1 ? urls[0]! : null;
+}
+
+/**
+ * push 实际用的地址：只有 `pushurl` 与 `url` 指向同一个 HTTPS 目的地时才绑定。
+ * 仓库配置能把 push 改到另一个地址，而那个地址不一定是这次操作「预期的仓库」，
+ * 所以出现额外目的地、或多条 pushurl / 多条 url 时返回 null（这一趟不带令牌，宁可 push 失败）。
+ */
+export async function pushDestination(path: string): Promise<string | null> {
+  const urls = await rawRemoteUrls(path, 'url');
+  if (urls.length !== 1) return null;
+  const base = urls[0]!;
+  const pushUrls = await rawRemoteUrls(path, 'pushurl');
+  if (pushUrls.length === 0) return base;
+  if (pushUrls.length > 1) return null;
+  const push = pushUrls[0]!;
+  const pushScope = authScopeUrl(push);
+  return pushScope !== null && pushScope === authScopeUrl(base) ? push : null;
+}
+
 function isLocalGitUrl(url: string | null | undefined): boolean {
   const value = (url ?? '').trim();
   return value.startsWith('/') || value.startsWith('file:') || value.startsWith('~');
 }
 
-async function initSubmodules(path: string, auth?: GitAuth): Promise<Result<void, DomainError>> {
+/**
+ * 建好 checkout 后按项目开关递归初始化子模块；失败时由调用方决定是否清掉目录。
+ *
+ * 子模块地址来自 `.gitmodules`，是仓库内容而不是操作者指定的目的地：可能指向任意 host。
+ * 所以这里**永远不带令牌**，只用机器自己的凭据（SSH key / agent）或匿名；私有子模块会失败，
+ * 这是有意的取舍——宁可初始化失败，也不把项目令牌交给仓库内容控制的一串 URL。
+ */
+async function initSubmodules(path: string): Promise<Result<void, DomainError>> {
   try {
     const origin = ((await simpleGit(path).remote(['get-url', 'origin']).catch(() => '')) || '').trim();
     if (isLocalGitUrl(origin)) {
@@ -460,12 +587,12 @@ async function initSubmodules(path: string, auth?: GitAuth): Promise<Result<void
         execFile(
           'git',
           ['-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '--recursive'],
-          { cwd: path, env: networkEnv(auth), timeout: 120_000, maxBuffer: 1 << 20 },
+          { cwd: path, env: networkEnv(), timeout: 120_000, maxBuffer: 1 << 20 },
           (error) => (error ? fail(error) : done())
         );
       });
     } else {
-      await networkGit(path, undefined, auth).raw(['submodule', 'update', '--init', '--recursive']);
+      await networkGit(path).raw(['submodule', 'update', '--init', '--recursive']);
     }
     return { ok: true, value: undefined };
   } catch (error) {
@@ -476,11 +603,10 @@ async function initSubmodules(path: string, auth?: GitAuth): Promise<Result<void
 async function finishWorktree(
   path: string,
   branch: string,
-  recurse: boolean | undefined,
-  auth?: GitAuth
+  recurse: boolean | undefined
 ): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>> {
   if (!recurse) return { ok: true, value: { path, branch } };
-  const sub = await initSubmodules(path, auth);
+  const sub = await initSubmodules(path);
   if (sub.ok) return { ok: true, value: { path, branch } };
   await detachWorktree(path, true).catch(() => rm(path, { recursive: true, force: true }).catch(() => undefined));
   return sub;
@@ -534,12 +660,6 @@ export async function resolveRemoteBase(
   return 'HEAD';
 }
 
-function networkGit(baseDir: string, timeoutMs?: number, auth?: GitAuth): SimpleGit {
-  const env = networkEnv(auth);
-  const timeout = timeoutMs === undefined ? {} : { timeout: { block: timeoutMs } };
-  return simpleGit({ baseDir, allowEnvironment: [...CREDENTIAL_ENV, ...AUTH_ENV], ...timeout }).env(env);
-}
-
 type GhRun = (args: string[]) => Promise<{ ok: true; out: string } | { ok: false; reason: string }>;
 
 /** 跑这台机器上已登录的 gh：不交互、60 秒；没装 / 没登录都翻成 ok:false + 原因（原因里抹掉凭据）。 */
@@ -560,42 +680,154 @@ function runGh(cwd: string, args: string[]): ReturnType<GhRun> {
 }
 
 async function viewPr(run: GhRun, ref: string): Promise<{ ok: true; pr: RemotePullRequest } | { ok: false; reason: string }> {
-  const viewed = await run(['pr', 'view', ref, '--json', 'number,url,state,headRefOid,mergedAt,baseRefName']);
+  const viewed = await run(['pr', 'view', ref, '--json', 'number,url,state,headRefOid,headRefName,headRepository,headRepositoryOwner,mergedAt,baseRefName']);
   if (!viewed.ok) return viewed;
   try {
-    const o = JSON.parse(viewed.out) as { number: number; url: string; state: string; headRefOid?: string; mergedAt?: string | null; baseRefName?: string };
+    const o = JSON.parse(viewed.out) as GhPrJson;
     return { ok: true, pr: toRemotePr(o) };
   } catch {
     return { ok: false, reason: 'gh 返回的不是 JSON' };
   }
 }
 
-/** 按分支列 PR：认领 agent 用 gh pr create 在会话分支上开的、没落库的 PR（#262）。 */
-async function listPr(run: GhRun, head: string): Promise<{ ok: true; prs: readonly RemotePullRequest[] } | { ok: false; reason: string }> {
-  const listed = await run(['pr', 'list', '--head', head, '--state', 'all', '--limit', '20', '--json', 'number,url,state,headRefOid,mergedAt,baseRefName']);
+/** 按分支列 PR：认领 agent 用 gh pr create 在会话分支上开的、没落库的 PR（#262）。只列开着的（#269）。 */
+async function listPr(run: GhRun, head: string, repo: string | undefined): Promise<{ ok: true; prs: readonly RemotePullRequest[] } | { ok: false; reason: string }> {
+  // --repo 必须绑到候选的 origin：只给 --head 时 gh 会按当前目录推断仓库，
+  // worktree 可能推断到 upstream，PR 号就属于另一个仓库了（#269）。
+  const target = repo ? ['--repo', repo] : [];
+  const listed = await run(['pr', 'list', '--head', head, ...target, '--state', 'open', '--limit', '20', '--json', 'number,url,state,headRefOid,headRefName,headRepository,headRepositoryOwner,mergedAt,baseRefName']);
   if (!listed.ok) return listed;
   try {
-    const items = JSON.parse(listed.out) as { number: number; url: string; state: string; headRefOid?: string; mergedAt?: string | null; baseRefName?: string }[];
+    const items = JSON.parse(listed.out) as GhPrJson[];
     return { ok: true, prs: items.map(toRemotePr) };
   } catch {
     return { ok: false, reason: 'gh 返回的不是 JSON' };
   }
 }
 
-function toRemotePr(o: { number: number; url: string; state: string; headRefOid?: string; mergedAt?: string | null; baseRefName?: string }): RemotePullRequest {
+/** `gh --json` 里本模块关心的字段（老版本 gh 可能不带 headRepository / headRefName）。 */
+interface GhPrJson {
+  readonly number: number;
+  readonly url: string;
+  readonly state: string;
+  readonly headRefOid?: string;
+  readonly headRefName?: string;
+  /**
+   * gh 的 GraphQL 导出：`headRepository` 是 `{id,name,nameWithOwner}`（query_builder.go），
+   * 但旧版/不同导出只给 `{id,name}`，owner 在单独的 `headRepositoryOwner.login`。
+   */
+  readonly headRepository?: { readonly name?: string; readonly nameWithOwner?: string } | null;
+  readonly headRepositoryOwner?: { readonly login?: string } | null;
+  readonly mergedAt?: string | null;
+  readonly baseRefName?: string;
+}
+
+function headRepoOf(o: GhPrJson): string | null {
+  const full = o.headRepository?.nameWithOwner;
+  if (full) return full;
+  const owner = o.headRepositoryOwner?.login;
+  const name = o.headRepository?.name;
+  return owner && name ? `${owner}/${name}` : null; // 缺一半就不猜：认领那边会因此拒绝
+}
+
+function toRemotePr(o: GhPrJson): RemotePullRequest {
   return {
     number: o.number,
     url: o.url,
     state: o.state === 'MERGED' ? 'merged' : o.state === 'CLOSED' ? 'closed' : 'open',
     headSha: o.headRefOid ?? null,
     mergedAt: o.mergedAt ? Date.parse(o.mergedAt) : null,
-    base: o.baseRefName ?? null
+    base: o.baseRefName ?? null,
+    // head 仓库 / 分支名：自动认领据此排斥 fork 与同名分支（#269）；老 gh 不带就是 null
+    repo: headRepoOf(o),
+    headRef: o.headRefName ?? null
   };
 }
 
 const STATUS_OF: Record<string, string> = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'added', T: 'modified', '?': 'untracked' };
 
-async function previewOf(path: string, maxPatchBytes: number): Promise<CommitPreview> {
+/** 受保护预览最多用多少个 pathspec；超过就整段省略，绝不退回整树 diff + 文本过滤。 */
+const MAX_DIFF_PATHSPECS = 1000;
+
+// 只给受保护预览用：--find-copies-harder 会把未修改文件也当复制源，能识破「从敏感文件复制出新文件」。
+// 它比普通 diff 贵，但不影响 Git 工作流的默认预览。
+const PROTECTED_DIFF_ARGS = ['diff', '--no-color', '--no-ext-diff', '-M', '-C', '--find-copies-harder'] as const;
+
+/** 受保护预览里一条已跟踪改动；rename/copy 保留源路径。 */
+export interface TrackedDiffEntry {
+  readonly path: string;
+  readonly status: string;
+  readonly oldPath?: string;
+}
+
+export interface TrackedDiffPlan {
+  /** 源或目标命中敏感规则：这些路径的整对改动都不展示。 */
+  readonly hidden: ReadonlySet<string>;
+  /** 不需要隐藏的路径（改名 / 复制的两侧都算），用于按路径取 diff。 */
+  readonly allowed: readonly string[];
+  /** 过滤后的元数据；与 allowed 来自同一份 git 清单。 */
+  readonly entries: readonly TrackedDiffEntry[];
+}
+
+/**
+ * 解析 `git diff --name-status -z`。结构不完整就返回 null，绝不能猜。
+ * 先收全部记录再统一过滤：一个路径只要在任何记录里被标成敏感源/目标，就从 allowlist 消失，
+ * 不让后面的普通记录把它重新放回来。
+ */
+export function parseTrackedDiffPlan(raw: string): TrackedDiffPlan | null {
+  const tokens = raw.split('\0');
+  const records: TrackedDiffEntry[] = [];
+  const hidden = new Set<string>();
+  for (let i = 0; i < tokens.length; i++) {
+    const status = tokens[i]!;
+    if (status === '') continue;
+    const mapped = STATUS_OF[status[0] ?? ''] ?? 'modified';
+    if (status[0] === 'R' || status[0] === 'C') {
+      const from = tokens[++i];
+      const to = tokens[++i];
+      if (!from || !to) return null;
+      records.push({ path: to, status: mapped, oldPath: from });
+      if (isSensitivePath(from) || isSensitivePath(to)) {
+        hidden.add(from);
+        hidden.add(to);
+      }
+    } else {
+      const one = tokens[++i];
+      if (!one) return null;
+      records.push({ path: one, status: mapped });
+      if (isSensitivePath(one)) hidden.add(one);
+    }
+  }
+  const entries = records.filter((entry) => !hidden.has(entry.path) && !(entry.oldPath !== undefined && hidden.has(entry.oldPath)));
+  const allowed = [...new Set(entries.flatMap((entry) => (entry.oldPath === undefined ? [entry.path] : [entry.oldPath, entry.path])))];
+  return { hidden, allowed, entries };
+}
+
+/**
+ * 以 git 自己的改名 / 复制识别为准列出工作区改动（#269）。
+ * 必须传入已解析的 HEAD，所有 diff 都针对同一个提交，避免中途 symbolic HEAD 移动。
+ * 失败时返回 null；调用方必须整段省略，不能退回文本过滤。
+ */
+async function trackedDiffPlan(git: SimpleGit, head: string): Promise<TrackedDiffPlan | null> {
+  const raw = await git.raw([...PROTECTED_DIFF_ARGS, '--name-status', '-z', head]).catch(() => null);
+  return raw === null ? null : parseTrackedDiffPlan(raw);
+}
+
+export type ProtectedDiff = { readonly ok: true; readonly patch: string } | { readonly ok: false };
+
+/**
+ * 受保护模式下的已跟踪 diff：只按 git 清单里的允许路径取。
+ * 任何失败都返回 ok:false，由调用方把 patch 留空并标注 notice；没有整树兜底。
+ */
+export async function protectedDiff(git: Pick<SimpleGit, 'raw'>, head: string, plan: TrackedDiffPlan): Promise<ProtectedDiff> {
+  if (plan.allowed.length === 0) return { ok: true, patch: '' };
+  if (plan.allowed.length > MAX_DIFF_PATHSPECS) return { ok: false };
+  const pathspecs = plan.allowed.map((p) => `:(literal)${p}`);
+  const raw = await git.raw([...PROTECTED_DIFF_ARGS, head, '--', ...pathspecs]).catch(() => null);
+  return raw === null ? { ok: false } : { ok: true, patch: raw };
+}
+
+async function previewOf(path: string, maxPatchBytes: number, redactSensitive = false): Promise<CommitPreview> {
   const git = simpleGit(path);
   const empty: CommitPreview = { isGit: false, branch: null, defaultBranch: null, remoteUrl: null, upstream: null, ahead: 0, head: null, files: [], patch: '', truncated: false };
   if (!(await git.checkIsRepo().catch(() => false))) return empty;
@@ -616,30 +848,101 @@ async function previewOf(path: string, maxPatchBytes: number): Promise<CommitPre
   const upstream = (await git.raw(['rev-parse', '--abbrev-ref', '-q', '@{upstream}']).catch(() => '')).trim() || null;
   const against = upstream ?? (defaultBranch && remoteUrl ? `origin/${defaultBranch}` : null);
   const ahead = head && against ? Number((await git.raw(['rev-list', '--count', `${against}..HEAD`]).catch(() => '0')).trim()) || 0 : 0;
-  // D7：未跟踪文件也算（强制 normal，不受仓库配置影响）
-  const porcelain = await git.raw(['-c', 'status.showUntrackedFiles=normal', 'status', '--porcelain=v1', '-z']);
+
   const files: { path: string; status: string }[] = [];
-  const parts = porcelain.split('\0');
-  for (let i = 0; i < parts.length; i++) {
-    const entry = parts[i]!;
-    if (entry.length < 4) continue;
-    const xy = entry.slice(0, 2);
-    const code = xy === '??' ? '?' : (xy[0] !== ' ' ? xy[0]! : xy[1]!);
-    files.push({ path: entry.slice(3), status: STATUS_OF[code] ?? 'modified' });
-    if (xy[0] === 'R' || xy[0] === 'C') i++; // -z 下重命名的旧名单独一段
+  let notice: string | undefined;
+  let protectedUnavailable = false;
+  let plan: TrackedDiffPlan | null = null;
+
+  if (redactSensitive) {
+    if (head) {
+      plan = await trackedDiffPlan(git, head);
+      if (plan === null) {
+        // 拿不到权威路径清单就整段省略：绝不能退回整树 diff + 文本过滤，那样改名 / 复制目标可能漏出。
+        protectedUnavailable = true;
+        notice = '敏感路径过滤清单读取失败：为安全起见，本次未返回工作区 diff；请重试或检查 git 状态。';
+      }
+    } else {
+      plan = { hidden: new Set(), allowed: [], entries: [] };
+    }
+    if (!protectedUnavailable) {
+      // 元数据也来自同一份已解析 HEAD 的清单，不再看可能移动的 symbolic HEAD。
+      for (const entry of plan!.entries) files.push({ path: entry.path, status: entry.status });
+      // 未跟踪文件只列名字；ls-files 不依赖当前 HEAD，也不会把内容带出来。
+      const untrackedRaw = await git.raw(['ls-files', '--others', '--exclude-standard', '-z']).catch(() => null);
+      if (untrackedRaw === null) {
+        protectedUnavailable = true;
+        notice = '未跟踪文件清单读取失败：为安全起见，本次未返回工作区 diff。';
+      } else {
+        for (const file of untrackedRaw.split('\0')) {
+          if (file !== '' && !isSensitivePath(file)) files.push({ path: file, status: 'untracked' });
+        }
+      }
+    }
+    if (protectedUnavailable) files.length = 0;
+  } else {
+    // D7：未跟踪文件也算（强制 normal，不受仓库配置影响）。默认预览完全沿用旧参数。
+    const porcelain = await git.raw(['-c', 'status.showUntrackedFiles=normal', 'status', '--porcelain=v1', '-z']);
+    const parts = porcelain.split('\0');
+    for (let i = 0; i < parts.length; i++) {
+      const entry = parts[i]!;
+      if (entry.length < 4) continue;
+      const xy = entry.slice(0, 2);
+      const code = xy === '??' ? '?' : (xy[0] !== ' ' ? xy[0]! : xy[1]!);
+      const renamed = xy[0] === 'R' || xy[0] === 'C';
+      if (renamed) i++; // 默认预览不读旧名，但仍要跳过 -z 里的旧名段
+      files.push({ path: entry.slice(3), status: STATUS_OF[code] ?? 'modified' });
+    }
   }
+
   let patch = '';
   let truncated = false;
-  if (maxPatchBytes > 0 && files.length > 0) {
-    // 只看不写：已跟踪的 diff 对 HEAD；未跟踪的只列名字（内容进不了模型，免得把大文件 / 密钥送出去）
-    const raw = head ? await git.raw(['diff', '--no-color', '--no-ext-diff', 'HEAD']).catch(() => '') : '';
-    const untracked = files.filter((f) => f.status === 'untracked').map((f) => `新文件：${f.path}`).join('\n');
-    const all = [raw, untracked].filter(Boolean).join('\n');
-    const bytes = Buffer.from(all);
-    truncated = bytes.length > maxPatchBytes;
-    patch = truncated ? bytes.subarray(0, maxPatchBytes).toString('utf8') : all;
+  let patchWithheld = false;
+  if (redactSensitive && plan !== null && plan.allowed.length > MAX_DIFF_PATHSPECS) {
+    // 路径太多时不再退回整树 diff；整个 patch 留空，并把原因显式带出去。
+    patchWithheld = true;
+    truncated = true;
+    notice = `改动路径超过 ${MAX_DIFF_PATHSPECS} 个，无法安全按路径筛选敏感文件；本次未返回 diff。`;
   }
-  return { isGit: true, branch, defaultBranch, remoteUrl, upstream, ahead, head, files, patch, truncated, sizeBytes: await sizeOf(path) };
+  if (maxPatchBytes > 0 && (files.length > 0 || (redactSensitive && !protectedUnavailable))) {
+    let safe = '';
+    if (redactSensitive) {
+      if (protectedUnavailable) {
+        patchWithheld = true;
+      } else if (patchWithheld) {
+        // 已在前面判定要整段省略。
+      } else if (head) {
+        const diff = await protectedDiff(git, head, plan!);
+        if (diff.ok) {
+          safe = diff.patch;
+        } else {
+          patchWithheld = true;
+          truncated = true;
+          notice = '受保护 diff 读取失败：为安全起见，本次未返回 diff。';
+        }
+      }
+    } else {
+      safe = head ? await git.raw(['diff', '--no-color', '--no-ext-diff', 'HEAD']).catch(() => '') : '';
+    }
+    // 未跟踪的只列名字（内容进不了模型，免得把大文件 / 密钥送出去）。
+    const untracked = files.filter((f) => f.status === 'untracked').map((f) => `新文件：${f.path}`).join('\n');
+    const all = patchWithheld ? '' : [safe, untracked].filter(Boolean).join('\n');
+    const bytes = Buffer.from(all);
+    truncated = truncated || bytes.length > maxPatchBytes;
+    patch = truncated ? bytes.subarray(0, maxPatchBytes).toString('utf8') : all;
+  } else if (redactSensitive && protectedUnavailable) {
+    truncated = true;
+  }
+  if (patchWithheld) {
+    patch = '';
+    truncated = true;
+  }
+  return {
+    isGit: true, branch, defaultBranch, remoteUrl, upstream, ahead, head, files, patch, truncated,
+    ...(redactSensitive ? { redactedSensitive: true } : {}),
+    ...(notice === undefined ? {} : { notice }),
+    sizeBytes: await sizeOf(path)
+  };
 }
 
 /** 有什么会丢就说什么；都没有返回 null（规则在领域里，和自动清理同一套）。 */

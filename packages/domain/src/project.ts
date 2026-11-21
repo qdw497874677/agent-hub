@@ -135,8 +135,12 @@ export interface ProjectRepo {
   readonly url: string;
   readonly defaultBranch: string | null;
   /**
-   * HTTPS 令牌在密钥箱里的名字（`repo-git:<repoId>`），**只记名字，不存明文**。
+   * HTTPS 令牌在密钥箱里的名字（`repo-git:<projectId>:<repoId>`），**只记名字，不存明文**。
    * 省略 / null = 这个仓库不额外带令牌（SSH 走机器自己的 key/agent）。绝不进 HTTP DTO。
+   *
+   * 旧数据可能还是单段的 `repo-git:<repoId>`。那个键是按 (name, url) 派生的 repoId 拼的，
+   * 两个项目绑同一个仓库时会撞在一起，归属不明确：读的时候不认，也不会自动删，
+   * 用户需要重新输入一次 credential（见 use-cases/projects.ts）。
    */
   readonly tokenSecret?: string | null;
 }
@@ -144,17 +148,63 @@ export interface ProjectRepo {
 /** 项目仓库令牌在密钥箱里的前缀：内部密钥，跟着仓库清单走，不能从密钥接口单独删。 */
 export const REPO_TOKEN_PREFIX = 'repo-git:';
 
-/** 仓库令牌的密钥箱键：`repo-git:<repoId>`。 */
-export const repoTokenKey = (repoId: string): string => `${REPO_TOKEN_PREFIX}${repoId}`;
+/**
+ * 仓库令牌的规范密钥箱键：`repo-git:<projectId>:<repoId>`。
+ *
+ * `projectId` 与 `repoId` 都是不可变的（仓库改名 / 换地址都不变），所以两个项目
+ * 即使绑同名同地址的仓库，也各自落在不同的键上。
+ */
+export const repoTokenKey = (projectId: string, repoId: string): string => `${REPO_TOKEN_PREFIX}${projectId}:${repoId}`;
 
-/** 反过来认一个密钥名是不是仓库令牌；是就拿到 repoId。 */
+/** 旧的单段键 `repo-git:<repoId>`。只用于识别历史数据，不再写入。 */
+export const legacyRepoTokenKey = (repoId: string): string => `${REPO_TOKEN_PREFIX}${repoId}`;
+
+export interface RepoTokenName {
+  /** 旧格式为 null：单凭键名判断不出属于哪个项目。 */
+  readonly projectId: string | null;
+  readonly repoId: string;
+  /** true = 旧格式 `repo-git:<repoId>`，归属不明确，不能读也不能删。 */
+  readonly legacy: boolean;
+}
+
+/** 解析仓库令牌键；不是仓库令牌或格式不完整返回 null。 */
+export function parseRepoTokenName(name: string): RepoTokenName | null {
+  if (!name.startsWith(REPO_TOKEN_PREFIX)) return null;
+  const rest = name.slice(REPO_TOKEN_PREFIX.length);
+  const separator = rest.indexOf(':');
+  if (separator === -1) return rest === '' ? null : { projectId: null, repoId: rest, legacy: true };
+  const projectId = rest.slice(0, separator);
+  const repoId = rest.slice(separator + 1);
+  if (projectId === '' || repoId === '' || repoId.includes(':')) return null;
+  return { projectId, repoId, legacy: false };
+}
+
+/**
+ * 只认这个项目 + 这个仓库自己的规范键；旧格式、别的项目的键、调用方随便写的名字
+ * 一律 false。查找 / 删除令牌前必须过这一关。
+ */
+export function isCanonicalRepoTokenKey(projectId: string, repoId: string, name: string | null | undefined): name is string {
+  return name === repoTokenKey(projectId, repoId);
+}
+
+/** 反过来认一个密钥名是不是仓库令牌；是就拿到 repoId（不判断归属）。 */
 export function repoIdOfTokenName(name: string): string | null {
-  return name.startsWith(REPO_TOKEN_PREFIX) ? name.slice(REPO_TOKEN_PREFIX.length) : null;
+  return parseRepoTokenName(name)?.repoId ?? null;
 }
 
 /** 只有 http(s) 仓库才可能用令牌；SSH / git:// / 本地路径一律让 git 用机器上的凭据。 */
 export function isHttpRepoUrl(url: string): boolean {
   return /^https?:\/\//i.test(url.trim());
+}
+
+/**
+ * 只有在 HTTPS 上才允许附带仓库令牌。
+ *
+ * 明文 http 会把 Authorization 头裸露在同网段；`sameRepoUrl` 又故意忽略 scheme，
+ * 所以调用方必须自己对「目标地址」和「配置地址」都做这一层判断。
+ */
+export function isHttpsRepoUrl(url: string): boolean {
+  return /^https:\/\//i.test(url.trim());
 }
 
 /** 一个项目最多绑多少个仓库（组合工作空间的成员上限）。 */
@@ -213,13 +263,23 @@ export function repoNameFromUrl(url: string): string {
   return name;
 }
 
+export interface NormalizeReposOptions {
+  /**
+   * 是否接受输入里带的 `tokenSecret`。默认 true：storage 还原持久化数据要用。
+   * 处理用户请求时必须传 false —— 密钥名只能由用例按 (projectId, repoId) 生成，
+   * 不能信任调用方塞进来的引用（否则可以指向别人的令牌）。
+   */
+  readonly acceptTokenSecret?: boolean;
+}
+
 /**
  * 校验并规范化项目的仓库清单（PATCH /api/projects/:id 的 repos 字段）。
  * - 最多 `PROJECT_REPOS_MAX` 个；空数组合法（= 不绑仓库）；
  * - 名字缺省时从 URL 派生，给了就必须合规且项目内唯一；
  * - id 缺省时按 (name, url) 确定性生成；给了就保留（改名字不改 id）。
+ * - `tokenSecret` 默认照原样保留（storage 用），请求路径传 `acceptTokenSecret: false` 忽略。
  */
-export function normalizeRepos(input: readonly Partial<ProjectRepo>[]): Result<readonly ProjectRepo[], DomainError> {
+export function normalizeRepos(input: readonly Partial<ProjectRepo>[], options: NormalizeReposOptions = {}): Result<readonly ProjectRepo[], DomainError> {
   if (input.length > PROJECT_REPOS_MAX) return err(invalid(`一个项目最多 ${PROJECT_REPOS_MAX} 个仓库`));
   const seen = new Set<string>();
   const repos: ProjectRepo[] = [];
@@ -241,7 +301,9 @@ export function normalizeRepos(input: readonly Partial<ProjectRepo>[]): Result<r
     seen.add(name);
     const id = typeof raw.id === 'string' ? raw.id.trim() : '';
     // 令牌只保留密钥箱里的名字（trim 后非空才算）；空串 / 省略 = 不写这个字段。
-    const tokenSecret = typeof raw.tokenSecret === 'string' ? raw.tokenSecret.trim() : '';
+    // 请求路径（acceptTokenSecret: false）完全忽略调用方给的名字。
+    const tokenSecret =
+      options.acceptTokenSecret !== false && typeof raw.tokenSecret === 'string' ? raw.tokenSecret.trim() : '';
     repos.push({
       id: id === '' ? deriveRepoId(name, url) : id,
       name,

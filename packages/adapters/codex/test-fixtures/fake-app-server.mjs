@@ -7,6 +7,8 @@ const state = {
   threadId: 'th_fake_1',
   turnSeq: 0,
   activeTurn: null,
+  /** 上一次 finishTurn 的 id：用来模拟「旧轮的迟到重复通知」。 */
+  lastTurnId: null,
   requestSeq: 900,
   pendingApprovals: new Map()
 };
@@ -42,6 +44,7 @@ function threadResult(params) {
 
 function finishTurn(turnId, status) {
   state.activeTurn = null;
+  state.lastTurnId = turnId;
   notify('turn/completed', {
     threadId: state.threadId,
     turn: {
@@ -79,6 +82,36 @@ async function runTurn(turnId, text) {
     threadId: state.threadId,
     turn: { id: turnId, items: [], status: 'inProgress' }
   });
+
+  if (text.includes('die-mid')) {
+    // 这一轮已经确认开跑（turn/started 已发）之后进程直接没了：没有 turn/completed。
+    notify('item/agentMessage/delta', {
+      threadId: state.threadId,
+      turnId,
+      itemId: 'item_msg',
+      delta: '说到一半进程就没了'
+    });
+    setTimeout(() => process.exit(1), 100);
+    return;
+  }
+
+  if (text.includes('stale')) {
+    // 上一轮的迟到重复 turn/completed：不能让它收掉这一轮，也不能替这一轮确认送达。
+    if (state.lastTurnId !== null) {
+      notify('turn/completed', {
+        threadId: state.threadId,
+        turn: { id: state.lastTurnId, items: [], status: 'completed' }
+      });
+    }
+    notify('item/agentMessage/delta', {
+      threadId: state.threadId,
+      turnId,
+      itemId: 'item_msg',
+      delta: '这一轮正常结束。'
+    });
+    finishTurn(turnId, 'completed');
+    return;
+  }
 
   if (text.includes('fail')) {
     notify('error', {
@@ -250,11 +283,33 @@ function handleRequest(message) {
       });
       return;
     case 'turn/start': {
+      const text = String(params.input?.[0]?.text ?? '');
       const turnId = `turn_${++state.turnSeq}`;
       state.activeTurn = turnId;
+      if (text.includes('early')) {
+        // 收尾通知先于 turn/start 响应到达：客户端必须按原生 turn id 归属，不能等响应。
+        notify('turn/started', {
+          threadId: state.threadId,
+          turn: { id: turnId, items: [], status: 'inProgress' }
+        });
+        notify('item/agentMessage/delta', {
+          threadId: state.threadId,
+          turnId,
+          itemId: 'item_msg',
+          delta: '早到的回复'
+        });
+        finishTurn(turnId, 'completed');
+        reply(id, { turn: { id: turnId, items: [], status: 'inProgress' } });
+        return;
+      }
+      if (text.includes('die-now')) {
+        // 连 turn/start 响应都不回就退出：这一轮的原生 id 永远无法确认。
+        setTimeout(() => process.exit(1), 100);
+        return;
+      }
       reply(id, { turn: { id: turnId, items: [], status: 'inProgress' } });
       setImmediate(() => {
-        runTurn(turnId, String(params.input?.[0]?.text ?? '')).catch((error) => {
+        runTurn(turnId, text).catch((error) => {
           process.stderr.write(`fake turn failed: ${error?.message ?? error}\n`);
         });
       });
