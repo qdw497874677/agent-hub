@@ -10,8 +10,36 @@ const PROJECT_DIR = `/tmp/agent-hub-e2e-profile-${RUN}`;
 const TASK_TITLE = `配置任务-${RUN}`;
 const PROFILE_NAME = `配置-${RUN}`;
 
+type CanvasSession = {
+  id: string;
+  model: string;
+  options: Record<string, string | boolean>;
+  optionSpec: unknown[];
+  status: string;
+  createdAt: number;
+};
+
 const taskNode = (page: Page, title: string) => page.locator('.react-flow__node-task').filter({ hasText: title });
 const sessionNode = (page: Page) => page.locator('.react-flow__node-session');
+
+async function readSessions(page: Page, projectId: string): Promise<CanvasSession[]> {
+  const response = await page.request.get(`/api/projects/${projectId}/canvas`);
+  if (!response.ok()) throw new Error(`读画布失败：HTTP ${response.status()}`);
+  return ((await response.json()) as { sessions: CanvasSession[] }).sessions;
+}
+
+/** 运行时上报可调项是异步的：等到会话的 optionSpec 非空再核对，别在空选项上做真空断言。 */
+async function waitForReportedSessions(page: Page, projectId: string, count: number): Promise<CanvasSession[]> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const sessions = await readSessions(page, projectId);
+    if (sessions.length >= count && sessions.every((session) => session.optionSpec.length > 0)) {
+      return [...sessions].sort((a, b) => a.createdAt - b.createdAt);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`等 ${count} 条会话上报运行时选项超时`);
+}
 
 async function chooseWorkspace(_page: Page, dialog: Locator): Promise<void> {
   // 这个测试只关心 profile 的保存/套用，不关心目录选择；用临时工作目录避免路径输入框。
@@ -47,12 +75,31 @@ test('Agent 配置：保存当前会话，派生时套用', async ({ page }) => 
   await firstRun.getByRole('button', { name: '开始', exact: true }).click();
   await expect(page.getByLabel('发送消息')).toBeVisible();
 
+  const projectId = /#\/p\/([^/]+)/.exec(new URL(page.url()).hash)?.[1];
+  if (!projectId) throw new Error('地址栏里没有项目 id');
+
   await page.getByRole('button', { name: '更多' }).click();
   await page.getByRole('menuitem', { name: /保存为启动预设/ }).click();
   const saveDialog = page.getByRole('dialog', { name: '保存为启动预设' });
   await saveDialog.getByLabel('名字').fill(PROFILE_NAME);
   await saveDialog.getByRole('button', { name: '保存' }).click();
   await expect(saveDialog).toHaveCount(0);
+
+  // #238：刚开完会话就保存时，运行时可能还没把选项报上来。保存按钮会等选项上报后才可用
+  // （产品侧行为），这里仍然开完会话就点保存——Playwright 的 click 会等按钮可用，
+  // 竞态覆盖还在；下面核对预设确实存到了那份选项，而不是 {}。
+  const first = (await waitForReportedSessions(page, projectId, 1))[0];
+  if (!first) throw new Error('画布里没有第一会话');
+  const profilesResponse = await page.request.get('/api/agent-profiles');
+  expect(profilesResponse.ok()).toBeTruthy();
+  const profiles = (await profilesResponse.json()) as Array<{
+    name: string;
+    options: Record<string, string | boolean>;
+  }>;
+  const savedProfile = profiles.find((profile) => profile.name === PROFILE_NAME);
+  expect(savedProfile).toBeDefined();
+  expect(savedProfile?.options).toEqual(first.options);
+  expect(Object.keys(savedProfile?.options ?? {})).not.toHaveLength(0);
 
   // 管理页：改名，确认管理 UI 与派生下拉同步。
   await page.getByRole('button', { name: '更多' }).click();
@@ -83,16 +130,9 @@ test('Agent 配置：保存当前会话，派生时套用', async ({ page }) => 
   await page.getByRole('button', { name: '画布', exact: true }).click();
   await expect(sessionNode(page)).toHaveCount(2);
 
-  const projectId = /#\/p\/([^/]+)/.exec(new URL(page.url()).hash)?.[1];
-  if (!projectId) throw new Error('地址栏里没有项目 id');
-  const response = await page.request.get(`/api/projects/${projectId}/canvas`);
-  expect(response.ok()).toBeTruthy();
-  const canvas = (await response.json()) as {
-    sessions: Array<{ id: string; model: string; options: Record<string, string | boolean>; createdAt: number }>;
-  };
-  const sessions = [...canvas.sessions].sort((a, b) => a.createdAt - b.createdAt);
+  const sessions = await waitForReportedSessions(page, projectId, 2);
   expect(sessions).toHaveLength(2);
   expect(sessions[0]?.model).toBeTruthy();
   expect(sessions[1]?.model).toBe(sessions[0]?.model);
-  expect(sessions[1]?.options).toMatchObject(sessions[0]?.options ?? {});
+  expect(sessions[1]?.options).toEqual(sessions[0]?.options);
 });

@@ -962,6 +962,7 @@ export function FocusView({
         <SaveAgentProfileDialog
           session={session}
           agentLabel={agentLabel}
+          expectsOptions={(agent?.options.length ?? 0) > 0}
           onClose={() => setProfileOpen(false)}
           onSaved={() => setProfileOpen(false)}
         />
