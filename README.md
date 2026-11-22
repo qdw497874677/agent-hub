@@ -236,6 +236,7 @@ npm run e2e    # Playwright：真浏览器 + 真 agent，从建项目到模型�
 | [`docs/design/multi-worker-research.md`](docs/design/multi-worker-research.md) | 多台 Worker 的界面调研（截图在 `docs/design/multi-worker/`） |
 | [`docs/design/harness-readiness.md`](docs/design/harness-readiness.md) | Harness 就绪探测：装了不等于能用，变灰与原因 |
 | [`docs/design/workspaces.md`](docs/design/workspaces.md) | 工作空间：持久 / 临时、按机器、运行面板 |
+| [`docs/design/service-preview.md`](docs/design/service-preview.md) | 工作空间上的本机服务预览（提议，ADR 0034；未实现） |
 | [`docs/design/tasks-and-capabilities.md`](docs/design/tasks-and-capabilities.md) | 任务模型 v2（工作日志）与 agent 能力接入层 |
 | [`docs/design/asset-hub.md`](docs/design/asset-hub.md) | 资产中心：技能、指令、MCP、密钥、按机器下发 |
 | [`docs/adr/`](docs/adr) | 八个不可轻易回退的决定，见下表 |
@@ -250,3 +251,5 @@ npm run e2e    # Playwright：真浏览器 + 真 agent，从建项目到模型�
 | [0006](docs/adr/0006-prompts-are-journal-events.md) | 用户的提问也是事件 |
 | [0007](docs/adr/0007-options-come-from-the-agent.md) | 可调项（思考强度等）来自 agent，不是来自平台 |
 | [0008](docs/adr/0008-accounts.md) | 账号体系：单 Workspace、主人 + 成员、按机器签发接入凭据 |
+
+0009 及以后的决定在 [`docs/adr/`](docs/adr)。其中 [0034](docs/adr/0034-service-preview.md) 是工作空间服务预览，状态为提议。
