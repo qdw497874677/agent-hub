@@ -33,6 +33,11 @@ export interface DelegationDto {
   baseSha: string | null;
   instructions: string;
   executionSessionId: string;
+  /**
+   * 服务端按「会话真的存在，而且当前查看者能读」算出来的；false 时不许画进入链接。
+   * 老服务端不发时按 false 处理，宁可少一个入口，也不给幽灵链接。
+   */
+  executionSessionExists?: boolean;
   worktreePath: string;
   branch: string;
   state: DelegationState;

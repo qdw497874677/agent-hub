@@ -1242,8 +1242,6 @@ export function FocusView({
                 >
                   <TurnWave />
                   <span className="min-w-0 truncate text-secondary" data-testid="turn-progress-phase">{progress.label}</span>
-                  {/* 秒数只给眼睛：读屏别每秒被打断一次，完整说明在 title / aria-label 里。 */}
-                  <span className="shrink-0 tabular-nums" aria-hidden data-testid="turn-progress-elapsed">· {progress.seconds} 秒</span>
                 </div>
               ) : <span />}
               <div className="flex min-w-0 shrink-0 items-center gap-3">

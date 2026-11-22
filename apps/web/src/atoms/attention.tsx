@@ -15,6 +15,7 @@ export const PHASE_LABEL: Readonly<Record<AttentionPhase, string>> = {
   needs_approval: '等审批',
   undelivered: '未送达',
   failed: '失败了',
+  outcome_unknown: '结果待确认',
   needs_answer: '等回答',
   needs_review: '等审查'
 };
@@ -137,7 +138,7 @@ export function useAutoAck(sessionId: string | null, delayMs = 3000) {
   const key = item ? `${item.sessionId}|${item.phase}|${item.since}` : null;
   useEffect(() => {
     if (!item) return;
-    if (item.phase === 'needs_approval' || item.phase === 'needs_answer') return;
+    if (item.phase === 'needs_approval' || item.phase === 'needs_answer' || item.phase === 'outcome_unknown') return;
     const timer = setTimeout(() => ack.mutate({ item }), delayMs);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -99,6 +99,6 @@ test('秒数不会为负：时钟回拨 / 起点在将来也显示 0 秒', () =>
 test('detail 给完整说明，并且包含「正在回复」', () => {
   const state = progress([prompt(), text()]);
   assert.ok(state?.detail.includes('正在回复'));
-  assert.ok(state?.detail.includes('已等待 6 秒'));
   assert.ok(state?.detail.includes('Codex'));
+  assert.ok(!state?.detail.includes('秒'));
 });

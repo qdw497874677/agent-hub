@@ -36,14 +36,36 @@ test('批准卡：显示、手机尺寸、点允许发出回答；不存在的�
   const bad = await page.request.post(`/api/sessions/${id}/approvals/nope`, { data: { decision: 'always' }, headers });
   expect(bad.status()).toBe(400);
 
+  let ackSubmitted = false;
+  let journalResolved = false;
   await page.route(`**/api/sessions/${id}/events**`, async (route) => {
     const response = await route.fetch();
     const entries = (await response.json()) as Array<{ seq: number; at?: number; event?: Record<string, unknown> }>;
     const last = entries[entries.length - 1]!;
-    const extra = { ...last, seq: last.seq + 1, event: { kind: 'approval', phase: 'request', id: 'run_x:req_1', title: 'rm -rf build/', expiresAt: Date.now() + 120_000 } };
-    await route.fulfill({ response, json: [...entries, extra] });
+    const request = { ...last, seq: last.seq + 1, event: { kind: 'approval', phase: 'request', id: 'run_x:req_1', title: 'rm -rf build/', expiresAt: Date.now() + 120_000 } };
+    // 202 回执和 journal 里的 resolved 分开控制：刷新时只认后者。
+    const resolved = {
+      ...last,
+      seq: last.seq + 2,
+      event: { kind: 'approval', phase: 'resolved', id: 'run_x:req_1', decision: 'deny', by: 'runtime', author: { id: 'e2e', name: '运行时' } }
+    };
+    const question = {
+      ...last,
+      seq: last.seq + 3,
+      event: { kind: 'tool_call', name: 'AskUserQuestion', input: JSON.stringify({ question: '用 A 还是 B？', options: [{ label: 'A' }, { label: 'B' }] }) }
+    };
+    const malformed = {
+      ...last,
+      seq: last.seq + 4,
+      event: { kind: 'tool_call', name: 'AskUserQuestion', input: 'RAW_QUESTION_SHOULD_NOT_RENDER' }
+    };
+    const injected = journalResolved ? [request, resolved, question, malformed] : [request, question, malformed];
+    await route.fulfill({ response, json: [...entries, ...injected] });
   });
-  await page.route(`**/api/sessions/${id}/approvals/**`, (route) => route.fulfill({ status: 202, json: { requested: true } }));
+  await page.route(`**/api/sessions/${id}/approvals/**`, (route) => {
+    ackSubmitted = true;
+    return route.fulfill({ status: 202, json: { requested: true } });
+  });
   await page.goto(`/#/p/${project.id}/focus/${id}`);
   const card = page.getByRole('log', { name: '会话记录' }).getByTestId('msg-approval').last();
   await expect(card).toBeVisible();
@@ -57,6 +79,43 @@ test('批准卡：显示、手机尺寸、点允许发出回答；不存在的�
   const answered = page.waitForRequest((request) => request.url().includes(`/api/sessions/${id}/approvals/`) && request.method() === 'POST');
   await card.getByTestId('approval-allow').click();
   const request = await answered;
+  expect(ackSubmitted).toBe(true);
   expect(decodeURIComponent(request.url())).toContain('/approvals/run_x:req_1');
   expect(request.postDataJSON()).toEqual({ decision: 'allow' });
+
+  // 202 只是「收到了」，不是允许/拒绝；不能在本地说成结论。
+  await expect(card).toHaveAttribute('data-state', 'submitted');
+  await expect(card.getByTestId('approval-submitted')).toContainText('已提交，等待结果确认');
+  await expect(card.getByTestId('approval-verdict')).toHaveCount(0);
+  await expect(card.getByTestId('approval-allow')).toHaveCount(0);
+  await expect(card.getByTestId('approval-deny')).toHaveCount(0);
+
+  // 显式提问只展示原始问题，不声称仍在等待，也不自动生成答案。
+  const question = page.getByRole('log', { name: '会话记录' }).getByTestId('agent-question');
+  await expect(question).toBeVisible();
+  await expect(question).toContainText('Agent 提问');
+  await expect(question).toContainText('不代表仍在等待回答');
+  await expect(question).toContainText('用 A 还是 B？');
+  await expect(question.getByText('A', { exact: true })).toBeVisible();
+  await expect(question).not.toContainText('已回答');
+
+  // 刷新后只认 journal：运行时实际给的是拒绝，和刚才点的允许不同。
+  journalResolved = true;
+  const me = (await (await page.request.get('/api/auth/state')).json()) as { user: { id: string } };
+  await page.evaluate(
+    (userId) => localStorage.setItem(`agent-hub.display.${userId}`, JSON.stringify({ tools: 'hidden' })),
+    me.user.id
+  );
+  await page.reload();
+  const persisted = page.getByRole('log', { name: '会话记录' }).getByTestId('msg-approval').last();
+  await expect(persisted).toHaveAttribute('data-state', 'deny');
+  await expect(persisted.getByTestId('approval-verdict')).toContainText('运行时已不再等待');
+  await expect(persisted.getByTestId('approval-submitted')).toHaveCount(0);
+  await expect(persisted.getByTestId('approval-allow')).toHaveCount(0);
+  await expect(persisted.getByTestId('approval-deny')).toHaveCount(0);
+  const persistedQuestions = page.getByRole('log', { name: '会话记录' }).getByTestId('agent-question');
+  await expect(persistedQuestions).toHaveCount(1);
+  await expect(persistedQuestions).toContainText('用 A 还是 B？');
+  // 工具行设成隐藏后，仍保留能解析的提问卡；解析不了的原始参数不能冒充问题。
+  await expect(page.getByText('RAW_QUESTION_SHOULD_NOT_RENDER')).toHaveCount(0);
 });

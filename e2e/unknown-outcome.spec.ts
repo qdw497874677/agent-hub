@@ -6,10 +6,11 @@ import { loginByApi } from './login.ts';
 import { piModel } from './hub-model.ts';
 
 /**
- * 结果未知（Hermes outcome_unknown）的一轮：对话里给一张说明卡，「重发这一轮」把上一句再发一次，「不用了」只收起按钮。
- * 真 worker 上做不出 outcome_unknown：先跑出一轮真的失败（目录删了），再把历史接口里那条 ended 改写成结果未知。
+ * 结果未知（Hermes outcome_unknown）的一轮：对话里只给一张说明卡。
+ * 不提供一键重发，也不在浏览器里假装「已处理」；真 worker 上做不出 outcome_unknown，
+ * 先跑出一轮真的失败（目录删了），再把历史接口里那条 ended 改写成结果未知。
  */
-test('结果未知的一轮：说明卡 + 重发 / 不用了', async ({ page, baseURL }) => {
+test('结果未知的一轮：只说明，不重发、不本地消解', async ({ page, baseURL }) => {
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
@@ -45,20 +46,14 @@ test('结果未知的一轮：说明卡 + 重发 / 不用了', async ({ page, ba
   const log = page.getByRole('log', { name: '会话记录' });
   const card = log.getByTestId('msg-unknown').last();
   await expect(card).toBeVisible();
-  await expect(card).toContainText('这一轮结果不确定');
+  await expect(card).toContainText('这一轮结果待确认');
+  await expect(card.getByTestId('unknown-guidance')).toContainText('先核对工作目录和会话记录');
+  // 没有「重发 / 不用了」这类可以假装结论的按钮。
+  await expect(card.getByRole('button')).toHaveCount(0);
+  await expect(page.getByTestId('turn-progress-elapsed')).toHaveCount(0);
 
-  // 「不用了」：按钮收起，刷新后也不再出现（本浏览器记住）
-  await card.getByTestId('unknown-dismiss').click();
-  await expect(card.getByTestId('unknown-resend')).toHaveCount(0);
-  await expect(card).toContainText('已处理');
   await page.reload();
-  await expect(log.getByTestId('msg-unknown').last()).toContainText('已处理');
-
-  // 换一个浏览器存储再来：「重发这一轮」把上一句原样发出去
-  await page.evaluate(() => localStorage.clear());
-  await page.reload();
-  const prompted = page.waitForRequest((request) => request.url().endsWith(`/api/sessions/${id}/prompt`) && request.method() === 'POST');
-  await log.getByTestId('unknown-resend').click(); // 只有最后一块有按钮
-  expect((await prompted).postDataJSON()).toMatchObject({ text: '改一下 README' });
-  await expect(log.getByTestId('msg-unknown').last()).toContainText('已处理');
+  await expect(log.getByTestId('msg-unknown').last()).toContainText('这一轮结果待确认');
+  // 普通输入框仍然在：要继续，就明确发一条新消息。
+  await expect(page.getByRole('textbox', { name: '发送消息' })).toBeVisible();
 });

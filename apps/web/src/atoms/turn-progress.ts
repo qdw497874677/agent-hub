@@ -81,7 +81,8 @@ export function turnProgress({ blocks, awaiting, startedAt, now, agentLabel }: T
   }
 
   // 「正在回复」四个字保留在这里：悬停、读屏、以及 e2e 的 `/正在回复/` 都认它。
-  return { phase, label, seconds, detail: `${agentLabel} 正在回复：${label} 已等待 ${seconds} 秒` };
+  // 浏览器只知道自己从什么时候开始看，不知道运行时真正何时开始；不把本地时钟冒充运行时长。
+  return { phase, label, seconds, detail: `${agentLabel} 正在回复：${label}` };
 }
 
 function shortTool(name: string): string {

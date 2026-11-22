@@ -69,7 +69,7 @@ export interface DeliveryDto {
 
 // ---- 「等我处理」（ADR 0031 D1） ----
 
-export type AttentionPhase = 'needs_approval' | 'needs_answer' | 'needs_review' | 'failed' | 'undelivered';
+export type AttentionPhase = 'needs_approval' | 'needs_answer' | 'needs_review' | 'failed' | 'outcome_unknown' | 'undelivered';
 export interface AttentionItemDto {
   readonly sessionId: string;
   readonly taskId: string;

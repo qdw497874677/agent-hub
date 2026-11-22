@@ -6,7 +6,7 @@ import type { Session } from './session.ts';
 /**
  * 「等我处理」（ADR 0031 D1）：会话现在处在哪个阶段、要不要人。纯函数，读时由事件尾部派生，不落库。
  */
-export type Phase = 'needs_approval' | 'needs_answer' | 'needs_review' | 'failed' | 'undelivered' | 'queued' | 'working' | 'idle';
+export type Phase = 'needs_approval' | 'needs_answer' | 'needs_review' | 'failed' | 'outcome_unknown' | 'undelivered' | 'queued' | 'working' | 'idle';
 
 export interface PhaseView {
   readonly phase: Phase;
@@ -19,12 +19,23 @@ export interface PhaseView {
   readonly expiresAt?: number;
 }
 
-export const NEEDS_HUMAN: ReadonlySet<Phase> = new Set(['needs_approval', 'needs_answer', 'needs_review', 'failed', 'undelivered']);
+export const NEEDS_HUMAN: ReadonlySet<Phase> = new Set(['needs_approval', 'needs_answer', 'needs_review', 'failed', 'outcome_unknown', 'undelivered']);
 export const needsHuman = (phase: Phase): boolean => NEEDS_HUMAN.has(phase);
 /** 收件箱排序：越靠前越急。 */
 export const PHASE_RANK: Readonly<Record<Phase, number>> = {
-  needs_approval: 0, undelivered: 1, failed: 2, needs_answer: 3, needs_review: 4, queued: 5, working: 6, idle: 7
+  needs_approval: 0, undelivered: 1, failed: 2, outcome_unknown: 3, needs_answer: 4, needs_review: 5, queued: 6, working: 7, idle: 8
 };
+
+/**
+ * Hermes 在 worker / 网关中途重启、这一轮到底跑没跑完说不清时，落在 ended 原因里的固定标记。
+ * 它已经随事件持久化；判定「结果未知」只读这个标记，不从会话状态或超时反推。
+ */
+export const UNKNOWN_OUTCOME_MARKER = 'outcome_unknown';
+
+/** 这条事件是不是「结果未知」的收尾：ended · interrupted，且原因里带持久化标记。 */
+export function isUnknownOutcomeEnded(event: SessionEvent): boolean {
+  return event.kind === 'ended' && event.outcome === 'interrupted' && event.reason?.includes(UNKNOWN_OUTCOME_MARKER) === true;
+}
 
 /** agent 显式提问的工具名（ask 类工具 / ACP input-required 落成的 tool_call）。 */
 const ASK_TOOL = /(?:^|[^a-z])(ask_?user(?:_?question)?|ask_?human|ask_?followup_?question|request_?user_?input|input_?required)(?:$|[^a-z])/i;
@@ -70,7 +81,14 @@ export function derivePhase(input: PhaseInput): PhaseView {
   const lastPrompt = lastIndex(events, (e) => e.kind === 'prompt');
   const lastEnded = lastIndex(events, (e) => e.kind === 'ended');
   const turnOver = lastEnded >= 0 && lastEnded > lastPrompt;
-  // 3. 失败 / 中断，且之后没有新话
+  // 3. 结果未知：只认 Hermes 已落库的 ended 标记。真失败 / 普通断连各有自己的原因，
+  //    不会因为会话状态像「中断」就被算成结果未知（见 ADR 0031 / Hermes 运行时）。
+  if (turnOver && isUnknownOutcomeEnded(events[lastEnded]!.event)) {
+    const ended = events[lastEnded]!;
+    const reason = ended.event.kind === 'ended' && ended.event.reason ? ended.event.reason : '这一轮的结果未知';
+    return { phase: 'outcome_unknown', since: ended.at, reason };
+  }
+  // 4. 失败 / 中断，且之后没有新话
   if ((input.session.status === 'failed' || input.session.status === 'interrupted') && (turnOver || lastPrompt < 0)) {
     const ended = lastEnded >= 0 ? events[lastEnded]! : null;
     const reason = ended && ended.event.kind === 'ended' && ended.event.reason ? ended.event.reason : input.session.status === 'failed' ? '运行失败' : '进程中断了';
@@ -79,10 +97,10 @@ export function derivePhase(input: PhaseInput): PhaseView {
   if (turnOver && input.session.status !== 'running') {
     const ended = events[lastEnded]!;
     const turn = events.slice(lastPrompt + 1, lastEnded);
-    // 4. 等回答：显式提问优先
+    // 5. 等回答：显式提问优先
     const ask = turn.find((e) => e.event.kind === 'tool_call' && isAskTool(e.event.name));
     if (ask) return { phase: 'needs_answer', since: ended.at, reason: 'agent 在问你' };
-    // 5. 等审查：这一轮产生了 PR 或 commit
+    // 6. 等审查：这一轮产生了 PR 或 commit
     const turnStart = lastPrompt >= 0 ? events[lastPrompt]!.at : 0;
     const committed = turn.some((e, i) => e.event.kind === 'tool_call' && REVIEW_CMD.test(`${e.event.name}\n${e.event.input}`)
       && turn.slice(i + 1).some((r) => r.event.kind === 'tool_result' && r.event.ok));
@@ -93,7 +111,7 @@ export function derivePhase(input: PhaseInput): PhaseView {
     if (/[?？]\s*$/.test(reply)) return { phase: 'needs_answer', since: ended.at, reason: '可能在等你', possible: true };
     if (pr || committed) return { phase: 'needs_review', since: ended.at, reason: pr ? '这一轮开了 PR' : '这一轮有新提交' };
   }
-  // 6. 排队 / 工作中 / 空闲
+  // 7. 排队 / 工作中 / 空闲
   const queued = (input.pending ?? []).filter((d) => d.state === 'queued' || d.state === 'sending');
   if (queued.length) return { phase: 'queued', since: Math.min(...queued.map((d) => d.updatedAt)), reason: `${queued.length} 条排队中` };
   if (input.session.status === 'running') return { phase: 'working', since: input.session.updatedAt, reason: '工作中' };

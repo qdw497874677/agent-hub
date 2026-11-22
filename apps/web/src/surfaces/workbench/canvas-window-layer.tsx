@@ -299,7 +299,7 @@ function WaitingDot({ sessionId, blocks, agentLabel }: { sessionId: string; bloc
     <span
       className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent"
       aria-label="正在回复"
-      title={progress ? `${agentLabel} 正在回复 · ${progress.seconds} 秒` : undefined}
+      title={progress ? `${agentLabel} 正在回复` : undefined}
     />
   );
 }

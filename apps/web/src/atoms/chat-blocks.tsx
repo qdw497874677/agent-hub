@@ -3,6 +3,62 @@ import { AuthorTag } from './author.tsx';
 import { AGENT_MESSAGE_KIND, REPLY_STATUS_TEXT, parseAgentMessage, type ParsedAgentMessage } from './agent-message-card.ts';
 
 /** 会话通信 P1e：agent 间消息在时间线里画成卡片（谁发的、类型、回复状态、正文），正文仍是不可信数据。 */
+/**
+ * agent 明确用提问工具问的那一句。只认工具名和输入里的字段，不从回复语气、
+ * 也不从后面某条用户消息反推答案——后者可能只是另一件事。
+ */
+const QUESTION_TOOL = /(?:^|[^a-z])(ask_?user(?:_?question)?|ask_?human|ask_?followup_?question|request_?user_?input|input_?required)(?:$|[^a-z])/i;
+
+function questionOf(block: Extract<Block, { kind: 'tool' }>): { text: string; options: readonly string[] } | null {
+  if (!QUESTION_TOOL.test(block.name.trim())) return null;
+  try {
+    const value: unknown = JSON.parse(block.input);
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('not an object');
+    const record = value as Record<string, unknown>;
+    const first = Array.isArray(record.questions) && typeof record.questions[0] === 'object' && record.questions[0] !== null
+      ? (record.questions[0] as Record<string, unknown>)
+      : record;
+    const text =
+      (typeof first.question === 'string' && first.question.trim() !== '' ? first.question : null) ??
+      (typeof first.prompt === 'string' && first.prompt.trim() !== '' ? first.prompt : null) ??
+      (typeof first.message === 'string' && first.message.trim() !== '' ? first.message : null);
+    if (text === null) return null;
+    const options = (Array.isArray(first.options) ? first.options : [])
+      .map((option) =>
+        typeof option === 'string'
+          ? option
+          : typeof option === 'object' && option !== null && typeof (option as Record<string, unknown>).label === 'string'
+            ? ((option as Record<string, unknown>).label as string)
+            : null
+      )
+      .filter((option): option is string => option !== null && option.trim() !== '');
+    return { text, options };
+  } catch {
+    // 输入解析不了就不当提问卡：尤其不能把原始工具参数当成给人看的问题。
+    return null;
+  }
+}
+
+/** 提问卡：证明 agent 真的问了什么；回答仍走正常输入框，不自动选中任何选项。 */
+function AgentQuestion({ block }: { block: Extract<Block, { kind: 'tool' }> }) {
+  const question = questionOf(block);
+  if (question === null) return null;
+  return (
+    <div role="group" aria-label="Agent 提问" className="flex flex-col gap-1.5 border-l-2 border-link bg-link/5 px-3 py-2 text-meta text-primary" data-testid="agent-question">
+      <p className="font-medium text-link">Agent 提问</p>
+      <p className="whitespace-pre-wrap text-secondary">{question.text}</p>
+      {question.options.length > 0 ? (
+        <ul className="flex flex-wrap gap-1.5" aria-label="问题里的选项（仅供参考）">
+          {question.options.map((option) => (
+            <li key={option} className="rounded-sm border border-hair px-2 py-1 text-tertiary">{option}</li>
+          ))}
+        </ul>
+      ) : null}
+      <p className="text-tertiary">这条卡只展示提问记录，不代表仍在等待回答；回答请在下面的输入框发送。</p>
+    </div>
+  );
+}
+
 function AgentMessageCard({ message }: { message: ParsedAgentMessage }) {
   const tone = message.failure || message.status === 'failed' || message.status === 'refused' ? 'border-rust/50' : 'border-hair';
   return (
@@ -1030,9 +1086,7 @@ export function ChatBlock({
     );
   }
   if (block.kind === 'approval') return <ApprovalCard block={block} sessionId={sessionId} />;
-  if (block.kind === 'unknown') {
-    return <UnknownOutcome block={block} sessionId={sessionId} actionable={last && !running} />;
-  }
+  if (block.kind === 'unknown') return <UnknownOutcome />;
   if (block.kind === 'error') {
     return (
       <div role="alert" className="flex flex-col gap-1" data-testid="msg-error">
@@ -1066,6 +1120,8 @@ export function ChatBlock({
     );
   }
   if (block.kind === 'tool') {
+    // 明确提问是会话里必须看见的事实，不跟着「工具显示」一起被藏掉。
+    if (questionOf(block) !== null) return <AgentQuestion block={block} />;
     if (settings.tools === 'hidden') return null;
     return <ToolRow block={block} settings={settings} recovered={recovered} />;
   }
@@ -1080,19 +1136,16 @@ export function ChatBlock({
 }
 
 /**
- * 结果未知的一轮：说清楚不确定在哪，让人选。重发 = 把上一条文字再发一次（附件不带）；
- * 不用了 = 只在这台浏览器记下「已处理」。只有它是最后一块、且不在跑时才给按钮。
- */
-/**
  * 批准卡（ADR 0023）：运行时要做一件需要人点头的事。手机上按钮整行、至少 44px 高，点得准。
- * 超时 = 拒绝：倒计时到 0 就不再给按钮，等运行时补上结论。
+ * 倒计时到 0 只收起按钮，显示等待结果；超时本身不是拒绝，等 journal 里的结论。
  */
 function ApprovalCard({ block, sessionId }: { block: Extract<Block, { kind: 'approval' }>; sessionId: string }) {
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState<'allow' | 'deny' | null>(null);
+  const [submitted, setSubmitted] = useState<'allow' | 'deny' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const left = block.expiresAt === null ? null : Math.max(0, Math.ceil((block.expiresAt - now) / 1000));
-  const open = block.resolved === null && (left === null || left > 0);
+  const open = block.resolved === null && submitted === null && (left === null || left > 0);
   useEffect(() => {
     if (!open || block.expiresAt === null) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -1103,6 +1156,8 @@ function ApprovalCard({ block, sessionId }: { block: Extract<Block, { kind: 'app
     setError(null);
     try {
       await api.respondApproval(sessionId, block.id, decision);
+      // 202 只表示请求已被接单，不是允许/拒绝的结论。先收起按钮，等 journal 的 resolved。
+      setSubmitted(decision);
     } catch (cause) {
       setError((cause as Error).message);
       setBusy(null);
@@ -1116,11 +1171,13 @@ function ApprovalCard({ block, sessionId }: { block: Extract<Block, { kind: 'app
         : block.resolved.by === 'runtime'
           ? '运行时已不再等待'
           : `已拒绝${block.resolved.author ? `（${block.resolved.author.name}）` : ''}`
-    : open
+    : submitted !== null
       ? null
-      : '超时，已拒绝';
+      : open
+        ? null
+        : '倒计时已结束，等待结果确认';
   return (
-    <div role="group" aria-label="需要你批准" className="flex flex-col gap-2 rounded-sm border-l-2 border-ochre bg-ochre/10 px-3 py-2 text-meta text-primary" data-testid="msg-approval" data-state={block.resolved ? block.resolved.decision : open ? 'open' : 'expired'}>
+    <div role="group" aria-label="需要你批准" className="flex flex-col gap-2 rounded-sm border-l-2 border-ochre bg-ochre/10 px-3 py-2 text-meta text-primary" data-testid="msg-approval" data-state={block.resolved?.decision ?? (submitted !== null ? 'submitted' : open ? 'open' : 'expired')}>
       <p className="font-medium text-ochre">需要你批准</p>
       <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-secondary">{block.title || '（运行时没说要做什么）'}</pre>
       {block.detail ? <p className="whitespace-pre-wrap text-secondary">{block.detail}</p> : null}
@@ -1136,68 +1193,31 @@ function ApprovalCard({ block, sessionId }: { block: Extract<Block, { kind: 'app
           </div>
           {left !== null ? <p className="text-tertiary" data-testid="approval-countdown">{left} 秒内不回答就当拒绝</p> : null}
         </>
-      ) : (
+      ) : submitted !== null && block.resolved === null ? (
+        <p className="text-secondary" data-testid="approval-submitted" role="status">已提交，等待结果确认</p>
+      ) : verdict !== null ? (
         <p className="text-secondary" data-testid="approval-verdict">{verdict}</p>
-      )}
+      ) : null}
       {error ? <p role="alert" className="text-rust">{error}</p> : null}
     </div>
   );
 }
 
-function UnknownOutcome({ block, sessionId, actionable }: { block: Extract<Block, { kind: 'unknown' }>; sessionId: string; actionable: boolean }) {
-  const storageKey = `ahub:unknown-resolved:${sessionId}:${block.seq}`;
-  const [resolved, setResolved] = useState(() => {
-    try {
-      return localStorage.getItem(storageKey) !== null;
-    } catch {
-      return false;
-    }
-  });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const resolve = (how: string) => {
-    try {
-      localStorage.setItem(storageKey, how);
-    } catch {
-      /* 存不下就只在这次页面里生效 */
-    }
-    setResolved(true);
-  };
-  const resend = async () => {
-    if (block.prompt === null) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await api.prompt(sessionId, block.prompt);
-      resolve('resent');
-    } catch (cause) {
-      setError((cause as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
+/**
+ * 结果待确认：运行时中断，但没有任何证据说这轮成功或失败。
+ * 不提供一键重发，也不在浏览器里假装修好——先去对工作目录和会话记录；
+ * 真要继续时，输入框仍然可以发一条明确的新消息。
+ */
+function UnknownOutcome() {
   return (
     <div role="status" className="flex flex-col gap-2 rounded-sm border-l-2 border-ochre bg-ochre/10 px-3 py-2 text-meta text-primary" data-testid="msg-unknown">
-      <p className="font-medium text-ochre">这一轮结果不确定</p>
+      <p className="font-medium text-ochre">这一轮结果待确认</p>
       <p className="text-secondary">
-        这一轮结果不确定，可能已经改过文件。请先查看工作目录，再决定是否重发。
+        运行时中途中断，没留下明确结论，可能已经改过文件。
       </p>
-      {actionable && !resolved ? (
-        <div className="flex flex-wrap items-center gap-2">
-          {block.prompt !== null ? (
-            <button type="button" className="rounded-sm border border-rule px-2 py-1 hover:bg-card-raised disabled:opacity-50" disabled={busy} onClick={() => void resend()} data-testid="unknown-resend">
-              {busy ? '重发中…' : '重发这一轮'}
-            </button>
-          ) : null}
-          <button type="button" className="rounded-sm px-2 py-1 text-secondary hover:bg-card-raised" disabled={busy} onClick={() => resolve('dismissed')} data-testid="unknown-dismiss">
-            不用了
-          </button>
-          {block.prompt !== null ? <span className="text-tertiary">重发只带文字，附件需要重新添加</span> : null}
-        </div>
-      ) : resolved ? (
-        <p className="text-tertiary">已处理</p>
-      ) : null}
-      {error ? <p role="alert" className="text-rust">重发失败：{error}</p> : null}
+      <p className="text-tertiary" data-testid="unknown-guidance">
+        先核对工作目录和会话记录，再决定下一步。这里不会自动重发，也不会把后面某句话当成这轮的答案；需要继续时，在输入框发一条新消息。
+      </p>
     </div>
   );
 }

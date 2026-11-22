@@ -14,7 +14,7 @@ import { PinnedMark } from '../../atoms/pinned-mark.tsx';
 import { CardComposer } from './card-composer.tsx';
 import { OptionControls } from '../../atoms/options.tsx';
 import { HubSwitchNote, useSessionOptions } from '../../atoms/session-options.tsx';
-import { PHASE_DOT, elapsedLabel, phaseLabel, phaseTone, sessionPhase, type SessionPhase } from './session-status.ts';
+import { PHASE_DOT, phaseLabel, phaseTone, sessionPhase, type SessionPhase } from './session-status.ts';
 import {
   cardBlocks,
   multipleAuthors,
@@ -290,13 +290,6 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   const background = useBackgroundActivity(session.id, blocks, status, live?.lastSeq ?? session.lastSeq);
   const showAuthor = multipleAuthors(blocks);
   const dimmed = status === 'stopped';
-  // 工作中才数时长；半分钟一跳就够（秒级数字会一直抓眼睛）。
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (phase !== 'working') return;
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(timer);
-  }, [phase]);
   const { nearEnd, ref: scroller, scrollToEnd } = useStickToBottom<HTMLDivElement>(session.id);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -487,7 +480,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
               <span className="sr-only">后台任务还在跑</span>
             </span>
           ) : null}
-          <CardStatus phase={phase} startedAt={session.createdAt} now={now} reason={failureReason} />
+          <CardStatus phase={phase} reason={failureReason} />
           {expanded ? <span className="text-meta text-secondary" title="已在画布中展开" data-testid="card-expanded">◫</span> : null}
           <button
             className={`nodrag rounded-sm border px-1.5 py-0.5 text-meta transition-opacity hover:border-strong hover:text-primary focus:opacity-100 ${
@@ -659,34 +652,21 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
 }
 
 /**
- * 卡片上的状态位：点 + 文案，工作中的再跟一句「已跑多久」。
- * 替换原来的 StatusPill：一个状态只说一次，别让眼睛在两个地方对同一件事。
+ * 卡片上的状态位。运行时长不在这里显示：会话卡只有创建时间，
+ * 拿它算「已跑」会把排队和空闲也算进去。
  */
-function CardStatus({
-  phase,
-  startedAt,
-  now,
-  reason
-}: {
-  phase: SessionPhase;
-  startedAt: number;
-  now: number;
-  reason: string | null;
-}) {
+function CardStatus({ phase, reason }: { phase: SessionPhase; reason: string | null }) {
   const tone = phaseTone(phase);
-  const elapsed = phase === 'working' ? elapsedLabel(startedAt, now) : null;
-  const suffix = elapsed === null ? null : elapsed === '刚刚' ? '刚开始' : `已跑 ${elapsed}`;
   return (
     <span
       data-testid="card-status"
       data-phase={phase}
       data-tone={tone}
       className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-meta text-secondary"
-      title={reason ?? (suffix ? `${phaseLabel(phase)} · ${suffix}` : phaseLabel(phase))}
+      title={reason ?? phaseLabel(phase)}
     >
       <span aria-hidden className={`block size-[7px] shrink-0 rounded-full ${PHASE_DOT[tone]}`} />
       <span>{phaseLabel(phase)}</span>
-      {suffix ? <span className="text-tertiary">· {suffix}</span> : null}
     </span>
   );
 }

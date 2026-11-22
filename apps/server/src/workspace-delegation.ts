@@ -598,6 +598,14 @@ export interface DelegationView {
   readonly branch: string;
   /** 只有仍处于「待确认提案」时才是 true；不是请求方可以指定的布尔值。 */
   readonly canConfirm: boolean;
+  /**
+   * 读取时按会话存储核实「执行会话现在真的存在，并且当前查看者能读」。
+   *
+   * 这不是按 `state` 推出来的：prepared 之后会话可能被删，pending 预留的 id 也还没有会话。
+   * 只有同时满足以下条件才是 true；其余（不存在 / 已删除 / 读取异常 / 归属漂移 / 没有
+   * `session.read`）一律 false，并且**不区分原因**——不要用这个布尔值反推「别人的会话是否存在」。
+   */
+  readonly executionSessionExists: boolean;
   readonly startup: DelegationStartupView | null;
   readonly state: WorkspaceDelegation['state'];
   readonly failure: WorkspaceDelegation['failure'];
@@ -605,7 +613,8 @@ export interface DelegationView {
   readonly updatedAt: number;
 }
 
-export function delegationView(record: WorkspaceDelegation): DelegationView {
+/** 旧调用点（例如 Runtime 工具）没有查看者上下文：默认 false = 不声称会话存在。 */
+export function delegationView(record: WorkspaceDelegation, executionSessionExists = false): DelegationView {
   return {
     id: record.id,
     coordinatorSessionId: record.coordinatorSessionId,
@@ -621,6 +630,7 @@ export function delegationView(record: WorkspaceDelegation): DelegationView {
     worktreePath: record.worktreePath,
     branch: record.branch,
     canConfirm: record.state === 'pending' && record.claim === null && record.startup !== null,
+    executionSessionExists,
     startup: record.startup
       ? {
           agentId: record.startup.agentId,
@@ -633,6 +643,44 @@ export function delegationView(record: WorkspaceDelegation): DelegationView {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
+}
+
+/**
+ * 读取时的执行会话存在性判定（`executionSessionExists` 的唯一来源）。
+ *
+ * 纯读、无副作用；任何一步不成立都返回 false，绝不把原因（无权 / 已删 / 读失败）传给浏览器：
+ * - 精确归属：查看者必须就是这条派工的归属账号（与 GET / confirm 同一份 ownership 检查）；
+ * - 项目一致：只能用服务端核实过的项目做 `session.read`，不能让查询参数改判；
+ * - 真实存在：按预留 `executionSessionId` 从会话存储读取，读不到 / 抛错都当不存在；
+ * - 身份一致：会话的任务与创建者必须跟派工记录完全一致，bot / 侧聊 / 容器会话不算；
+ * - 当前可读：查看者现在仍对这条会话有 `session.read`（权限可能在发起后被收回）。
+ */
+async function executionSessionExistsFor(
+  deps: Pick<DelegationDeps, 'access' | 'sessions'>,
+  viewer: Subject | null,
+  project: Project | null,
+  record: WorkspaceDelegation
+): Promise<boolean> {
+  const principal = humanOf(viewer);
+  if (!principal || principal.user.id !== record.accountId) return false;
+  if (!project || project.id !== record.projectId) return false;
+  let session: Session | null;
+  try {
+    session = await deps.sessions.byId(asSessionId(record.executionSessionId));
+  } catch {
+    return false;
+  }
+  if (!session) return false;
+  if (session.taskId !== record.taskId) return false;
+  if ((session.createdBy ?? '') !== record.accountId) return false;
+  if ((session.botId ?? null) !== null) return false;
+  if ((session.parentSessionId ?? null) !== null || session.kind === 'side') return false;
+  try {
+    const allowed = await authorizeSession(deps.access, viewer, project, session, 'session.read');
+    return allowed.ok;
+  } catch {
+    return false;
+  }
 }
 
 export type DelegationDeps = Pick<
@@ -739,11 +787,13 @@ export function installDelegationRoutes(
       command
     );
     if (!result.ok) return fail(c, result.error);
+    const project = await deps.projects.byId(result.value.record.projectId);
+    const executionSessionExists = await executionSessionExistsFor(deps, actor, project, result.value.record);
     return c.json(
       {
         created: result.value.allocation === 'created',
         claimed: result.value.claimed,
-        delegation: delegationView(result.value.record)
+        delegation: delegationView(result.value.record, executionSessionExists)
       },
       result.value.allocation === 'created' ? 201 : 200,
       noStore
@@ -776,7 +826,12 @@ export function installDelegationRoutes(
 
     // 已完成的确认是幂等的：重复点击只回同一条 prepared 记录，不再碰 Git / 会话。
     if (record.state === 'prepared') {
-      return c.json({ created: false, claimed: false, delegation: delegationView(record) }, 200, noStore);
+      const executionSessionExists = await executionSessionExistsFor(deps, actor, context.project, record);
+      return c.json(
+        { created: false, claimed: false, delegation: delegationView(record, executionSessionExists) },
+        200,
+        noStore
+      );
     }
     if (record.state !== 'pending' || record.claim !== null) {
       return fail(c, conflict(`派工当前是 ${record.state}，不能确认`));
@@ -817,7 +872,14 @@ export function installDelegationRoutes(
       return fail(c, conflict(`派工当前是 ${result.value.record.state}，还没有完成确认`));
     }
     return c.json(
-      { created: false, claimed: result.value.claimed, delegation: delegationView(result.value.record) },
+      {
+        created: false,
+        claimed: result.value.claimed,
+        delegation: delegationView(
+          result.value.record,
+          await executionSessionExistsFor(deps, actor, context.project, result.value.record)
+        )
+      },
       200,
       noStore
     );
@@ -841,6 +903,11 @@ export function installDelegationRoutes(
     if (context.session.createdBy !== principal.user.id) return fail(c, forbidden('只有主会话的创建者能查看派工'));
     const records = await delegations.byCoordinator(sessionId);
     const own = records.filter((record) => record.accountId === principal.user.id);
-    return c.json({ delegations: own.map(delegationView) }, 200, noStore);
+    const views = await Promise.all(
+      own.map(async (record) =>
+        delegationView(record, await executionSessionExistsFor(deps, actor, context.project, record))
+      )
+    );
+    return c.json({ delegations: views }, 200, noStore);
   });
 }

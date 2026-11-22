@@ -99,6 +99,7 @@ interface DelegationBody {
     baseSha: string | null;
     instructions: string;
     canConfirm: boolean;
+    executionSessionExists: boolean;
     startup: { agentId: string; model: string | null; profileId: string | null } | null;
   };
 }
@@ -555,6 +556,110 @@ test('GET：同项目非 owner 不能读取派工说明、路径与 canConfirm�
   assert.equal(view.instructions, '把设置页拆成两个组件，并保留现有路由。');
   assert.equal(view.worktreePath, proposal.worktreePath);
   assert.equal(view.canConfirm, true);
+});
+
+async function listedDelegation(w: Awaited<ReturnType<typeof world>>, id: string) {
+  const response = await w.get();
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as ListBody;
+  return payload.delegations.find((row) => row.id === id);
+}
+
+test('executionSessionExists：pending 预留 ID 为 false，确认出真实会话后同一记录为 true', async () => {
+  const w = await world();
+  const proposal = await seedProposal(w, { requestKey: 'presence-pending' });
+  assert.equal(proposal.state, 'pending');
+  assert.equal(
+    await w.deps.sessions.byId(asSessionId(proposal.executionSessionId)),
+    null,
+    'pending 的 executionSessionId 只是预留，还没有会话'
+  );
+
+  const before = await listedDelegation(w, proposal.id);
+  assert.ok(before);
+  assert.equal(before.executionSessionExists, false);
+
+  const confirmed = await w.confirm(proposal.id);
+  assert.equal(confirmed.status, 200);
+  const payload = (await confirmed.json()) as DelegationBody;
+  assert.equal(payload.delegation.state, 'prepared');
+  assert.equal(payload.delegation.executionSessionExists, true);
+  assert.ok(await w.deps.sessions.byId(asSessionId(payload.delegation.executionSessionId)));
+
+  const after = await listedDelegation(w, proposal.id);
+  assert.ok(after);
+  assert.equal(after.executionSessionExists, true);
+
+  const repeated = (await (await w.confirm(proposal.id)).json()) as DelegationBody;
+  assert.equal(repeated.delegation.executionSessionExists, true, '重复确认也按读取时真实会话判断');
+});
+
+test('executionSessionExists：POST 新建 prepared 派工时来自真实执行会话', async () => {
+  const w = await world();
+  const response = await w.post(w.body());
+  assert.equal(response.status, 201);
+  const payload = (await response.json()) as DelegationBody;
+  assert.equal(payload.delegation.state, 'prepared');
+  assert.equal(payload.delegation.executionSessionExists, true);
+  assert.ok(await w.deps.sessions.byId(asSessionId(payload.delegation.executionSessionId)));
+});
+
+test('executionSessionExists：执行会话被删除后 GET 与幂等 confirm 都是 false，且不报错', async () => {
+  const w = await world();
+  const created = (await (await w.post(w.body())).json()) as DelegationBody;
+  assert.equal(created.delegation.executionSessionExists, true);
+  await w.deps.sessions.remove(asSessionId(created.delegation.executionSessionId));
+
+  const listed = await listedDelegation(w, created.delegation.id);
+  assert.ok(listed);
+  assert.equal(listed.executionSessionExists, false);
+  assert.equal('executionSessionError' in listed, false, '不暴露读取失败原因');
+
+  const repeated = await w.confirm(created.delegation.id);
+  assert.equal(repeated.status, 200);
+  assert.equal(((await repeated.json()) as DelegationBody).delegation.executionSessionExists, false);
+});
+
+test('executionSessionExists：读取执行会话抛错时按不存在处理，200 且不带错误细节', async () => {
+  const w = await world();
+  const created = (await (await w.post(w.body())).json()) as DelegationBody;
+  const target = asSessionId(created.delegation.executionSessionId);
+  const original = w.deps.sessions.byId;
+  w.deps.sessions.byId = async (id) => {
+    if (id === target) throw new Error('delegation session unavailable');
+    return original(id);
+  };
+  try {
+    const response = await w.get();
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    const payload = JSON.parse(text) as ListBody;
+    const view = payload.delegations.find((row) => row.id === created.delegation.id);
+    assert.ok(view);
+    assert.equal(view.executionSessionExists, false);
+    assert.equal(text.includes('delegation session unavailable'), false);
+  } finally {
+    w.deps.sessions.byId = original;
+  }
+});
+
+test('executionSessionExists：任务或创建者与派工记录不一致的会话不算执行会话', async () => {
+  const w = await world();
+  const created = (await (await w.post(w.body())).json()) as DelegationBody;
+  const session = await w.deps.sessions.byId(asSessionId(created.delegation.executionSessionId));
+  assert.ok(session);
+
+  await w.deps.sessions.save({ ...session, createdBy: 'u-someone-else' });
+  const driftedCreator = await listedDelegation(w, created.delegation.id);
+  assert.equal(driftedCreator?.executionSessionExists, false);
+
+  await w.deps.sessions.save({ ...session });
+  const restored = await listedDelegation(w, created.delegation.id);
+  assert.equal(restored?.executionSessionExists, true, '恢复归属后重新可读');
+
+  await w.deps.sessions.save({ ...session, taskId: asTaskId('task-unrelated') });
+  const driftedTask = await listedDelegation(w, created.delegation.id);
+  assert.equal(driftedTask?.executionSessionExists, false);
 });
 
 function directCommand(

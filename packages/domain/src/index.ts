@@ -248,7 +248,7 @@ export { attemptDelivery, pumpDeliveries, releaseAfterTurn, recoverOrphanedTurns
 export { validateProvenance, legacyProvenance, viaLabel, PARENT_REQUIRED, type SessionProvenance, type ProvenanceVia, type ProvenanceActorKind } from './provenance.ts';
 export type { ProvenanceStore } from './ports/provenance-store.ts';
 export { recordProvenance, type ProvenanceDeps, type RecordProvenanceInput } from './use-cases/provenance.ts';
-export { derivePhase, needsHuman, isAskTool, NEEDS_HUMAN, PHASE_RANK, type Phase, type PhaseView, type PhaseInput } from './attention.ts';
+export { derivePhase, needsHuman, isAskTool, isUnknownOutcomeEnded, UNKNOWN_OUTCOME_MARKER, NEEDS_HUMAN, PHASE_RANK, type Phase, type PhaseView, type PhaseInput } from './attention.ts';
 export type { AttentionStore, AttentionAck } from './ports/attention-store.ts';
 export { loadAttention, markAttention, attentionOwnedBy, attentionTarget, ATTENTION_WINDOW_MS, ATTENTION_SESSION_ID_MAX, type AttentionItem, type AttentionView, type AttentionDeps, type AttentionTarget, type MarkAttentionInput } from './use-cases/attention.ts';
 export * from './connector.ts';

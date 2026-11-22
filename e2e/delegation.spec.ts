@@ -100,6 +100,7 @@ function delegation(seed: Seed, over: Record<string, unknown> = {}) {
     baseSha: 'b'.repeat(40),
     instructions: '把首页的空态文案改短一点，跑一次 typecheck',
     executionSessionId: 'exec-session-1',
+    executionSessionExists: true,
     worktreePath: '/tmp/e2e-delegation-ws.delegation-abc',
     branch: 'delegation/abc123',
     state: 'prepared',
@@ -163,7 +164,8 @@ test('提议：只有服务端说 canConfirm 的才给确认按钮，确认只�
 
   const proposals = [
     delegation(seedValue, { id: 'del-waiting', requestKey: 'req-等提议', canConfirm: false, state: 'pending' }),
-    delegation(seedValue, { id: 'del-confirmable', requestKey: 'req-可确认', canConfirm: true, state: 'pending' })
+    delegation(seedValue, { id: 'del-confirmable', requestKey: 'req-可确认', canConfirm: true, state: 'pending' }),
+    delegation(seedValue, { id: 'del-gone', requestKey: 'req-会话没了', canConfirm: false, state: 'prepared', executionSessionExists: false })
   ];
   await page.route('**/api/coordinators/*/delegations', async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
@@ -183,11 +185,15 @@ test('提议：只有服务端说 canConfirm 的才给确认按钮，确认只�
   await page.goto(`/#/p/${seedValue.projectId}/focus/${seedValue.sessionId}`);
   const panel = page.getByTestId('delegation-panel');
   await expect(panel).toBeVisible();
-  await expect(panel.getByTestId('delegation-row')).toHaveCount(2);
+  await expect(panel.getByTestId('delegation-row')).toHaveCount(3);
 
   // 等人确认 vs 等 Runtime 提议，说法要分开——不能把 pending 一律画成「可确认」
   const waiting = panel.locator('[data-delegation-id="del-waiting"]');
   const ready = panel.locator('[data-delegation-id="del-confirmable"]');
+  const gone = panel.locator('[data-delegation-id="del-gone"]');
+  await expect(gone.getByTestId('delegation-open')).toHaveCount(0);
+  await expect(gone.getByTestId('delegation-publish-open')).toHaveCount(0);
+  await expect(gone.getByTestId('delegation-execution-missing')).toContainText('先看任务记录');
   await expect(waiting.getByTestId('delegation-status')).toContainText('等待 Runtime 提议');
   await expect(waiting.getByTestId('delegation-confirm')).toHaveCount(0);
   await expect(ready.getByTestId('delegation-status')).toContainText('等你确认');

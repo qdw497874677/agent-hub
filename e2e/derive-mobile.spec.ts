@@ -52,6 +52,11 @@ test.describe('390×844', () => {
     await expect(target).toBeVisible();
     await expect(target).toContainText('面板里的任务');
     await expect(target).toContainText(projectName);
+    // 机器不是一句「自动」：写清在线 worker 的真实名字（这台是唯一可用机器）。
+    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ label: string; state: string; agentIds?: string[] }>;
+    const online = workers.find((worker) => worker.state === 'online' && (worker.agentIds?.length ?? 0) > 0);
+    if (online) await expect(target).toContainText(online.label);
+    await expect(target).not.toContainText('自动');
 
     // 2）还没选目录时，缺什么就写在开始按钮边上（不是只给个灰按钮）
     await settleSheet(page);

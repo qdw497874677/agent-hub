@@ -160,24 +160,32 @@ export function DelegationPanel({
                   {confirming === record.id ? '正在确认…' : '确认开始'}
                 </button>
               ) : null}
-              <button
-                type="button"
-                className="min-h-9 rounded-control border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary"
-                onClick={() => onOpenSession(record.executionSessionId)}
-                data-testid="delegation-open"
-                data-delegation-id={record.id}
-              >
-                进执行会话
-              </button>
-              <button
-                type="button"
-                className="min-h-9 rounded-control border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary"
-                onClick={() => setPublishing(record)}
-                data-testid="delegation-publish-open"
-                data-delegation-id={record.id}
-              >
-                复核发布…
-              </button>
+              {record.executionSessionExists === true ? (
+                <button
+                  type="button"
+                  className="min-h-9 rounded-control border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary"
+                  onClick={() => onOpenSession(record.executionSessionId)}
+                  data-testid="delegation-open"
+                  data-delegation-id={record.id}
+                >
+                  进执行会话
+                </button>
+              ) : (
+                <span className="min-h-9 content-center text-meta text-tertiary" data-testid="delegation-execution-missing">
+                  执行会话当前不可查看；先看任务记录，别重复发起
+                </span>
+              )}
+              {record.executionSessionExists === true ? (
+                <button
+                  type="button"
+                  className="min-h-9 rounded-control border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary"
+                  onClick={() => setPublishing(record)}
+                  data-testid="delegation-publish-open"
+                  data-delegation-id={record.id}
+                >
+                  复核发布…
+                </button>
+              ) : null}
             </div>
           </li>
         ))}
