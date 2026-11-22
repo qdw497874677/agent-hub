@@ -1,6 +1,5 @@
 import type { Project } from '../project.ts';
-import type { SessionStatus } from '../session.ts';
-import { isContainerSession } from '../session.ts';
+import type { Session, SessionStatus } from '../session.ts';
 import type { AgentId, ProjectId, SessionId, TaskId } from '../ids.ts';
 import type { Deps } from './deps.ts';
 
@@ -12,7 +11,7 @@ export interface ProjectSummary extends Project {
 
 export interface RecentSession {
   readonly sessionId: SessionId;
-  readonly taskId: TaskId;
+  readonly taskId: TaskId | null;
   readonly taskTitle: string;
   readonly projectId: ProjectId;
   readonly projectName: string;
@@ -39,36 +38,44 @@ export async function loadHome(
   deps: Pick<Deps, 'projects' | 'tasks' | 'sessions'>,
   limit: number = RECENT_LIMIT,
   /** 只要这个人能看的项目（ADR 0011）；不给 = 全部。 */
-  include: (project: Project) => boolean = () => true
+  include: (project: Project) => boolean = () => true,
+  coordinators?: (projectId: ProjectId) => Promise<readonly Session[]>
 ): Promise<HomeView> {
   const projects = (await deps.projects.list()).filter(include);
   const owners = new Map<string, { title: string; project: Project }>();
+  const registered = new Map<SessionId, { session: Session; project: Project }>();
 
   const summaries = await Promise.all(
     projects.map(async (project): Promise<ProjectSummary> => {
       const tasks = await deps.tasks.listByProject(project.id);
       const sessions = await deps.sessions.listByProject(project.id);
+      const main = (await coordinators?.(project.id) ?? []).filter(
+        (session) => session.taskId === null && session.originProjectId === project.id && session.kind !== 'side'
+      );
+      for (const session of main) registered.set(session.id, { session, project });
+      const visibleSessions = new Map([...sessions, ...main].map((session) => [session.id, session]));
       for (const task of tasks) owners.set(task.id, { title: task.title, project });
-      const touched = [...tasks.map((task) => task.updatedAt), ...sessions.map((session) => session.updatedAt)];
+      const touched = [...tasks.map((task) => task.updatedAt), ...Array.from(visibleSessions.values(), (session) => session.updatedAt)];
       return {
         ...project,
         taskCount: tasks.length,
-        sessionCount: sessions.length,
+        sessionCount: visibleSessions.size,
         lastActivityAt: touched.length === 0 ? null : Math.max(...touched)
       };
     })
   );
   summaries.sort((left, right) => (right.lastActivityAt ?? right.createdAt) - (left.lastActivityAt ?? left.createdAt));
 
-  const recentSessions = (await deps.sessions.listAll())
+  const all = new Map((await deps.sessions.listAll()).map((session) => [session.id, session]));
+  for (const { session } of registered.values()) all.set(session.id, session);
+  const recentSessions = [...all.values()]
     // 侧聊只是顺口问一句，不该占首页「接着干哪条」的位置。
     .filter((session) => session.kind !== 'side')
     .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .flatMap((session): RecentSession[] => {
-      // 容器会话（#221 步骤 7）不属于任何任务：首页「接着干」靠任务标题定位，它们暂不在这里出现。
-      if (isContainerSession(session)) return [];
-      const taskId = session.taskId as TaskId;
-      const owner = owners.get(taskId);
+      const taskId = session.taskId;
+      const main = registered.get(session.id);
+      const owner = taskId === null ? (main && { title: '主会话', project: main.project }) : owners.get(taskId);
       if (!owner) return [];
       return [
         {

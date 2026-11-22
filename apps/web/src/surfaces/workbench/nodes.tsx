@@ -85,8 +85,8 @@ export type SessionNode = Node<
       clientMessageId: string,
       attachments?: readonly AttachmentInputDto[]
     ) => Promise<PromptAckDto>;
-    /** 发完这一句之后，在同一张画布上再开一张卡（沿用「新建会话」那条路，不另写一套派生）。 */
-    onSendAndNew: () => void;
+    /** 发完这一句之后，在同一张画布上再开一张卡（沿用「新建会话」那条路，不另写一套派生）。没有归属任务的会话不提供这条动作。 */
+    onSendAndNew?: () => void;
     onInterrupt: () => Promise<void>;
     onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
   } & Resizable,
@@ -369,7 +369,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
     } finally {
       setBusy(false);
     }
-    onSendAndNew();
+    onSendAndNew?.();
   }
 
   async function retry(pending: PendingPrompt): Promise<void> {
@@ -606,7 +606,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         draft={draft}
         onDraftChange={onDraftChange}
         onSend={send}
-        onSendAndNew={sendAndNew}
+        onSendAndNew={onSendAndNew === undefined ? undefined : sendAndNew}
         onInterrupt={() => void run(onInterrupt)}
         busy={busy}
         error={error}

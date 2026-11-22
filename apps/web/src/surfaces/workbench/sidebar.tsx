@@ -15,6 +15,8 @@ import { sessionActionItems, type SessionActionId, type SessionActionItem } from
 import { useSessionActions } from '../../atoms/use-session-actions.ts';
 import { DeleteSessionDialog } from '../../atoms/delete-session-dialog.tsx';
 import { SessionRowMenu } from './session-row-menu.tsx';
+import { COORDINATOR_TITLE, UNASSIGNED_KEY, UNASSIGNED_TITLE } from '../../atoms/session-groups.ts';
+import { useCoordinators } from '../../shell/coordinators.ts';
 
 /** 平台修饰键（⌘ / Ctrl）：提示写对，快捷键本身两个都收。 */
 const MOD = modKeyLabel();
@@ -73,6 +75,8 @@ interface Props {
   readonly onOpenSession: (sessionId: string) => void;
   readonly onSearch: () => void;
   readonly onNewTask: () => void;
+  /** 新开主会话：和新建任务并排，因为它也是「从这条项目开始干活」。 */
+  readonly onNewCoordinator: () => void;
   readonly onClose?: (() => void) | undefined;
 }
 
@@ -95,6 +99,7 @@ export function ProjectSidebar({
   onOpenSession,
   onSearch,
   onNewTask,
+  onNewCoordinator,
   onClose
 }: Props) {
   const drawer = onClose !== undefined;
@@ -109,7 +114,7 @@ export function ProjectSidebar({
   const sessions = useMemo(() => {
     const grouped = new Map<string, SessionDto[]>();
     for (const session of active) {
-      const key = session.taskId ?? 'container';
+      const key = session.taskId ?? UNASSIGNED_KEY;
       const list = grouped.get(key) ?? [];
       list.push(session);
       grouped.set(key, list);
@@ -117,10 +122,23 @@ export function ProjectSidebar({
     return grouped;
   }, [active]);
   const taskTitle = useMemo(() => new Map(tasks.map((task) => [task.id, task.title])), [tasks]);
+  /**
+   * 没有任务的会话（人开的主会话、bot、群角色）：以前这个桶不渲染，主会话就永远不在侧栏出现。
+   * 登记表里有的才是「主会话」，其余照中性的说法——不能把 bot 会话也叫成主会话。
+   */
+  const { ids: coordinatorIds } = useCoordinators(project.id);
+  const taskless = sessions.get(UNASSIGNED_KEY) ?? [];
+  const coordinators = taskless.filter((session) => coordinatorIds.has(session.id));
+  const unassigned = taskless.filter((session) => !coordinatorIds.has(session.id));
   const now = Date.now();
 
-  const titleOf = (session: SessionDto): string =>
-    session.title?.trim() || canvas?.openings[session.id]?.trim() || (session.taskId === null ? '' : taskTitle.get(session.taskId)) || session.id.slice(-8);
+  const titleOf = (session: SessionDto): string => {
+    const named = session.title?.trim() || canvas?.openings[session.id]?.trim();
+    if (named) return named;
+    const task = session.taskId === null ? undefined : taskTitle.get(session.taskId);
+    // 无任务会话没有任务名可借：主会话就叫主会话，其余宁可给一个短编号，也不要空行
+    return task || (coordinatorIds.has(session.id) ? COORDINATOR_TITLE : `会话 ${session.id.slice(-4)}`);
+  };
 
   // 会话行的「⋯」/ 右键菜单：动作、缓存改写和会话页「⋯」同一份（atoms/use-session-actions.ts）。
   const actions = useSessionActions(project.id);
@@ -223,6 +241,20 @@ export function ProjectSidebar({
     onMenu: (x: number, y: number, trigger: HTMLElement | null) => openMenu(session.id, x, y, trigger),
     onRenamed: (value: string | null) => finishRename(session, value)
   });
+  /** 没有任务的两组共用一套行：组名不同，行的动作和别的行完全一样。 */
+  const tasklessSection = (testId: string, title: string, rows: SessionDto[]) =>
+    rows.length === 0 ? null : (
+      <section className="mb-1" data-testid={testId} aria-label={title}>
+        <p className="flex min-h-10 items-center gap-1.5 rounded-md px-1.5 text-left text-sub text-tertiary lg:min-h-7">
+          <Icon name="chevron-down" size={13} />
+          <span className="min-w-0 flex-1 truncate">{title}</span>
+          <span className="shrink-0 text-meta">{rows.length}</span>
+        </p>
+        {rows.map((session) => (
+          <SessionRow key={session.id} {...rowProps(session)} />
+        ))}
+      </section>
+    );
   const menuSession = menu ? allSessions.find((session) => session.id === menu.sessionId) : undefined;
 
   const toggleCollapsed = useCallback(() => {
@@ -292,6 +324,9 @@ export function ProjectSidebar({
         <button className={GHOST_ICON} aria-label="新建任务" title="新建任务" onClick={onNewTask}>
           <Icon name="plus" />
         </button>
+        <button className={GHOST_ICON} aria-label="新开主会话" title="新开主会话" onClick={onNewCoordinator}>
+          <Icon name="message" />
+        </button>
         <button className={GHOST_ICON} aria-label="搜索" title={`搜索（${MOD}K）`} onClick={onSearch}>
           <Icon name="search" />
         </button>
@@ -352,6 +387,10 @@ export function ProjectSidebar({
           <Icon name="plus" className="text-tertiary" />
           新建任务
         </button>
+        <button className={ROW} data-testid="sidebar-new-coordinator" onClick={onNewCoordinator}>
+          <Icon name="message" className="text-tertiary" />
+          新开主会话
+        </button>
         <button className={ROW} onClick={onSearch} title="搜索任务与会话">
           <Icon name="search" className="text-tertiary" />
           <span className="flex-1">搜索</span>
@@ -397,6 +436,10 @@ export function ProjectSidebar({
             );
           })
         )}
+        {/* 没有任务的会话：主会话要能一直被看见，不能等它派了工才出现在某条任务下面。
+            两组分开：登记过的主会话一个名字，bot / 群 / 连接器开的照中性的说法。 */}
+        {tasklessSection('sidebar-coordinators', COORDINATOR_TITLE, coordinators)}
+        {tasklessSection('sidebar-unassigned', UNASSIGNED_TITLE, unassigned)}
         <div className="mt-2" data-testid="sidebar-settled">
           <button
             data-testid="sidebar-settled-toggle"

@@ -1,6 +1,11 @@
 import { modelLabel } from '../../atoms/model-label.ts';
 import { DeliveryContext, useDeliveries } from '../../atoms/delivery-note.tsx';
 import { ProvenanceRow } from '../../atoms/provenance-row.tsx';
+import { COORDINATOR_TITLE, UNASSIGNED_TITLE } from '../../atoms/session-groups.ts';
+import { useCoordinators } from '../../shell/coordinators.ts';
+import { useDelegations } from '../../shell/delegations.ts';
+import { DelegationOriginBanner, DelegationPanel } from './delegation-panel.tsx';
+import { DelegateDialog } from './delegate-dialog.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
@@ -275,6 +280,22 @@ export function FocusView({
   const { nearEnd, ref: scroller, scrollToEnd } = useStickToBottom<HTMLDivElement>(session.id);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
+  // 主会话要在标题上认得出自己；没有登记的无任务会话（bot / 群）不留空标题。
+  const { ids: coordinatorIds } = useCoordinators(canvas.project.id);
+  const isCoordinatorSession = coordinatorIds.has(session.id);
+  const [delegating, setDelegating] = useState(false);
+  // 执行会话的来路：只有它的目录确实是从某条登记过的主任目录拉出来的 worktree，
+  // 才去问那条主会话的派工记录；能对上 executionSessionId 才算「派工的执行会话」。
+  const originBaseWorkspaceId = (() => {
+    const own = canvas.workspaces.find((candidate) => candidate.id === session.workspaceId);
+    return own?.kind === 'temporary' && own.source === 'worktree' ? own.baseWorkspaceId : null;
+  })();
+  const originCoordinator =
+    originBaseWorkspaceId === null
+      ? undefined
+      : canvas.sessions.find((candidate) => candidate.workspaceId === originBaseWorkspaceId && coordinatorIds.has(candidate.id));
+  const originDelegations = useDelegations(isCoordinatorSession ? null : originCoordinator?.id ?? null);
+  const originRecord = originDelegations.rows.find((row) => row.executionSessionId === session.id) ?? null;
   const blocks = live?.blocks ?? [];
   // 乐观气泡、8 秒超时、重试/放弃、和 journal 对账：和画布卡片是同一份实现。
   const delivery = usePromptDelivery({
@@ -509,8 +530,15 @@ export function FocusView({
     setTurnBase({ base: `turn:${turn}`, nonce: Date.now() });
     setTab('changes');
   };
-  // 任务上的 PR（打开任务时服务端顺手同步状态）
-  const taskPrs = useQuery({ queryKey: taskKeys.pullRequests(session.taskId ?? ''), queryFn: () => gitApi.taskPullRequests(session.taskId ?? ''), staleTime: 60_000, retry: false }).data ?? [];
+  // 任务上的 PR（打开任务时服务端顺手同步状态）；主会话没有任务，就不问
+  const sessionTaskId = session.taskId;
+  const taskPrs = useQuery({
+    queryKey: taskKeys.pullRequests(sessionTaskId ?? 'no-task'),
+    queryFn: () => gitApi.taskPullRequests(sessionTaskId ?? ''),
+    enabled: sessionTaskId !== null,
+    staleTime: 60_000,
+    retry: false
+  }).data ?? [];
   /**
    * 环境（资产 / MCP / 启动配置）改过但没有重新托管：只用来说一句「下一轮生效」。
    * 30s 内不重复问；切回窗口时问一次（在别处改完设置回来就能看到）。
@@ -616,11 +644,14 @@ export function FocusView({
   /**
    * 发送并新建：这一句已经由 Composer 走 sendMessage 发出去了，这里只负责用同一条会话的参数
    * 派生下一条、跳过去。派生失败就留在原地——草稿不会因为跳走而消失。
+   * 主会话没有归属任务，派生要落在任务上，所以这条动作对它不出现（见 Composer 的 onSendAndNew）。
    */
   async function sendAndNew(): Promise<void> {
+    const taskId = session.taskId;
+    if (taskId === null) return;
     await run(async () => {
       const created = await api.derive({
-        taskId: session.taskId ?? '',
+        taskId,
         agentId: session.agentId,
         model: session.model,
         ...(groupId !== null ? { groupId } : { workspaceId: session.workspaceId }),
@@ -694,12 +725,12 @@ export function FocusView({
               data-testid="session-title"
               onClick={startRename}
             >
-              {session.title || task?.title || session.taskId}
+              {session.title || task?.title || (coordinatorIds.has(session.id) ? COORDINATOR_TITLE : UNASSIGNED_TITLE)}
             </button>
           )}
           <p className="flex min-w-0 items-center gap-1 font-mono text-meta text-tertiary">
             <span className="truncate">
-              {session.title ? `${task?.title ?? session.taskId} · ` : ''}{agentLabel} · {modelLabel(session.model)}
+              {session.title && task ? `${task.title} · ` : ''}{agentLabel} · {modelLabel(session.model)}
               {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
             </span>
             {/* 常驻标记放在状态行里：窄屏标题被截断时这一枚也不会换行 */}
@@ -769,14 +800,18 @@ export function FocusView({
                   />
                   <MenuItem
                     title="开一条侧聊…"
-                    hint={session.kind === 'side' ? '侧聊不能再生侧聊' : '用同一个工作目录和模型，单独问一轮，不打断这条会话'}
+                    hint={session.taskId === null
+                      ? '这条会话还没归到任务：先派工到任务才能开侧聊'
+                      : session.kind === 'side' ? '侧聊不能再生侧聊' : '用同一个工作目录和模型，单独问一轮，不打断这条会话'}
                     testId="session-side-open"
-                    disabled={session.kind === 'side' || !('workspaceId' in session && session.workspaceId !== null)}
+                    disabled={session.taskId === null || session.kind === 'side' || !('workspaceId' in session && session.workspaceId !== null)}
                     onClick={() => {
                       close();
                       void run(async () => {
+                        const taskId = session.taskId;
+                        if (taskId === null) return;
                         const created = await api.derive({
-                          taskId: session.taskId ?? '',
+                          taskId,
                           agentId: session.agentId,
                           model: session.model,
                           kind: 'side',
@@ -786,10 +821,22 @@ export function FocusView({
                       });
                     }}
                   />
+                  {isCoordinatorSession ? (
+                    <MenuItem
+                      title="派工到任务…"
+                      hint="选一个同项目的任务，让它在这个仓库的独立目录里干活，主目录不动"
+                      testId="session-delegate"
+                      onClick={() => {
+                        close();
+                        setDelegating(true);
+                      }}
+                    />
+                  ) : null}
                   <MenuItem
                     title="换个地方继续…"
-                    hint={canContinueElsewhere(session) ? '换台机器或工作目录，带着会话摘要接着做' : CONTINUE_DISABLED_HINT}
-                    disabled={!canContinueElsewhere(session)}
+                    hint={session.taskId === null                      ? '这条会话还没归到任务：换个地方继续要给任务建目录'
+                      : canContinueElsewhere(session) ? '换台机器或工作目录，带着会话摘要接着做' : CONTINUE_DISABLED_HINT}
+                    disabled={session.taskId === null || !canContinueElsewhere(session)}
                     onClick={() => {
                       close();
                       setContinuing(true);
@@ -876,8 +923,30 @@ export function FocusView({
       <WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} />
       {groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}
       <AttentionAutoAck sessionId={session.id} />
+      {isCoordinatorSession ? (
+        <DelegationPanel
+          coordinatorSessionId={session.id}
+          tasks={canvas.tasks}
+          onOpenSession={onOpenSession}
+          onStart={() => setDelegating(true)}
+        />
+      ) : originRecord === null ? null : (
+        <DelegationOriginBanner
+          record={originRecord}
+          taskTitle={task?.title ?? null}
+          onBack={() => onOpenSession(originRecord.coordinatorSessionId)}
+        />
+      )}
       {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
       {gitOpen ? <GitDialog sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} taskId={session.taskId} onClose={() => setGitOpen(false)} switcher={switcher} /> : null}
+      {delegating ? (
+        <DelegateDialog
+          canvas={canvas}
+          session={session}
+          onClose={() => setDelegating(false)}
+          onStarted={() => setDelegating(false)}
+        />
+      ) : null}
       {subagentPath.length > 0 ? (
         <SubagentPanel
           blocks={blocks}
@@ -1237,7 +1306,7 @@ export function FocusView({
             draft={draft}
             onDraftChange={onDraftChange}
             onSend={sendMessage}
-            onSendAndNew={sendAndNew}
+            onSendAndNew={session.taskId === null ? undefined : sendAndNew}
             onInterrupt={() => void run(() => api.interrupt(session.id))}
             busy={busy}
             error={error}
@@ -1256,12 +1325,13 @@ export function FocusView({
   );
 }
 
-/** 会话在界面上的名字：任务标题 · agent。 */
+/** 会话在界面上的名字：任务标题 · agent；没有任务的会话只用 agent（不拼出 null）。 */
 function sessionName(canvas: CanvasDto, session: SessionDto): string {
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
   if (session.title) return session.title;
-  return `${task?.title ?? session.taskId} · ${agent?.label ?? session.agentId}`;
+  const who = agent?.label ?? session.agentId;
+  return task ? `${task.title} · ${who}` : who;
 }
 
 type TurnRow = { turn: number; files: number | null; additions: number | null; deletions: number | null };

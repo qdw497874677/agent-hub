@@ -17,6 +17,15 @@ test('git-common-dir 的相对路径按 worktree 解析，不按进程 cwd', () 
 const sh = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
 
+/** rev-parse 一个 ref；不存在就回空串（`git rev-parse --verify` 会非零退出）。 */
+const rev = (cwd: string, ref: string): string => {
+  try {
+    return sh(cwd, 'rev-parse', '-q', '--verify', ref).trim();
+  } catch {
+    return '';
+  }
+};
+
 /** 一个「远端」（bare）+ 一份初始提交。 */
 async function origin() {
   const root = realpathSync(await mkdtemp(join(tmpdir(), 'ws-git-')));
@@ -843,4 +852,443 @@ test('worktree add：origin 不可达时退回本地默认分支，不把无效�
   });
   assert.ok(added.ok, added.ok ? '' : added.error.message);
   assert.equal(existsSync(join(tree, 'README.md')), true);
+});
+
+/** publishRef 的真实本地 bare 远端：本地 clone 在功能分支上有一个尚未推送的提交。 */
+async function publishFixture(branch = 'agent-hub/publish') {
+  const { root, url } = await origin();
+  const repo = join(root, 'clone');
+  sh(root, 'clone', '-q', url, 'clone');
+  sh(repo, 'config', 'user.name', 't');
+  sh(repo, 'config', 'user.email', 't@t');
+  sh(repo, 'checkout', '-q', '-b', branch);
+  await writeFile(join(repo, 'work.txt'), 'work\n');
+  sh(repo, 'add', '.');
+  sh(repo, 'commit', '-qm', 'feat');
+  const sha = sh(repo, 'rev-parse', 'HEAD').trim();
+  const git = createGitWorkspace(undefined, { allowLocalPublishOrigin: true });
+  return { root, url, repo, branch, sha, git };
+}
+
+const remoteRef = (repo: string, url: string, ref: string) => sh(repo, 'ls-remote', url, ref).trim().split('\t')[0] ?? '';
+
+test('publishRef：批准的 SHA 作为新分支发布；重复调用只核验；verifyOnly 不推送', async () => {
+  const { url, repo, branch, sha, git } = await publishFixture();
+  const input = { path: repo, branch, sha, expectedUrl: url, baseBranch: 'main' };
+
+  const verified = await git.publishRef!({ ...input, verifyOnly: true });
+  assert.ok(verified.ok, verified.ok ? '' : verified.error.message);
+  assert.equal(verified.value.published, false);
+  assert.equal(verified.value.pushed, false);
+  assert.equal(verified.value.remoteSha, null);
+  assert.equal(verified.value.baseBranch, 'main');
+  assert.equal(verified.value.defaultBranch, 'main');
+  assert.match(verified.value.reason ?? '', /仅核验/);
+  assert.equal(remoteRef(repo, url, `refs/heads/${branch}`), '');
+
+  const published = await git.publishRef!(input);
+  assert.ok(published.ok, published.ok ? '' : published.error.message);
+  assert.equal(published.value.published, true);
+  assert.equal(published.value.pushed, true);
+  assert.equal(published.value.uncertain, false);
+  assert.equal(published.value.baseSha, sh(repo, 'rev-parse', 'main').trim());
+  assert.equal(remoteRef(repo, url, `refs/heads/${branch}`), sha);
+  // 远端 base 没被这次发布挪动
+  assert.equal(remoteRef(repo, url, 'refs/heads/main'), published.value.baseSha);
+
+  const again = await git.publishRef!(input);
+  assert.ok(again.ok, again.ok ? '' : again.error.message);
+  assert.equal(again.value.published, true);
+  assert.equal(again.value.pushed, false, '已经在远端同一个提交上时不再 push');
+  assert.equal(again.value.remoteSha, sha);
+});
+
+test('publishRef：SHA / 分支 / 工作区 / 目的地 / base / 默认分支准入全部失败关闭', async () => {
+  const { url, repo, branch, sha, git } = await publishFixture();
+  const base = { path: repo, branch, sha, expectedUrl: url, baseBranch: 'main' };
+
+  const wrongSha = await git.publishRef!({ ...base, sha: '0'.repeat(40) });
+  assert.equal(wrongSha.ok, false);
+  assert.equal(wrongSha.ok ? '' : wrongSha.error.code, 'conflict');
+  assert.match(wrongSha.ok ? '' : wrongSha.error.message, /HEAD/);
+
+  const wrongBranch = await git.publishRef!({ ...base, branch: 'agent-hub/other' });
+  assert.equal(wrongBranch.ok, false);
+  assert.match(wrongBranch.ok ? '' : wrongBranch.error.message, /当前分支/);
+
+  const badName = await git.publishRef!({ ...base, branch: '--force' });
+  assert.equal(badName.ok, false);
+  assert.match(badName.ok ? '' : badName.error.message, /分支名不合法/);
+
+  await writeFile(join(repo, 'dirty.txt'), 'x');
+  const dirty = await git.publishRef!(base);
+  assert.equal(dirty.ok, false);
+  assert.match(dirty.ok ? '' : dirty.error.message, /不干净/);
+  await rm(join(repo, 'dirty.txt'));
+
+  const wrongUrl = await git.publishRef!({ ...base, expectedUrl: join(repo, '..', 'mirror.git') });
+  assert.equal(wrongUrl.ok, false);
+  assert.match(wrongUrl.ok ? '' : wrongUrl.error.message, /不一致/);
+
+  const missingBase = await git.publishRef!({ ...base, baseBranch: 'nope' });
+  assert.equal(missingBase.ok, false);
+  assert.match(missingBase.ok ? '' : missingBase.error.message, /base 分支/);
+
+  // 本地 insteadOf 把 origin 改写去别处：即使 raw 配置看起来对，也拒绝
+  sh(repo, 'config', `url.${join(repo, '..', 'mirror.git')}.insteadOf`, url);
+  const rewritten = await git.publishRef!(base);
+  assert.equal(rewritten.ok, false);
+  assert.match(rewritten.ok ? '' : rewritten.error.message, /改写/);
+  sh(repo, 'config', '--unset', `url.${join(repo, '..', 'mirror.git')}.insteadOf`);
+
+  // 功能分支就是远端默认分支：拒绝（base 记录成另一个真实分支来绕过 base 同名校验）
+  sh(repo, 'push', '-q', 'origin', 'main:refs/heads/release');
+  sh(repo, 'checkout', '-q', 'main');
+  const mainSha = sh(repo, 'rev-parse', 'HEAD').trim();
+  const defaultBranch = await git.publishRef!({ path: repo, branch: 'main', sha: mainSha, expectedUrl: url, baseBranch: 'release' });
+  assert.equal(defaultBranch.ok, false);
+  assert.match(defaultBranch.ok ? '' : defaultBranch.error.message, /默认分支/);
+});
+
+test('publishRef：远端已有不同提交时失败关闭，绝不覆盖', async () => {
+  const { url, repo, branch, sha, git } = await publishFixture();
+  const other = sh(repo, 'rev-parse', 'main').trim();
+  sh(repo, 'push', '-q', 'origin', `main:refs/heads/${branch}`);
+  assert.equal(remoteRef(repo, url, `refs/heads/${branch}`), other);
+
+  const refused = await git.publishRef!({ path: repo, branch, sha, expectedUrl: url, baseBranch: 'main' });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.ok ? '' : refused.error.code, 'conflict');
+  assert.match(refused.ok ? '' : refused.error.message, /另一个提交|失败关闭/);
+  assert.equal(remoteRef(repo, url, `refs/heads/${branch}`), other, '远端未被改动');
+});
+
+test('publishRef：HTTPS origin 必须带绑定同一地址的 scoped auth，不读 ambient 凭据', async () => {
+  const root = realpathSync(await mkdtemp(join(tmpdir(), 'ws-publish-https-')));
+  const repo = join(root, 'repo');
+  await mkdir(repo);
+  const api = 'https://gitlab.test/me/api.git';
+  sh(repo, 'init', '-q', '-b', 'main');
+  await writeFile(join(repo, 'a.txt'), 'a\n');
+  sh(repo, 'add', '.');
+  sh(repo, 'commit', '-qm', 'a');
+  sh(repo, 'checkout', '-q', '-b', 'agent-hub/https');
+  await writeFile(join(repo, 'b.txt'), 'b\n');
+  sh(repo, 'add', '.');
+  sh(repo, 'commit', '-qm', 'b');
+  sh(repo, 'remote', 'add', 'origin', api);
+  const sha = sh(repo, 'rev-parse', 'HEAD').trim();
+  const git = createGitWorkspace();
+  const input = { path: repo, branch: 'agent-hub/https', sha, expectedUrl: api, baseBranch: 'main' };
+
+  const anonymous = await git.publishRef!(input);
+  assert.equal(anonymous.ok, false);
+  assert.match(anonymous.ok ? '' : anonymous.error.message, /必须使用绑定/);
+
+  const header = 'Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2xwYXQtYWJj';
+  const mismatched = await git.publishRef!({ ...input, auth: { header, url: 'https://evil.test/me/api.git' } });
+  assert.equal(mismatched.ok, false);
+  assert.match(mismatched.ok ? '' : mismatched.error.message, /不一致/);
+
+  const unbound = await git.publishRef!({ ...input, auth: { header } });
+  assert.equal(unbound.ok, false);
+  assert.match(unbound.ok ? '' : unbound.error.message, /旧版 hub|拒绝/);
+  await rm(root, { recursive: true, force: true });
+});
+
+/** A4 的真实本地 bare 远端：源仓库保持脏工作区（已跟踪改动 + 未跟踪文件），本地还有过期分支。 */
+async function delegationFixture() {
+  const { root, url } = await origin();
+  const repo = join(root, 'source');
+  sh(root, 'clone', '-q', url, 'source');
+  sh(repo, 'config', 'user.name', 't');
+  sh(repo, 'config', 'user.email', 't@t');
+  sh(repo, 'branch', 'release'); // 本地过期 ref：远端没有 release
+  const stale = sh(repo, 'rev-parse', 'HEAD').trim();
+  sh(repo, 'update-ref', 'refs/remotes/origin/release', stale);
+  await writeFile(join(repo, 'README.md'), 'local edit, do not lose\n');
+  await writeFile(join(repo, 'scratch.txt'), 'untracked, do not lose\n');
+  const before = {
+    head: sh(repo, 'rev-parse', 'HEAD').trim(),
+    branch: sh(repo, 'branch', '--show-current').trim(),
+    status: sh(repo, 'status', '--porcelain').trim(),
+    staged: sh(repo, 'diff', '--cached', '--name-only').trim(),
+    indexSha: sh(repo, 'ls-files', '-s').trim()
+  };
+  await mkdir(join(root, 'trees'), { recursive: true });
+  const git = createGitWorkspace(undefined, { allowLocalPublishOrigin: true });
+  return { root, url, repo, stale, before, git };
+}
+
+test('prepareDelegationWorktree：从远端 base 开两个精确路径的 worktree，脏源仓库原样不动', async () => {
+  const { root, url, repo, before, git } = await delegationFixture();
+  const baseSha = sh(repo, 'rev-parse', 'refs/remotes/origin/release').trim();
+  assert.equal(baseSha, before.head);
+
+  const first = join(root, 'trees', 'one');
+  const one = await git.prepareDelegationWorktree!({
+    repoPath: repo,
+    path: first,
+    branch: 'agent-hub/delegation-one',
+    baseBranch: 'main',
+    expectedUrl: url
+  });
+  assert.ok(one.ok, one.ok ? '' : one.error.message);
+  assert.equal(one.value.path, realpathSync(first));
+  assert.equal(one.value.branch, 'agent-hub/delegation-one');
+  assert.equal(one.value.baseSha, before.head);
+  assert.equal(await readFile(join(first, 'README.md'), 'utf8'), 'hi\n');
+  assert.equal(existsSync(join(first, 'scratch.txt')), false);
+  assert.equal(sh(first, 'status', '--porcelain').trim(), '');
+  assert.equal(sh(first, 'symbolic-ref', '--short', 'HEAD').trim(), 'agent-hub/delegation-one');
+
+  const second = join(root, 'trees', 'two');
+  const two = await git.prepareDelegationWorktree!({
+    repoPath: repo,
+    path: second,
+    branch: 'agent-hub/delegation-two',
+    baseBranch: 'main',
+    expectedUrl: url
+  });
+  assert.ok(two.ok, two.ok ? '' : two.error.message);
+  assert.notEqual(one.value.path, two.value.path);
+  assert.equal(sh(second, 'rev-parse', 'HEAD').trim(), one.value.baseSha);
+
+  // 源仓库：分支 / HEAD / index / 工作区一个都不能变
+  assert.equal(sh(repo, 'rev-parse', 'HEAD').trim(), before.head);
+  assert.equal(sh(repo, 'branch', '--show-current').trim(), before.branch);
+  assert.equal(sh(repo, 'status', '--porcelain').trim(), before.status);
+  assert.equal(sh(repo, 'diff', '--cached', '--name-only').trim(), before.staged);
+  assert.equal(sh(repo, 'ls-files', '-s').trim(), before.indexSha);
+  assert.match(await readFile(join(repo, 'README.md'), 'utf8'), /do not lose/);
+  assert.match(await readFile(join(repo, 'scratch.txt'), 'utf8'), /do not lose/);
+  assert.equal(sh(repo, 'worktree', 'list', '--porcelain').split('\n').filter((l) => l.startsWith('worktree ')).length, 3);
+});
+
+test('prepareDelegationWorktree：目标目录 / 本地或远端分支已存在时拒绝，不采用', async () => {
+  const { root, url, repo, before, git } = await delegationFixture();
+  const input = { repoPath: repo, branch: 'agent-hub/delegation-x', baseBranch: 'main', expectedUrl: url };
+
+  const occupied = join(root, 'trees', 'occupied');
+  await mkdir(occupied);
+  const dirTaken = await git.prepareDelegationWorktree!({ ...input, path: occupied });
+  assert.equal(dirTaken.ok, false);
+  assert.equal(dirTaken.ok ? '' : dirTaken.error.code, 'conflict');
+  assert.match(dirTaken.ok ? '' : dirTaken.error.message, /已经存在/);
+  assert.equal((await readdir(occupied)).length, 0);
+
+  sh(repo, 'branch', 'agent-hub/delegation-x');
+  const refTaken = await git.prepareDelegationWorktree!({ ...input, path: join(root, 'trees', 'ref-taken') });
+  assert.equal(refTaken.ok, false);
+  assert.equal(refTaken.ok ? '' : refTaken.error.code, 'conflict');
+  assert.match(refTaken.ok ? '' : refTaken.error.message, /已经存在/);
+  assert.equal(existsSync(join(root, 'trees', 'ref-taken')), false);
+
+  const remote = join(root, 'pusher');
+  sh(root, 'clone', '-q', url, 'pusher');
+  sh(remote, 'push', '-q', 'origin', `main:refs/heads/agent-hub/delegation-remote`);
+  const remoteTaken = await git.prepareDelegationWorktree!({
+    repoPath: repo,
+    path: join(root, 'trees', 'remote-taken'),
+    branch: 'agent-hub/delegation-remote',
+    baseBranch: 'main',
+    expectedUrl: url
+  });
+  assert.equal(remoteTaken.ok, false);
+  assert.equal(remoteTaken.ok ? '' : remoteTaken.error.code, 'conflict');
+  assert.match(remoteTaken.ok ? '' : remoteTaken.error.message, /远端已经有分支/);
+  assert.equal(existsSync(join(root, 'trees', 'remote-taken')), false);
+
+  assert.equal(sh(repo, 'status', '--porcelain').trim(), before.status);
+});
+
+test('prepareDelegationWorktree：远端 base 缺失时不用本地过期 ref，目的地 / 路径 / 分支名一律失败关闭', async () => {
+  const { root, url, repo, before, git } = await delegationFixture();
+  const destination = join(root, 'trees', 'never');
+  const input = { repoPath: repo, path: destination, branch: 'agent-hub/delegation-y', expectedUrl: url };
+
+  const missingBase = await git.prepareDelegationWorktree!({ ...input, baseBranch: 'release' });
+  assert.equal(missingBase.ok, false);
+  assert.equal(missingBase.ok ? '' : missingBase.error.code, 'conflict');
+  assert.match(missingBase.ok ? '' : missingBase.error.message, /base 分支/);
+  assert.equal(existsSync(destination), false);
+
+  const wrongUrl = await git.prepareDelegationWorktree!({ ...input, baseBranch: 'main', expectedUrl: join(root, 'mirror.git') });
+  assert.equal(wrongUrl.ok, false);
+  assert.match(wrongUrl.ok ? '' : wrongUrl.error.message, /不一致|HTTPS/);
+
+  const badBranch = await git.prepareDelegationWorktree!({ ...input, baseBranch: 'main', branch: '--force' });
+  assert.equal(badBranch.ok, false);
+  assert.match(badBranch.ok ? '' : badBranch.error.message, /分支名不合法/);
+
+  const sameBranch = await git.prepareDelegationWorktree!({ ...input, baseBranch: 'main', branch: 'main' });
+  assert.equal(sameBranch.ok, false); // 默认分支 / base 同名都拒绝
+
+  const insideRepo = await git.prepareDelegationWorktree!({ ...input, baseBranch: 'main', path: join(repo, '.delegation') });
+  assert.equal(insideRepo.ok, false);
+  assert.match(insideRepo.ok ? '' : insideRepo.error.message, /源仓库/);
+  assert.equal(existsSync(join(repo, '.delegation')), false);
+
+  const missingParent = await git.prepareDelegationWorktree!({ ...input, baseBranch: 'main', path: join(root, 'nope', 'deep') });
+  assert.equal(missingParent.ok, false);
+  assert.match(missingParent.ok ? '' : missingParent.error.message, /父目录/);
+
+  await mkdir(join(root, 'plain'));
+  const notRoot = await git.prepareDelegationWorktree!({ ...input, baseBranch: 'main', repoPath: join(root, 'plain') });
+  assert.equal(notRoot.ok, false);
+  assert.match(notRoot.ok ? '' : notRoot.error.message, /不是 git 仓库根目录/);
+
+  assert.equal(sh(repo, 'status', '--porcelain').trim(), before.status);
+});
+
+/**
+ * importCommit 的两份独立 clone（都从同一个 bare origin 克隆）：
+ * 源 clone 在 feat 上有一个尚未推送的提交；other 分支上另有一个不在 feat 历史里的提交。
+ */
+async function importFixture() {
+  const { root, url } = await origin();
+  const source = join(root, 'source');
+  const target = join(root, 'target');
+  sh(root, 'clone', '-q', url, 'source');
+  sh(root, 'clone', '-q', url, 'target');
+  for (const repo of [source, target]) {
+    sh(repo, 'config', 'user.name', 't');
+    sh(repo, 'config', 'user.email', 't@t');
+  }
+  sh(source, 'checkout', '-q', '-b', 'feat');
+  await writeFile(join(source, 'feat.txt'), 'feat\n');
+  sh(source, 'add', '.');
+  sh(source, 'commit', '-qm', 'unpublished');
+  const sha = sh(source, 'rev-parse', 'HEAD').trim();
+  sh(source, 'checkout', '-q', '-b', 'other');
+  await writeFile(join(source, 'other.txt'), 'other\n');
+  sh(source, 'add', '.');
+  sh(source, 'commit', '-qm', 'other only');
+  const otherSha = sh(source, 'rev-parse', 'HEAD').trim();
+  sh(source, 'checkout', '-q', 'feat');
+
+  const state = (repo: string) => ({
+    head: rev(repo, 'HEAD'),
+    branch: sh(repo, 'branch', '--show-current').trim(),
+    status: sh(repo, 'status', '--porcelain').trim(),
+    index: sh(repo, 'ls-files', '-s').trim()
+  });
+  const remoteRefs = () => sh(root, '--git-dir', url, 'for-each-ref', '--format=%(refname) %(objectname)').trim();
+  const git = createGitWorkspace(undefined, { allowLocalPublishOrigin: true });
+  return { root, url, source, target, sha, otherSha, state, remoteRefs, git };
+}
+
+test('importCommit：本地导入未推送提交到专用 ref，create-only、重复幂等，两侧状态与远端不变', async () => {
+  const { url, source, target, sha, state, remoteRefs, git } = await importFixture();
+  const ref = `refs/agent-hub/imports/delegation-1/${sha}`;
+  const before = state(target);
+  const sourceBefore = state(source);
+  const remoteBefore = remoteRefs();
+  assert.equal(rev(target, ref), '');
+
+  const imported = await git.importCommit!({ sourcePath: source, targetPath: target, sourceBranch: 'feat', sha, ref, expectedUrl: url });
+  assert.ok(imported.ok, imported.ok ? '' : imported.error.message);
+  assert.deepEqual(imported.value, { ref, sha, alreadyPresent: false });
+  assert.equal(rev(target, ref), sha);
+  assert.equal(rev(target, `${sha}^{commit}`), sha);
+  // 目标仓库只多了这个专用 ref：没有 checkout、没动 index / HEAD / 分支 / FETCH_HEAD
+  assert.deepEqual(state(target), before);
+  assert.equal(existsSync(join(target, '.git', 'FETCH_HEAD')), false);
+  assert.equal(sh(target, 'branch', '--list', 'feat').trim(), '');
+  // 源仓库与远端都没有被写入
+  assert.deepEqual(state(source), sourceBefore);
+  assert.equal(remoteRefs(), remoteBefore);
+
+  const again = await git.importCommit!({ sourcePath: source, targetPath: target, sourceBranch: 'feat', sha, ref, expectedUrl: url });
+  assert.ok(again.ok, again.ok ? '' : again.error.message);
+  assert.deepEqual(again.value, { ref, sha, alreadyPresent: true });
+  assert.deepEqual(state(target), before);
+  assert.equal(remoteRefs(), remoteBefore);
+});
+
+test('importCommit：分支 / 提交 / ref / 仓库不一致都失败关闭，不留下任何 ref', async () => {
+  const { root, url, source, target, sha, otherSha, state, remoteRefs, git } = await importFixture();
+  const ref = `refs/agent-hub/imports/delegation-2/${sha}`;
+  const base = { sourcePath: source, targetPath: target, sourceBranch: 'feat', sha, ref, expectedUrl: url };
+  const zero = '0'.repeat(40);
+  const before = state(target);
+  const remoteBefore = remoteRefs();
+
+  // ref 预先指向另一个对象：同名 ref 不能被覆盖，也不产生写入
+  const headBefore = rev(target, 'HEAD');
+  sh(target, 'update-ref', ref, headBefore);
+  const occupied = await git.importCommit!(base);
+  assert.equal(occupied.ok, false);
+  assert.equal(occupied.ok ? '' : occupied.error.code, 'conflict', occupied.ok ? '' : occupied.error.message);
+  assert.match(occupied.ok ? '' : occupied.error.message, /另一个提交/);
+  assert.equal(rev(target, ref), headBefore);
+  assert.deepEqual(state(target), before);
+  sh(target, 'update-ref', '-d', ref);
+
+  const first = await git.importCommit!(base);
+  assert.ok(first.ok, first.ok ? '' : first.error.message);
+  assert.equal(rev(target, ref), sha);
+
+  // 源 HEAD 不在记录的分支上（不猜、不退回别的分支）
+  sh(source, 'checkout', '-q', 'main');
+  const wrongHead = await git.importCommit!({ ...base, ref: `refs/agent-hub/imports/delegation-3/${sha}` });
+  assert.equal(wrongHead.ok, false);
+  assert.match(wrongHead.ok ? '' : wrongHead.error.message, /当前分支/);
+  sh(source, 'checkout', '-q', 'feat');
+
+  // 提交只存在于别的分支：不在记录分支历史上，拒绝
+  const foreignRef = `refs/agent-hub/imports/delegation-4/${otherSha}`;
+  const foreign = await git.importCommit!({ ...base, ref: foreignRef, sha: otherSha });
+  assert.equal(foreign.ok, false);
+  assert.match(foreign.ok ? '' : foreign.error.message, /历史/);
+  assert.equal(rev(target, foreignRef), '');
+
+  // 源仓库里没有这个提交
+  const missing = await git.importCommit!({ ...base, ref: `refs/agent-hub/imports/delegation-5/${zero}`, sha: zero });
+  assert.equal(missing.ok, false);
+  assert.match(missing.ok ? '' : missing.error.message, /不是源仓库里的提交/);
+
+  // 目标是另一个项目的 clone：origin 对不上
+  const { url: otherUrl } = await origin();
+  const foreignTarget = join(root, 'foreign-target');
+  sh(root, 'clone', '-q', otherUrl, 'foreign-target');
+  const wrongRepoRef = `refs/agent-hub/imports/delegation-6/${sha}`;
+  const wrongRepo = await git.importCommit!({ ...base, targetPath: foreignTarget, ref: wrongRepoRef });
+  assert.equal(wrongRepo.ok, false);
+  assert.match(wrongRepo.ok ? '' : wrongRepo.error.message, /不一致/);
+  assert.equal(rev(foreignTarget, wrongRepoRef), '');
+
+  const wrongUrl = await git.importCommit!({ ...base, ref: `refs/agent-hub/imports/delegation-7/${sha}`, expectedUrl: otherUrl });
+  assert.equal(wrongUrl.ok, false);
+  assert.match(wrongUrl.ok ? '' : wrongUrl.error.message, /不一致|HTTPS/);
+
+  // 目标不是 git 仓库根目录 / 和源是同一个目录
+  await mkdir(join(root, 'plain'));
+  const notRoot = await git.importCommit!({ ...base, targetPath: join(root, 'plain'), ref: `refs/agent-hub/imports/delegation-8/${sha}` });
+  assert.equal(notRoot.ok, false);
+  assert.match(notRoot.ok ? '' : notRoot.error.message, /不是 git 仓库根目录/);
+  const samePath = await git.importCommit!({ ...base, targetPath: source, ref: `refs/agent-hub/imports/delegation-9/${sha}` });
+  assert.equal(samePath.ok, false);
+  assert.match(samePath.ok ? '' : samePath.error.message, /同一个目录/);
+
+  // ref 只接受 refs/agent-hub/imports/<id>/<sha>：越界命名空间 / 多段 id / 分支 / 裸名都拒绝
+  const outsideNamespace = `refs/agent-hub/imported/${sha}`;
+  const nestedId = `refs/agent-hub/imports/a/b/${sha}`;
+  const branchRef = 'refs/heads/imported';
+  for (const bad of [outsideNamespace, nestedId, branchRef, 'imported']) {
+    const rejected = await git.importCommit!({ ...base, ref: bad });
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.ok ? '' : rejected.error.message, /refs\/agent-hub\/imports/);
+    assert.equal(rev(target, bad), '');
+  }
+
+  // 命名空间正确但末尾 SHA 与 sha 不一致：也拒绝，防止 ref 名伪造别的提交
+  const mismatched = `refs/agent-hub/imports/delegation-2/${zero}`;
+  const mismatchedRef = await git.importCommit!({ ...base, ref: mismatched });
+  assert.equal(mismatchedRef.ok, false);
+  assert.match(mismatchedRef.ok ? '' : mismatchedRef.error.message, /SHA 必须/);
+  assert.equal(rev(target, mismatched), '');
+
+  assert.deepEqual(state(target), before);
+  assert.equal(remoteRefs(), remoteBefore);
 });

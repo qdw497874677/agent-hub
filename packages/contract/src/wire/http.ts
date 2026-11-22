@@ -446,7 +446,7 @@ export const projectSummarySchema = projectSchema.extend({
  */
 export const recentSessionSchema = z.object({
   sessionId: id,
-  taskId: id,
+  taskId: id.nullable(),
   taskTitle: z.string(),
   projectId: id,
   projectName: z.string(),

@@ -771,3 +771,280 @@ test('会话通信 P1d：外部 ask 超时 → 失败通知进外部收件箱', 
   assert.equal(got.value.reply?.failure, 'timeout');
   assert.equal(got.value.reply?.replyStatus, 'failed');
 });
+
+// ---- 会话交接 P2（docs/design/project-session-mcp.md）----
+
+async function taskSession(w: Awaited<ReturnType<typeof world>>, owner: string, originProjectId?: Session['originProjectId']): Promise<Session> {
+  const task = createTask({ projectId: w.project.id, title: 'handoff-task', goal: '', now: 1 });
+  assert.ok(task.ok);
+  await w.deps.tasks.save(task.value);
+  const session = deriveSession({
+    task: task.value,
+    agentId: asAgentId('pi'),
+    model: '',
+    now: 1,
+    createdBy: owner,
+    ...(originProjectId === undefined ? {} : { originProjectId })
+  });
+  assert.ok(session.ok);
+  await w.deps.sessions.save(session.value);
+  return session.value;
+}
+
+async function containerSession(w: Awaited<ReturnType<typeof world>>, owner: string, originProjectId?: Session['originProjectId']): Promise<Session> {
+  const session = deriveSession({
+    agentId: asAgentId('pi'),
+    model: '',
+    now: 1,
+    createdBy: owner,
+    ...(originProjectId === undefined ? {} : { originProjectId })
+  });
+  assert.ok(session.ok);
+  await w.deps.sessions.save(session.value);
+  return session.value;
+}
+
+test('会话交接 P2：同项目交接默认只进收件箱，绕过显式连线也不唤醒；普通 send 仍受连线限制', async () => {
+  const w = await world({ links: fakeSessionLinks() });
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+  await recordEvent(w.deps, { sessionId: b.id, event: { kind: 'prompt', text: '我正忙' } });
+
+  const sent = await w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: b.id, body: '交接一下', requestKey: 'h-1' });
+  assert.ok(sent.ok);
+  assert.equal(sent.value.status, 'done', '默认 wake=false：只进收件箱');
+  assert.equal(sent.value.targetSessionId, b.id);
+  const stored = await w.messages.byId(sent.value.messageId);
+  assert.equal(stored?.kind, 'send');
+  assert.equal(stored?.wake, false);
+  assert.equal(stored?.to, `session:${b.id}`);
+  assert.match(stored?.idempotencyKey ?? '', /message\.handoff/);
+  assert.equal(w.delivered.length, 0, '不唤醒、不 pump');
+
+  // 旧入口没变：没显式连线，普通 send 仍然被拦。
+  const blocked = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: '普通发送' });
+  assert.equal(!blocked.ok && blocked.error.code, 'forbidden');
+
+  // 目标结束这一轮也不会把收件箱消息当成排队消息投出去。
+  await w.finishTurn(b.id, '我看到了');
+  assert.equal(w.delivered.length, 0);
+});
+
+test('会话交接 P2：wake=true 才排队并在对方空下来后投递一轮', async () => {
+  const w = await world({ links: fakeSessionLinks() });
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+  await recordEvent(w.deps, { sessionId: b.id, event: { kind: 'prompt', text: '我正忙' } });
+
+  const sent = await w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: b.id, body: '醒来看看', requestKey: 'h-2', wake: true });
+  assert.ok(sent.ok);
+  assert.equal(sent.value.status, 'queued');
+  assert.equal(w.delivered.length, 0, '对方忙，先排队');
+
+  await w.finishTurn(b.id, '忙完了');
+  assert.equal((await w.messages.byId(sent.value.messageId))?.status, 'delivered');
+  assert.equal(w.delivered.length, 1);
+  assert.equal(w.delivered[0]?.sessionId, b.id);
+  assert.match(w.delivered[0]?.text ?? '', /醒来看看/);
+});
+
+test('会话交接 P2：项目只认不可变来源——任务来源冲突、无任务缺来源都拒绝；同项目容器会话可用', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const other = createProject({ name: 'other', now: 1, teamId: 'T', createdBy: 'alice' });
+  assert.ok(other.ok);
+  await w.deps.projects.save(other.value);
+
+  const conflicting = await taskSession(w, 'alice', other.value.id);
+  const fromConflict = await w.bus.handoff({ fromSessionId: conflicting.id, actorId: 'alice', targetSessionId: a.id, body: 'x', requestKey: 'c-1' });
+  assert.equal(!fromConflict.ok && fromConflict.error.code, 'forbidden');
+  assert.match(!fromConflict.ok ? fromConflict.error.message : '', /项目来源与任务项目冲突/);
+
+  const targetConflict = await taskSession(w, 'alice', other.value.id);
+  const toConflict = await w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: targetConflict.id, body: 'x', requestKey: 'c-2' });
+  assert.equal(!toConflict.ok && toConflict.error.code, 'forbidden');
+  assert.match(!toConflict.ok ? toConflict.error.message : '', /项目来源与任务项目冲突/);
+
+  const noOrigin = await containerSession(w, 'alice');
+  const missing = await w.bus.handoff({ fromSessionId: noOrigin.id, actorId: 'alice', targetSessionId: a.id, body: 'x', requestKey: 'c-3' });
+  assert.equal(!missing.ok && missing.error.code, 'forbidden');
+  assert.match(!missing.ok ? missing.error.message : '', /没有不可变的项目来源/);
+
+  const withOrigin = await containerSession(w, 'alice', w.project.id);
+  assert.ok((await w.bus.handoff({ fromSessionId: withOrigin.id, actorId: 'alice', targetSessionId: a.id, body: 'x', requestKey: 'c-4' })).ok);
+});
+
+test('会话交接 P2：跨项目的目标会话拒绝', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const other = createProject({ name: 'other', now: 1, teamId: 'T', createdBy: 'alice' });
+  assert.ok(other.ok);
+  await w.deps.projects.save(other.value);
+  const outsider = await containerSession(w, 'alice', other.value.id);
+
+  const sent = await w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: outsider.id, body: 'x', requestKey: 'x-1' });
+  assert.equal(!sent.ok && sent.error.code, 'forbidden');
+  assert.match(!sent.ok ? sent.error.message : '', /同一个项目里没有这条会话/);
+
+  const fromOutside = await w.bus.handoff({ fromSessionId: outsider.id, actorId: 'alice', targetSessionId: a.id, body: 'x', requestKey: 'x-2' });
+  assert.equal(!fromOutside.ok && fromOutside.error.code, 'forbidden');
+  assert.match(!fromOutside.ok ? fromOutside.error.message : '', /同一个项目里没有这条会话/);
+});
+
+test('会话交接 P2：派生隔离、权限交集、收起状态仍然生效', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const parent = await w.newSession('alice');
+  const child = await w.newSession('alice');
+  await w.messages.saveSpawn({ sessionId: child.id, spawnerSessionId: parent.id, projectId: w.project.id, role: '', traceId: 't1', createdAt: 1 });
+  const isolated = await w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: child.id, body: 'x', requestKey: 's-1' });
+  assert.equal(!isolated.ok && isolated.error.code, 'forbidden');
+  assert.match(!isolated.ok ? isolated.error.message : '', /默认隔离/);
+
+  const v = await w.newSession('vicky');
+  const toViewer = await w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: v.id, body: 'x', requestKey: 's-2' });
+  assert.equal(!toViewer.ok && toViewer.error.code, 'forbidden');
+  assert.match(!toViewer.ok ? toViewer.error.message : '', /被调会话的主人/);
+
+  const fromViewer = await w.bus.handoff({ fromSessionId: v.id, actorId: 'alice', targetSessionId: a.id, body: 'x', requestKey: 's-3' });
+  assert.equal(!fromViewer.ok && fromViewer.error.code, 'forbidden');
+  assert.match(!fromViewer.ok ? fromViewer.error.message : '', /会话主人没有/);
+
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(a.id))!, settledAt: 5 });
+  const archivedTarget = await w.bus.handoff({ fromSessionId: parent.id, actorId: 'alice', targetSessionId: a.id, body: 'x', requestKey: 's-4' });
+  assert.equal(!archivedTarget.ok && archivedTarget.error.code, 'forbidden');
+  assert.match(!archivedTarget.ok ? archivedTarget.error.message : '', /^archived:/);
+  assert.ok(w.messages.audits.some((e) => e.action === 'denied'));
+});
+
+test('会话交接 P2：同键同参回放原结果；目标 / 正文 / wake / parts 不同都算冲突', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+  const c = await w.newSession('alice');
+  const parts = [{ type: 'data' as const, schema: 'task/v1', data: { n: 1 } }];
+  const base = { fromSessionId: a.id, actorId: 'alice', targetSessionId: b.id, body: '同一条', requestKey: 'idem-1', parts };
+
+  const first = await w.bus.handoff(base);
+  assert.ok(first.ok);
+  const replay = await w.bus.handoff(base);
+  assert.ok(replay.ok);
+  assert.equal(replay.value.messageId, first.value.messageId);
+  assert.equal([...w.messages.all.values()].filter((m) => m.fromSessionId === a.id && m.body === '同一条').length, 1);
+
+  for (const changed of [
+    { ...base, body: '改正文' },
+    { ...base, targetSessionId: c.id },
+    { ...base, wake: true },
+    { ...base, parts: [{ type: 'data' as const, schema: 'task/v1', data: { n: 2 } }] }
+  ]) {
+    const conflict = await w.bus.handoff(changed);
+    assert.equal(!conflict.ok && conflict.error.code, 'conflict', JSON.stringify(changed));
+    assert.match(!conflict.ok ? conflict.error.message : '', /同一请求键对应不同参数/);
+  }
+});
+
+test('会话交接 P2：并发同键——同参只写一条并共享回执，异参一成一败', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+  const c = await w.newSession('alice');
+
+  const [sameA, sameB] = await Promise.all([
+    w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: c.id, body: '并发同参', requestKey: 'race-same' }),
+    w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: c.id, body: '并发同参', requestKey: 'race-same' })
+  ]);
+  assert.ok(sameA.ok);
+  assert.ok(sameB.ok);
+  if (sameA.ok && sameB.ok) assert.equal(sameA.value.messageId, sameB.value.messageId);
+  assert.equal([...w.messages.all.values()].filter((m) => m.fromSessionId === a.id && m.body === '并发同参').length, 1);
+
+  const different = await Promise.all([
+    w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: b.id, body: '并发 A', requestKey: 'race-diff' }),
+    w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: b.id, body: '并发 B', requestKey: 'race-diff' })
+  ]);
+  assert.equal(different.filter((r) => r.ok).length, 1);
+  assert.equal(different.filter((r) => !r.ok && r.error.code === 'conflict').length, 1);
+  assert.equal([...w.messages.all.values()].filter((m) => m.fromSessionId === a.id && (m.body === '并发 A' || m.body === '并发 B')).length, 1);
+});
+
+test('会话交接 P2：请求键按来源会话隔离，不同源会话不共享回执', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+  const c = await w.newSession('alice');
+
+  const first = await w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: c.id, body: '同名键', requestKey: 'shared' });
+  const second = await w.bus.handoff({ fromSessionId: b.id, actorId: 'alice', targetSessionId: c.id, body: '同名键', requestKey: 'shared' });
+  assert.ok(first.ok && second.ok);
+  assert.notEqual(first.value.messageId, second.value.messageId);
+  const m1 = await w.messages.byId(first.value.messageId);
+  const m2 = await w.messages.byId(second.value.messageId);
+  assert.notEqual(m1?.idempotencyKey, m2?.idempotencyKey);
+  assert.match(m1?.idempotencyKey ?? '', /shared/);
+  assert.match(m2?.idempotencyKey ?? '', /shared/);
+});
+
+test('会话交接 P2：并发同键指向不同目标也只写一条，不会因目标锁不同而各写一条', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+  const c = await w.newSession('alice');
+
+  const raced = await Promise.all([
+    w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: b.id, body: '目标 B', requestKey: 'race-targets' }),
+    w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: c.id, body: '目标 C', requestKey: 'race-targets' })
+  ]);
+  assert.equal(raced.filter((r) => r.ok).length, 1);
+  assert.equal(raced.filter((r) => !r.ok && r.error.code === 'conflict').length, 1);
+  assert.equal([...w.messages.all.values()].filter((m) => m.fromSessionId === a.id && (m.body === '目标 B' || m.body === '目标 C')).length, 1);
+});
+
+test('会话交接 P2：公共 accept 不接受调用方自报的放行标记', async () => {
+  const w = await world({ links: fakeSessionLinks() });
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+
+  const legacyLink = {
+    fromSessionId: a.id,
+    kind: 'send' as const,
+    to: `session:${b.id}`,
+    body: '普通发送',
+    bypassLinks: true,
+    trustedHandoff: true
+  };
+  const blocked = await w.bus.accept(legacyLink);
+  assert.equal(!blocked.ok && blocked.error.code, 'forbidden');
+  assert.match(!blocked.ok ? blocked.error.message : '', /只有明确连接的会话/);
+
+  const parent = await w.newSession('alice');
+  const child = await w.newSession('alice');
+  await w.messages.saveSpawn({ sessionId: child.id, spawnerSessionId: parent.id, projectId: w.project.id, role: '', traceId: 't-legacy', createdAt: 1 });
+  const legacyIsolation = {
+    fromSessionId: a.id,
+    kind: 'send' as const,
+    to: `session:${child.id}`,
+    body: '绕过隔离',
+    bypassIsolation: true,
+    trustedHandoff: true
+  };
+  const isolated = await w.bus.accept(legacyIsolation);
+  assert.equal(!isolated.ok && isolated.error.code, 'forbidden');
+  assert.match(!isolated.ok ? isolated.error.message : '', /默认隔离/);
+});
+
+test('会话交接 P2：审计不落正文，只记录长度、parts 数和 wake', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+  const body = '不要在审计里出现的正文';
+
+  const sent = await w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: b.id, body, requestKey: 'audit-1' });
+  assert.ok(sent.ok);
+  const entry = w.messages.audits.find((e) => e.traceId === sent.value.traceId && e.action === 'accepted');
+  assert.ok(entry);
+  assert.equal(entry.detail.includes(body), false);
+  assert.match(entry.detail, new RegExp(`chars=${body.length}`));
+  assert.match(entry.detail, /parts=0/);
+  assert.match(entry.detail, /wake=false/);
+});

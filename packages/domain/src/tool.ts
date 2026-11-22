@@ -15,12 +15,68 @@ import type { SessionId, TaskId } from './ids.ts';
  * artifact = 任务/会话的产出物（issue #216 P2）：列、按 id 读、登记外部引用；
  * files = 只读浏览会话工作空间（复用 WorkspaceFilesService 的路径与 workspace.files.read 校验）。
  */
-export type ToolScope = 'task:read' | 'task:log:write' | 'task:status:write' | 'agent:message' | 'memory' | 'context' | 'task:create' | 'connector' | 'git' | 'session:control' | 'project' | 'artifact' | 'files';
+export type ToolScope = 'task:read' | 'task:log:write' | 'task:status:write' | 'agent:message' | 'memory' | 'context' | 'task:create' | 'connector' | 'git' | 'session:control' | 'workspace:delegate' | 'project' | 'artifact' | 'files' | 'project:read' | 'project:task-write' | 'project:asset-write' | 'project:worktree-open' | 'project:message-send' | 'project:candidate-import';
 
-export const TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector', 'git', 'session:control', 'project', 'artifact', 'files'];
+/**
+ * 项目会话的显式授权对应的工具 scope：**故意不在默认授权里**，也不和旧工具共用。
+ *
+ * 旧 `task:create` / `git` / `project` 仍然服务现有 bot 与普通会话；新项目会话的读取、
+ * 建任务、资产写、开 worktree、发消息各自一把 scope，便于按用户勾选的能力签发，
+ * 也便于受限子会话整体排除（docs/design/project-session-mcp.md §25-§30）。
+ */
+export const PROJECT_READ_TOOL_SCOPE = 'project:read' as const;
+export const PROJECT_TASK_WRITE_TOOL_SCOPE = 'project:task-write' as const;
+export const PROJECT_ASSET_WRITE_TOOL_SCOPE = 'project:asset-write' as const;
+export const PROJECT_WORKTREE_OPEN_TOOL_SCOPE = 'project:worktree-open' as const;
+export const PROJECT_MESSAGE_SEND_TOOL_SCOPE = 'project:message-send' as const;
+export const PROJECT_CANDIDATE_IMPORT_TOOL_SCOPE = 'project:candidate-import' as const;
+
+export const PROJECT_SESSION_TOOL_SCOPES: readonly ToolScope[] = [
+  PROJECT_READ_TOOL_SCOPE,
+  PROJECT_TASK_WRITE_TOOL_SCOPE,
+  PROJECT_ASSET_WRITE_TOOL_SCOPE,
+  PROJECT_WORKTREE_OPEN_TOOL_SCOPE,
+  PROJECT_MESSAGE_SEND_TOOL_SCOPE,
+  PROJECT_CANDIDATE_IMPORT_TOOL_SCOPE
+];
+
+export const TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector', 'git', 'session:control', 'workspace:delegate', 'project', 'artifact', 'files', ...PROJECT_SESSION_TOOL_SCOPES];
+
+/**
+ * 派工提案的专用 scope：**故意不在默认授权里**。
+ * 只有经持久主会话登记簿核实、且冻结 actor 是会话归属人的真人 Web 授权才会额外拿到；
+ * 普通会话、bot、群、派生、外来的授权都看不到 workspace.delegate。
+ */
+export const WORKSPACE_DELEGATE_SCOPE = 'workspace:delegate' as const;
 
 /** 默认授权：读任务 + 写日志 + 改状态（agent 只能走到 进行中/受阻/待验收，done 仍由人确认）+ git 工作流入口 + 派生/停止会话（#216 P1）+ 产物与工作空间文件只读（#216 P2）。 */
 export const DEFAULT_TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector', 'git', 'session:control', 'project', 'artifact', 'files'];
+
+/**
+ * 派工执行会话（受限子会话）明确不继承的 scope。
+ *
+ * 这些入口都能从子会话重新打开「调度 / 写项目」的侧门：再建任务、提交推送、控制别的会话、
+ * 给别的 agent 发消息、改项目设置，以及再派工。子会话只保留对话与完成自身任务所需的能力；
+ * 项目写授权由用户在原会话上显式开启，不向下继承（docs/design/project-session-mcp.md §25）。
+ */
+export const RESTRICTED_CHILD_EXCLUDED_SCOPES: readonly ToolScope[] = [
+  'task:create',
+  'git',
+  'session:control',
+  'agent:message',
+  'project',
+  'workspace:delegate',
+  ...PROJECT_SESSION_TOOL_SCOPES
+];
+
+/**
+ * 受限子会话的最小工具集：默认授权去掉 {@link RESTRICTED_CHILD_EXCLUDED_SCOPES}。
+ * 调用方仍可追加只读类 scope，但被排除的项不会被追加回来。
+ */
+export function restrictedChildScopes(extra: readonly ToolScope[] = []): readonly ToolScope[] {
+  const allowed = new Set(TOOL_SCOPES.filter((scope) => !RESTRICTED_CHILD_EXCLUDED_SCOPES.includes(scope)));
+  return [...new Set([...DEFAULT_TOOL_SCOPES, ...extra])].filter((scope) => allowed.has(scope));
+}
 
 /**
  * 授权是滑动有效期：签发后 7 天内没有用就过期；每次认证成功续到「现在 + 7 天」，

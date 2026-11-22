@@ -2,6 +2,10 @@ import { installConnectorRoutes, type ConnectorRouteDeps } from './connector-rou
 import { installObserveRoutes, type ObserveRouteOptions } from './observe-routes.ts';
 import { installGroupRoutes, type GroupRouteDeps } from './group-routes.ts';
 import { installWorkspaceGroupRoutes } from './workspace-group-routes.ts';
+import { coordinatorSessionsUseCase, installCoordinatorRoutes, type CoordinatorRouteDeps } from './workspace-coordinator.ts';
+import { installDelegationRoutes, type DelegationRouteDeps } from './workspace-delegation.ts';
+import { installProjectSessionGrantRoutes, type ProjectSessionGrantRoutes } from './project-session-grant-routes.ts';
+import { installDelegationPublishRoutes, type DelegationPublishRouteOptions } from './workspace-delegation-publish.ts';
 import { installProjectReposRoutes } from './project-repos-routes.ts';
 import { projectDto } from './project-dto.ts';
 import { installPreviewRoutes, type PreviewApiOptions } from './preview-routes.ts';
@@ -167,7 +171,7 @@ import { installRuntimeInstall } from './runtime-install.ts';
 import { installComponents } from './components.ts';
 import { installWorkerResources } from './worker-resources.ts';
 import { installWorkerAgentRoutes, type WorkerAgentsApi } from './worker-agents-routes.ts';
-import type { ComponentDeps, ResourceDeps, RuntimeInstallDeps } from '@agent-hub/domain';
+import type { ComponentDeps, ProjectId, ResourceDeps, RuntimeInstallDeps } from '@agent-hub/domain';
 import { installProjectDeletion } from './project-delete.ts';
 import { installAccess } from './access.ts';
 import type { DeleteProjectDeps } from '@agent-hub/domain';
@@ -241,6 +245,11 @@ export interface AppOptions {
   readonly files?: WorkspaceFilesService;
   readonly git?: GitWorkflowService;
   readonly rewind?: RewindService;
+  /** 项目主会话（workspace delegation A 阶段）：登记簿 + `/api/coordinators` 与首页主会话。 */
+  readonly coordinators?: Omit<CoordinatorRouteDeps, 'deps'>;
+  readonly workspaceDelegation?: Omit<DelegationRouteDeps, 'deps'>;
+  readonly projectSessionGrants?: ProjectSessionGrantRoutes;
+  readonly delegationPublish?: DelegationPublishRouteOptions;
   /** 开放 API（/openapi/v1 + MCP，ADR 0015）与设置页的令牌管理；要有账号体系。 */
   readonly openApi?: OpenApiOptions & { readonly manage: ApiTokenDeps };
   /**
@@ -352,6 +361,12 @@ export function createApp(options: AppOptions): Hono {
     if (options.observe) installObserveRoutes(app, options.observe, subjectOf);
     if (options.memory) installMemoryRoutes(app, { ...options.memory, deps }, subjectOf);
     if (options.groups) installGroupRoutes(app, options.groups, subjectOf);
+    if (options.coordinators) installCoordinatorRoutes(app, { deps, ...options.coordinators,
+      onCreated: (c, actor, session) => noteProvenance(deps, options.activity, c, actor, session, viaOfClient(c))
+    }, subjectOf);
+    if (options.workspaceDelegation) installDelegationRoutes(app, { deps, ...options.workspaceDelegation }, subjectOf);
+    if (options.projectSessionGrants) installProjectSessionGrantRoutes(app, options.projectSessionGrants, principalOf);
+    if (options.delegationPublish) installDelegationPublishRoutes(app, options.delegationPublish, subjectOf);
     if (options.bots) installBotRoutes(app, options.bots, subjectOf, options.groups?.agentTokens, options.connectors?.hub);
     if (options.context) installContextRoutes(app, options.context, subjectOf);
     if (options.files) installFilesRoutes(app, options.files, subjectOf);
@@ -421,9 +436,18 @@ export function createApp(options: AppOptions): Hono {
     );
   }
 
-  app.get('/api/home', async (c) =>
-    c.json(homeSchema.parse(await loadHome(deps, undefined, await projectReader(deps.access, subjectOf(c)))))
-  );
+  app.get('/api/home', async (c) => {
+    const subject = subjectOf(c);
+    const coordinators = options.coordinators;
+    // 首页里的主会话只认登记簿 + 复核过的会话；普通无任务容器会话不会被带出来。
+    const registered = coordinators
+      ? async (projectId: ProjectId) => {
+          const listed = await coordinatorSessionsUseCase(deps, coordinators.coordinators, { projectId, actor: subject });
+          return listed.ok ? listed.value : [];
+        }
+      : undefined;
+    return c.json(homeSchema.parse(await loadHome(deps, undefined, await projectReader(deps.access, subject), registered)));
+  });
 
   // 目录选择器（S2.1）：让人从真实目录里挑，而不是手打一个可能会错的路径。
   // 多机：带 workerId 就去那台 Worker 上浏览（经 WebSocket 问它），不带就是 Server 本机。
@@ -705,7 +729,13 @@ export function createApp(options: AppOptions): Hono {
 
   app.get('/api/projects/:projectId/canvas', async (c) => {
     const includeSide = c.req.query('includeSide') === '1' || c.req.query('includeSide') === 'true';
-    const result = await loadCanvas(deps, c.req.param('projectId'), { includeSide });
+    const coordinators = options.coordinators?.coordinators;
+    const actor = subjectOf(c);
+    const registeredCoordinators = coordinators ? async (projectId: ProjectId) => {
+      const listed = await coordinatorSessionsUseCase(deps, coordinators, { projectId, actor });
+      return listed.ok ? listed.value : [];
+    } : undefined;
+    const result = await loadCanvas(deps, c.req.param('projectId'), { includeSide, registeredCoordinators });
     if (!result.ok) return fail(c, result.error);
     return c.json({ ...result.value, previews: await refreshPreviewAuthors(options.activity, result.value.previews) });
   });

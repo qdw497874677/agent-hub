@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rewriteCredentialEnv } from './credential-env.ts';
+import { consumeWorkerCredentials, rewriteCredentialEnv } from './credential-env.ts';
+
+test('连接凭据留给 Worker，之后构造子进程环境时不再继承', () => {
+  const env = { HUB_TOKEN: 'shared-test', HUB_WORKER_CREDENTIAL: 'paired-test', HUB_LOCAL_SECRET: 'local-test', LANG: 'C' };
+  assert.deepEqual(consumeWorkerCredentials(env), { token: 'shared-test', credential: 'paired-test', localSecret: 'local-test' });
+  assert.deepEqual({ ...env }, { LANG: 'C' });
+});
 
 test('轮换：只换 HUB_WORKER_CREDENTIAL 那一行，权限不变', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cred-'));

@@ -10,6 +10,9 @@ const FORK = process.argv.includes('--fork');
 const FORK_FAIL = process.argv.includes('--fork-fail');
 // --child：模拟 OpenCode 的 child session updates（子代理事件带 _meta['opencode/child-session']）
 const CHILD = process.argv.includes('--child');
+// --mcp-http：像支持 Streamable HTTP MCP 的 agent 那样声明 mcpCapabilities.http=true，
+// 并在 prompt 里真的用 session/new 下发的 mcpServers 调工具（workspace delegation e2e 用）。
+const MCP_HTTP = process.argv.includes('--mcp-http');
 let turn = 0;
 let forkedAt = null;
 const say = (sessionId, text) =>
@@ -46,6 +49,8 @@ const options = () => [
 const seen = [];
 let pendingPrompt;
 let cwd = process.cwd();
+// session/new 下发的 MCP server 清单（hub 的工具入口；--mcp-http 时才有用）。
+let mcpServers = [];
 // --please-backlog：回合在后台子代理还在跑时就 end_turn；总结只出现在之后的 session/load 重放里
 // （opencode 的 ACP 适配器真实行为：prompt 返回后不再推 session/update）。
 let backlogSummary = null;
@@ -55,7 +60,18 @@ const backlogText = (sessionId, messageId, text) =>
 const backlogThought = (sessionId, messageId, text) =>
   send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text }, messageId } } });
 
-createInterface({ input: process.stdin }).on('line', (line) => {
+// 最小 Streamable HTTP MCP 客户端：一个 POST 一个 JSON-RPC（hub 的入口开了 enableJsonResponse）。
+async function mcpCall(server, body) {
+  const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+  for (const header of server.headers ?? []) headers[header.name] = header.value;
+  const response = await fetch(server.url, { method: 'POST', headers, body: JSON.stringify(body) });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`MCP ${response.status}: ${text.slice(0, 200)}`);
+  if (text === '') return null;
+  return JSON.parse(text);
+}
+
+createInterface({ input: process.stdin }).on('line', async (line) => {
   const msg = JSON.parse(line);
   if (msg.method === undefined) {
     // 我们发出的 request_permission 的回答
@@ -65,8 +81,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   }
   seen.push(msg.method + (msg.params?._meta ? JSON.stringify(msg.params._meta) : ''));
   switch (msg.method) {
-    case 'initialize':
-      return send({ id: msg.id, result: { protocolVersion: 1, authMethods: [{ id: 'key', name: 'Key' }], ...(FORK ? { agentCapabilities: { sessionCapabilities: { fork: {} } } } : {}) } });
+    case 'initialize': {
+      const capabilities = {
+        ...(FORK ? { sessionCapabilities: { fork: {} } } : {}),
+        ...(MCP_HTTP ? { mcpCapabilities: { http: true } } : {})
+      };
+      return send({ id: msg.id, result: { protocolVersion: 1, authMethods: [{ id: 'key', name: 'Key' }], ...(Object.keys(capabilities).length > 0 ? { agentCapabilities: capabilities } : {}) } });
+    }
     case 'session/fork': {
       if (FORK_FAIL) return send({ id: msg.id, error: { code: -32603, message: 'fake fork failure' } });
       if (typeof msg.params?.cwd === 'string') cwd = msg.params.cwd;
@@ -77,10 +98,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return send({ id: msg.id, result: {} });
     case 'session/new':
       if (typeof msg.params?.cwd === 'string') cwd = msg.params.cwd;
+      if (Array.isArray(msg.params?.mcpServers)) mcpServers = msg.params.mcpServers;
       if (LEGACY) model = 'custom:a';
       return send({ id: msg.id, result: { sessionId: 's1', ...reported() } });
     case 'session/load': {
       const sid = msg.params.sessionId;
+      // 重新托管走 session/load；真实 ACP 会在 load 时重新注入 MCP server 清单，
+      // fake 也要跟着换，否则还拿旧 token 的 URL 调工具。
+      if (Array.isArray(msg.params?.mcpServers)) mcpServers = msg.params.mcpServers;
       if (backlogSummary) {
         // 真实 opencode 会把整段历史重放一遍：旧 thought 被合并成一块、旧文本原样再来、
         // 后台子代理完成后的总结只在最后出现（并**没有**子代理的 child_update）。
@@ -156,6 +181,197 @@ createInterface({ input: process.stdin }).on('line', (line) => {
           setTimeout(wait, 25);
         };
         return wait();
+      }
+      // please-delegate：用 session/new 下发的 HTTP MCP server 真的调 workspace.delegate
+      // （args 从 prompt 里的 k=v 读；只在 --mcp-http 下生效）。
+      if (MCP_HTTP && all.includes('please-delegate')) {
+        const sessionId = msg.params.sessionId;
+        const server = mcpServers.find((entry) => entry && entry.type === 'http' && typeof entry.url === 'string');
+        const pick = (name) => new RegExp(`(?:^|\\s)${name}=(\\S+)`).exec(all)?.[1] ?? '';
+        const args = {
+          request_key: pick('key') || `mcp-${turn}`,
+          task_id: pick('task'),
+          repo_id: pick('repo'),
+          base_branch: pick('base') || 'main',
+          instructions: pick('instructions') || '请加一个文件',
+          agent_id: pick('agent') || 'fakeacp'
+        };
+        try {
+          if (!server) throw new Error('session/new 没有下发 HTTP MCP server');
+          const list = await mcpCall(server, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+          const names = (list?.result?.tools ?? []).map((tool) => tool.name);
+          const called = await mcpCall(server, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'workspace.delegate', arguments: args } });
+          const text = (called?.result?.content ?? []).map((block) => block.text ?? '').join(' ');
+          say(sessionId, `delegate-tools:${names.join(',')};result:${text.slice(0, 300)}`);
+        } catch (error) {
+          say(sessionId, `delegate-error:${error.message}`);
+        }
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      // please-project-create / please-project-worktree：项目会话 MCP 工具 lane。
+      // 和 please-delegate 一样用 session/new 下发的 HTTP MCP server，但调的是 project.task.create /
+      // project.worktree.start；把工具清单、isError 和响应原文一起打回事件流，供 e2e 精确断言。
+      if (MCP_HTTP && (all.includes('please-project-create') || all.includes('please-project-worktree'))) {
+        const sessionId = msg.params.sessionId;
+        const server = mcpServers.find((entry) => entry && entry.type === 'http' && typeof entry.url === 'string');
+        const pick = (name) => new RegExp(`(?:^|\\s)${name}=(\\S+)`).exec(all)?.[1] ?? '';
+        const taskLane = all.includes('please-project-create');
+        const action = taskLane ? 'task.create' : 'worktree.start';
+        let names = [];
+        let listError = null;
+        let callError = null;
+        try {
+          if (!server) throw new Error('session/new 没有下发 HTTP MCP server');
+          const list = await mcpCall(server, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+          names = (list?.result?.tools ?? []).map((tool) => tool.name);
+          listError = list?.error ?? null;
+          const args = taskLane
+            ? {
+                request_key: pick('key') || `project-task-${turn}`,
+                title: pick('title') || '项目子任务',
+                ...(pick('goal') ? { goal: pick('goal') } : {}),
+                ...(pick('parent') ? { parent_task_id: pick('parent') } : {})
+              }
+            : {
+                request_key: pick('key') || `project-worktree-${turn}`,
+                task_id: pick('task'),
+                repo_id: pick('repo'),
+                base_branch: pick('base') || 'main',
+                instructions: pick('instructions') || '请加一个文件',
+                agent_id: pick('agent') || 'fakeacp',
+                ...(pick('model') ? { model: pick('model') } : {})
+              };
+          const called = await mcpCall(server, {
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'tools/call',
+            params: { name: taskLane ? 'project_task_create' : 'project_worktree_start', arguments: args }
+          });
+          const text = (called?.result?.content ?? []).map((block) => block.text ?? '').join(' ').slice(0, 600);
+          callError = called?.error ?? null;
+          say(sessionId, `project-observation:${JSON.stringify({ action, names, listError, callError, isError: called?.result?.isError === true, text })}`);
+        } catch (error) {
+          say(sessionId, `project-observation:${JSON.stringify({ action, names, listError, callError, isError: true, text: String(error.message ?? error).slice(0, 600) })}`);
+        }
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      // please-project-handoff / please-project-import：项目会话 MCP 的第二组工具。
+      // 交接默认不传 wake（服务端按 false 处理）；候选引用只在三件套齐全时附带。
+      if (MCP_HTTP && (all.includes('please-project-handoff') || all.includes('please-project-import'))) {
+        const sessionId = msg.params.sessionId;
+        const server = mcpServers.find((entry) => entry && entry.type === 'http' && typeof entry.url === 'string');
+        const pick = (name) => new RegExp(`(?:^|\\s)${name}=(\\S+)`).exec(all)?.[1] ?? '';
+        const handoffLane = all.includes('please-project-handoff');
+        const action = handoffLane ? 'handoff' : 'candidate.import';
+        let names = [];
+        let listError = null;
+        let callError = null;
+        try {
+          if (!server) throw new Error('session/new 没有下发 HTTP MCP server');
+          const list = await mcpCall(server, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+          names = (list?.result?.tools ?? []).map((tool) => tool.name);
+          listError = list?.error ?? null;
+          const args = handoffLane
+            ? {
+                request_key: pick('key') || `project-handoff-${turn}`,
+                target_session_id: pick('target'),
+                body: pick('body') || 'handoff_body',
+                ...(pick('wake') ? { wake: pick('wake') === 'true' } : {}),
+                ...(pick('candidate_source') && pick('candidate_repo') && pick('candidate_sha')
+                  ? {
+                      candidate: {
+                        source_session_id: pick('candidate_source'),
+                        repo_id: pick('candidate_repo'),
+                        sha: pick('candidate_sha')
+                      }
+                    }
+                  : {})
+              }
+            : {
+                request_key: pick('key') || `project-import-${turn}`,
+                source_session_id: pick('source'),
+                target_session_id: pick('target'),
+                repo_id: pick('repo'),
+                sha: pick('sha')
+              };
+          const called = await mcpCall(server, {
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'tools/call',
+            params: { name: handoffLane ? 'project_session_handoff' : 'project_candidate_import', arguments: args }
+          });
+          const text = (called?.result?.content ?? []).map((block) => block.text ?? '').join(' ').slice(0, 900);
+          callError = called?.error ?? null;
+          say(sessionId, `project-observation:${JSON.stringify({ action, names, listError, callError, isError: called?.result?.isError === true, text })}`);
+        } catch (error) {
+          say(sessionId, `project-observation:${JSON.stringify({ action, names, listError, callError, isError: true, text: String(error.message ?? error).slice(0, 900) })}`);
+        }
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      // please-project-asset-*：项目资产工具 lane（阶段 3）。工具清单、isError 和响应原文一起
+      // 打回事件流；replay=true 时用同一个参数连续调用两次，验证请求键幂等。
+      if (MCP_HTTP && all.includes('please-project-asset-')) {
+        const sessionId = msg.params.sessionId;
+        const server = mcpServers.find((entry) => entry && entry.type === 'http' && typeof entry.url === 'string');
+        const pick = (name) => new RegExp(`(?:^|\\s)${name}=(\\S+)`).exec(all)?.[1] ?? '';
+        const listLane = all.includes('please-project-asset-list');
+        const readLane = all.includes('please-project-asset-read');
+        const createLane = all.includes('please-project-asset-create');
+        const reviseLane = all.includes('please-project-asset-revise');
+        const enableLane = all.includes('please-project-asset-enable');
+        const action = listLane
+          ? 'asset.list'
+          : readLane
+            ? 'asset.read'
+            : createLane
+              ? 'asset.create'
+              : reviseLane
+                ? 'asset.revise'
+                : 'asset.set_enabled';
+        const name = pick('name') || `e2e-asset-${turn}`;
+        const body = pick('body') || 'version one';
+        const files = [
+          {
+            path: 'SKILL.md',
+            content: `---\nname: ${name}\ndescription: E2E project asset\n---\n${body}\n`
+          }
+        ];
+        const args = listLane
+          ? {
+              ...(pick('kind') ? { kind: pick('kind') } : {}),
+              ...(pick('include_disabled') ? { include_disabled: pick('include_disabled') === 'true' } : {}),
+              ...(pick('limit') ? { limit: Number(pick('limit')) } : {})
+            }
+          : readLane
+            ? {
+                asset_id: pick('asset'),
+                ...(pick('path') ? { path: pick('path') } : {})
+              }
+            : createLane
+              ? { request_key: pick('key') || `project-asset-create-${turn}`, kind: pick('kind') || 'skill', name, files }
+              : reviseLane
+                ? { request_key: pick('key') || `project-asset-revise-${turn}`, asset_id: pick('asset'), files }
+                : { request_key: pick('key') || `project-asset-enable-${turn}`, asset_id: pick('asset'), enabled: pick('enabled') === 'true' };
+        const replay = pick('replay') === 'true';
+        try {
+          if (!server) throw new Error('session/new 没有下发 HTTP MCP server');
+          const list = await mcpCall(server, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+          const names = (list?.result?.tools ?? []).map((tool) => tool.name);
+          const listError = list?.error ?? null;
+          for (let attempt = 0; attempt < (replay ? 2 : 1); attempt++) {
+            const called = await mcpCall(server, {
+              jsonrpc: '2.0',
+              id: 2 + attempt,
+              method: 'tools/call',
+              params: { name: `project_asset_${action.slice('asset.'.length)}`, arguments: args }
+            });
+            const text = (called?.result?.content ?? []).map((block) => block.text ?? '').join(' ').slice(0, 1200);
+            say(sessionId, `project-observation:${JSON.stringify({ action, names, listError, callError: called?.error ?? null, isError: called?.result?.isError === true, text })}`);
+          }
+        } catch (error) {
+          say(sessionId, `project-observation:${JSON.stringify({ action, names: [], listError: null, callError: null, isError: true, text: String(error.message ?? error).slice(0, 1200) })}`);
+        }
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }
       // please-write:<相对路径>=<一行内容>：在会话目录里追加一行（回合检查点 e2e 用）
       const writes = [...all.matchAll(/please-write:([\w./-]+)=(\S+)/g)];

@@ -7,7 +7,8 @@ import {
   type Subject,
   type TaskDispatch,
   type ToolContext,
-  type ToolGrant
+  type ToolGrant,
+  type WorkspaceDelegation
 } from '@agent-hub/domain';
 import { createGitWriteSubjectOf } from './git-write-identity.ts';
 
@@ -48,6 +49,7 @@ function world(
     readonly provenance?: SessionProvenance | null;
     readonly dispatch?: TaskDispatch | null;
     readonly subjectResult?: Subject | null;
+    readonly delegated?: boolean;
   } = {}
 ) {
   const calls = { subject: [] as string[], bot: [] as string[] };
@@ -63,6 +65,9 @@ function world(
     memberOfSession: async () => over.memberOfSession ?? null,
     provenance: { get: async () => over.provenance ?? null },
     dispatches: { bySession: async () => over.dispatch ?? null },
+    delegations: {
+      byExecutionSession: async (id: SessionId) => (over.delegated && id === ('s1' as SessionId) ? ({ executionSessionId: id } as WorkspaceDelegation) : null)
+    },
     subjectOf: async (id: SessionId) => {
       calls.subject.push(id);
       return over.subjectResult === undefined ? subject : over.subjectResult;
@@ -136,4 +141,22 @@ test('#217 写入身份：冻结 grant.actor 带 bot/群/连接器来源或没�
   const res = await anonymous.fn('s1' as SessionId, ctx({ userId: null, via: 'web' }));
   assert.equal(!res.ok && res.error.code, 'forbidden');
   assert.deepEqual(anonymous.calls.subject, [], '没有人类账号时不能回落到 createdBy');
+});
+
+test('派工执行会话：持久派工身份先于冻结 actor / subject 解析，一律拒写', async () => {
+  // 即使来历、冻结 grant.actor 和 subjectOf 都看起来像人类，派工执行会话也不能写。
+  const delegated = world({
+    delegated: true,
+    provenance: provenance(),
+    subjectResult: subject
+  });
+  const res = await delegated.fn('s1' as SessionId, ctx({ userId: 'u1', via: 'web' }));
+  assert.equal(!res.ok && res.error.code, 'forbidden');
+  assert.match(res.ok ? '' : res.error.message, /派工执行会话/);
+  assert.deepEqual(delegated.calls.subject, [], '派工身份命中后不再回落到 subjectOf');
+  assert.deepEqual(delegated.calls.bot, [], '派工判定在读 bot 兼容映射之前');
+
+  // 没有派工记录的同一会话照旧可写（普通会话行为不变）。
+  const regular = world({ provenance: provenance() });
+  assert.ok((await regular.fn('s1' as SessionId, ctx({ userId: 'u1', via: 'web' }))).ok);
 });

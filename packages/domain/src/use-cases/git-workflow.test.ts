@@ -7,6 +7,9 @@ import { capabilityMatrix, available } from '../capability.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
 import type { GitHostApi, PullRequestLink, PullRequestRepository, GitHostTokenStore } from '../ports/pull-requests.ts';
 import type { RemotePullRequest } from '../ports/workspace-git.ts';
+import type { Subject } from '../access.ts';
+import type { SessionId } from '../ids.ts';
+import type { WorkspaceDelegation } from '../workspace-delegation.ts';
 import { cleanBranchName, compareUrl, githubRepoOf, parseGitText, templateGitText } from '../git-workflow.ts';
 import { newWorkspace } from '../workspace.ts';
 import { createProjectUseCase } from './projects.ts';
@@ -49,7 +52,7 @@ function memoryTokens(): GitHostTokenStore & { map: Map<string, string> } {
   };
 }
 
-async function world(opts: { token?: boolean; host?: Partial<GitHostApi>; writer?: boolean } = {}) {
+async function world(opts: { token?: boolean; host?: Partial<GitHostApi>; writer?: boolean; delegated?: boolean } = {}) {
   const w = inMemoryDeps({ now: () => 1000 });
   w.agents.push(agent);
   const project = await createProjectUseCase(w.deps, { name: 'demo', rootPath: '/tmp/demo/' });
@@ -64,6 +67,7 @@ async function world(opts: { token?: boolean; host?: Partial<GitHostApi>; writer
   if (opts.token) tokens.map.set('team-1', 'ghp_secretsecretsecret1234');
   const hostCalls: string[] = [];
   const listedPrs: { repo: string; head: string; pr: RemotePullRequest }[] = [];
+  const delegatedExecutions = new Set<string>();
   let clock = 1000;
   const svc = createGitWorkflowService({
     ...w.deps,
@@ -83,10 +87,13 @@ async function world(opts: { token?: boolean; host?: Partial<GitHostApi>; writer
     },
     ...(opts.writer ? { writer: { write: async () => ({ message: 'feat: 模型写的', title: '模型标题', body: '模型描述', branch: 'feat/model' }) } } : {}),
     hubTeamId: async () => 'team-1',
+    ...(opts.delegated
+      ? { delegations: { byExecutionSession: async (sessionId: SessionId) => (delegatedExecutions.has(sessionId) ? ({ executionSessionId: sessionId } as WorkspaceDelegation) : null) } }
+      : {}),
     now: () => clock
   });
   const root = '/tmp/demo';
-  return { ...w, svc, audits, prs, tokens, hostCalls, listedPrs, session: session.value, task: task.value, root, tick: (ms: number) => (clock += ms) };
+  return { ...w, svc, audits, prs, tokens, hostCalls, listedPrs, delegatedExecutions, session: session.value, task: task.value, root, tick: (ms: number) => (clock += ms) };
 }
 
 const dirty = (branch: string, remoteUrl: string | null, head = 'h0', defaultBranch: string | null = 'main') => ({
@@ -422,6 +429,35 @@ test('推送：默认分支直接拒绝（#217 / #221 步骤 0）', async () => 
   const pushed = await w.svc.run(null, w.session.id, { action: 'push', message: 'x' });
   assert.ok(pushed.ok);
   assert.equal(pushed.value.pushed, true);
+});
+
+test('派工执行会话：push / PR 在预览与副作用前拒绝；本地 commit 仍按现有权限', async () => {
+  const w = await world({ delegated: true });
+  w.delegatedExecutions.add(w.session.id);
+  w.git.previews.set(w.root, dirty('feat/x', 'https://github.com/o/r.git'));
+
+  const push = await w.svc.run(null, w.session.id, { action: 'push', message: 'x' });
+  assert.equal(push.ok, false);
+  assert.match(push.ok ? '' : push.error.message, /派工执行会话/);
+  assert.deepEqual(w.git.calls, [], '在 preview 之前就拒绝，没有产生任何 Git 调用');
+
+  const human = { user: { id: 'u1', email: 'u1@example.com' } } as unknown as Subject;
+  const pr = await w.svc.run(human, w.session.id, { action: 'pr', message: 'x', title: 'X' });
+  assert.equal(pr.ok, false);
+  assert.match(pr.ok ? '' : pr.error.message, /派工执行会话/);
+  assert.deepEqual(w.git.calls, [], '换人类 actor 也拒绝，与调用入口无关');
+
+  // 本地手工 commit 仍按现有权限：派工身份只拦平台发布（push / PR）。
+  const commit = await w.svc.run(human, w.session.id, { action: 'commit', message: 'fix: 候选' });
+  assert.ok(commit.ok);
+  assert.equal(commit.value.committed, true);
+
+  // 普通会话（没有派工记录）push 照旧。
+  const plain = await world({ delegated: true });
+  plain.git.previews.set(plain.root, dirty('feat/x', 'https://github.com/o/r.git'));
+  const allowed = await plain.svc.run(human, plain.session.id, { action: 'push', message: 'x' });
+  assert.ok(allowed.ok);
+  assert.equal(allowed.value.pushed, true);
 });
 
 test('开 PR：默认分支上拒绝；要标题', async () => {

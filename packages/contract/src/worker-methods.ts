@@ -174,7 +174,11 @@ const remotePr = z.object({
   /** head 所在仓库（owner/name）；老 Worker 不带，自动认领会因此跳过（#269）。 */
   repo: z.string().nullable().optional(),
   /** head 分支名；老 Worker 不带，自动认领会因此跳过（#269）。 */
-  headRef: z.string().nullable().optional()
+  headRef: z.string().nullable().optional(),
+  /** 草稿 PR（workspace-delegation step B）；老 Worker 不带。 */
+  draft: z.boolean().optional(),
+  /** base 所在仓库；跨 fork 时和 origin 不同，拿不到 = null。 */
+  baseRepo: z.string().nullable().optional()
 });
 
 export const wsPreview = method(
@@ -207,6 +211,88 @@ export const wsPush = method(
   'ws.push', 'git.remote',
   z.object({ path: z.string(), auth: gitAuth }),
   z.object({ pushed: z.boolean(), branch: z.string().nullable(), reason: z.string().nullable() })
+);
+
+/**
+ * workspace-delegation step B：把已批准的 SHA 发布成远端功能分支。
+ * 单独立方法而不是给 ws.push 加可选 sha：老 Worker 会静默忽略多余字段并按本地分支推送。
+ * expectedUrl / baseBranch 必须由 domain 显式给出，Worker 不猜。
+ */
+export const wsPublishRef = method(
+  'ws.publish_ref', 'git.remote',
+  z.object({
+    path: z.string().min(1),
+    branch: z.string().min(1).max(255),
+    sha: z.string().regex(/^[0-9a-f]{40}$/),
+    expectedUrl: z.string().min(1).max(2000),
+    baseBranch: z.string().min(1).max(255),
+    auth: gitAuth,
+    verifyOnly: z.boolean().optional()
+  }),
+  z.object({
+    sha: z.string(),
+    branch: z.string(),
+    published: z.boolean(),
+    pushed: z.boolean(),
+    baseBranch: z.string(),
+    baseSha: z.string(),
+    defaultBranch: z.string(),
+    remoteSha: z.string().nullable(),
+    uncertain: z.boolean(),
+    reason: z.string().nullable()
+  })
+);
+
+/**
+ * workspace-delegation step A4：为委派严格准备 worktree。
+ * 单独立方法而不是给 ws.add_worktree 加参数：老 Worker 会静默采用已有目录 / 分支或回退本地 ref。
+ * repoPath / path / expectedUrl / baseBranch 全由 domain 显式给出，Worker 不猜，也不重定位目录。
+ */
+export const wsPrepareDelegationWorktree = method(
+  'ws.prepare_delegation_worktree', 'git.remote',
+  z.object({
+    repoPath: z.string().min(1),
+    path: z.string().min(1),
+    branch: z.string().min(1).max(255),
+    baseBranch: z.string().min(1).max(255),
+    expectedUrl: z.string().min(1).max(2000),
+    auth: gitAuth
+  }),
+  z.object({
+    path: z.string(),
+    branch: z.string(),
+    baseSha: z.string().regex(/^[0-9a-f]{40}$/)
+  })
+);
+
+/**
+ * 委派 step B 的本地传递：把源 clone 里尚未推送的提交导入目标 clone 的专用 ref。
+ * 单独立方法而不是复用 fetch / push：老 Worker 没有这个方法，不能退回联网路径。
+ * sourcePath / targetPath / sourceBranch / expectedUrl 全由 domain 显式给出，Worker 不猜。
+ *
+ * ref 的命名空间固定为 `refs/agent-hub/imports/<id>/<sha>`，且末尾 SHA 必须等于要导入的 sha：
+ * 这是「只写一个专用 ref」的协议约束，Worker 端再按同一规则失败关闭。
+ */
+export const importCommitRefPattern = /^refs\/agent-hub\/imports\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})\/([0-9a-f]{40})$/;
+
+export const wsImportCommit = method(
+  'ws.import_commit', 'git',
+  z.object({
+    sourcePath: z.string().min(1),
+    targetPath: z.string().min(1),
+    sourceBranch: z.string().min(1).max(255),
+    sha: z.string().regex(/^[0-9a-f]{40}$/),
+    ref: z.string().min(1).max(1024).regex(importCommitRefPattern, 'ref 必须是 refs/agent-hub/imports/<id>/<sha>'),
+    expectedUrl: z.string().min(1).max(2000)
+  }).refine((value) => importCommitRefPattern.exec(value.ref)?.[2] === value.sha, {
+    message: 'ref 末尾的 SHA 必须等于 sha',
+    path: ['ref']
+  }),
+  z.object({
+    ref: z.string(),
+    sha: z.string().regex(/^[0-9a-f]{40}$/),
+    alreadyPresent: z.boolean()
+  })
 );
 
 export const wsGh = method(

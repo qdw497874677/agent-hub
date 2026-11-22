@@ -53,6 +53,9 @@ import { authenticateWorker, withToolAccess,
   asServiceId,
   asProjectId,
   authorizeProject,
+  authorizeSession,
+  forbidden,
+  projectToolScope,
   resolveSessionAssets,
   projectOfSession,
 } from '@agent-hub/domain';
@@ -95,6 +98,17 @@ import { createProviderWiring } from './providers.ts';
 import { createSessionEnvironment } from './session-environment.ts';
 import { createGitTextWriter } from './git-text-writer.ts';
 import { createGitHubApi } from './github-api.ts';
+import { createDelegationHeadResolver, createDelegationPublisher } from './workspace-delegation-publish.ts';
+import { createWorkspaceDelegateScopeResolverFromDelegation } from './workspace-delegation-tool.ts';
+import { createProjectSessionGrantService } from './project-session-grant.ts';
+import { createProjectSessionGrantRoutes } from './project-session-grant-routes.ts';
+import { createProjectSessionActions } from './project-session-actions.ts';
+import { createProjectSessionToolProvider } from './project-session-tools.ts';
+import { createProjectAssetToolProvider } from './project-session-asset-tools.ts';
+import { createProjectSessionAssetActions } from './project-session-assets.ts';
+import { importProjectCandidate } from './project-session-candidate.ts';
+import { createProjectSessionHandoffActions } from './project-session-handoff.ts';
+import { gitForWorker } from './workspace-delegation.ts';
 import { createModelDistiller } from './model-distiller.ts';
 import { createApp } from './http.ts';
 import { createConnectorObserveReader } from './observe-connector.ts';
@@ -228,7 +242,13 @@ const deps: Deps = {
         const actor = live
           ? { userId: live.createdBy ?? null, via: live.groupId ? ('group' as const) : ('web' as const) }
           : undefined;
-        effective = await withToolAccess(toolGateway, toolEndpoint, granted.value, actor);
+        effective = await withToolAccess(toolGateway, toolEndpoint, granted.value, actor, {
+          scopes: projectSessionGrant.toolScopes,
+          extraScopes: async (input) => [
+            ...await workspaceDelegateScopes(input),
+            ...await projectSessionGrant.projectExtraScopes(input)
+          ]
+        });
       }
       // 环境准备（资产/MCP）必须排在工具令牌之后：MCP 启动配置以 command.tools 为准。
       // 全仓只有这一处 prepare；domain 的启动入口只负责把回执里的版本落库。
@@ -403,12 +423,14 @@ deps.cleanup = {
   liveSessions: () => (terminalBridge === null ? [] : [...terminalBridge.knownTerminals()].map((id) => id.split(':')[0] ?? '').filter(Boolean))
 };
 // 提交 / 推送 / PR（ADR 0027 阶段 2）：文字由提炼模型写（D4），PR 走团队 token → gh → 链接（D3）
+const gitHost = createGitHubApi({ base: readEnv('HUB_GITHUB_API') ?? undefined });
 const gitService = createGitWorkflowService({
   projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, workspaceGroups: store.workspaceGroups, bots: store.bots, gateway: deps.gateway, access: deps.access, audit: store.audit,
   workLog: store.workLog, git: deps.git,
+  delegations: store.workspaceDelegations,
   pullRequests: pullRequestRepo,
   tokens: gitHostTokens,
-  host: createGitHubApi({ base: readEnv('HUB_GITHUB_API') ?? undefined }),
+  host: gitHost,
   writer: createGitTextWriter({ settings: store.memory.settings, providers: providerRepo, projectTeam: projectTeamOf, audit: store.audit, now: () => Date.now(), log }),
   hubTeamId: async () => (await store.users.firstClusterAdmin())?.teamId ?? null,
   now: () => Date.now()
@@ -604,9 +626,53 @@ const providerWiring = createProviderWiring({
   log
 });
 // 工具网关依赖上面建好的 providerWiring（模型检查），所以放在它后面。
-toolGateway = wireTools({
-  deps, store, readEnv, messageBus, groupChat, botOfSession, contextService, filesService, gitService, memoryService,
-  providerWiring, githubClient, teamTokenOf, githubReposFor, subjectOf, enqueueDispatch
+const workspaceDelegateScopes = createWorkspaceDelegateScopeResolverFromDelegation({
+  delegationDeps: deps,
+  coordinators: store.workspaceCoordinators,
+  loadActor: (userId) => loadActor(store.users, store.access, userId, 'tool-workspace-delegate')
+});
+const projectToolActor = (accountId: string) => loadActor(store.users, store.access, accountId, 'tool-project-session');
+const projectSessionGrant = createProjectSessionGrantService({
+  now: deps.now,
+  projectSessionGrants: store.projectSessionGrants,
+  sessions: deps.sessions,
+  tasks: deps.tasks,
+  workspaceDelegations: store.workspaceDelegations,
+  loadActor: async (accountId) => (await projectToolActor(accountId)) ? { userId: accountId, via: 'web' } : null,
+  sourceEligible: async ({ action, actor, session }) => {
+    if (action === 'revoke' || action === 'list') return true; // 旧授权始终可由归属人清理。
+    if (session.botId != null || session.groupId != null) return false;
+    const [provenance, spawn, group, dispatch] = await Promise.all([
+      store.provenance.get(session.id), store.messages.spawnOf(session.id),
+      store.groups.memberOfSession(session.id), store.dispatches.bySession(session.id)
+    ]);
+    return !spawn && !group && !dispatch && provenance !== null && !provenance.backfilled
+      && provenance.actor.kind === 'user' && provenance.actor.id === actor.userId
+      && (provenance.via === 'web' || provenance.via === 'mobile');
+  },
+  invalidateSessionTools: async (sessionId) => { await toolGateway?.revoke({ id: sessionId }); },
+  checkCurrentPermission: async ({ accountId, sessionId, projectId, scope }) => {
+    const actor = await projectToolActor(accountId);
+    if (!actor) return err(forbidden('当前账号不可用'));
+    const project = await deps.projects.byId(projectId);
+    const session = await deps.sessions.byId(sessionId);
+    const visible = await authorizeSession(deps.access, actor, project, session, 'session.read');
+    if (!visible.ok) return visible;
+    const permission = (() => {
+      switch (scope) {
+        case 'task:write': return 'task.create';
+        case 'worktree:open': return 'project.update';
+        case 'project:read': return 'project.read';
+        case 'candidate:import': return 'workspace.files.read';
+        case 'message:send': return 'agent.message.send';
+        case 'asset:write': return 'project.update';
+        default: return null;
+      }
+    })();
+    if (!permission) return err(forbidden('不支持的项目工具授权范围'));
+    const allowed = await authorizeProject(deps.access, actor, project, permission);
+    return allowed.ok ? ok(undefined) : allowed;
+  }
 });
 const assetDeps: AssetReviewDeps = {
   assets: store.assets,
@@ -628,6 +694,42 @@ const assetDeps: AssetReviewDeps = {
   secrets: secretsVault,
   now: () => Date.now()
 };
+toolGateway = wireTools({
+  deps, store, readEnv, messageBus, groupChat, botOfSession, contextService, filesService, gitService, memoryService,
+  providerWiring, githubClient, teamTokenOf, githubReposFor, subjectOf, enqueueDispatch,
+  projectSessionTools: createProjectSessionToolProvider({
+    ...createProjectSessionActions({
+      grants: projectSessionGrant,
+      delegationDeps: deps,
+      delegations: store.workspaceDelegations,
+      taskCreations: store.taskCreations,
+      loadActor: projectToolActor
+    }),
+    ...createProjectSessionHandoffActions({
+      grants: projectSessionGrant, access: deps.access, projects: deps.projects, sessions: deps.sessions,
+      tasks: deps.tasks, delegations: store.workspaceDelegations, messageBus, loadActor: projectToolActor,
+      listTasklessByOriginProject: (projectId) => store.listTasklessSessionsByOriginProject(asProjectId(projectId))
+    }),
+    importCandidate: (command) => importProjectCandidate({
+      grants: projectSessionGrant, access: deps.access, projects: deps.projects, workspaces: deps.workspaces,
+      sessions: deps.sessions, delegations: store.workspaceDelegations, operationReceipts: store.operationReceipts,
+      loadActor: projectToolActor, gitForWorker: (workerId) => gitForWorker(deps, workerId)
+    }, command),
+    scopes: {
+      taskCreate: projectToolScope('task:write'), worktreeStart: projectToolScope('worktree:open'),
+      candidateImport: projectToolScope('candidate:import'), handoff: projectToolScope('message:send'),
+      sessionList: projectToolScope('project:read')
+    }
+  }),
+  projectAssetTools: createProjectAssetToolProvider({
+    ...createProjectSessionAssetActions({
+      grants: projectSessionGrant, assets: assetDeps, sessions: deps.sessions,
+      operationReceipts: store.operationReceipts, loadActor: projectToolActor
+    }),
+    scopes: { read: projectToolScope('project:read'), write: projectToolScope('asset:write') }
+  }),
+  projectSessionScopeCap: projectSessionGrant.toolScopeCap
+});
 // ADR 0016 迁移：老资产记到 hub 管理员名下（全局 / 项目级，已发布）；幂等，重启不重复。
 {
   const migrated = await migrateAssetOwnership(assetDeps);
@@ -1087,6 +1189,17 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   files: filesService,
   git: gitService,
   rewind: rewindService,
+  coordinators: { coordinators: store.workspaceCoordinators },
+  workspaceDelegation: { coordinators: store.workspaceCoordinators, delegations: store.workspaceDelegations },
+  projectSessionGrants: createProjectSessionGrantRoutes(deps, projectSessionGrant),
+  delegationPublish: {
+    publisher: createDelegationPublisher({ ...deps, gitHost, gitHostTokens }, store.workspaceDelegations, store.delegationPublishAttempts),
+    resolveHead: createDelegationHeadResolver(deps),
+    delegations: store.workspaceDelegations,
+    attempts: store.delegationPublishAttempts,
+    projects: deps.projects,
+    access: deps.access
+  },
   memory: { memory: memoryService },
   openApi: {
     tokens: apiTokenDeps,

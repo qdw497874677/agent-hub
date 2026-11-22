@@ -9,7 +9,8 @@ import {
   type SessionRepository,
   type Subject,
   type TaskDispatchStore,
-  type ToolContext
+  type ToolContext,
+  type WorkspaceDelegationStore
 } from '@agent-hub/domain';
 
 /**
@@ -24,6 +25,7 @@ import {
  * - agent_spawns / 群成员映射（botOfSession 解析不出来的兜底）
  * - SessionProvenance.via = bot / group，或非人类的 actor
  * - TaskDispatch.bySession（调度器 / 外部连接器派生的任务会话）
+ * - workspace_delegations.byExecutionSession（持久派工预留的执行会话）
  *
  * 普通用户会话（没有以上标记）继续走原来的 subjectOf；找不到账号也拒绝。
  */
@@ -34,15 +36,21 @@ export interface GitWriteIdentityDeps {
   readonly memberOfSession: (sessionId: SessionId) => Promise<{ readonly role: string } | null>;
   readonly provenance: Pick<ProvenanceStore, 'get'>;
   readonly dispatches: Pick<TaskDispatchStore, 'bySession'>;
+  /** 持久派工的执行会话身份（durable，不依赖冻结的 actor）。 */
+  readonly delegations: Pick<WorkspaceDelegationStore, 'byExecutionSession'>;
   readonly subjectOf: (sessionId: SessionId) => Promise<Subject | null>;
 }
 
 const SHARED_DENIED = 'bot/群聊/连接器会话没有可验证的当轮人类身份：git commit/push/PR 已关闭；请让人类在自己的会话里操作';
+const DELEGATED_DENIED = '派工执行会话没有平台 Git 写权限：本地改动由人确认后发布，commit/push/PR 已关闭';
 
 export function createGitWriteSubjectOf(deps: GitWriteIdentityDeps) {
   return async (sessionId: SessionId, ctx: ToolContext): Promise<Result<Subject, DomainError>> => {
     const session = await deps.sessions.byId(sessionId);
     if (!session) return err(forbidden('找不到这条会话，git 写入已关闭'));
+
+    // 派工执行会话：先看持久派工记录，再谈任何冻结 actor / owner / subject 回落。
+    if (await deps.delegations.byExecutionSession(sessionId)) return err(forbidden(DELEGATED_DENIED));
 
     // 共享来源：不信任冻结的 grant.actor，也不回落到 createdBy / 任务 owner。
     if (session.botId != null) return err(forbidden(SHARED_DENIED));

@@ -9,6 +9,8 @@ export { RequestFailed, UNAUTHORIZED_EVENT, streamUrl } from './api/http.ts';
 export type { ApiError } from './api/http.ts';
 
 export * from './api/sessions.ts';
+export * from './api/coordinators.ts';
+export * from './api/delegations.ts';
 export * from './api/files.ts';
 export * from './api/messages.ts';
 export * from './api/tasks.ts';

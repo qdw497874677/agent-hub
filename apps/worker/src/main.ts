@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { rewriteCredentialEnv } from './credential-env.ts';
+import { consumeWorkerCredentials, rewriteCredentialEnv } from './credential-env.ts';
 import { arch, homedir, hostname, platform } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,13 +21,7 @@ import { applyAgentAliases, readAgentAliases, type BuiltAliasHarness } from './a
 const env = process.env;
 
 const hubUrl = env['HUB_URL'] ?? 'ws://127.0.0.1:7878/worker';
-const token = env['HUB_TOKEN'] ?? '';
-// 单台机器接入换来的专属凭据（install-worker.sh 写进 worker.env）；同样不留给子进程。
-const credential = env['HUB_WORKER_CREDENTIAL'] ?? '';
-delete env['HUB_WORKER_CREDENTIAL'];
-// 本机口令只属于这个进程：读完就从环境里抹掉，免得被它拉起的 agent（和 agent 跑的命令）继承走。
-const localSecret = env['HUB_LOCAL_SECRET'] ?? '';
-delete env['HUB_LOCAL_SECRET'];
+const { token, credential, localSecret } = consumeWorkerCredentials(env);
 const origin = env['WORKER_ORIGIN'] === 'remote' ? 'remote' : 'local';
 const label = env['WORKER_LABEL'] ?? (origin === 'local' ? '本机' : hostname());
 const workerId = env['WORKER_ID'] ?? stableWorkerId();

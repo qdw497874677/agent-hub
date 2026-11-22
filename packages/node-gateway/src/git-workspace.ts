@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { execFile } from 'node:child_process';
-import type { CommitPreview, DomainError, GitAuth, GitStatus, RemotePullRequest, Result, WorkspaceGit } from '@agent-hub/domain';
+import type { CommitPreview, DomainError, GitAuth, GitStatus, ImportCommitInput, ImportCommitOutcome, PrepareDelegationWorktreeInput, PrepareDelegationWorktreeOutcome, PublishRefInput, PublishRefOutcome, RemotePullRequest, Result, WorkspaceGit } from '@agent-hub/domain';
 import { conflict, folderNameProblem, invalid, isSensitivePath, nonGitReason, unavailable, unsavedReason } from '@agent-hub/domain';
 import { insideGroups } from './group-dir.ts';
 import { runSetupScript } from './setup-script.ts';
@@ -26,6 +26,11 @@ export interface GitWorkspaceOptions {
    * 省略 = 这台 Worker 不支持组合工作空间。
    */
   readonly groupsDir?: string;
+  /**
+   * 仅测试用：允许 `publishRef` 发布到本地路径 / `file:` 的 origin（真实 bare 仓库测试）。
+   * 不来自 Worker 环境变量，也不在 RPC 参数里；生产构造永远不设置。
+   */
+  readonly allowLocalPublishOrigin?: boolean;
 }
 
 /**
@@ -48,6 +53,12 @@ export function relocateWorktree(path: string, worktreesDir: string | undefined)
   const repo = parts.at(-2) ?? 'repo';
   return join(resolve(worktreesDir), repo, name);
 }
+
+/**
+ * 与 contract 的 `ws.import_commit` 同一规则：只允许专用命名空间，且末尾 SHA 必须等于要导入的 SHA。
+ * Worker 不靠 hub 自觉；本地再按这条规则失败关闭。
+ */
+const IMPORT_REF_PATTERN = /^refs\/agent-hub\/imports\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})\/([0-9a-f]{40})$/;
 
 export function createGitWorkspace(check: (path: string) => Promise<string | null> = async () => null, options: GitWorkspaceOptions = {}): WorkspaceGit {
   const guard = async (path: string): Promise<DomainError | null> => {
@@ -269,6 +280,399 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
         return { ok: true, value: { pushed: true, branch, reason: null } };
       } catch (error) {
         return { ok: true, value: { pushed: false, branch, reason: gitMessage(error) } };
+      }
+    },
+
+    async publishRef(input: PublishRefInput) {
+      const { path, sha, auth, verifyOnly } = input;
+      const blocked = await guard(path);
+      if (blocked) return { ok: false, error: blocked };
+      if (!(await exists(path))) return { ok: false, error: unavailable(`目录不存在：${path}`) };
+      const branch = validBranchRef(input.branch);
+      const baseBranch = validBranchRef(input.baseBranch);
+      if (branch === null) return { ok: false, error: invalid('功能分支名不合法') };
+      if (baseBranch === null) return { ok: false, error: invalid('base 分支名不合法') };
+      if (!/^[0-9a-f]{40}$/.test(sha)) return { ok: false, error: invalid('要发布的提交必须是 40 位小写 SHA') };
+      if (branch === baseBranch) return { ok: false, error: invalid('功能分支不能就是要发布的 base 分支') };
+      const allowLocal = options.allowLocalPublishOrigin === true;
+      const expectedScope = authScopeUrl(input.expectedUrl);
+      if (expectedScope === null && !(allowLocal && isLocalGitUrl(input.expectedUrl))) {
+        return { ok: false, error: invalid('项目仓库地址必须是可校验的 HTTPS 地址') };
+      }
+      const git = simpleGit(path);
+      if (!(await git.checkIsRepo().catch(() => false)) || !(await ownRepo(git, path))) {
+        return { ok: false, error: invalid('目录不是 git 仓库根目录') };
+      }
+      try {
+        return await withRepoLock(path, async (): Promise<Result<PublishRefOutcome, DomainError>> => {
+          // ── 本地准入：分支 / HEAD / 工作区 —— 任何一项对不上都说明「批准时的样子」已经变了 ──
+          const live = (await git.raw(['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => '')).trim();
+          if (live !== branch) return { ok: false, error: conflict(`本地当前分支是「${live || 'detached HEAD'}」，不是要发布的「${branch}」`) };
+          const head = (await git.raw(['rev-parse', 'HEAD']).catch(() => '')).trim();
+          if (head !== sha) return { ok: false, error: conflict('本地 HEAD 已经不是批准的提交；请重新确认后再发布') };
+          const dirty = await simpleGit(path, { config: ['status.showUntrackedFiles=normal'] })
+            .raw(['status', '--porcelain', '-z'])
+            .catch(() => '?');
+          if (dirty !== '') return { ok: false, error: conflict('工作区不干净：先把改动提交或清理，再发布批准的提交') };
+
+          // ── 目的地准入：只认 domain 给的 expectedUrl，且 fetch / push 都必须落到它上面 ──
+          const origin = await readOriginDestination(path);
+          if (!origin.ok) return origin;
+          const destination = origin.value;
+          const expected = input.expectedUrl.trim();
+          const matches = (canonical: string | null, url: string): boolean =>
+            expectedScope === null ? allowLocal && url === expected : canonical === expectedScope;
+          if (!matches(destination.canonicalFetch, destination.fetchUrl) || !matches(destination.canonicalPush, destination.pushUrl)) {
+            return { ok: false, error: invalid('origin 的 fetch / push 目的地与项目仓库地址不一致，已拒绝发布') };
+          }
+          const binding = bindAuth(auth, destination.fetchUrl);
+          if (!binding.ok) return { ok: false, error: invalid(binding.reason) };
+          if (expectedScope !== null && !hasAuth(binding.auth)) {
+            return { ok: false, error: invalid('发布到 HTTPS 仓库必须使用绑定该仓库的凭据（不读机器上的 ambient 凭据）') };
+          }
+          const env = publishEnv(binding.auth, destination.fetchUrl);
+
+          // ── 远端权威事实：默认分支、base、现有功能分支 ──
+          const symref = await runGit(path, ['ls-remote', '--symref', destination.fetchUrl, 'HEAD'], env);
+          if (symref.code !== 0) return { ok: false, error: unavailable(`连不上远端：${gitMessage(symref.stderr)}`) };
+          const defaultBranch = parseSymrefDefault(symref.stdout);
+          if (defaultBranch === null) return { ok: false, error: invalid('远端没有可解析的默认分支（ls-remote --symref HEAD），已拒绝发布') };
+          if (defaultBranch === branch) return { ok: false, error: invalid('功能分支不能是远端默认分支') };
+          const refs = await runGit(path, ['ls-remote', destination.fetchUrl, `refs/heads/${baseBranch}`, `refs/heads/${branch}`], env);
+          if (refs.code !== 0) return { ok: false, error: unavailable(`连不上远端：${gitMessage(refs.stderr)}`) };
+          const baseSha = parseLsRemoteRef(refs.stdout, `refs/heads/${baseBranch}`);
+          if (baseSha === null) return { ok: false, error: invalid(`远端没有 base 分支「${baseBranch}」，已拒绝发布`) };
+          const remoteSha = parseLsRemoteRef(refs.stdout, `refs/heads/${branch}`);
+          if (remoteSha !== null && remoteSha !== sha) {
+            return { ok: false, error: conflict(`远端分支「${branch}」已经指向另一个提交；失败关闭，不覆盖`) };
+          }
+          // remoteSha 只记录「这次调用结束时证明的远端状态」；push 的回报本身不算证明。
+          const outcome = (
+            provenSha: string | null,
+            published: boolean,
+            pushed: boolean,
+            uncertain: boolean,
+            reason: string | null
+          ): Result<PublishRefOutcome, DomainError> => ({
+            ok: true,
+            value: { sha, branch, published, pushed, baseBranch, baseSha, defaultBranch, remoteSha: provenSha, uncertain, reason }
+          });
+          if (remoteSha === sha) return outcome(sha, true, false, false, null);
+          if (verifyOnly === true) return outcome(null, false, false, false, `仅核验：远端还没有「${branch}」这个提交`);
+
+          // ── 只做 create-only 的 ref 更新：空 expected lease 要求该 ref 在远端起手就不存在，
+          //    因此并发创建 / 任何替换都会被远端拒绝；这不是通用 force，也永远不会覆盖已有提交。──
+          const pushed = await runGit(
+            path,
+            ['push', '--no-verify', '--signed=no', '--recurse-submodules=no', `--force-with-lease=refs/heads/${branch}:`, destination.pushUrl, `${sha}:refs/heads/${branch}`],
+            env,
+            120_000
+          );
+          // ── 无论 push 的回报如何，都以远端事实为准；证明不了就返回 uncertain，不盲目重试 ──
+          const after = await runGit(path, ['ls-remote', destination.fetchUrl, `refs/heads/${branch}`], env);
+          if (after.code !== 0) {
+            return outcome(null, false, pushed.code === 0, true, `push 结果无法用 ls-remote 确认：${gitMessage(after.stderr)}`);
+          }
+          const afterSha = parseLsRemoteRef(after.stdout, `refs/heads/${branch}`);
+          if (afterSha !== sha) {
+            return outcome(
+              afterSha,
+              false,
+              pushed.code === 0,
+              false,
+              pushed.code === 0 ? 'push 回报成功但远端不是这个提交，已失败关闭' : `推送失败：${gitMessage(pushed.stderr)}`
+            );
+          }
+          return outcome(sha, true, true, false, pushed.code === 0 ? null : `push 报错但远端已更新为该提交：${gitMessage(pushed.stderr)}`);
+        });
+      } catch (error) {
+        return failed('发布分支', error);
+      }
+    },
+
+    async prepareDelegationWorktree(input: PrepareDelegationWorktreeInput) {
+      const { repoPath, auth } = input;
+      const blockedRepo = await guard(repoPath);
+      if (blockedRepo) return { ok: false, error: blockedRepo };
+      const blockedPath = await guard(input.path);
+      if (blockedPath) return { ok: false, error: blockedPath };
+      if (!(await exists(repoPath))) return { ok: false, error: unavailable(`目录不存在：${repoPath}`) };
+      const branch = validBranchRef(input.branch);
+      const baseBranch = validBranchRef(input.baseBranch);
+      if (branch === null) return { ok: false, error: invalid('功能分支名不合法') };
+      if (baseBranch === null) return { ok: false, error: invalid('base 分支名不合法') };
+      if (branch === baseBranch) return { ok: false, error: invalid('功能分支不能就是要拉取的 base 分支') };
+      const repoAbs = resolve(repoPath);
+      const target = resolve(input.path);
+      if (target === repoAbs || target.startsWith(`${repoAbs}/`)) {
+        return { ok: false, error: invalid('目标 worktree 不能放在源仓库目录里（会改变源工作区）') };
+      }
+      const parentInfo = await lstat(dirname(target)).catch(() => null);
+      if (parentInfo?.isDirectory() !== true) return { ok: false, error: invalid(`目标目录的父目录不存在：${dirname(target)}`) };
+      const allowLocal = options.allowLocalPublishOrigin === true;
+      const expectedScope = authScopeUrl(input.expectedUrl);
+      if (expectedScope === null && !(allowLocal && isLocalGitUrl(input.expectedUrl))) {
+        return { ok: false, error: invalid('项目仓库地址必须是可校验的 HTTPS 地址') };
+      }
+      const git = simpleGit(repoPath);
+      if (!(await git.checkIsRepo().catch(() => false)) || !(await ownRepo(git, repoPath))) {
+        return { ok: false, error: invalid('目录不是 git 仓库根目录') };
+      }
+      try {
+        return await withRepoLock(repoPath, async (): Promise<Result<PrepareDelegationWorktreeOutcome, DomainError>> => {
+          // ── 本地准入：目标目录 / 分支都不采用已有状态；源仓库的工作区、index、HEAD 一律不碰 ──
+          if ((await lstat(target).catch(() => null)) !== null) {
+            return { ok: false, error: conflict(`目标目录已经存在（不采用已有目录）：${target}`) };
+          }
+          const localRef = (await git.raw(['rev-parse', '-q', '--verify', `refs/heads/${branch}`]).catch(() => '')).trim();
+          if (localRef !== '') return { ok: false, error: conflict(`本地分支 ${branch} 已经存在（不采用已有分支）`) };
+
+          // ── 目的地准入：只认 domain 给的 expectedUrl，且 fetch / push 都必须落到它上面 ──
+          const origin = await readOriginDestination(repoPath);
+          if (!origin.ok) return origin;
+          const destination = origin.value;
+          const expected = input.expectedUrl.trim();
+          const matches = (canonical: string | null, url: string): boolean =>
+            expectedScope === null ? allowLocal && url === expected : canonical === expectedScope;
+          if (!matches(destination.canonicalFetch, destination.fetchUrl) || !matches(destination.canonicalPush, destination.pushUrl)) {
+            return { ok: false, error: invalid('origin 的 fetch / push 目的地与项目仓库地址不一致，已拒绝准备工作区') };
+          }
+          // 公开 base 可以不传凭据；传了就必须绑定同一个目的地（不读 ambient 凭据）。
+          const binding = bindAuth(auth, destination.fetchUrl);
+          if (!binding.ok) return { ok: false, error: invalid(binding.reason) };
+          const env = publishEnv(binding.auth, destination.fetchUrl);
+
+          // ── 远端权威事实：默认分支、选中的 base、是否已有同名功能分支 ──
+          const symref = await runGit(repoPath, ['ls-remote', '--symref', destination.fetchUrl, 'HEAD'], env);
+          if (symref.code !== 0) return { ok: false, error: unavailable(`连不上远端：${gitMessage(symref.stderr)}`) };
+          const defaultBranch = parseSymrefDefault(symref.stdout);
+          if (defaultBranch === null) return { ok: false, error: invalid('远端没有可解析的默认分支（ls-remote --symref HEAD），已拒绝准备工作区') };
+          if (defaultBranch === branch) return { ok: false, error: invalid('功能分支不能是远端默认分支') };
+          const refs = await runGit(repoPath, ['ls-remote', destination.fetchUrl, `refs/heads/${baseBranch}`, `refs/heads/${branch}`], env);
+          if (refs.code !== 0) return { ok: false, error: unavailable(`连不上远端：${gitMessage(refs.stderr)}`) };
+          const baseSha = parseLsRemoteRef(refs.stdout, `refs/heads/${baseBranch}`);
+          if (baseSha === null) return { ok: false, error: conflict(`远端没有 base 分支「${baseBranch}」，已拒绝准备工作区`) };
+          if (parseLsRemoteRef(refs.stdout, `refs/heads/${branch}`) !== null) {
+            return { ok: false, error: conflict(`远端已经有分支「${branch}」（不采用已有分支）`) };
+          }
+
+          // ── 显式严格 fetch：只取选中 base 的这一个提交，失败不吞、不退回本地 ref；源工作区 / index / 分支不动。
+          //    fetch 超时 5 分钟，worktree add 2 分钟，事后的状态核验 30 秒。──
+          const fetched = await runGit(
+            repoPath,
+            ['fetch', '--no-tags', '--no-prune', '--no-recurse-submodules', '--no-write-fetch-head', destination.fetchUrl, baseSha],
+            env,
+            300_000
+          );
+          if (fetched.code !== 0) {
+            return { ok: false, error: unavailable(`拉取 base 分支失败（未创建工作区）：${gitMessage(fetched.stderr)}`) };
+          }
+          const object = await runGit(repoPath, ['rev-parse', '-q', '--verify', `${baseSha}^{commit}`], env, 20_000);
+          if (object.code !== 0 || object.stdout.trim() !== baseSha) {
+            return { ok: false, error: unavailable('远端 base 提交没有按预期落到本地，已拒绝创建工作区') };
+          }
+
+          // ── 精确路径 + 精确 SHA 开分支；不重定位目录、不递归子模块、不跑 setup / hooks。──
+          const added = await runGit(
+            repoPath,
+            ['-c', 'core.hooksPath=/dev/null', 'worktree', 'add', '--no-track', '-b', branch, target, baseSha],
+            env,
+            120_000
+          );
+
+          // ── 只认「能证明」的成功：目录 realpath、注册路径、实际分支、实际 HEAD 全部对上。──
+          const realTarget = await realpath(target).catch(() => null);
+          const list = await runGit(repoPath, ['worktree', 'list', '--porcelain'], env, 30_000);
+          const registered = list.code === 0 && (await worktreePathsOf(list.stdout)).includes(realTarget ?? target);
+          const actualBranch = realTarget === null ? '' : (await runGit(realTarget, ['symbolic-ref', '--short', '-q', 'HEAD'], env, 30_000)).stdout.trim();
+          const actualHead = realTarget === null ? '' : (await runGit(realTarget, ['rev-parse', 'HEAD'], env, 30_000)).stdout.trim();
+          if (added.code === 0 && realTarget !== null && registered && actualBranch === branch && actualHead === baseSha) {
+            return { ok: true, value: { path: realTarget, branch, baseSha } };
+          }
+
+          // 失败后默认「无法确认」；只有目标目录与本地分支都确实不存在，才算证明了没有任何效果。
+          const dirNow = await lstat(target).catch(() => null);
+          const refNow = (await git.raw(['rev-parse', '-q', '--verify', `refs/heads/${branch}`]).catch(() => '')).trim();
+          const detail = gitMessage(added.stderr) || gitMessage(list.stderr);
+          if (dirNow === null && refNow === '') {
+            return { ok: false, error: unavailable(`创建工作区失败（没有产生任何工作区 / 分支）：${detail || '原因未知'}`) };
+          }
+          return {
+            ok: false,
+            error: unavailable(`创建工作区的结果无法确认（目录或分支可能已部分存在），请人工检查「${target}」后再重试${detail ? `：${detail}` : ''}`)
+          };
+        });
+      } catch (error) {
+        return failed('准备工作区', error);
+      }
+    },
+
+    async importCommit(input: ImportCommitInput) {
+      const { sha } = input;
+      const blockedSource = await guard(input.sourcePath);
+      if (blockedSource) return { ok: false, error: blockedSource };
+      const blockedTarget = await guard(input.targetPath);
+      if (blockedTarget) return { ok: false, error: blockedTarget };
+      if (!(await exists(input.sourcePath))) return { ok: false, error: unavailable(`目录不存在：${input.sourcePath}`) };
+      if (!(await exists(input.targetPath))) return { ok: false, error: unavailable(`目录不存在：${input.targetPath}`) };
+      const sourceBranch = validBranchRef(input.sourceBranch);
+      if (sourceBranch === null) return { ok: false, error: invalid('源分支名不合法') };
+      if (!/^[0-9a-f]{40}$/.test(sha)) return { ok: false, error: invalid('要导入的提交必须是 40 位小写 SHA') };
+      const ref = input.ref;
+      const refMatch = IMPORT_REF_PATTERN.exec(ref);
+      if (ref !== ref.trim() || refMatch === null) {
+        return { ok: false, error: invalid('导入用的 ref 必须是 refs/agent-hub/imports/<id>/<sha>') };
+      }
+      if (refMatch[2] !== sha) {
+        return { ok: false, error: invalid('ref 末尾的 SHA 必须等于要导入的提交') };
+      }
+      const allowLocal = options.allowLocalPublishOrigin === true;
+      const expectedScope = authScopeUrl(input.expectedUrl);
+      if (expectedScope === null && !(allowLocal && isLocalGitUrl(input.expectedUrl))) {
+        return { ok: false, error: invalid('项目仓库地址必须是可校验的 HTTPS 地址') };
+      }
+      const sourceAbs = await realpath(input.sourcePath).catch(() => null);
+      const targetAbs = await realpath(input.targetPath).catch(() => null);
+      if (sourceAbs === null || targetAbs === null) {
+        return { ok: false, error: invalid('无法解析源仓库或目标仓库的真实路径，已拒绝导入') };
+      }
+      if (sourceAbs === targetAbs) return { ok: false, error: invalid('源仓库和目标仓库不能是同一个目录') };
+      if (sourceAbs.startsWith(`${targetAbs}/`) || targetAbs.startsWith(`${sourceAbs}/`)) {
+        return { ok: false, error: invalid('源仓库和目标仓库不能互相嵌套') };
+      }
+      // 本地传递专用 env：不联网、不读 global / system 配置，也不接受任意 GIT_* 覆盖。
+      const env = publishEnv(undefined, null);
+      env.GIT_ALLOW_PROTOCOL = 'file';
+      // 只允许本机文件路径：连 ambient 的 ssh / askpass 可执行入口也不带进去。
+      delete env.GIT_SSH;
+      delete env.GIT_SSH_COMMAND;
+      delete env.GIT_ASKPASS;
+
+      // 必须是 canonical 的 git 仓库根目录；解析不出真实路径就失败关闭，不拿输入路径凑合。
+      const canonicalRoot = async (path: string): Promise<string | null> => {
+        const top = await runGit(path, ['rev-parse', '--show-toplevel'], env, 20_000);
+        if (top.code !== 0) return null;
+        const dir = top.stdout.trim();
+        if (dir === '') return null;
+        return realpath(dir).catch(() => null);
+      };
+      const [sourceRoot, targetRoot] = await Promise.all([canonicalRoot(sourceAbs), canonicalRoot(targetAbs)]);
+      if (sourceRoot === null) return { ok: false, error: invalid('源目录不是 git 仓库根目录（或无法确认真实路径）') };
+      if (targetRoot === null) return { ok: false, error: invalid('目标目录不是 git 仓库根目录（或无法确认真实路径）') };
+      if (sourceRoot !== sourceAbs) return { ok: false, error: invalid('源目录不是 canonical git 仓库根目录') };
+      if (targetRoot !== targetAbs) return { ok: false, error: invalid('目标目录不是 canonical git 仓库根目录') };
+
+      // 同一个仓库（主 checkout / worktree）之间不算两个独立 clone；common-dir 解析失败也失败关闭。
+      const commonDirOf = async (path: string): Promise<string | null> => {
+        const raw = await runGit(path, ['rev-parse', '--git-common-dir'], env, 20_000);
+        if (raw.code !== 0) return null;
+        const dir = raw.stdout.trim();
+        if (dir === '') return null;
+        return realpath(isAbsolute(dir) ? dir : resolve(path, dir)).catch(() => null);
+      };
+      const [sourceCommon, targetCommon] = await Promise.all([commonDirOf(sourceAbs), commonDirOf(targetAbs)]);
+      if (sourceCommon === null || targetCommon === null) {
+        return { ok: false, error: invalid('无法确认源仓库和目标仓库是两个独立的 clone，已拒绝导入') };
+      }
+      if (sourceCommon === targetCommon) {
+        return { ok: false, error: invalid('源仓库和目标仓库必须是两个独立的 clone') };
+      }
+
+      // ── 目的地准入：两边都只认 domain 给的 expectedUrl，fetch / push 都必须落到它上面 ──
+      const expected = input.expectedUrl.trim();
+      const matches = (canonical: string | null, url: string): boolean =>
+        expectedScope === null ? allowLocal && url === expected : canonical === expectedScope;
+      for (const [label, path] of [['源仓库', sourceAbs], ['目标仓库', targetAbs]] as const) {
+        const origin = await readOriginDestination(path);
+        if (!origin.ok) return origin;
+        const destination = origin.value;
+        if (!matches(destination.canonicalFetch, destination.fetchUrl) || !matches(destination.canonicalPush, destination.pushUrl)) {
+          return { ok: false, error: invalid(`${label}的 origin fetch / push 目的地与项目仓库地址不一致，已拒绝导入`) };
+        }
+      }
+
+      try {
+        return await withRepoLock(targetAbs, async (): Promise<Result<ImportCommitOutcome, DomainError>> => {
+          const refCheck = await runGit(sourceAbs, ['check-ref-format', ref], env, 20_000);
+          if (refCheck.code !== 0) return { ok: false, error: invalid('导入用的 ref 名不合法') };
+
+          // ── 源仓库准入：HEAD 必须正好在记录的分支上；提交必须是该分支历史里的 commit（不退回别的 ref）──
+          const live = (await runGit(sourceAbs, ['symbolic-ref', '--short', '-q', 'HEAD'], env, 20_000)).stdout.trim();
+          if (live !== sourceBranch) {
+            return { ok: false, error: conflict(`源仓库当前分支是「${live || 'detached HEAD'}」，不是记录的源分支「${sourceBranch}」`) };
+          }
+          const tip = await runGit(sourceAbs, ['rev-parse', '-q', '--verify', `refs/heads/${sourceBranch}^{commit}`], env, 20_000);
+          if (tip.code !== 0 || tip.stdout.trim() === '') {
+            return { ok: false, error: conflict(`源仓库没有分支「${sourceBranch}」`) };
+          }
+          const object = await runGit(sourceAbs, ['rev-parse', '-q', '--verify', `${sha}^{commit}`], env, 20_000);
+          if (object.code !== 0 || object.stdout.trim() !== sha) {
+            return { ok: false, error: invalid('要导入的提交不是源仓库里的提交') };
+          }
+          const reachable = await runGit(sourceAbs, ['merge-base', '--is-ancestor', sha, tip.stdout.trim()], env, 20_000);
+          if (reachable.code !== 0) {
+            return { ok: false, error: conflict(`要导入的提交不在记录的源分支「${sourceBranch}」历史里；已拒绝导入`) };
+          }
+
+          // ── 目标仓库：已有同一个 ref 指向同一提交 = 幂等，不写任何东西 ──
+          const existing = await runGit(targetAbs, ['rev-parse', '-q', '--verify', ref], env, 20_000);
+          if (existing.code === 0) {
+            if (existing.stdout.trim() !== sha) {
+              return { ok: false, error: conflict(`目标仓库的 ${ref} 已经指向另一个提交；失败关闭，不覆盖`) };
+            }
+            const present = await runGit(targetAbs, ['rev-parse', '-q', '--verify', `${sha}^{commit}`], env, 20_000);
+            if (present.code !== 0 || present.stdout.trim() !== sha) {
+              return { ok: false, error: unavailable('目标仓库的 ref 指向的提交无法解析，请人工检查') };
+            }
+            return { ok: true, value: { ref, sha, alreadyPresent: true } };
+          }
+
+          // ── 只从源仓库的绝对路径取对象：禁止换 transport / 执行额外程序，也不写 FETCH_HEAD ──
+          const fetched = await runGit(
+            targetAbs,
+            [
+              '-c', 'protocol.allow=never',
+              '-c', 'protocol.file.allow=always',
+              '-c', 'core.hooksPath=/dev/null',
+              '-c', 'gc.auto=0',
+              '-c', 'maintenance.auto=false',
+              'fetch', '--no-tags', '--no-prune', '--no-recurse-submodules', '--no-write-fetch-head',
+              '--refmap=', '--no-auto-gc',
+              '--', sourceAbs, sha
+            ],
+            env,
+            300_000
+          );
+          if (fetched.code !== 0) {
+            return { ok: false, error: unavailable(`从源仓库导入提交失败（未写任何 ref）：${gitMessage(fetched.stderr)}`) };
+          }
+          const imported = await runGit(targetAbs, ['rev-parse', '-q', '--verify', `${sha}^{commit}`], env, 20_000);
+          if (imported.code !== 0 || imported.stdout.trim() !== sha) {
+            return { ok: false, error: unavailable('导入后的提交没有按预期落到目标仓库，已拒绝写 ref') };
+          }
+
+          // ── create-only：old 是零 OID，ref 已存在时拒绝；并发写了同一个值则退化成幂等 ──
+          const zero = '0'.repeat(40);
+          const created = await runGit(targetAbs, ['update-ref', ref, sha, zero], env, 20_000);
+          if (created.code === 0) {
+            const after = await runGit(targetAbs, ['rev-parse', '-q', '--verify', ref], env, 20_000);
+            if (after.code !== 0 || after.stdout.trim() !== sha) {
+              return { ok: false, error: unavailable(`写 ${ref} 的结果无法确认，请人工检查目标仓库`) };
+            }
+            return { ok: true, value: { ref, sha, alreadyPresent: false } };
+          }
+          const now = await runGit(targetAbs, ['rev-parse', '-q', '--verify', ref], env, 20_000);
+          if (now.code === 0 && now.stdout.trim() === sha) {
+            return { ok: true, value: { ref, sha, alreadyPresent: true } };
+          }
+          const detail = gitMessage(created.stderr);
+          return {
+            ok: false,
+            error: conflict(`目标仓库的 ${ref} 已经存在另一个提交（或写入被并发改动）；失败关闭${detail ? `：${detail}` : ''}`)
+          };
+        });
+      } catch (error) {
+        return failed('导入提交', error);
       }
     },
 
@@ -568,7 +972,135 @@ export async function pushDestination(path: string): Promise<string | null> {
 
 function isLocalGitUrl(url: string | null | undefined): boolean {
   const value = (url ?? '').trim();
-  return value.startsWith('/') || value.startsWith('file:') || value.startsWith('~');
+  return value.startsWith('/') || value.startsWith('file:') || value.startsWith('~') || /^\.{1,2}\//.test(value);
+}
+
+/** 发布分支名只认 git 允许的普通分支：拒绝 `-` 开头、`..`、`@{`、控制字符与 `.lock` 等注入面。 */
+export function validBranchRef(name: string): string | null {
+  if (name === '' || name.length > 255 || name !== name.trim()) return null;
+  if (/[\u0000-\u0020\u007f~^:?*\[\\]/.test(name)) return null;
+  if (name === '@' || name.startsWith('-') || name.startsWith('/') || name.endsWith('/') || name.endsWith('.')) return null;
+  if (name.includes('..') || name.includes('@{') || name.includes('//')) return null;
+  const parts = name.split('/');
+  return parts.some((part) => part === '' || part === '.' || part === '..' || part.startsWith('.') || part.endsWith('.lock') || part === '@')
+    ? null
+    : name;
+}
+
+interface GitRun {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/** 带完整环境控制的 git（发布用）：不继承 ambient config，失败不抛异常。 */
+function runGit(cwd: string, args: string[], env: Record<string, string>, timeoutMs = 60_000): Promise<GitRun> {
+  return new Promise((done) => {
+    execFile('git', args, { cwd, env, timeout: timeoutMs, maxBuffer: 4 << 20 }, (error, stdout, stderr) => {
+      const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0;
+      done({ code, stdout: String(stdout), stderr: String(stderr || (error ? error.message : '')) });
+    });
+  });
+}
+
+/**
+ * 发布专用 env：沿用 networkEnv 的「令牌只发给绑定的 HTTPS 地址 + 不跟随重定向」，
+ * 再屏蔽 global / system 配置与 credential helper。
+ *
+ * 为什么：`url.*.insteadOf`、`http.*.extraHeader`、`credential.helper` 都能来自用户全局配置，
+ * 把「校验过的目的地」在真正联网时改写到别处，或让 git 自己附加另一份凭据。
+ * 发布只允许仓库自带的本地配置，且下面的 `readOriginDestination` 会核对 insteadOf 展开结果。
+ */
+export function publishEnv(auth?: GitAuth, destination?: string | null, source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env = networkEnv(auth, source, destination);
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  env.GIT_CONFIG_SYSTEM = '/dev/null';
+  const count = Number(env.GIT_CONFIG_COUNT ?? '0') || 0;
+  const extra: readonly (readonly [string, string])[] = [
+    // 空值 = 清空 credential helper 列表：发布只认本次传入的 scoped auth，不读机器上的 helper。
+    ['credential.helper', ''],
+    ['credential.interactive', 'false'],
+    ['http.followRedirects', 'false']
+  ];
+  extra.forEach(([key, value], index) => {
+    env[`GIT_CONFIG_KEY_${count + index}`] = key;
+    env[`GIT_CONFIG_VALUE_${count + index}`] = value;
+  });
+  env.GIT_CONFIG_COUNT = String(count + extra.length);
+  return env;
+}
+
+/** origin 的 fetch / push 目的地，以及 git 解析（insteadOf）之后的规范形式。 */
+export interface OriginDestination {
+  readonly fetchUrl: string;
+  readonly pushUrl: string;
+  readonly canonicalFetch: string | null;
+  readonly canonicalPush: string | null;
+  readonly local: boolean;
+}
+
+/**
+ * 读出 origin 的真实目的地：raw 配置各恰好一条，且 git 展开后与 raw 指向同一个地方。
+ * 展开在 publishEnv 下做（屏蔽 global/system 的 insteadOf），所以核对的就是发布时 git 看到的东西；
+ * 仓库本地 insteadOf 仍会生效，因而也会被这一致性检查抓住并拒绝。
+ */
+export async function readOriginDestination(path: string): Promise<Result<OriginDestination, DomainError>> {
+  const raw = await rawRemoteUrls(path, 'url');
+  if (raw.length !== 1) return { ok: false, error: invalid('origin 必须恰好配置一个 fetch 地址') };
+  const rawPushUrls = await rawRemoteUrls(path, 'pushurl');
+  if (rawPushUrls.length > 1) return { ok: false, error: invalid('origin 配置了多个 push 地址，拒绝发布') };
+  const rawFetch = raw[0]!.trim();
+  const rawPush = (rawPushUrls[0] ?? raw[0]!).trim();
+  const env = publishEnv();
+  const expandedFetch = (await runGit(path, ['remote', 'get-url', 'origin'], env, 20_000)).stdout.trim();
+  const expandedPush = (await runGit(path, ['remote', 'get-url', '--push', 'origin'], env, 20_000)).stdout.trim();
+  const fetchUrl = expandedFetch || rawFetch;
+  const pushUrl = expandedPush || rawPush;
+  const canonicalFetch = authScopeUrl(fetchUrl);
+  const canonicalPush = authScopeUrl(pushUrl);
+  const local = canonicalFetch === null && isLocalGitUrl(fetchUrl);
+  if (canonicalFetch === null && !local) return { ok: false, error: invalid('origin 不是可校验的 HTTPS 地址（本地路径仅测试策略放行）') };
+  if (canonicalPush === null && !local) return { ok: false, error: invalid('origin 的 push 地址不是可校验的 HTTPS 地址') };
+  if (canonicalFetch !== null && authScopeUrl(rawFetch) !== canonicalFetch) {
+    return { ok: false, error: invalid('origin 地址被 git 配置改写（insteadOf），拒绝发布') };
+  }
+  if (canonicalPush !== null && authScopeUrl(rawPush) !== canonicalPush) {
+    return { ok: false, error: invalid('origin 的 push 地址被 git 配置改写（insteadOf），拒绝发布') };
+  }
+  if (canonicalFetch === null && fetchUrl !== rawFetch) return { ok: false, error: invalid('origin 地址被 git 配置改写（insteadOf），拒绝发布') };
+  if (canonicalPush === null && pushUrl !== rawPush) return { ok: false, error: invalid('origin 的 push 地址被 git 配置改写（insteadOf），拒绝发布') };
+  return { ok: true, value: { fetchUrl, pushUrl, canonicalFetch, canonicalPush, local } };
+}
+
+/** `ls-remote --symref <url> HEAD` 的第一行 `ref: refs/heads/<name>\tHEAD`。 */
+export function parseSymrefDefault(raw: string): string | null {
+  for (const line of raw.split('\n')) {
+    const match = /^ref:\s+refs\/heads\/(\S+)\tHEAD$/.exec(line.trim());
+    if (match) return validBranchRef(match[1]!);
+  }
+  return null;
+}
+
+/** `ls-remote` 输出里只认 `refs/heads/...` 的精确匹配，并校验 OID 是 40 位小写十六进制。 */
+export function parseLsRemoteRef(raw: string, ref: string): string | null {
+  for (const line of raw.split('\n')) {
+    const [oid, name] = line.trim().split(/\s+/);
+    if (name === ref && oid !== undefined && /^[0-9a-f]{40}$/.test(oid)) return oid;
+  }
+  return null;
+}
+
+/** `git worktree list --porcelain` 里的注册路径（尽量 realpath；已消失的路径原样保留）。 */
+async function worktreePathsOf(raw: string): Promise<string[]> {
+  const paths: string[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.startsWith('worktree ')) continue;
+    const given = line.slice('worktree '.length).trim();
+    if (given === '') continue;
+    paths.push(await realpath(given).catch(() => resolve(given)));
+  }
+  return paths;
 }
 
 /**

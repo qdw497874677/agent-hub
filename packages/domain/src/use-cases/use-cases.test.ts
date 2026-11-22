@@ -618,6 +618,22 @@ test('首页：最近会话按时间倒序、受条数限制、项目按活跃�
   assert.equal(home.recentSessions[0]?.projectName, 'demo');
 });
 
+test('首页：仅展示登记且来源匹配的无任务主会话', async () => {
+  const w = await world();
+  const first = await derived(w);
+  const second = await derived(w);
+  const main = { ...first, taskId: null, originProjectId: w.project.id };
+  const unregistered = { ...second, taskId: null, originProjectId: w.project.id };
+  await w.deps.sessions.save(main);
+  await w.deps.sessions.save(unregistered);
+  assert.deepEqual((await loadHome(w.deps)).recentSessions, []);
+  const home = await loadHome(w.deps, undefined, () => true, async () => [main, { ...unregistered, originProjectId: null }]);
+  assert.deepEqual(home.recentSessions.map(({ sessionId, taskId, taskTitle }) => ({ sessionId, taskId, taskTitle })), [
+    { sessionId: main.id, taskId: null, taskTitle: '主会话' }
+  ]);
+  assert.deepEqual((await loadHome(w.deps, undefined, () => false, async () => assert.fail('不查询不可见项目'))).recentSessions, []);
+});
+
 test('保存布局：从空布局开始，逐个放置', async () => {
   const w = await world();
   const layout = await saveLayoutUseCase(w.deps, w.project.id, { positions: { a: { x: 1, y: 2 }, b: { x: 3, y: 4 } } });

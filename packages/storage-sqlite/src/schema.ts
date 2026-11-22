@@ -25,12 +25,29 @@ CREATE TABLE IF NOT EXISTS tasks (
   owner_id   TEXT,
   branch     TEXT,
   base_branch TEXT,
+  -- 显式父任务（项目内子任务）；只在创建时写，旧库由 task-creations.ts 补列。
+  parent_task_id TEXT,
   summary    TEXT,
   log_seq    INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS tasks_by_project ON tasks(project_id);
+
+-- 会话内写工具的持久请求回执（docs/design/project-session-mcp.md）：
+-- key 由 人 + 来源会话 + 项目 + 操作 + 调用方请求键 组成；result 是首次成功结果的 JSON。
+-- 回执与业务写入同事务，重试只回放、不重跑。
+CREATE TABLE IF NOT EXISTS request_receipts (
+  key               TEXT PRIMARY KEY,
+  actor_id          TEXT NOT NULL,
+  source_session_id TEXT,
+  project_id        TEXT NOT NULL,
+  operation         TEXT NOT NULL,
+  fingerprint       TEXT NOT NULL,
+  result            TEXT NOT NULL,
+  created_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS request_receipts_by_project ON request_receipts(project_id, created_at);
 
 -- 任务工作日志：只追加。修订 = 新行 + 旧行 superseded_by 指向它。
 CREATE TABLE IF NOT EXISTS task_log_entries (

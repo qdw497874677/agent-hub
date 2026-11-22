@@ -21,6 +21,7 @@ import {
   ok,
   prepareRepoWorktreeUseCase,
   prepareTemporaryWorkspaceUseCase,
+  proposeWorkspaceDelegationUseCase,
   promptSessionUseCase,
   renameSessionUseCase,
   setProjectChecksUseCase,
@@ -32,6 +33,7 @@ import {
   type SessionId,
   type Subject,
   type ToolGateway,
+  type ToolProvider,
   changeSessionOption
 } from '@agent-hub/domain';
 import { createTokenIssuer } from '@agent-hub/adapter-accounts';
@@ -39,6 +41,9 @@ import { createGithubToolProvider, githubParams, parseIssueKey, type GithubClien
 import type { SqliteStore } from '@agent-hub/storage-sqlite';
 import type { createBotOfSession } from './bot-session.ts';
 import { createGitWriteSubjectOf } from './git-write-identity.ts';
+import { loadActor } from './role-session.ts';
+import { createWorkspaceDelegationBridges } from './workspace-delegation.ts';
+import { createWorkspaceDelegationToolProvider } from './workspace-delegation-tool.ts';
 import type { createGroupChat, createMessageBus } from '@agent-hub/domain';
 import type { createProviderWiring } from './providers.ts';
 import type { createWorkspaceFilesService } from '@agent-hub/domain';
@@ -64,6 +69,9 @@ export interface ToolWiringInput {
   readonly githubReposFor: (projectId: string) => Promise<string[]>;
   readonly subjectOf: (sessionId: SessionId) => Promise<Subject | null>;
   readonly enqueueDispatch: (request: AgentTaskRequest) => Promise<void>;
+  readonly projectSessionTools?: ToolProvider;
+  readonly projectAssetTools?: ToolProvider;
+  readonly projectSessionScopeCap?: NonNullable<Parameters<typeof createToolGateway>[0]['scopeCap']>;
 }
 
 /** 工具网关：把各工具 provider 按会话/项目权限接起来；main 只拿回网关给 worker 中转。 */
@@ -77,13 +85,17 @@ export function wireTools(input: ToolWiringInput): ToolGateway {
     memberOfSession: (sessionId) => store.groups.memberOfSession(sessionId),
     provenance: store.provenance,
     dispatches: store.dispatches,
+    delegations: store.workspaceDelegations,
     subjectOf
   });
   return createToolGateway({
     now: deps.now,
     toolGrants: store.toolGrants,
     tokens: createTokenIssuer(),
+    scopeCap: input.projectSessionScopeCap,
     providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService),
+      ...(input.projectSessionTools ? [input.projectSessionTools] : []),
+      ...(input.projectAssetTools ? [input.projectAssetTools] : []),
       createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
       // issue #216：agent 不 shell git/gh 也能 commit / push / 开 PR；权限与审计走工作流。
       createGitToolProvider({ workflow: gitService, subjectOf, writeSubjectOf: gitWriteSubjectOf, resolvePeer: (from, address) => messageBus.resolvePeer(from, address) }),
@@ -131,6 +143,15 @@ export function wireTools(input: ToolWiringInput): ToolGateway {
         derive: (command) => deriveSessionUseCase(deps, command),
         interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
         rename: (command) => renameSessionUseCase(deps, command)
+      }),
+      // 派工提案：主会话只能把请求登记成 pending；身份取授权快照并与会话归属人核对，不读 payload actor。
+      createWorkspaceDelegationToolProvider({
+        sessions: deps.sessions,
+        bridgesFor: ({ baseBranch, agentId }) =>
+          createWorkspaceDelegationBridges(deps, store.workspaceCoordinators, { baseBranch, agentId }),
+        propose: (command, bridges) =>
+          proposeWorkspaceDelegationUseCase(deps, store.workspaceDelegations, bridges, command),
+        loadActor: (userId) => loadActor(store.users, store.access, userId, 'tool-workspace-delegate')
       }),
       createAgentOrchestrationToolProvider({
         agentProfiles: deps.agentProfiles,

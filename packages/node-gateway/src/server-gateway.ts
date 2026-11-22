@@ -41,6 +41,9 @@ import {
   wsPreview,
   wsCommit,
   wsPush,
+  wsPublishRef,
+  wsPrepareDelegationWorktree,
+  wsImportCommit,
   wsGh,
   wsStatus,
   linkEcho
@@ -1194,6 +1197,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           ),
         commit: (path, input) => call((c) => c.request(wsCommit, { path, ...input }, { timeoutMs: 120_000 }), '提交'),
         push: (path, auth) => call((c) => c.request(wsPush, { path, ...(auth ? { auth } : {}) }, slow), '推送'),
+        publishRef: (input) => call((c) => c.request(wsPublishRef, { ...input, ...(input.auth ? { auth: input.auth } : {}) }, slow), '发布批准提交'),
+        prepareDelegationWorktree: (input) =>
+          call((c) => c.request(wsPrepareDelegationWorktree, { ...input, ...(input.auth ? { auth: input.auth } : {}) }, slow), '准备委派工作区'),
+        importCommit: (input) => call((c) => c.request(wsImportCommit, input, slow), '本地导入提交'),
         gh: (path, request) => call((c) => c.request(wsGh, { path, request }, { timeoutMs: 120_000 }), 'gh 开 PR'),
         remove: (path, kind, options) => call((c) => c.request(wsRemove, { path, kind, ...(options?.force ? { force: true } : {}), ...(options?.mergedHead ? { mergedHead: options.mergedHead } : {}) }, { timeoutMs: 120_000 }), '删除工作空间'),
         // 准备命令最多跑 30 分钟（项目配置上限），RPC 再多给 30 秒，别让管道先超时

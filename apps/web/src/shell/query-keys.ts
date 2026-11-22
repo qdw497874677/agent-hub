@@ -65,6 +65,17 @@ export function filesInvalidationKeys(keys: FilesKeys): readonly (readonly unkno
   return keys.dir[1] === keys.session[1] ? [keys.dir] : [keys.dir, keys.session];
 }
 
+/** 项目主会话登记表：一个项目一份，侧栏 / 列表 / 专注页共用同一份缓存。 */
+export const coordinatorKeys = {
+  forProject: (projectId: string) => ['coordinators', projectId] as const
+};
+
+/** 派工：主会话一条列表，发布面板按派工各查一份（不进同一份缓存，避免串状态）。 */
+export const delegationKeys = {
+  forCoordinator: (coordinatorSessionId: string) => ['delegations', coordinatorSessionId] as const,
+  publish: (delegationId: string) => ['delegation-publish', delegationId] as const
+};
+
 export const taskKeys = {
   pullRequests: (taskId: string) => ['task-prs', taskId] as const
 };
@@ -76,7 +87,9 @@ export const sessionKeys = {
   /** 这条会话能用的 MCP 服务器 + 关掉了哪些；改完要跟着会话 DTO 一起刷新。 */
   mcp: (sessionId: string) => ['session', sessionId, 'mcp'] as const,
   /** 预览链接（docs/design/preview.md §4）：只有这条会话知道，增删后整体失效。 */
-  previews: (sessionId: string) => ['session', sessionId, 'previews'] as const
+  previews: (sessionId: string) => ['session', sessionId, 'previews'] as const,
+  /** 项目级能力授权（docs/design/project-session-mcp.md §25-35）：归属人逐项开启，默认全关。 */
+  projectGrant: (sessionId: string) => ['session', sessionId, 'project-grant'] as const
 };
 
 /**

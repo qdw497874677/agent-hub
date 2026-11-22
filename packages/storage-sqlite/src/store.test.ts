@@ -100,6 +100,11 @@ test('容器会话的 originProjectId 往返无损，后续保存不能清掉或
   await store.projects.save(other.value);
   await store.sessions.save({ ...container, originProjectId: other.value.id, updatedAt: now + 2 });
   assert.equal((await store.sessions.byId(container.id))?.originProjectId, w.project.id);
+  const legacy = deriveSession({ agentId: asAgentId('grok'), model: 'grok-4', now });
+  assert.ok(legacy.ok);
+  await store.sessions.save(legacy.value);
+  assert.deepEqual((await store.listTasklessSessionsByOriginProject(w.project.id)).map((row) => row.id), [container.id]);
+  assert.deepEqual(await store.listTasklessSessionsByOriginProject(other.value.id), []);
   store.close();
 });
 

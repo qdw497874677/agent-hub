@@ -53,6 +53,7 @@ export function installAccess(app: Hono<any>, deps: AccessDeps, subjectOf: Subje
   };
   const writePermission = (kind: ResourceRef['kind'], path: string, method: string): Permission => {
     if (kind === 'session') {
+      if (path.endsWith('/project-tool-grant')) return 'session.read'; // 路由另验真人、归属人和当前项目权限。
       // 删会话本身：DELETE /sessions/:id；其余动作看路径末尾
       if (method === 'DELETE') return 'session.delete';
       const action = /\/sessions\/[^/]+\/([^/]+)$/.exec(path)?.[1] ?? '';
@@ -73,6 +74,9 @@ export function installAccess(app: Hono<any>, deps: AccessDeps, subjectOf: Subje
     const path = c.req.path;
     const method = c.req.method;
     const read = method === 'GET' || method === 'HEAD';
+
+    // 授权撤销只需仍是会话归属人；不能因项目权限变更而留下无法撤销的旧授权。
+    if (prefix === '/api' && method === 'DELETE' && /^\/api\/sessions\/[^/]+\/project-tool-grant$/.test(path)) return next();
 
     // 回收站的几个动作：用例自己判断
     if (new RegExp(`^${esc}\\/projects\\/[^/]+$`).test(path) && method === 'DELETE') return next();

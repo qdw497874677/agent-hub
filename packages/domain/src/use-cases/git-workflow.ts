@@ -8,6 +8,7 @@ import type { WorkLogRepository } from '../ports/work-log-repository.ts';
 import type { PersistentAgentRepository } from '../ports/bot-repository.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
+import type { WorkspaceDelegationStore } from '../workspace-delegation.ts';
 import type { CommitPreview, RemotePullRequest, WorkspaceGit } from '../ports/workspace-git.ts';
 import type { RepoAuthPort } from '../ports/repo-auth.ts';
 import type { GitHostApi, GitHostTokenStore, GitText, GitTextWriter, PullRequestLink, PullRequestRepository } from '../ports/pull-requests.ts';
@@ -53,6 +54,11 @@ export interface GitWorkflowDeps {
   readonly writer?: GitTextWriter;
   /** 兜底团队（老数据 team_id 为 NULL）。 */
   readonly hubTeamId: () => Promise<string | null>;
+  /**
+   * 持久派工的执行会话身份（可选：老装配 / 测试没有它时行为不变）。
+   * 命中时普通 push / PR 入口在预览与副作用前拒绝；本地 commit 不受影响。
+   */
+  readonly delegations?: Pick<WorkspaceDelegationStore, 'byExecutionSession'>;
   readonly now: () => number;
 }
 
@@ -201,6 +207,11 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     const found = await locate(subject, sessionId, 'session.prompt', member);
     if (!found.ok) return found;
     const { git, workerId, root, project, session, workspace } = found.value;
+    // 派工执行会话（docs/design/workspace-delegation.md §4）：平台不替它发布。
+    // 在 preview / 任何副作用之前按持久身份拒绝，且与 actor / 调用入口（API 或 agent 工具）无关。
+    if (input.action !== 'commit' && deps.delegations && (await deps.delegations.byExecutionSession(session.id))) {
+      return err(conflict('派工执行会话不能推送或开 PR：请在主会话里由人确认发布'));
+    }
     if (input.action !== 'commit' && !(await canPush(subject, project))) return err(conflict('你没有这个项目的推送权限（git.push）'));
     const me = principalOfSubject(subject);
     const preview = await git.preview(root, 0);

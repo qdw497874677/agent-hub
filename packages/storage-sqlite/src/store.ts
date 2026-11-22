@@ -6,6 +6,7 @@ import type {
   CanvasLayout,
   JournalEntry,
   Project,
+  ProjectId,
   Seq,
   Session,
   SessionEvent,
@@ -38,6 +39,12 @@ import { createSqliteDeliveries } from './deliveries.ts';
 import { createSqliteProvenance } from './provenance.ts';
 import { createSqliteConnectors } from './connectors.ts';
 import { createSqliteTaskDispatch } from './task-dispatch.ts';
+import { createSqliteTaskCreations } from './task-creations.ts';
+import { createSqliteOperationReceipts } from './operation-receipts.ts';
+import { createSqliteProjectSessionGrants } from './project-session-grant.ts';
+import { createSqliteWorkspaceDelegations } from './workspace-delegation.ts';
+import { createSqliteDelegationPublishAttempts } from './workspace-delegation-publish.ts';
+import { createSqliteWorkspaceCoordinators } from './workspace-coordinator.ts';
 import { createSqliteAttention } from './attention.ts';
 import { createSqliteMemoryIndex, createSqliteMemorySettings, createSqliteMemoryStore } from './memory.ts';
 import { createEnrollmentRepository } from './enrollment.ts';
@@ -47,10 +54,12 @@ import { createAgentDefaultsStore } from './agent-defaults.ts';
 import { createSqliteAssetSets } from './asset-sets.ts';
 import { WORKSPACE_SCHEMA, claimWorkspaceInTransaction, createWorkspaceRepository, ensureSingleWorkspaceOwner, migrateSharedWorkspaces, migrateWorkspaces, upgradeWorkspaceTable } from './workspaces.ts';
 import { createSqliteWorkspaceGroups } from './workspace-groups.ts';
-import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
+import { toArtifact, toJournalEntry, toProject, toSession } from './mappers.ts';
+import { toTaskWithParent as toTask } from './task-mappers.ts';
 import type { RepositorySet } from './mappers.ts';
 
 export interface SqliteStore extends RepositorySet {
+  readonly listTasklessSessionsByOriginProject: (projectId: ProjectId) => Promise<readonly Session[]>;
   readonly search: ReturnType<typeof createSearch>;
   readonly users: UserRepository;
   readonly logins: LoginRepository;
@@ -84,6 +93,13 @@ export interface SqliteStore extends RepositorySet {
   /** 出站队列（#221 C2b）：外部回写先进这里，pump 带租约重试。 */
   readonly outbox: import('@agent-hub/domain').OutboxStore;
   readonly dispatches: import('@agent-hub/domain').TaskDispatchStore;
+  readonly taskCreations: import('@agent-hub/domain').TaskCreationStore;
+  readonly operationReceipts: import('@agent-hub/domain').OperationReceiptStore;
+  readonly projectSessionGrants: import('@agent-hub/domain').ProjectSessionGrantRepository;
+  readonly workspaceDelegations: import('@agent-hub/domain').WorkspaceDelegationStore;
+  readonly delegationPublishAttempts: import('@agent-hub/domain').DelegationPublishStore;
+  /** 项目主会话登记（A2）：项目 + 长期工作空间 → 无任务主会话。 */
+  readonly workspaceCoordinators: import('@agent-hub/domain').WorkspaceCoordinatorRegistry;
   readonly attention: AttentionStore;
   readonly memory: { readonly store: MemoryStore; readonly index: MemoryIndex; readonly settings: MemorySettingsStore };
   /** 单台机器接入：Pairing Code 与 Worker 凭据（都只存 hash）。 */
@@ -261,6 +277,8 @@ export function openSqliteStore(file: string): SqliteStore {
       'WHERE sessions.turn = 0 AND sessions.last_seq > 0'
   );
   migrateTasksV2(db);
+  const taskCreations = createSqliteTaskCreations(db);
+  const operationReceipts = createSqliteOperationReceipts(db);
   migrateWorkspaces(db);
   cleanLegacyLogText(db);
   const layoutColumns = db.prepare('PRAGMA table_info(layout)').all() as { name: string }[];
@@ -338,6 +356,9 @@ export function openSqliteStore(file: string): SqliteStore {
   const selectSessionsByProject = db.prepare(
     'SELECT s.* FROM sessions s JOIN tasks t ON t.id = s.task_id ' +
       'WHERE t.project_id = ? ORDER BY s.created_at ASC'
+  );
+  const selectTasklessSessionsByOriginProject = db.prepare(
+    'SELECT * FROM sessions WHERE task_id IS NULL AND origin_project_id = ?'
   );
   const selectSessionsByWorkspace = db.prepare('SELECT * FROM sessions WHERE workspace_id = ? ORDER BY created_at ASC');
   const selectAllSessions = db.prepare('SELECT * FROM sessions ORDER BY created_at ASC');
@@ -732,6 +753,12 @@ export function openSqliteStore(file: string): SqliteStore {
     provenance: createSqliteProvenance(db),
     ...createSqliteConnectors(db),
     dispatches: createSqliteTaskDispatch(db),
+    taskCreations,
+    operationReceipts,
+    projectSessionGrants: createSqliteProjectSessionGrants(db),
+    workspaceDelegations: createSqliteWorkspaceDelegations(db),
+    delegationPublishAttempts: createSqliteDelegationPublishAttempts(db),
+    workspaceCoordinators: createSqliteWorkspaceCoordinators(db),
     attention: createSqliteAttention(db),
     memory: { store: createSqliteMemoryStore(db), index: createSqliteMemoryIndex(db), settings: createSqliteMemorySettings(db) },
     workspaces: createWorkspaceRepository(db),
@@ -744,6 +771,8 @@ export function openSqliteStore(file: string): SqliteStore {
     assetSets: createSqliteAssetSets(db),
     notifications: createNotificationRepository(db),
     sessions,
+    listTasklessSessionsByOriginProject: async (projectId: ProjectId) =>
+      selectTasklessSessionsByOriginProject.all(projectId).map((row) => toSession(row)),
     artifacts,
     layout,
     links: createSqliteSessionLinks(db),

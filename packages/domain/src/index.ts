@@ -39,6 +39,8 @@ export * from './workspace-group.ts';
 export * from './runtime-install.ts';
 
 export type { TaskRepository } from './ports/task-repository.ts';
+export type { TaskCreationStore, TaskCreationOutcome } from './ports/task-creation-store.ts';
+export type * from './ports/operation-receipt-store.ts';
 export type { WorkLogRepository, WorkLogQuery } from './ports/work-log-repository.ts';
 export type {
   WorkspaceClaim,
@@ -72,7 +74,8 @@ export type { NodeGateway, WorkerCommand, DispatchOutcome, ServiceGateway, Servi
 export type { NodeProvisioner } from './ports/node-provisioner.ts';
 export type { CapacityPolicy, AdmissionRequest } from './ports/capacity-policy.ts';
 export type { DirectoryEntry, WorkspaceFS } from './ports/workspace-fs.ts';
-export type { CommitInput, CommitOutcome, CommitPreview, GhOutcome, GhRequest, PushOutcome, RemotePullRequest, CloneInput, GitAuth, GitInspection, GitStatus, PreviewOptions, RemoveKind, RemoveOptions, RemoveOutcome, RepoProbe, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
+export type { CommitInput, CommitOutcome, CommitPreview, GhOutcome, GhRequest, PushOutcome, RemotePullRequest, PublishRefInput, PublishRefOutcome, PrepareDelegationWorktreeInput, PrepareDelegationWorktreeOutcome, CloneInput, GitAuth, GitInspection, GitStatus, PreviewOptions, RemoveKind, RemoveOptions, RemoveOutcome, RepoProbe, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
+export type { ImportCommitInput, ImportCommitOutcome } from './ports/workspace-git.ts';
 export type { SearchGateway, SearchHit, SearchQuery } from './ports/search-gateway.ts';
 
 export type { SessionHosting } from './ports/session-hosting.ts';
@@ -87,6 +90,8 @@ export * from './use-cases/delete-session.ts';
 export * from './use-cases/settle-session.ts';
 export * from './use-cases/session-pin.ts';
 export * from './use-cases/tasks.ts';
+export * from './request-replay.ts';
+export * from './use-cases/task-creation.ts';
 export * from './use-cases/work-log.ts';
 export * from './use-cases/sessions.ts';
 export * from './use-cases/start-session.ts';
@@ -152,6 +157,7 @@ export type { HarnessInstaller, InstallRun, InstalledEntry } from './ports/harne
 export type { PreparedRuntime, ResolvedCommand, RuntimeAdapter, RuntimeAdapterContext, ToolShimCommand } from './ports/runtime-adapter.ts';
 
 export * from './tool.ts';
+export * from './project-session-grant.ts';
 export type { ToolDescriptor, ToolProvider, ToolContext, JsonSchema } from './ports/tool-provider.ts';
 export type { ToolGrantRepository } from './ports/tool-grant-repository.ts';
 export * from './use-cases/tool-gateway.ts';
@@ -240,3 +246,7 @@ export type { TaskDispatch, TaskDispatchStore, DispatchState } from './ports/tas
 export { createDispatcher, type Dispatcher, type DispatcherDeps, type DispatchView } from './use-cases/dispatcher.ts';
 
 export * from './task-progress.ts';
+export * from './workspace-delegation.ts';
+export * from './use-cases/workspace-delegation.ts';
+export * from './use-cases/workspace-delegation-publish.ts';
+export * from './workspace-coordinator.ts';

@@ -14,6 +14,7 @@ import { ProjectListSheet, ProjectRow } from './project-list.tsx';
 import { UndoToast } from '../../atoms/undo-toast.tsx';
 import { Icon } from '../../atoms/icons.tsx';
 import { DialogShell, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
+import { homeSessionRows, homeSessionSearch, homeSessionTitle, type HomeSessionRow } from '../../atoms/recent-session.ts';
 
 /**
  * 首页。
@@ -34,22 +35,20 @@ export function HomePage({
   const [deleting, setDeleting] = useState<ProjectDto | null>(null);
   const [sheet, setSheet] = useState(false);
   /** 标题被截断时用这个看全文：native title 在触屏和键盘上都摸不到。 */
-  const [titleView, setTitleView] = useState<RecentSessionDto | null>(null);
+  const [titleView, setTitleView] = useState<HomeSessionRow | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const queryClient = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
   const home = useQuery({ queryKey: ['home'], queryFn: api.home, refetchInterval: 10_000 });
 
   const projects = home.data?.projects ?? [];
-  const recent = home.data?.recentSessions ?? [];
+  const recent = useMemo(() => homeSessionRows(home.data?.recentSessions ?? []), [home.data]);
   const needle = filter.trim().toLowerCase();
   const shown = useMemo(
     () =>
       needle === ''
         ? recent
-        : recent.filter((session) =>
-            `${session.taskTitle} ${session.projectName}`.toLowerCase().includes(needle)
-          ),
+        : recent.filter((session) => homeSessionSearch(session).toLowerCase().includes(needle)),
     [recent, needle]
   );
   const groups = useMemo(() => groupByDay(shown), [shown]);
@@ -67,7 +66,7 @@ export function HomePage({
     return () => window.clearTimeout(timer);
   }, [filter, needle, shown.length]);
 
-  function open(session: RecentSessionDto): void {
+  function open(session: HomeSessionRow): void {
     const project = projectById.get(session.projectId);
     if (project) onOpen(project, session.sessionId);
   }
@@ -467,10 +466,10 @@ const DAY = 24 * 60 * 60 * 1000;
 const MOBILE_PROJECTS = 3;
 
 /** 「今天 / 昨天 / 更早」比一串日期好看，也正好对上「昨天那条跑完没有」这个问法。 */
-function groupByDay(sessions: readonly RecentSessionDto[]): Array<[string, RecentSessionDto[]]> {
+function groupByDay(sessions: readonly HomeSessionRow[]): Array<[string, HomeSessionRow[]]> {
   const today = new Date();
   const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-  const buckets: Array<[string, RecentSessionDto[]]> = [
+  const buckets: Array<[string, HomeSessionRow[]]> = [
     ['今天', []],
     ['昨天', []],
     ['更早', []]
@@ -484,7 +483,7 @@ function groupByDay(sessions: readonly RecentSessionDto[]): Array<[string, Recen
 }
 
 /** 与画布卡片同一套颜色：运行中琥珀、完成 sage、已停止灰、中断/失败 rust。 */
-function settled(session: RecentSessionDto): boolean {
+function settled(session: HomeSessionRow): boolean {
   return session.settledAt !== null && session.settledAt !== undefined;
 }
 
@@ -548,7 +547,7 @@ function RecentSessionRow({
   onOpen,
   onShowTitle
 }: {
-  session: RecentSessionDto;
+  session: HomeSessionRow;
   isSettled: boolean;
   onOpen: () => void;
   onShowTitle: () => void;
@@ -560,7 +559,7 @@ function RecentSessionRow({
         data-testid="home-session-row"
         className={`grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5 rounded-sm px-1 py-1.5 text-left hover:bg-card md:grid-cols-[auto_minmax(0,1fr)_auto_auto] ${isSettled ? 'opacity-60' : ''}`}
         onClick={onOpen}
-        title={session.taskTitle}
+        title={homeSessionTitle(session)}
       >
         <span
           className={`col-start-1 row-start-1 mt-1.5 size-1.5 shrink-0 self-start rounded-full md:mt-0 md:self-center ${
@@ -571,7 +570,7 @@ function RecentSessionRow({
           ref={titleRef}
           className="col-start-2 row-start-1 min-w-0 truncate text-body text-primary max-md:line-clamp-2 max-md:whitespace-normal"
         >
-          {session.taskTitle}
+          {homeSessionTitle(session)}
         </span>
         <span
           data-testid="home-session-time"
@@ -590,7 +589,7 @@ function RecentSessionRow({
         <button
           type="button"
           data-testid="home-session-full-title"
-          aria-label={`查看「${session.taskTitle}」的完整标题`}
+          aria-label={`查看「${homeSessionTitle(session)}」的完整标题`}
           className="flex w-[44px] shrink-0 items-center justify-center rounded-sm text-meta text-tertiary underline decoration-tertiary/60 decoration-dotted underline-offset-[3px] hover:bg-card hover:text-primary md:w-8"
           onClick={onShowTitle}
         >
@@ -607,7 +606,7 @@ function SessionTitleDialog({
   onClose,
   onOpen
 }: {
-  session: RecentSessionDto;
+  session: HomeSessionRow;
   onClose: () => void;
   onOpen: () => void;
 }) {
@@ -628,7 +627,7 @@ function SessionTitleDialog({
       }
     >
       <p data-testid="session-title-dialog-text" className="mb-2 break-words text-body text-primary">
-        {session.taskTitle}
+        {homeSessionTitle(session)}
       </p>
       <p className="text-meta text-tertiary">
         {session.agentId} · {session.projectName} · {ago(session.updatedAt)}

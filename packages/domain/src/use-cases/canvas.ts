@@ -6,6 +6,8 @@ import { err, ok, type Result } from '../result.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound, notImplemented } from '../errors.ts';
 import type { JournalEntry } from '../event.ts';
+import type { Session } from '../session.ts';
+import type { ProjectId } from '../ids.ts';
 import type { CanvasProjection, Deps } from './deps.ts';
 import { projectOfSessionOrigin } from './authorization.ts';
 import { promptOpening } from '../messaging.ts';
@@ -13,6 +15,8 @@ import { promptOpening } from '../messaging.ts';
 export interface LoadCanvasOptions {
   /** 侧聊默认不进画布；显式要看才带出来。 */
   readonly includeSide?: boolean;
+  /** 仅由已复核的项目主会话登记簿补充，不扫描无任务会话。 */
+  readonly registeredCoordinators?: (projectId: ProjectId) => Promise<readonly Session[]>;
 }
 
 export async function loadCanvas(
@@ -24,7 +28,14 @@ export async function loadCanvas(
   if (!project) return err(notFound('项目不存在'));
 
   const tasks = await deps.tasks.listByProject(project.id);
-  const allSessions = await deps.sessions.listByProject(project.id);
+  const taskSessions = await deps.sessions.listByProject(project.id);
+  const known = new Set(taskSessions.map((session) => session.id));
+  const registered = await options.registeredCoordinators?.(project.id) ?? [];
+  const allSessions = [...taskSessions, ...registered.filter((session) => {
+    if (known.has(session.id) || session.taskId !== null || session.originProjectId !== project.id) return false;
+    known.add(session.id);
+    return true;
+  })];
   // 侧聊是「顺口问一句」的临时会话：默认不画进画布，也不给预览占位。
   const sessions = options.includeSide ? allSessions : allSessions.filter((session) => session.kind !== 'side');
   const layout = (await deps.layout.load(project.id)) ?? emptyLayout(project.id, deps.now());

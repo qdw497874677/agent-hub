@@ -81,7 +81,8 @@ export function WorkspaceChooser({
   choice,
   onChoice,
   hubProtocols = [],
-  groups = false
+  groups = false,
+  longLivedOnly = false
 }: {
   canvas: CanvasDto;
   taskId: string;
@@ -99,6 +100,11 @@ export function WorkspaceChooser({
    * 整组跟随会换掉它的工作目录，所以那儿不出现。
    */
   groups?: boolean;
+  /**
+   * 只给长期目录：主会话是派工的起点，目录要一直在，所以临时 / 隔离 / 组合都不适用于它。
+   * 不是灰掉禁用，是本来就只该有这一种。
+   */
+  longLivedOnly?: boolean;
 }) {
   const views = useWorkspaceViews(canvas.project.id);
   // 「这台机器没有 git 基座」时那个动作按钮：加一就让下面的关联面板展开并滚进视野
@@ -157,7 +163,7 @@ export function WorkspaceChooser({
   const machineName = machines.find((worker) => worker.workerId === machine)?.label ?? '这台机器';
   const groupSelected = choice?.type === 'new_group';
   const groupNode =
-    groups && Boolean(canvas.project.primaryRepoId) && canvas.project.repos.length > 1 ? (
+    groups && !longLivedOnly && Boolean(canvas.project.primaryRepoId) && canvas.project.repos.length > 1 ? (
       <NewGroup canvas={canvas} machineName={machineName} choice={choice} onChoice={onChoice} />
     ) : null;
   const linkNode = (
@@ -255,6 +261,7 @@ export function WorkspaceChooser({
                 </button>
               );
             })}
+            {longLivedOnly ? null : (
             <NewTemporary
               canvas={canvas}
               taskId={taskId}
@@ -264,6 +271,8 @@ export function WorkspaceChooser({
               selected={choice?.type === 'new_temporary'}
               onSelect={() => onChoice({ type: 'new_temporary' })}
             />
+            )}
+            {longLivedOnly ? null : (
             <NewWorktree
               canvas={canvas}
               taskId={taskId}
@@ -273,6 +282,7 @@ export function WorkspaceChooser({
               onSelect={() => onChoice({ type: 'new_worktree' })}
               onFixGit={() => setLinkSignal((value) => value + 1)}
             />
+            )}
             <NewLongLived
               canvas={canvas}
               machine={machine}

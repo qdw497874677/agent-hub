@@ -17,6 +17,9 @@ import {
   wsPreview,
   wsCommit,
   wsPush,
+  wsPublishRef,
+  wsPrepareDelegationWorktree,
+  wsImportCommit,
   wsGh,
   wsStatus,
   filesChanged,
@@ -96,6 +99,21 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined, gitOpt
   });
   port.handle(wsCommit, async ({ path, ...input }) => unwrap(await need().commit(path, input)));
   port.handle(wsPush, async ({ path, auth }) => unwrap(await need().push(path, auth)));
+  port.handle(wsPublishRef, async (input) => {
+    const git = need();
+    if (!git.publishRef) throw new RpcFailure('unsupported', '这台 Worker 不支持发布批准提交（publish_ref）');
+    return unwrap(await git.publishRef(input));
+  });
+  port.handle(wsPrepareDelegationWorktree, async (input) => {
+    const git = need();
+    if (!git.prepareDelegationWorktree) throw new RpcFailure('unsupported', '这台 Worker 不支持严格准备委派工作区（prepare_delegation_worktree）');
+    return unwrap(await git.prepareDelegationWorktree(input));
+  });
+  port.handle(wsImportCommit, async (input) => {
+    const git = need();
+    if (!git.importCommit) throw new RpcFailure('unsupported', '这台 Worker 不支持本地导入提交（import_commit）');
+    return unwrap(await git.importCommit(input));
+  });
   port.handle(wsGh, async ({ path, request }) => {
     const outcome = unwrap(await need().gh(path, request));
     if (!outcome.ok) return { ok: false as const, reason: outcome.reason };

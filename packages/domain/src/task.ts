@@ -28,6 +28,11 @@ export interface Task {
   readonly summary: string | null;
   /** 任务默认 Agent：覆盖项目默认；会话里显式选的仍然优先。null = 没配。 */
   readonly defaultAgent?: AgentRef | null;
+  /**
+   * 显式父任务（项目内的子任务，docs/design/project-session-mcp.md）。关系只在创建时写，
+   * 首版不开放换父级。旧任务没有这个字段，读作 null；子任务本身不会因为父任务状态而联动。
+   */
+  readonly parentTaskId?: TaskId | null;
   /** 工作日志当前最大序号；追加日志时 +1。 */
   readonly logSeq: number;
   readonly createdAt: number;
@@ -41,6 +46,12 @@ export interface CreateTaskInput {
   readonly ownerId?: string | null;
   /** 远端分支名（不含 `origin/` 也接受，worktree 起点由 use case 规范化）。 */
   readonly baseBranch?: string | null;
+  /**
+   * 父任务的当前快照。给 `parentTaskId` 时必须一起给：领域层据此核对「父任务存在且同项目」，
+   * 不把跨项目父子关系写进库。只用于校验，不会修改父任务。
+   */
+  readonly parent?: Task | null;
+  readonly parentTaskId?: TaskId | null;
   readonly now: number;
   readonly id?: TaskId;
 }
@@ -62,6 +73,13 @@ export function createTask(input: CreateTaskInput): Result<Task, DomainError> {
   if (!title) return err(invalid('任务标题不能为空'));
   const baseBranch = parseBaseBranch(input.baseBranch);
   if (!baseBranch.ok) return baseBranch;
+  const parentTaskId = input.parentTaskId ?? null;
+  if (parentTaskId !== null) {
+    // 没有父任务快照就没法核对项目：拒绝，而不是默认放行。
+    if (!input.parent) return err(invalid('父任务不存在'));
+    if (input.parent.id !== parentTaskId) return err(invalid('父任务与 parentTaskId 不一致'));
+    if (input.parent.projectId !== input.projectId) return err(invalid('父任务必须与子任务同项目'));
+  }
   return ok({
     id: input.id ?? newTaskId(),
     projectId: input.projectId,
@@ -71,6 +89,7 @@ export function createTask(input: CreateTaskInput): Result<Task, DomainError> {
     ownerId: input.ownerId ?? null,
     branch: null,
     baseBranch: baseBranch.value,
+    parentTaskId,
     summary: null,
     defaultAgent: null,
     logSeq: 0,

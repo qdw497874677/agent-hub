@@ -11,6 +11,7 @@ import { ListView, SearchPalette, type PaletteAction } from '../surfaces/workben
 import { setThemePref } from './theme.ts';
 import { FocusView } from '../surfaces/workbench/focus.tsx';
 import { DeriveDialog, NewTaskDialog } from './dialogs.tsx';
+import { CoordinatorDialog } from '../surfaces/workbench/coordinator-dialog.tsx';
 import { ProjectHeader } from '../surfaces/workbench/header.tsx';
 import { ProjectSidebar, TOGGLE_SIDEBAR_EVENT } from '../surfaces/workbench/sidebar.tsx';
 import { ProjectBar } from '../surfaces/workbench/view-switch.tsx';
@@ -48,6 +49,8 @@ function Workspace() {
   const narrow = useNarrow();
   const homeView: View = narrow ? 'list' : 'canvas';
   const [newTask, setNewTask] = useState(false);
+  // 新开主会话（不是任务）：入口在侧栏动作区，和新建任务并排。
+  const [newCoordinator, setNewCoordinator] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
   const [taskDetail, setTaskDetail] = useState<string | null>(null);
@@ -374,6 +377,10 @@ function Workspace() {
         onClose?.();
         setNewTask(true);
       }}
+      onNewCoordinator={() => {
+        onClose?.();
+        setNewCoordinator(true);
+      }}
       onClose={onClose}
     />
   );
@@ -502,6 +509,17 @@ function Workspace() {
           onOpenSession={(sessionId) => {
             setTaskDetail(null);
             openSession(sessionId);
+          }}
+        />
+      ) : null}
+      {newCoordinator && canvas.data ? (
+        <CoordinatorDialog
+          canvas={canvas.data}
+          onClose={() => setNewCoordinator(false)}
+          onStarted={(session) => {
+            // 开好（或早就开过）就直接进去：开它就是为了说话。
+            setNewCoordinator(false);
+            openSession(session.id);
           }}
         />
       ) : null}

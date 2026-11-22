@@ -12,3 +12,8 @@ export { createSqliteWorkspaceGroups, groupIdOfWorkspace } from './workspace-gro
 export { createSqliteWorkerAgents } from './worker-agents.ts';
 export { createSqliteAssetSets, ASSET_SET_SCHEMA } from './asset-sets.ts';
 export { createSqliteAttention } from './attention.ts';
+export { createSqliteWorkspaceDelegations } from './workspace-delegation.ts';
+export { createSqliteDelegationPublishAttempts } from './workspace-delegation-publish.ts';
+export { createSqliteWorkspaceCoordinators } from './workspace-coordinator.ts';
+export { createSqliteTaskCreations, migrateTaskCreationSchema } from './task-creations.ts';
+export { createSqliteProjectSessionGrants } from './project-session-grant.ts';

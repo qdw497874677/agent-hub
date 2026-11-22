@@ -39,7 +39,7 @@ export function createGitHubApi(options: { base?: string; fetch?: typeof fetch; 
     return result.ok ? { ok: true, pr: toPr(result.json as Record<string, unknown>) } : result;
   };
   return {
-    createPullRequest: ({ token, repo, base: into, head, title, body }) => call(token, 'POST', `/repos/${repo}/pulls`, { title, body, head, base: into }),
+    createPullRequest: ({ token, repo, base: into, head, title, body, draft }) => call(token, 'POST', `/repos/${repo}/pulls`, { title, body, head, base: into, ...(draft === undefined ? {} : { draft }) }),
     getPullRequest: ({ token, repo, number }) => call(token, 'GET', `/repos/${repo}/pulls/${number}`),
     listPullRequestsByHead: async ({ token, repo, head }) => {
       const owner = repo.split('/')[0] ?? '';
@@ -55,7 +55,7 @@ export function createGitHubApi(options: { base?: string; fetch?: typeof fetch; 
 function toPr(json: Record<string, unknown>): RemotePullRequest {
   const merged = typeof json['merged_at'] === 'string' ? Date.parse(json['merged_at']) : null;
   const head = json['head'] as { sha?: string; ref?: string; repo?: { full_name?: string } | null } | undefined;
-  const base = json['base'] as { ref?: string } | undefined;
+  const base = json['base'] as { ref?: string; repo?: { full_name?: string } | null } | undefined;
   return {
     number: Number(json['number']),
     url: String(json['html_url'] ?? ''),
@@ -63,6 +63,8 @@ function toPr(json: Record<string, unknown>): RemotePullRequest {
     headSha: head?.sha ?? null,
     mergedAt: merged,
     base: typeof base?.ref === 'string' && base.ref ? base.ref : null,
+    baseRepo: typeof base?.repo?.full_name === 'string' && base.repo.full_name ? base.repo.full_name : null,
+    ...(typeof json['draft'] === 'boolean' ? { draft: json['draft'] } : {}),
     // head.repo 是 fork 的仓库，自动认领靠它确认 PR 的 head 就是本任务的 origin（#269）
     repo: typeof head?.repo?.full_name === 'string' && head.repo.full_name ? head.repo.full_name : null,
     headRef: typeof head?.ref === 'string' && head.ref ? head.ref : null

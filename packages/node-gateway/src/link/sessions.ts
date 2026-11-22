@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { ServerToWorker, SessionEventDto } from '@agent-hub/contract';
 import { RpcFailure, assetsFetch, assetsSync, providerTest } from '@agent-hub/contract';
 import { asSessionId, asTaskId, withExecutableArg } from '@agent-hub/domain';
@@ -42,6 +43,12 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
   const SESSION_IDLE_MS = options.sessionIdleMs ?? 900_000;
   const KEEPALIVE_MAX = options.keepAliveMax ?? 8;
   const PIN_MAX = options.pinMax ?? 16;
+  /**
+   * 每条活进程启动时的「工具授权 / MCP 接线」指纹（sha256 摘要，只比相等，不落原始令牌）。
+   * hub 重新托管同一会话时可能换了 bearer 或 MCP 清单：接线不同就必须重建进程，
+   * 否则 ACP 会留着启动时的旧 URL / 旧令牌继续跑。
+   */
+  const startupWiring = new Map<string, string>();
 
   channel.handle(assetsSync, async ({ entries, retain, sessions: liveSessions }) => {
     if (!options.assets) throw new RpcFailure('unsupported', '这台 Worker 不支持资产同步');
@@ -260,6 +267,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     pinnedSessions.delete(sessionId);
     sessionAgents.delete(sessionId);
     sessionProviders.delete(sessionId);
+    startupWiring.delete(sessionId);
     // 会话没了就别再 session/load 了（也顺带避免调已 dispose 的进程）。
     stopResync(sessionId);
   }
@@ -334,6 +342,23 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     });
   }
 
+  /**
+   * 这次启动真正交给运行时的凭据 / MCP 接线的指纹。只拿它做相等判断：
+   * 存的是 sha256，原始 bearer / env 密钥不进 map、不进日志。
+   * provider 仍由 `sessionProviders` 单独比（行为不变）；这里管 tools 与 mcp，含「这次没有」。
+   */
+  function startupWiringKey(spec: StartSpec): string {
+    const wiring = {
+      tools: spec.tools ? { transport: spec.tools.transport, url: spec.tools.url, token: spec.tools.token } : null,
+      mcp: (spec.mcp ?? []).map((entry) =>
+        entry.transport === 'http'
+          ? { transport: entry.transport, name: entry.name, url: entry.url }
+          : { transport: entry.transport, name: entry.name, command: entry.command, args: entry.args, env: entry.env }
+      )
+    };
+    return createHash('sha256').update(JSON.stringify(wiring)).digest('hex');
+  }
+
   async function startSession(command: Extract<ServerToWorker, { kind: 'start_session' }>): Promise<void> {
     const runtime = options.runtimes.find((candidate) => candidate.descriptor.id === command.agentId);
     if (!runtime) {
@@ -402,16 +427,19 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     }
 
     // 同一会话又来一次 start（比如断线后 server 重新托管）：进程还活着、agent 和工作目录都没变，
-    // 就直接复用——不能 spawn 第二个进程抢同一份会话文件。复用不了（分叉 / 换了 agent 或目录）
-    // 才收掉旧的；被顶替的旧进程结束时不许给新会话报 ended（见事件循环的 finally）。
+    // 就直接复用——不能 spawn 第二个进程抢同一份会话文件。复用不了（分叉 / 换了 agent、目录
+    // 或工具授权 / MCP 接线）才收掉旧的；被顶替的旧进程结束时不许给新会话报 ended（见事件循环的 finally）。
+    const wiringKey = startupWiringKey(spec);
     const previous = sessions.get(command.sessionId);
     if (previous) {
       const providerKey = spec.provider ? `${spec.provider.slug}|${spec.provider.baseUrl}|${spec.provider.token}` : '';
       if (command.pinned === true) pinnedSessions.add(command.sessionId);
       else pinnedSessions.delete(command.sessionId);
-      const reusable = !spec.branch && sessionAgents.get(command.sessionId) === command.agentId
+      const wiringChanged = startupWiring.get(command.sessionId) !== wiringKey;
+      const sameRuntime = sessionAgents.get(command.sessionId) === command.agentId
         && workspaces.get(command.sessionId) === command.workspaceRoot
         && sessionProviders.get(command.sessionId) === providerKey;
+      const reusable = !spec.branch && sameRuntime && !wiringChanged;
       if (reusable) {
         // 复用也要把这次 start 带来的选项（模型等）落上去，别沿用进程里上一轮的
         for (const [optionId, value] of Object.entries(spec.options ?? {})) {
@@ -426,6 +454,11 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
           status: 'running'
         });
         return;
+      }
+      // hub 撤销旧 bearer 后会用新令牌 / 新清单再发一次 start：接线不同（含被移除）
+      // 就必须换进程，否则 ACP 仍拿启动时的旧 URL 和旧令牌。
+      if (sameRuntime && wiringChanged) {
+        options.onLog?.(`会话 ${command.sessionId} 的工具授权 / MCP 接线变了，重建运行时`);
       }
       sessions.delete(command.sessionId);
       workspaces.delete(command.sessionId);
@@ -485,6 +518,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     if (command.pinned === true) pinnedSessions.add(command.sessionId);
     else pinnedSessions.delete(command.sessionId);
     sessionProviders.set(command.sessionId, spec.provider ? `${spec.provider.slug}|${spec.provider.baseUrl}|${spec.provider.token}` : '');
+    startupWiring.set(command.sessionId, wiringKey);
     send({
       type: 'status',
       sessionId: command.sessionId,
@@ -671,6 +705,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       workspaces.clear();
       sessionAgents.clear();
       sessionProviders.clear();
+      startupWiring.clear();
       lastActivity.clear();
       prompting.clear();
     }

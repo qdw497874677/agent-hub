@@ -4,7 +4,8 @@ import { localTime } from '../../shell/local-time.ts';
 import { useQuery } from '@tanstack/react-query';
 import type { CanvasDto, SearchHitDto, SessionDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
-import { sessionListLabel } from '../../atoms/session-label.ts';
+import { groupSessions } from '../../atoms/session-groups.ts';
+import { useCoordinators } from '../../shell/coordinators.ts';
 import type { LiveMap } from '../../atoms/live.ts';
 import { StatusPill } from '../../atoms/status.tsx';
 import { NoTasksHint } from './empty-tasks.tsx';
@@ -42,7 +43,9 @@ export function ListView({
   onTaskDetail: (taskId: string) => void;
   onNewTask: () => void;
 }) {
-  const groups = useMemo(() => groupSessions(canvas), [canvas]);
+  // 主会话的姓名来自登记表：没有它，无任务会话只能说「没有任务的会话」。
+  const { ids: coordinatorIds } = useCoordinators(canvas.project.id);
+  const groups = useMemo(() => groupSessions(canvas, coordinatorIds), [canvas, coordinatorIds]);
   const workers = useWorkers();
   const workspaces = useMemo(
     () => new Map(canvas.workspaces.map((workspace) => [workspace.id, workspace])),
@@ -60,16 +63,23 @@ export function ListView({
           <span className="min-w-0 truncate text-sub text-primary" title={canvas.project.name}>{canvas.project.name}</span>
         </div>
         <div className="mt-0.5 text-meta text-tertiary">
-          {groups.length} 个任务 · {canvas.sessions.length} 条会话
+          {groups.filter((group) => group.kind === 'task').length} 个任务 · {canvas.sessions.length} 条会话
         </div>
       </div>
       {canvas.sessions.length === 0 ? (
         <p className="py-6 text-meta text-tertiary">还没有会话。点下面的任务（或画布上任务卡的「＋ 会话」）就能派生一条。</p>
       ) : null}
       {groups.map((group) => (
-        <section key={group.taskId} className="mb-4" aria-label={`任务：${group.title}`} data-testid="list-task-group">
+        <section
+          key={group.taskId}
+          className="mb-4"
+          // 无任务组没有任务标题：读屏也只念组名，不假装它是一条任务
+          aria-label={group.taskless ? group.title : `任务：${group.title}`}
+          data-testid="list-task-group"
+          data-kind={group.kind}
+        >
           <h3 className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-hair bg-canvas/95 py-2 text-sub text-primary backdrop-blur">
-            <span className="shrink-0 text-meta text-tertiary">任务</span>
+            {group.taskless ? null : <span className="shrink-0 text-meta text-tertiary">任务</span>}
             <span className="min-w-0 truncate">{group.title}</span>
             <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
           </h3>
@@ -77,7 +87,9 @@ export function ListView({
             {group.sessions.map(({ session, label }) => {
               const status = statusOf(session, live);
               const seq = live[session.id]?.lastSeq ?? session.lastSeq;
-              const origin = session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '派生';
+              const origin = session.origin.kind === 'fork'
+                ? `分叉自 #${session.origin.atSeq}`
+                : session.taskId === null ? '没有任务' : '派生';
               const worker = resolveWorker(workers.list, session.workerId);
               const workspace = session.workspaceId ? workspaces.get(session.workspaceId) : undefined;
               return (
@@ -296,29 +308,4 @@ export function SearchPalette({
   );
 }
 
-/** 列表按任务分组；组内按开始时间排。行标题用第一句话；预览只有最近几条，第一句另存在 openings 里。 */
-export function groupSessions(canvas: Pick<CanvasDto, 'tasks' | 'sessions' | 'previews' | 'openings'>) {
-  const byTask = new Map<string, CanvasDto['sessions'][number][]>();
-  for (const session of canvas.sessions) {
-    const key = session.taskId ?? 'container';
-    byTask.set(key, [...(byTask.get(key) ?? []), session]);
-  }
-  const order = [...canvas.tasks.map((task) => task.id), ...[...byTask.keys()].filter((id) => !canvas.tasks.some((task) => task.id === id))];
-  return order
-    .filter((taskId) => byTask.has(taskId))
-    .map((taskId) => {
-      const sessions = [...(byTask.get(taskId) ?? [])].sort((a, b) => a.createdAt - b.createdAt);
-      return {
-        taskId,
-        title: canvas.tasks.find((task) => task.id === taskId)?.title ?? '—',
-        sessions: sessions.map((session, index) => {
-          const prompt = (canvas.previews[session.id] ?? []).find((entry) => entry.event.kind === 'prompt');
-          const previewText = prompt && prompt.event.kind === 'prompt' ? prompt.event.text : '';
-          return {
-            session,
-            label: sessionListLabel({ title: session.title, previewText, opening: canvas.openings[session.id], index })
-          };
-        })
-      };
-    });
-}
+/** 组内按开始时间排。行标题用第一句话；预览只有最近几条，第一句另存在 openings 里。分组本身见 atoms/session-groups.ts。 */

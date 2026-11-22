@@ -426,7 +426,14 @@ export function CanvasView({
         onDraftChange: (text: string) => onDraftChange(session.id, text),
         onSend: (text: string, clientMessageId: string, attachments?: readonly AttachmentInputDto[]) =>
           onSend(session.id, text, clientMessageId, attachments),
-        onSendAndNew: () => onDerive(session.taskId ?? ''),
+        // 派生要落在任务上：没有归属任务的会话不给「发完再开一条」，免得拿空 taskId 去请求。
+        onSendAndNew:
+          session.taskId === null
+            ? undefined
+            : () => {
+                const taskId = session.taskId;
+                if (taskId !== null) onDerive(taskId);
+              },
         onInterrupt: () => onInterrupt(session.id),
         onChangeOption: (optionId: string, value: string | boolean) => onChangeOption(session.id, optionId, value)
       }

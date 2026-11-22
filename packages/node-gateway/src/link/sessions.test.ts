@@ -23,7 +23,7 @@ interface TaggedSession extends RuntimeSession {
   readonly tag: string;
 }
 
-const startCommand = (sessionId: string, workspaceRoot: string): StartCommand => ({
+const startCommand = (sessionId: string, workspaceRoot: string, extra: Partial<StartCommand> = {}): StartCommand => ({
   kind: 'start_session',
   sessionId: asSessionId(sessionId),
   taskId: null,
@@ -31,7 +31,8 @@ const startCommand = (sessionId: string, workspaceRoot: string): StartCommand =>
   workspaceRoot,
   origin: { kind: 'derive' },
   resume: null,
-  options: {}
+  options: {},
+  ...extra
 });
 
 function descriptor(): AgentRuntime['descriptor'] {
@@ -194,4 +195,83 @@ test('不同会话的 start 保持并行：一条被阻塞不影响另一条', a
   await a;
   assert.equal((ctx.sessions.get('s1') as TaggedSession | undefined)?.tag, 's1');
   await sessions.closeAll();
+});
+
+/** 一次 start 带的工具授权 + MCP 接线（token 是 hub 签的 bearer）。 */
+const grants = (token: string): Partial<StartCommand> => ({
+  tools: { transport: 'relay', url: '', token },
+  mcp: [{ transport: 'http', name: 'gitea', url: '' }]
+});
+
+function countingRuntime(log: string[]): { runtime: AgentRuntime; starts: () => number } {
+  let starts = 0;
+  return {
+    starts: () => starts,
+    runtime: {
+      descriptor: descriptor(),
+      async start(spec) {
+        starts += 1;
+        const tag = `r${starts}`;
+        log.push(`start:${tag}`);
+        return { ok: true, value: fakeSession(String(spec.sessionId), tag, log) };
+      }
+    }
+  };
+}
+
+test('工具授权 / MCP 接线不变：同一会话直接复用进程', async () => {
+  const log: string[] = [];
+  const counted = countingRuntime(log);
+  const { ctx, sessions } = setup(counted.runtime);
+  const command = startCommand('s1', '/tmp/a', grants('bearer-a'));
+
+  await sessions.run(command);
+  await sessions.run(command);
+
+  assert.equal(counted.starts(), 1, '接线一致时不能重建运行时');
+  assert.deepEqual(log, ['start:r1'], '复用不 dispose 旧进程');
+  assert.equal((ctx.sessions.get('s1') as TaggedSession | undefined)?.tag, 'r1');
+  assert.equal(
+    JSON.stringify(log).includes('bearer-a'),
+    false,
+    '指纹只存摘要，不下发 / 不记录原始令牌'
+  );
+  await sessions.closeAll();
+  await sessions.mcpEndpoint.close();
+});
+
+test('新工具令牌：重建运行时，旧进程不能被复用', async () => {
+  const log: string[] = [];
+  const counted = countingRuntime(log);
+  const { ctx, sessions } = setup(counted.runtime);
+
+  await sessions.run(startCommand('s1', '/tmp/a', grants('bearer-old')));
+  // hub 撤销旧 bearer 后用新令牌重新托管：ACP 里还留着旧 URL / 旧令牌，必须换进程。
+  await sessions.run(startCommand('s1', '/tmp/a', grants('bearer-new')));
+
+  assert.equal(counted.starts(), 2, '换了 bearer 必须重新拉起运行时');
+  assert.deepEqual(log, ['start:r1', 'dispose:r1', 'start:r2']);
+  assert.equal((ctx.sessions.get('s1') as TaggedSession | undefined)?.tag, 'r2');
+
+  // 再拿已经撤销的旧令牌 start：同样不能复用，也不能复用更早的进程。
+  await sessions.run(startCommand('s1', '/tmp/a', grants('bearer-old')));
+  assert.equal(counted.starts(), 3);
+  assert.deepEqual(log, ['start:r1', 'dispose:r1', 'start:r2', 'dispose:r2', 'start:r3']);
+  await sessions.closeAll();
+  await sessions.mcpEndpoint.close();
+});
+
+test('工具授权被移除：接线从有到无也要重建运行时', async () => {
+  const log: string[] = [];
+  const counted = countingRuntime(log);
+  const { ctx, sessions } = setup(counted.runtime);
+
+  await sessions.run(startCommand('s1', '/tmp/a', grants('bearer-a')));
+  await sessions.run(startCommand('s1', '/tmp/a'));
+
+  assert.equal(counted.starts(), 2, '撤销所有工具 / MCP 后旧进程不能继续跑');
+  assert.deepEqual(log, ['start:r1', 'dispose:r1', 'start:r2']);
+  assert.equal((ctx.sessions.get('s1') as TaggedSession | undefined)?.tag, 'r2');
+  await sessions.closeAll();
+  await sessions.mcpEndpoint.close();
 });

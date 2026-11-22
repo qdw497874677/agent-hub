@@ -48,6 +48,90 @@ export const sessionMcpApi = {
 };
 
 /**
+ * 项目级能力授权（docs/design/project-session-mcp.md §25-35）。
+ *
+ * 这是**会话归属人**在网页上逐项开的权限，默认全关；工具侧不能自助开启。
+ * 接口只认登录会话，所以这里和别的会话动作一样走 cookie + CSRF。
+ */
+export type ProjectToolScope =
+  | 'project:read'
+  | 'task:write'
+  | 'asset:write'
+  | 'worktree:open'
+  | 'message:send'
+  | 'candidate:import';
+
+export const PROJECT_TOOL_SCOPES: readonly ProjectToolScope[] = [
+  'project:read',
+  'task:write',
+  'worktree:open',
+  'message:send',
+  'candidate:import',
+  'asset:write'
+];
+
+/**
+ * 面板这一版开放六项：查看、建任务、开 worktree、发交接、导入候选、改项目资产。它们互相独立，默认全关。
+ * 服务端仍认全部 scope；后续新增能力时在这里显式加入，避免开关先于工具出现。
+ */
+export const PROJECT_TOOL_GRANT_SCOPES = [
+  'project:read',
+  'task:write',
+  'worktree:open',
+  'message:send',
+  'candidate:import',
+  'asset:write'
+] as const satisfies readonly ProjectToolScope[];
+
+export interface ProjectToolGrantView {
+  /** 这条会话服务端绑定的项目；接口没给时是 null（不影响展示已有的 scopes）。 */
+  readonly projectId: string | null;
+  /** 当前**有效**的授权项；空数组就是默认全关。 */
+  readonly scopes: readonly ProjectToolScope[];
+}
+
+/** 后端在迁移期可能返回单条 grant、grant 列表、`{revoked:n}`，这里统一归一成「当前有效项」。 */
+function normalizeProjectGrant(payload: unknown): ProjectToolGrantView {
+  const grant = (payload as { grant?: unknown } | null | undefined)?.grant;
+  const candidates: unknown[] = Array.isArray(grant) ? grant : grant == null ? [] : [grant];
+  const now = Date.now();
+  const enabled = new Set<ProjectToolScope>();
+  let projectId: string | null = null;
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const record = candidate as { projectId?: unknown; scopes?: unknown; revokedAt?: unknown; expiresAt?: unknown };
+    if (typeof record.revokedAt === 'number') continue;
+    if (typeof record.expiresAt === 'number' && record.expiresAt <= now) continue;
+    if (typeof record.projectId === 'string') projectId ??= record.projectId;
+    if (!Array.isArray(record.scopes)) continue;
+    for (const scope of record.scopes) {
+      if (typeof scope === 'string' && (PROJECT_TOOL_SCOPES as readonly string[]).includes(scope)) {
+        enabled.add(scope as ProjectToolScope);
+      }
+    }
+  }
+  return { projectId, scopes: PROJECT_TOOL_SCOPES.filter((scope) => enabled.has(scope)) };
+}
+
+const projectGrantResponse = (payload: { readonly grant?: unknown }): ProjectToolGrantView =>
+  normalizeProjectGrant(payload);
+
+export const projectToolGrantApi = {
+  /** 归属人查看；没有授权时后端回 `grant: null`，这里归一成空 scopes。 */
+  view: (sessionId: string) =>
+    call<{ grant?: unknown }>(`${sq(sessionId)}/project-tool-grant`).then(projectGrantResponse),
+  /** 授予 / 替换；`scopes` 至少一项，撤权用 DELETE。 */
+  set: (sessionId: string, scopes: readonly ProjectToolScope[]) =>
+    call<{ grant?: unknown }>(`${sq(sessionId)}/project-tool-grant`, {
+      method: 'PUT',
+      body: JSON.stringify({ scopes })
+    }).then(projectGrantResponse),
+  /** 撤销这条会话下该账号的全部项目授权；对已经发出的旧工具令牌也立即生效。 */
+  revoke: (sessionId: string) =>
+    call<{ grant?: unknown }>(`${sq(sessionId)}/project-tool-grant`, { method: 'DELETE' }).then(projectGrantResponse)
+};
+
+/**
  * 会话所属的组合工作目录。`session.groupId` 后端已经返回，契约的 sessionSchema 还没补这个字段，
  * 所以在这里做一次结构化读取，等契约补上后换成直接 `session.groupId` 即可。
  */
