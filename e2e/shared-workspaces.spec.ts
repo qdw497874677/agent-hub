@@ -98,7 +98,7 @@ test('团队工作目录：新建 → A 分配 → B 转移 → 之后只有 B �
       const title = `共享-${width}`;
       const task = await page.request.post('/api/tasks', { data: { projectId: b.id, title }, headers });
       expect(task.ok(), await task.text()).toBe(true);
-      await page.goto(`/#/p/${b.id}`);
+      await page.goto(`/#/p/${b.id}/canvas`);
       await page.reload();
       await page.locator('.react-flow__node-task').filter({ hasText: title }).getByRole('button', { name: '＋ 会话' }).click();
       const run = page.getByRole('dialog', { name: '开始会话' });

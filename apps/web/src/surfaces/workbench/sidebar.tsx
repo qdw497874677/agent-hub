@@ -55,9 +55,9 @@ function save(key: string, value: string): void {
 
 /** 行级按钮的统一外观：28px（触屏 44px）高、圆角、悬停抬一档底色。 */
 const ROW =
-  'flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sub text-secondary hover:bg-hover hover:text-primary lg:min-h-7';
+  'flex min-h-[44px] w-full items-center gap-2 rounded-md px-2 text-left text-sub text-secondary hover:bg-hover hover:text-primary lg:min-h-7';
 const GHOST_ICON =
-  'flex size-10 shrink-0 items-center justify-center rounded-md text-tertiary hover:bg-hover hover:text-primary lg:size-7';
+  'flex size-[44px] shrink-0 items-center justify-center rounded-md text-tertiary hover:bg-hover hover:text-primary lg:size-7';
 
 interface Props {
   readonly project: ProjectDto;
@@ -391,6 +391,12 @@ export function ProjectSidebar({
         )}
       </div>
 
+      {drawer ? (
+        <div className="border-b border-hair px-2 py-2" data-testid="drawer-global-nav">
+          <GlobalNav />
+        </div>
+      ) : null}
+
       <div className="space-y-0.5 px-2 pb-2">
         <button className={ROW} onClick={onNewTask}>
           <Icon name="plus" className="text-tertiary" />
@@ -471,9 +477,11 @@ export function ProjectSidebar({
         </div>
       </nav>
 
-      <div className="border-t border-hair px-2 py-2">
-        <GlobalNav />
-      </div>
+      {drawer ? null : (
+        <div className="border-t border-hair px-2 py-2">
+          <GlobalNav />
+        </div>
+      )}
 
       <div className="flex items-center gap-0.5 border-t border-hair px-2 py-1.5">
         <div className="min-w-0 flex-1">
@@ -567,7 +575,7 @@ function SessionRow({
       onRenamed(value);
     };
     return (
-      <div data-testid="sidebar-session-row" data-session-id={session.id} className="flex min-h-11 items-center gap-2 rounded-md bg-selected py-1 pl-6 pr-1 lg:min-h-7">
+      <div data-testid="sidebar-session-row" data-session-id={session.id} className="flex min-h-[44px] items-center gap-2 rounded-md bg-selected py-1 pl-6 pr-1 lg:min-h-7">
         {dot}
         <input
           autoFocus
@@ -604,7 +612,7 @@ function SessionRow({
           data-phase={phase}
           data-settled={muted ? 'true' : undefined}
           aria-busy={busy || undefined}
-          className={`flex min-h-11 w-full items-center gap-2 rounded-md py-1 pl-6 pr-12 text-left text-sub pointer-fine:pr-2 lg:min-h-7 ${
+          className={`flex min-h-[44px] w-full items-center gap-2 rounded-md py-1 pl-6 pr-[52px] text-left text-sub pointer-fine:pr-2 lg:min-h-7 ${
             active
               ? 'bg-selected text-primary'
               : muted
@@ -646,7 +654,7 @@ function SessionRow({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           title="会话操作"
-          className={`absolute right-0.5 top-1/2 flex size-10 -translate-y-1/2 items-center justify-center rounded-md text-tertiary hover:bg-hover hover:text-primary focus-visible:opacity-100 pointer-fine:size-6 ${
+          className={`absolute right-0 top-1/2 flex size-[44px] -translate-y-1/2 items-center justify-center rounded-md text-tertiary hover:bg-hover hover:text-primary focus-visible:opacity-100 pointer-fine:size-6 ${
             menuOpen ? 'opacity-100' : 'pointer-fine:opacity-0 pointer-fine:group-focus-within:opacity-100 pointer-fine:group-hover:opacity-100'
           }`}
           onClick={(event) => {

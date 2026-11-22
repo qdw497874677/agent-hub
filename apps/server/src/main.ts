@@ -11,7 +11,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { createAssetReader } from '@agent-hub/adapter-assets';
-import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqliteWorkspaceSweeps, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, ServiceGateway, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
 import { authenticateWorker, withToolAccess,
   createBotUseCase,
@@ -86,6 +86,7 @@ import type { AccountDeps } from '@agent-hub/domain';
 import { componentJobFinished, createAccessPolicy, isFileAssetKind, loadResourcePolicy } from '@agent-hub/domain';
 
 import { backupArgs, runBackup } from './backup.ts';
+import { createTaskGate } from './task-gate.ts';
 import { createInstallArtifacts } from './install-artifacts.ts';
 import { createRepoAuth } from './repo-auth.ts';
 import { createRemoteClients, serveMcpRelay } from './mcp-relay.ts';
@@ -193,6 +194,7 @@ const deps: Deps = {
   handoffTokenCap: handoffCapFromEnv(readEnv('HUB_HANDOFF_TOKEN_CAP') ?? undefined),
   projects: store.projects,
   tasks: store.tasks,
+  taskGate: createTaskGate(),
   workLog: store.workLog,
   sessions: store.sessions,
   workspaces: store.workspaces,
@@ -299,6 +301,7 @@ const deps: Deps = {
   // 团队级的运行时默认模型：新会话没点名模型时按运行时补。
   agentDefaults: store.agentDefaults,
   search: store.search,
+  metadataSearch: store.metadataSearch,
   hosting: createMemoryHosting(),
   queue: createSessionQueue(),
   now: () => Date.now(),
@@ -1068,6 +1071,7 @@ const botDeps = {
   detach: (actor: Parameters<typeof groupChat.detachAgent>[0], projectId: Parameters<typeof groupChat.detachAgent>[1], name: string) => groupChat.detachAgent(actor, projectId, name)
 };
 const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, guard,
+  taskArchiveBlockers: createTaskArchiveBlockers(store.db),
   observe: {
     enabled: observeEnabled,
     readers: observeEnabled ? [createConnectorObserveReader({

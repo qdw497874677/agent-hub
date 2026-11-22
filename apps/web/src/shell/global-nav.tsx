@@ -65,7 +65,7 @@ export function GlobalNav({ layout = 'list' }: { layout?: 'list' | 'rail' }) {
             href={item.href}
             data-testid={`nav-${item.id}`}
             aria-current={on ? 'page' : undefined}
-            className={`flex min-h-12 flex-col items-center justify-center gap-1 rounded-md px-1 text-meta lg:min-h-7 lg:flex-row lg:justify-start lg:gap-2.5 lg:px-2 lg:text-sub ${
+            className={`flex min-h-[44px] flex-col items-center justify-center gap-1 rounded-md px-1 text-meta lg:min-h-7 lg:flex-row lg:justify-start lg:gap-2.5 lg:px-2 lg:text-sub ${
               item.gap ? 'lg:mt-2' : ''
             } ${on ? 'bg-selected text-primary' : 'text-secondary hover:bg-hover hover:text-primary'}`}
           >

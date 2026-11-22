@@ -27,7 +27,7 @@ test('手机打开画布：视图适配，卡片在屏幕内', async ({ page, ba
   const saved = await page.request.put(`/api/projects/${project.id}/layout`, { data: { positions }, headers });
   expect(saved.ok(), await saved.text()).toBe(true);
 
-  await page.goto(`/#/p/${project.id}`);
+  await page.goto(`/#/p/${project.id}/canvas`);
   const cards = page.locator('.react-flow__node-task');
   await expect(cards).toHaveCount(3);
   await page.waitForTimeout(600);

@@ -282,6 +282,8 @@ export const taskSchema = z.object({
   ownerId: z.string().nullable(),
   branch: z.string().nullable(),
   summary: z.string().nullable(),
+  /** 归档时间；null / 缺省 = 未归档（老数据没有这个字段）。 */
+  archivedAt: epochMs.nullable().optional(),
   logSeq: z.number().int().nonnegative(),
   /** 任务上的默认 Agent：覆盖项目默认，会话里显式选的仍然优先。null = 没配。 */
   defaultAgent: defaultAgentSchema.nullable().optional(),
@@ -515,6 +517,34 @@ export const searchHitSchema = z.object({
 });
 
 export const searchResponseSchema = z.object({ hits: z.array(searchHitSchema) });
+
+export const metadataSearchProjectSchema = z.object({
+  projectId: z.string(),
+  name: z.string()
+});
+
+export const metadataSearchTaskSchema = z.object({
+  taskId: z.string(),
+  projectId: z.string(),
+  title: z.string(),
+  projectName: z.string()
+});
+
+export const metadataSearchSessionSchema = z.object({
+  sessionId: z.string(),
+  taskId: z.string().nullable(),
+  projectId: z.string(),
+  projectName: z.string(),
+  title: z.string().nullable(),
+  taskTitle: z.string().nullable(),
+  updatedAt: epochMs
+});
+
+export const metadataSearchResponseSchema = z.object({
+  projects: z.array(metadataSearchProjectSchema),
+  tasks: z.array(metadataSearchTaskSchema),
+  sessions: z.array(metadataSearchSessionSchema)
+});
 
 export const journalEntrySchema = z.object({
   seq: z.number().int().positive(),

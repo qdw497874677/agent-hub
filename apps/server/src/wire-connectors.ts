@@ -302,6 +302,8 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
   const dispatcher = createDispatcher({
     now: deps.now,
     store: store.dispatches,
+    tasks: deps.tasks,
+    taskGate: deps.taskGate,
     progress: (d, kind, detail) => taskProgress.emit(d, kind, detail),
     placement: async (projectId) => {
       const ws = await defaultWorkspaceFor(deps, projectId as ProjectId);

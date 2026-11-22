@@ -207,6 +207,24 @@ export function isHttpsRepoUrl(url: string): boolean {
   return /^https:\/\//i.test(url.trim());
 }
 
+/**
+ * 仓库地址里是不是直接带了凭据。
+ *
+ * 令牌必须走项目仓库的 `credential`（只写不回，落在密钥箱里）；写进 URL 会被
+ * 持久化、回显、进日志，`sameRepoUrl` 又故意忽略 userinfo，不能当凭据用。
+ * HTTP(S) 的用户名也可能是令牌；SSH 的用户名允许，密码不允许。
+ */
+export function repoUrlHasUserInfo(url: string): boolean {
+  const trimmed = url.trim();
+  if (!/^(?:https?|ssh):\/\//i.test(trimmed)) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.password !== '' || (isHttpRepoUrl(trimmed) && parsed.username !== '');
+  } catch {
+    return true;
+  }
+}
+
 /** 一个项目最多绑多少个仓库（组合工作空间的成员上限）。 */
 export const PROJECT_REPOS_MAX = 8;
 

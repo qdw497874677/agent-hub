@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- 显式父任务（项目内子任务）；只在创建时写，旧库由 task-creations.ts 补列。
   parent_task_id TEXT,
   summary    TEXT,
+  -- 归档时间；NULL = 未归档。只经 CAS 语句写，整行 upsert 更新时不覆盖。
+  archived_at INTEGER,
   log_seq    INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL

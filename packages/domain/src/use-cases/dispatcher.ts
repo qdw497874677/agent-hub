@@ -1,10 +1,13 @@
 import { dispatchOrder, planDispatch, DISPATCH_CAPS } from '../dispatch.ts';
 import { invalid, notFound, type DomainError } from '../errors.ts';
-import { newId } from '../ids.ts';
+import { asTaskId, newId } from '../ids.ts';
 import type { AgentTaskRequest } from '../ports/agent-task-store.ts';
 import type { OutputSink } from '../ports/output-sink.ts';
 import type { TaskDispatch, TaskDispatchStore } from '../ports/task-dispatch-store.ts';
+import type { TaskGate } from '../ports/task-gate.ts';
+import type { TaskRepository } from '../ports/task-repository.ts';
 import { err, ok, type Result } from '../result.ts';
+import { withActiveTask } from './task-admission.ts';
 
 /**
  * 调度器（ADR 0032 R3）：task.create（含批准的超额）建出来的任务排队，按上限开任务智能体会话；
@@ -14,6 +17,9 @@ import { err, ok, type Result } from '../result.ts';
 export interface DispatcherDeps {
   readonly now: () => number;
   readonly store: TaskDispatchStore;
+  /** 入队 / 领取时共享持有任务；归档必须等这一段调度决定做完。 */
+  readonly tasks: Pick<TaskRepository, 'byId'>;
+  readonly taskGate?: TaskGate;
   /** 任务会落在哪台机器（项目默认工作空间所在）、那台机器在不在线。 */
   readonly placement: (projectId: string) => Promise<{ workerId: string | null; online: boolean }>;
   /** 开任务智能体会话并发第一句（复用现有派生 + 送达流程）。 */
@@ -45,14 +51,22 @@ export function createDispatcher(deps: DispatcherDeps) {
 
   const enqueue = async (r: AgentTaskRequest, runtime: { agentId: string | null; model: string | null }): Promise<TaskDispatch | null> => {
     if (!r.taskId) return null;
-    const now = deps.now();
-    return deps.store.insert({
-      id: newId(), taskId: r.taskId, accountId: r.accountId, projectId: r.projectId, title: r.title, goal: r.goal,
-      human: r.wakeKey === null || r.wakeKey.startsWith('session:'), notifySessionId: r.sessionId, agentId: runtime.agentId, model: runtime.model,
-      originConnector: r.originConnector, originExternalId: r.originExternalId,
-      state: 'queued', workerId: null, sessionId: null, waitReason: null, result: null, notified: false,
-      createdAt: now, startedAt: null, updatedAt: now
+    const taskId = r.taskId;
+    const admitted = await withActiveTask(deps, asTaskId(taskId), async () => {
+      const now = deps.now();
+      return ok(await deps.store.insert({
+        id: newId(), taskId, accountId: r.accountId, projectId: r.projectId, title: r.title, goal: r.goal,
+        human: r.wakeKey === null || r.wakeKey.startsWith('session:'), notifySessionId: r.sessionId, agentId: runtime.agentId, model: runtime.model,
+        originConnector: r.originConnector, originExternalId: r.originExternalId,
+        state: 'queued', workerId: null, sessionId: null, waitReason: null, result: null, notified: false,
+        createdAt: now, startedAt: null, updatedAt: now
+      }));
     });
+    if (!admitted.ok) {
+      deps.log?.(`调度：任务 ${r.taskId} 未入队：${admitted.error.message}`);
+      return null;
+    }
+    return admitted.value;
   };
 
   const sink = async (d: TaskDispatch) => {
@@ -113,13 +127,22 @@ export function createDispatcher(deps: DispatcherDeps) {
       const q = queued.find((x) => x.id === id)!;
       // 先占位（running）再开会话：同一条不会被两次 tick 重复派发
       const claimed: TaskDispatch = { ...q, state: 'running', workerId: placed.get(q.projectId)!.workerId, waitReason: null, startedAt: deps.now(), updatedAt: deps.now() };
-      await deps.store.save(claimed);
-      const started = await deps.start(claimed).catch((e: unknown) => err(invalid(String(e))));
-      if (!started.ok) { await finish(claimed, 'failed', `开任务会话失败：${started.error.message}`); continue; }
-      const startedRow = { ...claimed, sessionId: started.value.sessionId, workerId: started.value.workerId, updatedAt: deps.now() };
-      await deps.store.save(startedRow);
-      await deps.progress?.(startedRow, 'started').catch(() => undefined);
-      deps.log?.(`调度：任务 ${q.taskId} → 会话 ${started.value.sessionId}`);
+      // 共享准入必须一直持有到开会话这个副作用结束；归档不能插进「占位」和「启动」之间。
+      const admitted = await withActiveTask(deps, asTaskId(q.taskId), async () => {
+        await deps.store.save(claimed);
+        const started = await deps.start(claimed).catch((e: unknown) => err(invalid(String(e))));
+        if (!started.ok) { await finish(claimed, 'failed', `开任务会话失败：${started.error.message}`); return ok(false); }
+        const startedRow = { ...claimed, sessionId: started.value.sessionId, workerId: started.value.workerId, updatedAt: deps.now() };
+        await deps.store.save(startedRow);
+        await deps.progress?.(startedRow, 'started').catch(() => undefined);
+        deps.log?.(`调度：任务 ${q.taskId} → 会话 ${started.value.sessionId}`);
+        return ok(true);
+      });
+      if (!admitted.ok) {
+        // 归档 / 恢复赢了：不启动会话，把这一条落成明确失败，避免卡在 running。
+        await finish({ ...claimed, startedAt: null }, 'failed', `任务不可派发：${admitted.error.message}`);
+        deps.log?.(`调度：任务 ${q.taskId} 未启动：${admitted.error.message}`);
+      }
     }
     await notifyAll();
   };

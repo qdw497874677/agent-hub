@@ -93,6 +93,7 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
     git: git.on('local'),
     secrets: fakeSecrets(),
     search: { search: async () => [] },
+    metadataSearch: { search: async () => ({ projects: [], tasks: [], sessions: [] }) },
     hosting: fakeHosting(),
     queue: immediateQueue,
     now: () => (clock += 1),

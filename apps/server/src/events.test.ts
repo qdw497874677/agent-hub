@@ -65,6 +65,7 @@ function harness() {
     fs: createLocalFs(),
     git: createGitWorkspace(),
     search: store.search,
+    metadataSearch: store.metadataSearch,
     hosting: createMemoryHosting(),
     queue: createSessionQueue(),
     now: () => 1_700_000_000_000

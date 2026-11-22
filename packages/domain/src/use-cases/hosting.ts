@@ -6,6 +6,7 @@ import { err, ok, type Result } from '../result.ts';
 import { placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
 import { startSessionUseCase } from './start-session.ts';
+import { withActiveTask } from './task-admission.ts';
 
 
 /**
@@ -14,6 +15,14 @@ import { startSessionUseCase } from './start-session.ts';
  * 这就是 S7.1「重开浏览器还能接着干活」。
  */
 export async function ensureHosted(
+  deps: Pick<Deps, 'hosting' | 'tasks' | 'taskGate' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'bots' | 'workspaceGroups' | 'now'> &
+    Partial<Pick<Deps, 'toolGrants' | 'environment'>>,
+  session: Session
+): Promise<Result<void, DomainError>> {
+  return withActiveTask(deps, session.taskId, () => ensureHostedAdmitted(deps, session));
+}
+
+async function ensureHostedAdmitted(
   deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'bots' | 'workspaceGroups' | 'now'> &
     Partial<Pick<Deps, 'toolGrants' | 'environment'>>,
   session: Session

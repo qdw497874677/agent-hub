@@ -1,5 +1,5 @@
 import { principalOfSubject, type Subject } from '../access.ts';
-import { createProject, deriveRepoId, isCanonicalRepoTokenKey, normalizeChecks, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeSubmodules, normalizePrimaryRepoId, normalizeRepos, parseRepo, repoNameFromUrl, repoTokenKey, withProjectRepos } from '../project.ts';
+import { createProject, deriveRepoId, isCanonicalRepoTokenKey, normalizeChecks, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeSubmodules, normalizePrimaryRepoId, normalizeRepos, parseRepo, repoNameFromUrl, repoTokenKey, repoUrlHasUserInfo, withProjectRepos } from '../project.ts';
 import { normalizeDefaultAgent } from '../agent-ref.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project, ProjectRepo } from '../project.ts';
@@ -23,9 +23,16 @@ export interface CreateProjectCommand {
   readonly rootPath?: string;
   /** 目录在哪台 Worker 上。不给 / 给的是本机 Worker = 和 Server 同机。 */
   readonly workerId?: string | null;
-  /** 可选的 git 仓库。 */
+  /** 可选的 git 仓库（老的单仓库写法）；给了 repos 就不能再给。 */
   readonly repoUrl?: string | null;
   readonly defaultBranch?: string | null;
+  /**
+   * 多仓库清单（docs/design/multi-repo.md §11.2）：与 `repoUrl` / `defaultBranch` 互斥。
+   * `credential` 明文只在这次请求里出现，创建时写进密钥箱，项目上只留规范密钥名。
+   */
+  readonly repos?: readonly ProjectRepoInput[] | null;
+  /** 组合会话的主仓库；必须落在 `repos` 里（没给 repos 时不能指定）。 */
+  readonly primaryRepoId?: string | null;
   /** 可选的项目说明（markdown）。 */
   readonly description?: string | null;
   /** 谁建的：项目归他的团队、算他建的（ADR 0011）。 */
@@ -33,11 +40,33 @@ export interface CreateProjectCommand {
 }
 
 export async function createProjectUseCase(
-  deps: Pick<Deps, 'fs' | 'now' | 'projects' | 'gateway' | 'workspaces' | 'access'>,
+  deps: Pick<Deps, 'fs' | 'now' | 'projects' | 'gateway' | 'workspaces' | 'access' | 'secrets'>,
   command: CreateProjectCommand
 ): Promise<Result<Project, DomainError>> {
+  const hasLegacyRepo = (command.repoUrl?.trim() ?? '') !== '' || (command.defaultBranch?.trim() ?? '') !== '';
+  if (hasLegacyRepo && command.repos != null) {
+    return err(invalid('仓库清单（repos）和 repoUrl 不能同时给'));
+  }
+  if (command.primaryRepoId != null && command.repos == null) {
+    return err(invalid('primaryRepoId 只在给 repos 时使用'));
+  }
   const repo = parseRepo(command.repoUrl, command.defaultBranch);
   if (!repo.ok) return repo;
+  if (repo.value !== null && repoUrlHasUserInfo(repo.value.url)) {
+    return err(invalid('仓库地址里不能带用户名或密码：私有用 credential 传令牌'));
+  }
+  const normalizedRepos = command.repos == null ? null : normalizeRepos(command.repos, { acceptTokenSecret: false });
+  if (normalizedRepos !== null && !normalizedRepos.ok) return normalizedRepos;
+  if (normalizedRepos !== null) {
+    const ids = new Set<string>();
+    for (const entry of normalizedRepos.value) {
+      if (ids.has(entry.id)) return err(invalid(`仓库 id 重复：${entry.id}`));
+      ids.add(entry.id);
+      if (repoUrlHasUserInfo(entry.url)) {
+        return err(invalid('仓库地址里不能带用户名或密码：私有用 credential 传令牌'));
+      }
+    }
+  }
   const description = normalizeDescription(command.description);
   if (!description.ok) return description;
   const rootPath = command.rootPath?.trim() ?? '';
@@ -54,7 +83,9 @@ export async function createProjectUseCase(
   const created = createProject({
     name: command.name,
     now: deps.now(),
-    repo: repo.value,
+    repo: normalizedRepos === null ? repo.value : null,
+    repos: normalizedRepos?.value ?? undefined,
+    primaryRepoId: command.primaryRepoId,
     description: description.value,
     teamId: principalOfSubject(command.actor)?.user.teamId ?? null,
     createdBy: principalOfSubject(command.actor)?.user.id ?? null
@@ -83,21 +114,62 @@ export async function createProjectUseCase(
       target = saved.workspace;
     }
   }
+  // 仓库令牌：明文只进密钥箱，项目上只留规范键 `repo-git:<projectId>:<repoId>`。
+  // 先写密钥再存项目：写密钥失败时项目不会留下一个绑了却缺令牌的半成品；
+  // 存项目失败（含认领冲突 / 抛错）则把这次写入的密钥回收。
+  const written: string[] = [];
+  let project = created.value;
+  if (normalizedRepos !== null) {
+    const repos: ProjectRepo[] = [];
+    for (const [index, entry] of normalizedRepos.value.entries()) {
+      const credential = command.repos?.[index]?.credential;
+      const token = typeof credential === 'string' ? credential.trim() : '';
+      if (token === '') {
+        repos.push(entry);
+        continue;
+      }
+      const key = repoTokenKey(project.id, entry.id);
+      try {
+        await deps.secrets.put(key, token, deps.now());
+      } catch (error) {
+        await deps.secrets.remove(key).catch(() => false);
+        for (const name of written) await deps.secrets.remove(name).catch(() => false);
+        throw error;
+      }
+      written.push(key);
+      repos.push({ ...entry, tokenSecret: key });
+    }
+    project = withProjectRepos(project, repos, project.primaryRepoId);
+  }
+  const forgetTokens = async () => {
+    for (const name of written) await deps.secrets.remove(name).catch(() => false);
+  };
   // 团队里已经登记过这个目录（ADR 0026）：项目与认领在同一个 SQLite 事务里提交（#233）。
   // 冲突 / 历史重复时不写项目；写项目失败会连同认领一起回滚，工作空间本身可以保持未认领。
-  if (target) {
-    const claimed = await deps.projects.saveWithWorkspaceClaim(created.value, {
-      projectId: created.value.id,
-      workspaceId: target.id,
-      linkedBy: created.value.createdBy,
-      linkedAt: deps.now()
-    });
-    if (claimed.status === 'conflict') return err(claimConflictError());
-    if (claimed.status === 'ambiguous') return err(ambiguousPlaceError());
-  } else {
-    await deps.projects.save(created.value);
+  try {
+    if (target) {
+      const claimed = await deps.projects.saveWithWorkspaceClaim(project, {
+        projectId: project.id,
+        workspaceId: target.id,
+        linkedBy: project.createdBy,
+        linkedAt: deps.now()
+      });
+      if (claimed.status === 'conflict') {
+        await forgetTokens();
+        return err(claimConflictError());
+      }
+      if (claimed.status === 'ambiguous') {
+        await forgetTokens();
+        return err(ambiguousPlaceError());
+      }
+    } else {
+      await deps.projects.save(project);
+    }
+  } catch (error) {
+    await forgetTokens();
+    throw error;
   }
-  return ok(created.value);
+  return ok(project);
 }
 
 export async function listProjects(deps: Pick<Deps, 'projects'>): Promise<Result<Project[], DomainError>> {

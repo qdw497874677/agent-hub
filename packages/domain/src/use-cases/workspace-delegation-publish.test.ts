@@ -813,3 +813,35 @@ test('发布：记录没有有效基线 / 项目仓库地址变了 → conflict�
   assert.equal(changed.calls.publish.length, 0);
   assert.equal(changed.calls.create.length, 0);
 });
+
+test('归档准入：任务已归档 → 发布在领尝试 / 碰远端之前拒绝', async () => {
+  const w = await world();
+  assert.equal(await w.deps.tasks.setArchived(w.task.id, 99, null), true);
+  const result = await publishWorkspaceDelegationUseCase(w.deps, w.store, w.bridges, command());
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.error.code, 'conflict');
+  assert.match(!result.ok ? result.error.message : '', /已归档/);
+  assert.equal(w.calls.publish.length, 0);
+  assert.equal(w.calls.list.length, 0);
+  assert.equal(w.calls.create.length, 0);
+  assert.equal(w.store.rows.size, 0);
+});
+
+test('归档准入：任务已归档 → 显式对账也只读拒绝，不重新核验远端', async () => {
+  const w = await world();
+  assert.ok((await publishWorkspaceDelegationUseCase(w.deps, w.store, w.bridges, command())).ok);
+  assert.equal(await w.deps.tasks.setArchived(w.task.id, 99, null), true);
+
+  const reconciled = await publishWorkspaceDelegationUseCase(
+    w.deps,
+    w.store,
+    w.bridges,
+    command({ mode: 'reconcile' })
+  );
+  assert.equal(reconciled.ok, false);
+  assert.equal(!reconciled.ok && reconciled.error.code, 'conflict');
+  assert.equal(w.calls.publish.length, 1);
+  assert.equal(w.calls.list.length, 1);
+  assert.equal(w.calls.create.length, 1);
+  assert.equal([...w.store.rows.values()][0]?.state, 'published');
+});

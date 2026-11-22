@@ -122,7 +122,14 @@ function LiveCount({ text }: { text: string }) {
   );
 }
 
-/** 打开某条会话停几秒 = 看过了。 */
+/** 待办先说会话自己：任务名不能区分同一任务下的多条会话。 */
+export function attentionTitle(item: Pick<AttentionItemDto, 'sessionId' | 'sessionTitle'>): string {
+  const named = item.sessionTitle?.trim();
+  if (named) return named;
+  return `会话 ${item.sessionId.slice(0, 6)}`;
+}
+
+/** 打开某条会话停几秒 = 看过了。审批 / 回答必须留给人处理，不能自动收掉。 */
 export function useAutoAck(sessionId: string | null, delayMs = 3000) {
   const attention = useAttention();
   const ack = useAckAttention();
@@ -130,6 +137,7 @@ export function useAutoAck(sessionId: string | null, delayMs = 3000) {
   const key = item ? `${item.sessionId}|${item.phase}|${item.since}` : null;
   useEffect(() => {
     if (!item) return;
+    if (item.phase === 'needs_approval' || item.phase === 'needs_answer') return;
     const timer = setTimeout(() => ack.mutate({ item }), delayMs);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -165,7 +173,7 @@ export function AttentionInbox({ onOpen }: { onOpen(item: AttentionItemDto): voi
             ? undoNote
             : undo.isPending
               ? '正在撤销…'
-              : `已收起「${hiddenNow.item.taskTitle}」`}
+              : `已收起「${attentionTitle(hiddenNow.item)}」`}
       </span>
       <button
         data-testid="attention-undo-btn"
@@ -238,22 +246,22 @@ export function AttentionInbox({ onOpen }: { onOpen(item: AttentionItemDto): voi
             {/* 手机上行内目标和 ⋯ 都要 ≥44：这条通道最容易误触（点偏就进会话、点「稍后」就收起）。 */}
             <button
               className="flex min-w-0 flex-1 flex-col justify-center text-left max-md:min-h-[44px]"
-              title={`${item.taskTitle} · ${item.reason}`}
+              title={`${attentionTitle(item)} · ${item.reason}`}
               onClick={() => onOpen(item)}
             >
               {/* 时间跟标题同一行靠右（和会话行一个读法），第二行整行留给原因：
                   以前时间是原因后面的尾巴，390 上第一个被截掉，用户看不出这条等了多久。 */}
               <span className="flex min-w-0 items-baseline gap-2">
-                <span className="min-w-0 flex-1 truncate text-body text-primary">{item.taskTitle}</span>
+                <span className="min-w-0 flex-1 truncate text-body text-primary">{attentionTitle(item)}</span>
                 <span className="shrink-0 text-meta text-tertiary">{relativeTime(item.since)}</span>
               </span>
               <span className="block truncate text-meta text-tertiary">
-                {item.projectName} · {item.agentId} · {item.reason}
+                {item.projectName} · {item.taskTitle} · {item.agentId} · {item.reason}
               </span>
             </button>
             <button
               data-testid="attention-menu"
-              aria-label={`「${item.taskTitle}」的更多操作`}
+              aria-label={`「${attentionTitle(item)}」的更多操作`}
               title="更多操作"
               className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-sm text-meta text-tertiary hover:bg-card hover:text-secondary"
               onClick={(event) => {
@@ -335,9 +343,9 @@ export function AttentionInbox({ onOpen }: { onOpen(item: AttentionItemDto): voi
           </div>
         }
       >
-        <h3 className="text-title text-primary">{detail.taskTitle}</h3>
+        <h3 className="text-title text-primary">{attentionTitle(detail)}</h3>
         <p className="mt-1 text-meta text-tertiary">
-          {detail.projectName} · {detail.agentId} · {PHASE_LABEL[detail.phase]} · 等了{' '}
+          {detail.projectName} · {detail.taskTitle} · {detail.agentId} · {PHASE_LABEL[detail.phase]} · 等了{' '}
           {relativeTime(detail.since)}
         </p>
         {/* 列表里只有一行，原因被截在「模型拒绝了这次请求（st…」；完整的话放在这里，换行保留。 */}
@@ -367,7 +375,14 @@ function ConnectorNotices() {
     <section data-testid="connector-notices" className="mb-3 rounded-md border border-rust/40 bg-card">
       <ul>
         {list.map((n) => (
-          <li key={`${n.kind}|${n.id}`} data-testid="connector-notice" data-kind={n.kind} className="flex flex-wrap items-center gap-2 border-b border-hair px-3 py-2 last:border-b-0">
+          <li
+            key={`${n.kind}|${n.id}`}
+            data-testid="connector-notice"
+            data-kind={n.kind}
+            data-notice-id={n.id}
+            tabIndex={-1}
+            className="flex flex-wrap items-center gap-2 border-b border-hair px-3 py-2 outline-none last:border-b-0 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-strong"
+          >
             <span className="shrink-0 rounded bg-rust/15 px-1.5 text-[11px] leading-[18px] text-rust">{n.kind === 'binding_paused' ? '触发已暂停' : n.kind === 'inbound_quarantined' ? '疑似注入已隔离' : 'bot 建任务待批'}</span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-body text-primary">{n.title}</span>

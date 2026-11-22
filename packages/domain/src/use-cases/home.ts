@@ -13,6 +13,12 @@ export interface RecentSession {
   readonly sessionId: SessionId;
   readonly taskId: TaskId | null;
   readonly taskTitle: string;
+  /**
+   * 会话自己的名字（用户起的）。任务名回答「在哪条任务上」，会话名回答「哪一条」——
+   * 同一任务下的多条会话只能靠它区分。缺省 = 没起名，界面回退到短标识 / 首句。
+   * 只带已有的 `session.title`，不为它额外读事件或转录。
+   */
+  readonly sessionTitle?: string;
   readonly projectId: ProjectId;
   readonly projectName: string;
   readonly agentId: AgentId;
@@ -47,8 +53,12 @@ export async function loadHome(
 
   const summaries = await Promise.all(
     projects.map(async (project): Promise<ProjectSummary> => {
-      const tasks = await deps.tasks.listByProject(project.id);
-      const sessions = await deps.sessions.listByProject(project.id);
+      const allTasks = await deps.tasks.listByProject(project.id);
+      const archived = new Set(allTasks.filter((task) => task.archivedAt != null).map((task) => task.id));
+      const tasks = allTasks.filter((task) => !archived.has(task.id));
+      const sessions = (await deps.sessions.listByProject(project.id)).filter(
+        (session) => session.taskId === null || !archived.has(session.taskId)
+      );
       const main = (await coordinators?.(project.id) ?? []).filter(
         (session) => session.taskId === null && session.originProjectId === project.id && session.kind !== 'side'
       );
@@ -77,11 +87,13 @@ export async function loadHome(
       const main = registered.get(session.id);
       const owner = taskId === null ? (main && { title: '主会话', project: main.project }) : owners.get(taskId);
       if (!owner) return [];
+      const sessionTitle = session.title?.trim();
       return [
         {
           sessionId: session.id,
           taskId,
           taskTitle: owner.title,
+          ...(sessionTitle === undefined || sessionTitle === '' ? {} : { sessionTitle }),
           projectId: owner.project.id,
           projectName: owner.project.name,
           agentId: session.agentId,

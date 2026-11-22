@@ -10,5 +10,11 @@ import { toTask } from './mappers.ts';
 export function toTaskWithParent(row: Record<string, unknown>): Task {
   const task = toTask(row);
   const parent = row.parent_task_id;
-  return { ...task, parentTaskId: typeof parent === 'string' && parent !== '' ? asTaskId(parent) : null };
+  const archivedAt = row.archived_at;
+  return {
+    ...task,
+    parentTaskId: typeof parent === 'string' && parent !== '' ? asTaskId(parent) : null,
+    // 老库补列后是 NULL：输出 null（而不是缺省），和 createTask 的默认值往返一致。
+    archivedAt: typeof archivedAt === 'number' ? archivedAt : null
+  };
 }

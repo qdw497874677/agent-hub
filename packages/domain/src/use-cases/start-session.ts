@@ -5,6 +5,7 @@ import { err, ok, type Result } from '../result.ts';
 import { setupNotReady } from '../workspace.ts';
 import type { WorkerCommand } from '../ports/node-gateway.ts';
 import type { Deps } from './deps.ts';
+import { withActiveTask } from './task-admission.ts';
 
 type StartCommand = Extract<WorkerCommand, { kind: 'start_session' }>;
 
@@ -62,6 +63,13 @@ export interface StartPlan {
  * 所以不在这里做；这里只负责把 server 回执里的环境版本统一落库（落库失败不影响启动）。
  */
 export async function startSessionUseCase(
+  deps: Pick<Deps, 'gateway' | 'hosting' | 'now' | 'sessions' | 'tasks' | 'taskGate' | 'workspaces'>,
+  plan: StartPlan
+): Promise<Result<Session, DomainError>> {
+  return withActiveTask(deps, plan.session.taskId, () => startSessionAdmitted(deps, plan));
+}
+
+async function startSessionAdmitted(
   deps: Pick<Deps, 'gateway' | 'hosting' | 'now' | 'sessions' | 'workspaces'>,
   plan: StartPlan
 ): Promise<Result<Session, DomainError>> {

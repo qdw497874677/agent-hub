@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { createDispatcher, ok, type AgentTaskRequest, type DispatcherDeps } from '@agent-hub/domain';
+import { createDispatcher, ok, type AgentTaskRequest, type DispatcherDeps, type Task } from '@agent-hub/domain';
 import { createSqliteTaskDispatch } from './task-dispatch.ts';
 
 const req = (i: number, over: Partial<AgentTaskRequest> = {}): AgentTaskRequest => ({
@@ -18,6 +18,7 @@ function world(db = new DatabaseSync(':memory:')) {
   let botBusy = false;
   const deps: DispatcherDeps = {
     now: () => ++clock, store,
+    tasks: { byId: async (id) => ({ id, archivedAt: null } as Task) },
     placement: async (p) => ({ workerId: p === 'p3' ? 'w2' : 'w1', online: true }),
     start: async (d) => { await new Promise((r) => setTimeout(r, 5)); const sid = `s-${d.taskId}`; started.push(d.taskId); sessions.set(sid, { running: true, outcome: null, reply: '' }); return ok({ sessionId: sid, workerId: d.projectId === 'p3' ? 'w2' : 'w1' }); },
     sessionState: async (sid) => sessions.get(sid) ?? null,

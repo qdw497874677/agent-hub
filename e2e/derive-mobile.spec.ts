@@ -19,7 +19,7 @@ async function openPanel(page: Page, baseURL: string): Promise<string> {
   const name = `运行面板 ${Date.now().toString(36)}`;
   const project = (await (await page.request.post('/api/projects', { data: { name }, headers })).json()) as { id: string };
   await page.request.post('/api/tasks', { data: { projectId: project.id, title: '面板里的任务' }, headers });
-  await page.goto(`/#/p/${project.id}`);
+  await page.goto(`/#/p/${project.id}/canvas`);
   await page.locator('.react-flow__node-task').filter({ hasText: '面板里的任务' }).getByRole('button', { name: '＋ 会话' }).click();
   await page.getByRole('dialog', { name: '开始会话' }).waitFor();
   return name;

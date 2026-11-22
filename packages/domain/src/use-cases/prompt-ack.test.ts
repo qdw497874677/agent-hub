@@ -92,6 +92,7 @@ test('同一 clientMessageId 发两次：journal 只有一条 prompt，第二次
   assert.equal(second.value.deliveryId, first.value.deliveryId, '第二次返回同一条送达记录');
   assert.equal(second.value.state, 'queued');
   assert.equal((await w.deliveries.recent(w.sid, 10)).length, 1, '也不能重复入队');
+  await settle();
   assert.equal(w.dispatched.filter((command) => command.kind === 'prompt').length, 1, '不能重复派发');
 });
 

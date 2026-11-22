@@ -4,6 +4,7 @@ import { inMemoryDeps } from '../testing/in-memory.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { createTaskWithReplayUseCase, TASK_CREATE_OPERATION } from './task-creation.ts';
+import { createTask } from '../task.ts';
 import type { TaskCreationStore } from '../ports/task-creation-store.ts';
 import type { Task } from '../task.ts';
 import type { ProjectId, SessionId } from '../ids.ts';
@@ -155,4 +156,49 @@ test('创建任务没有隐式副作用：不建会话、不派工', async () =>
   assert.deepEqual(await w.deps.sessions.listByProject(project.id), []);
   assert.deepEqual(await w.deps.workspaces.byProject(project.id), []);
   assert.deepEqual(w.dispatched, []);
+});
+
+test('归档准入：直接父任务已归档 → conflict，不建子任务、不写回执', async () => {
+  const { w, project, deps } = await world();
+  const parent = await createTaskUseCase(w.deps, { projectId: project.id, title: '父任务' });
+  assert.ok(parent.ok);
+  assert.equal(await w.deps.tasks.setArchived(parent.value.id, 99, null), true);
+
+  const child = await createTaskWithReplayUseCase(deps, {
+    ...base(project.id),
+    parentTaskId: parent.value.id
+  });
+  assert.ok(!child.ok);
+  assert.equal(child.error.code, 'conflict');
+  assert.match(child.error.message, /已归档/);
+  assert.equal(deps.taskCreations.calls.length, 0);
+  assert.equal((await w.deps.tasks.listByProject(project.id)).length, 1);
+});
+
+test('归档准入：只共享直接父任务，兄弟与祖先归档都不影响', async () => {
+  const { w, project, deps } = await world();
+  const grandparent = await createTaskUseCase(w.deps, { projectId: project.id, title: '曾祖任务' });
+  assert.ok(grandparent.ok);
+  assert.equal(await w.deps.tasks.setArchived(grandparent.value.id, 99, null), true);
+  const createdParent = createTask({
+    projectId: project.id,
+    title: '父任务',
+    parentTaskId: grandparent.value.id,
+    parent: grandparent.value,
+    now: w.deps.now()
+  });
+  assert.ok(createdParent.ok);
+  await w.deps.tasks.save(createdParent.value);
+  const parent = createdParent;
+  const sibling = await createTaskUseCase(w.deps, { projectId: project.id, title: '兄弟任务' });
+  assert.ok(sibling.ok);
+  assert.equal(await w.deps.tasks.setArchived(sibling.value.id, 99, null), true);
+
+  const child = await createTaskWithReplayUseCase(deps, {
+    ...base(project.id),
+    parentTaskId: parent.value.id
+  });
+  assert.ok(child.ok, JSON.stringify(child));
+  assert.equal(child.value.parentTaskId, parent.value.id);
+  assert.equal(deps.taskCreations.calls.length, 1);
 });

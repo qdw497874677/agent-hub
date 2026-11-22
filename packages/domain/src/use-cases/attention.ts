@@ -12,6 +12,11 @@ export interface AttentionItem {
   readonly sessionId: string;
   readonly taskId: string;
   readonly taskTitle: string;
+  /**
+   * 会话自己的名字（用户起的）；缺省 = 没起名，界面回退到短标识。
+   * 同一任务下可能有多条会话等处理，靠它区分。只带已有的 `session.title`。
+   */
+  readonly sessionTitle?: string;
   readonly projectId: string;
   readonly projectName: string;
   readonly agentId: string;
@@ -134,8 +139,11 @@ export async function loadAttention(
       const view = derivePhase({ session, events, pending, prCreatedAt: prs.map((p) => p.createdAt), now: input.now });
       if (view.phase === 'working' || view.phase === 'queued') working++;
       if (!needsHuman(view.phase) || acked.has(`${session.id}|${view.phase}|${view.since}`)) continue;
+      const sessionTitle = session.title?.trim();
       items.push({
-        sessionId: session.id, taskId: task.id, taskTitle: task.title, projectId: project.id, projectName: project.name,
+        sessionId: session.id, taskId: task.id, taskTitle: task.title,
+        ...(sessionTitle === undefined || sessionTitle === '' ? {} : { sessionTitle }),
+        projectId: project.id, projectName: project.name,
         agentId: session.agentId, phase: view.phase, since: view.since, reason: view.reason,
         possible: view.possible === true, expiresAt: view.expiresAt ?? null
       });

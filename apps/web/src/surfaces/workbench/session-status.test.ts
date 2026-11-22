@@ -10,7 +10,11 @@ import {
   settledSessions
 } from './session-status.ts';
 
-const at = (status: SessionDto['status'], settledAt?: number | null) => ({ status, ...(settledAt === undefined ? {} : { settledAt }) });
+const at = (status: SessionDto['status'], settledAt?: number | null, lastSeq = 1) => ({
+  status,
+  lastSeq,
+  ...(settledAt === undefined ? {} : { settledAt })
+});
 
 test('收起压过进程状态', () => {
   assert.equal(sessionPhase(at('running', 1_700_000_000_000)), 'settled');
@@ -20,8 +24,15 @@ test('收起压过进程状态', () => {
   assert.equal(sessionPhase(at('done')), 'done');
 });
 
-test('五种存储状态各自映射', () => {
-  assert.equal(sessionPhase(at('running')), 'working');
+test('running 但还没跑出第一条事件 = 就绪，不是工作中', () => {
+  assert.equal(sessionPhase(at('running', null, 0)), 'ready');
+  assert.equal(sessionPhase(at('running', null, 1)), 'working');
+  // 停止 / 断线仍然是停止，不能因为 lastSeq 被误认成 ready
+  assert.equal(sessionPhase(at('stopped', null, 0)), 'stopped');
+  assert.equal(sessionPhase(at('failed', null, 0)), 'failed');
+});
+
+test('存储状态各自映射', () => {
   assert.equal(sessionPhase(at('failed')), 'failed');
   assert.equal(sessionPhase(at('interrupted')), 'interrupted');
   assert.equal(sessionPhase(at('stopped')), 'stopped');
@@ -30,12 +41,12 @@ test('五种存储状态各自映射', () => {
 
 test('文案和底色', () => {
   assert.deepEqual(
-    (['working', 'failed', 'interrupted', 'stopped', 'done', 'settled'] as const).map((phase) => phaseLabel(phase)),
-    ['工作中', '失败了', '已中断', '已停止', '已完成', '已收起']
+    (['ready', 'working', 'failed', 'interrupted', 'stopped', 'done', 'settled'] as const).map((phase) => phaseLabel(phase)),
+    ['就绪', '工作中', '失败了', '已中断', '已停止', '已完成', '已收起']
   );
   assert.deepEqual(
-    (['working', 'failed', 'interrupted', 'stopped', 'done', 'settled'] as const).map((phase) => phaseTone(phase)),
-    ['busy', 'bad', 'bad', 'idle', 'idle', 'idle']
+    (['ready', 'working', 'failed', 'interrupted', 'stopped', 'done', 'settled'] as const).map((phase) => phaseTone(phase)),
+    ['idle', 'busy', 'bad', 'bad', 'idle', 'idle', 'idle']
   );
 });
 

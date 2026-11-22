@@ -5,22 +5,20 @@ import { Icon, type IconName } from '../../atoms/icons.tsx';
 
 export const VIEWS: readonly { view: View; label: string; icon: IconName }[] = [
   { view: 'canvas', label: '画布', icon: 'grid' },
-  { view: 'list', label: '列表', icon: 'list' },
-  { view: 'focus', label: '会话', icon: 'message' }
+  { view: 'list', label: '列表', icon: 'list' }
 ];
 
 /**
- * 项目内的视图切换（画布 / 列表 / 会话）：页头里的分段控件。
+ * 项目内的视图切换（画布 / 列表）：页头里的分段控件。
+ * 会话是列表 / 画布打开后的详情，不是并列的第三块；打开方式始终是选一条会话。
  * 窄屏只留图标（名字在 aria-label / title 里），宽屏图标 + 名字。
  */
 export function ViewSwitch({
   view,
-  canFocus,
   onView,
   iconOnly = false
 }: {
   view: View;
-  canFocus: boolean;
   onView: (view: View) => void;
   iconOnly?: boolean;
 }) {
@@ -35,9 +33,8 @@ export function ViewSwitch({
             aria-label={iconOnly ? item.label : undefined}
             title={item.label}
             aria-pressed={on}
-            disabled={item.view === 'focus' && !canFocus}
             onClick={() => onView(item.view)}
-            className={`flex items-center justify-center gap-1.5 rounded-[4px] text-sub transition-colors duration-[var(--dur-fast)] disabled:opacity-35 ${
+            className={`flex items-center justify-center gap-1.5 rounded-[4px] text-sub transition-colors duration-[var(--dur-fast)] ${
               iconOnly ? 'size-9' : 'h-7 px-2.5'
             } ${on ? 'bg-selected text-primary' : 'text-tertiary hover:text-primary'}`}
           >
@@ -54,13 +51,11 @@ export function ViewSwitch({
 export function ProjectBar({
   project,
   view,
-  canFocus,
   stream,
   onView
 }: {
   project: ProjectDto;
   view: View;
-  canFocus: boolean;
   stream: StreamState;
   onView: (view: View) => void;
 }) {
@@ -76,7 +71,7 @@ export function ProjectBar({
         </span>
       ) : null}
       <div className="ml-auto">
-        <ViewSwitch view={view} canFocus={canFocus} onView={onView} />
+        <ViewSwitch view={view} onView={onView} />
       </div>
     </div>
   );

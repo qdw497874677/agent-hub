@@ -7,6 +7,8 @@ import { createTask, type Task } from '../task.ts';
 import type { ProjectRepository } from '../ports/project-repository.ts';
 import type { TaskRepository } from '../ports/task-repository.ts';
 import type { TaskCreationStore } from '../ports/task-creation-store.ts';
+import type { TaskGate } from '../ports/task-gate.ts';
+import { withActiveTask } from './task-admission.ts';
 
 /** 请求回执里的操作名：换操作不共用请求键。 */
 export const TASK_CREATE_OPERATION = 'task.create';
@@ -34,6 +36,8 @@ export interface TaskCreationDeps {
   readonly tasks: TaskRepository;
   readonly taskCreations: TaskCreationStore;
   readonly now: () => number;
+  /** 有直接父任务时共享持有父任务；归档中的父任务不能再长出子任务。 */
+  readonly taskGate?: TaskGate;
 }
 
 /**
@@ -69,47 +73,50 @@ export async function createTaskWithReplayUseCase(
     parentTaskId = parent.id;
   }
 
-  const created = createTask({
-    projectId: project.id,
-    title: command.title,
-    goal: command.goal,
-    ownerId: command.ownerId ?? null,
-    baseBranch: command.baseBranch ?? null,
-    parentTaskId,
-    parent,
-    now: deps.now()
-  });
-  if (!created.ok) return created;
-  const task = created.value;
+  // 只共享直接父任务：兄弟 / 其它父级的任务创建互不影响；没有父任务时不占用任何准入。
+  return withActiveTask(deps, parentTaskId, async () => {
+    const created = createTask({
+      projectId: project.id,
+      title: command.title,
+      goal: command.goal,
+      ownerId: command.ownerId ?? null,
+      baseBranch: command.baseBranch ?? null,
+      parentTaskId,
+      parent,
+      now: deps.now()
+    });
+    if (!created.ok) return created;
+    const task = created.value;
 
-  const key = requestReplayKey(
-    {
+    const key = requestReplayKey(
+      {
+        actorId,
+        sourceSessionId: asSessionId(sourceSessionId),
+        projectId: project.id,
+        operation: TASK_CREATE_OPERATION
+      },
+      requestKey
+    );
+    // 规范化后的输入才进指纹：标题首尾空白、goal 空串等差异不算「新参数」。
+    const fingerprint = requestFingerprint([
+      TASK_CREATE_FINGERPRINT_VERSION,
+      task.title,
+      task.goal,
+      task.ownerId,
+      task.baseBranch,
+      task.parentTaskId ?? null
+    ]);
+
+    const outcome = await deps.taskCreations.createWithReplay({
+      key,
+      fingerprint,
       actorId,
       sourceSessionId: asSessionId(sourceSessionId),
       projectId: project.id,
-      operation: TASK_CREATE_OPERATION
-    },
-    requestKey
-  );
-  // 规范化后的输入才进指纹：标题首尾空白、goal 空串等差异不算「新参数」。
-  const fingerprint = requestFingerprint([
-    TASK_CREATE_FINGERPRINT_VERSION,
-    task.title,
-    task.goal,
-    task.ownerId,
-    task.baseBranch,
-    task.parentTaskId ?? null
-  ]);
-
-  const outcome = await deps.taskCreations.createWithReplay({
-    key,
-    fingerprint,
-    actorId,
-    sourceSessionId: asSessionId(sourceSessionId),
-    projectId: project.id,
-    operation: TASK_CREATE_OPERATION,
-    task
+      operation: TASK_CREATE_OPERATION,
+      task
+    });
+    if (outcome.status === 'conflict') return err(conflict('同一请求键对应不同参数'));
+    return ok(outcome.task);
   });
-  if (outcome.status === 'conflict') return err(conflict('同一请求键对应不同参数'));
-  return ok(outcome.task);
 }

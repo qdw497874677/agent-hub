@@ -25,10 +25,12 @@ async function enterProject(page: Page, name: string): Promise<void> {
   const sidebar = page.getByRole('complementary', { name: '项目导航' });
   if (await sidebar.isVisible().catch(() => false)) {
     await sidebar.getByRole('combobox', { name: '切换项目' }).selectOption({ label: name });
-    return;
+  } else {
+    const nav = page.getByRole('complementary', { name: '首页侧栏' });
+    await nav.getByRole('button', { name: new RegExp(`^${name}`) }).first().click();
   }
-  const nav = page.getByRole('complementary', { name: '首页侧栏' });
-  await nav.getByRole('button', { name: new RegExp(`^${name}`) }).first().click();
+  // 项目默认落在列表；这些用例看的是画布。
+  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
 }
 
 test.beforeAll(() => {
@@ -56,7 +58,8 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await panel.getByLabel('项目名').fill(PROJECT_NAME);
   await panel.getByRole('button', { name: '创建' }).click();
 
-  // M1：画布出现
+  // 项目默认进列表；这一步看的是空画布。
+  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
   await expect(page.getByRole('button', { name: '新建任务' }).first()).toBeVisible();
 
   // 空画布不是一片黑：有一句提示和就近的「新建任务」
@@ -144,6 +147,7 @@ test('刷新之后画布还在，布局被记住', async ({ page }) => {
   await page.goto('/');
   // 新浏览器没有 localStorage：从左栏回到自己刚建的那个项目
   await page.getByRole('complementary', { name: '首页侧栏' }).getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).first().click();
+  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
   await expect(sessionNode(page)).toHaveCount(1);
   await expect(taskNode(page, TASK_TITLE)).toContainText('1 个会话');
 
@@ -161,6 +165,8 @@ test('刷新之后画布还在，布局被记住', async ({ page }) => {
   const before = await sessionNode(page).boundingBox();
   await page.mouse.move(0, 0);
   await page.goto('/');
+  // 首页会回到上次的项目；默认是列表，这里仍看画布布局。
+  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
   // 打开时视口要等卡片量完尺寸才落定（fitOnOpen），刚 goto 完读到的是落定前的位置：轮询到稳定为止
   await expect
     .poll(async () => {
@@ -174,7 +180,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   await page.goto('/');
   await expect(page.getByRole('complementary', { name: '首页侧栏' }).getByText('项目', { exact: true })).toBeVisible();
   // 首页右栏直接列最近会话：点一条就进那条会话说话（「接着干」不是「先看画布」）
-  await page.getByRole('button', { name: new RegExp(TASK_TITLE) }).first().click();
+  await page.getByTestId('home-session-row').first().click();
   const composer = page.getByLabel('发送消息');
   await expect(composer).toBeVisible();
 
@@ -190,7 +196,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   await composer.fill('这段草稿要活过视图切换');
   await page.getByRole('button', { name: '列表' }).click();
   await expect(page.getByTestId('list-view')).toBeVisible();
-  await page.getByRole('button', { name: '会话', exact: true }).click();
+  await page.getByTestId('list-session-row').first().click();
   await expect(composer).toHaveValue('这段草稿要活过视图切换');
 
   // 搜索：用会话正文里的词命中，回车跳到那个节点
@@ -294,6 +300,7 @@ test('会话卡片能改模型与思考强度，改完不回弹', async ({ page 
   await page.goto('/');
   await expect(page.getByRole('complementary', { name: '首页侧栏' }).getByText('项目', { exact: true })).toBeVisible();
   await page.getByRole('complementary', { name: '首页侧栏' }).getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).first().click();
+  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
   await expect(sessionNode(page)).toHaveCount(1);
 
   const card = sessionNode(page);

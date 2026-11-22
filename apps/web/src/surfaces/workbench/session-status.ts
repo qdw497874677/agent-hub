@@ -7,9 +7,10 @@ import type { SessionDto } from '@agent-hub/contract';
  * `settled`（收起）压过 `status`：一条会话收起之后不管进程是完成还是失败，
  * 它都已经从活跃列表退场了；要接着看就移回活跃列表。
  */
-export type SessionPhase = 'working' | 'failed' | 'interrupted' | 'stopped' | 'done' | 'settled';
+export type SessionPhase = 'ready' | 'working' | 'failed' | 'interrupted' | 'stopped' | 'done' | 'settled';
 
 const PHASE_LABEL: Record<SessionPhase, string> = {
+  ready: '就绪',
   working: '工作中',
   failed: '失败了',
   interrupted: '已中断',
@@ -39,12 +40,12 @@ export const PHASE_DOT: Record<PhaseTone, string> = {
   idle: 'border border-tertiary'
 };
 
-/** 有 settledAt 就是收起；否则 running = 工作中，其余状态原样保留。 */
-export function sessionPhase(session: Pick<SessionDto, 'status' | 'settledAt'>): SessionPhase {
+/** 有 settledAt 就是收起；running 且还没跑出第一条事件 = 就绪，其余原样保留。 */
+export function sessionPhase(session: Pick<SessionDto, 'status' | 'settledAt' | 'lastSeq'>): SessionPhase {
   if (session.settledAt != null) return 'settled';
   switch (session.status) {
     case 'running':
-      return 'working';
+      return session.lastSeq === 0 ? 'ready' : 'working';
     case 'failed':
       return 'failed';
     case 'interrupted':

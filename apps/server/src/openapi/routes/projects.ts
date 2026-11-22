@@ -33,7 +33,8 @@ export const projects = {
     method: 'post', path: `${V1}/projects`, tags: ['projects'], summary: '新建项目',
     description:
       '新建一个项目（代码与任务的边界）。\n' +
-      '参数：name（1–80，必填）；其余都可选：rootPath（不给或空串 = 先不选目录，开始任务时再选机器和工作空间；给了则须是 hub 机器上已存在的绝对路径）、workerId、repoUrl、defaultBranch、description。\n' +
+      '参数：name（1–80，必填）；其余都可选：rootPath（不给或空串 = 先不选目录，开始任务时再选机器和工作空间；给了则须是 hub 机器上已存在的绝对路径）、workerId、repoUrl、defaultBranch、repos、primaryRepoId、description。\n' +
+      'repoUrl/defaultBranch 是单仓库老写法；repos 是多仓库清单（每项 id/name/url/defaultBranch/credential，最多 8 个），两者不能同时给。primaryRepoId 必须是 repos 里的 id。私用仓库用 credential 传令牌（不会回显），地址里不要带用户名或密码。\n' +
       '返回：项目对象（id、name、rootPath、repos）。仓库 hasToken=false 时带 tokenHint / gitTokenHint：用 project_repos 写入 credential（只写不回）再推送或开 PR。\n' +
       '下一步：用 task_create 在项目里建任务，再 session_start 派一台机器。\n' +
       '错误：401 令牌无效；403 无 projects:write；409 同名；400 目录不合法（仅在给了 rootPath 时）。',

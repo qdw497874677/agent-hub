@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, assetsApi, assetSetsApi, providersApi, type CanvasDto, type HubModelsDto, type SessionDto, type WorkerInfoDto } from './api.ts';
+import { api, assetsApi, assetSetsApi, providersApi, type CanvasDto, type HubModelsDto, type SessionDto, type TaskDto, type WorkerInfoDto } from './api.ts';
 import {
   assetNote,
   assetSelectionKey,
@@ -31,15 +31,24 @@ import { cloneErrorHint } from '../surfaces/workbench/project-repos.ts';
 import { groupStateNote, memberStateLabel, failedGroupIdFromWorkspaces, type WorkspaceGroupView } from '../surfaces/workbench/workspace-group.ts';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
-export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone: () => void }) {
+export function NewTaskDialog({
+  projectId,
+  onDone,
+  onCreated
+}: {
+  projectId: string;
+  onDone: () => void;
+  onCreated?: (task: TaskDto) => void;
+}) {
   const [title, setTitle] = useState('');
   const [goal, setGoal] = useState('');
   const queryClient = useQueryClient();
   const create = useMutation({
     mutationFn: () => api.createTask({ projectId, title: title.trim(), goal: goal.trim() || undefined }),
-    onSuccess: async () => {
+    onSuccess: async (task) => {
       await queryClient.invalidateQueries({ queryKey: ['canvas', projectId] });
       onDone();
+      onCreated?.(task);
     }
   });
 

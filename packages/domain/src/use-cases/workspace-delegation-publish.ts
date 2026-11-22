@@ -14,6 +14,7 @@ import { DELEGATION_CLAIM_TTL_MS, newDelegationClaim } from '../workspace-delega
 import type { AccessPolicy } from './authorization.ts';
 import { authorizeProject, authorizeWorker } from './authorization.ts';
 import type { Deps } from './deps.ts';
+import { withActiveTask } from './task-admission.ts';
 
 /**
  * 派工记录 step B：把「已批准的功能分支提交」发布成远端分支，并开一个**草稿 PR**
@@ -330,7 +331,7 @@ function run(
 }
 
 export async function publishWorkspaceDelegationUseCase(
-  deps: Pick<Deps, 'projects' | 'tasks' | 'access' | 'now'>,
+  deps: Pick<Deps, 'projects' | 'tasks' | 'access' | 'now' | 'taskGate'>,
   store: DelegationPublishStore,
   bridges: WorkspaceDelegationPublishBridges,
   command: PublishDelegationCommand
@@ -386,253 +387,256 @@ export async function publishWorkspaceDelegationUseCase(
   const canUseWorker = await authorizeWorker(policy, actor, record.workerId, 'worker.use');
   if (!canUseWorker.ok) return canUseWorker;
 
-  const at = deps.now();
-  const previous = await store.byKey(record.id, approvalKey);
+  // 任务准入：发布与显式对账都要先共享持有目标任务；归档独占期间不碰远端、也不落尝试状态。
+  return withActiveTask(deps, task.id, async () => {
+    const at = deps.now();
+    const previous = await store.byKey(record.id, approvalKey);
 
-  /* ───────────────────────── 只读对账 ───────────────────────── */
-  if (reconcile) {
-    if (!previous) return err(notFound('没有这次发布尝试，无法对账'));
-    const attempt = previous;
-    const fingerprint = fingerprintOf(record, approvalKey, attempt.headSha);
-    if (attempt.fingerprint !== fingerprint) return err(conflict('发布尝试与当前派工记录不一致，不能对账'));
-    if (attempt.state === 'published') {
-      // 已发布是终态：对账也只读记录，不碰远端。
-      return ok(run(record, attempt, { attempted: false, replayed: true, reconciled: true }));
-    }
-    if (attempt.state === 'publishing' && attempt.claim !== null && attempt.claim.expiresAt > at) {
-      return err(conflict('发布正在进行，等它落定后再对账'));
-    }
-    return reconcileReadOnly(deps, store, bridges, record, project, repoName, attempt);
-  }
-
-  /* ───────────────────────── 正常发布 ───────────────────────── */
-  const headSha = expectedHeadSha as string;
-  const fingerprint = fingerprintOf(record, approvalKey, headSha);
-
-  if (previous) {
-    if (previous.fingerprint !== fingerprint) return err(conflict('同一个批准键不能换提交 / 仓库 / 分支'));
-    switch (previous.state) {
-      case 'published': {
-        // 成功重放：只读记录，任何外部通道都不碰。
-        if (previous.pullRequest === null || previous.pullRequest.headSha !== headSha) {
-          return err(conflict('已发布记录不完整，无法重放'));
-        }
-        return ok(run(record, previous, { attempted: false, replayed: true, reconciled: false }));
+    /* ───────────────────────── 只读对账 ───────────────────────── */
+    if (reconcile) {
+      if (!previous) return err(notFound('没有这次发布尝试，无法对账'));
+      const attempt = previous;
+      const fingerprint = fingerprintOf(record, approvalKey, attempt.headSha);
+      if (attempt.fingerprint !== fingerprint) return err(conflict('发布尝试与当前派工记录不一致，不能对账'));
+      if (attempt.state === 'published') {
+        // 已发布是终态：对账也只读记录，不碰远端。
+        return ok(run(record, attempt, { attempted: false, replayed: true, reconciled: true }));
       }
-      case 'uncertain':
-        return err(conflict('上次发布结果不明；请先对账，不会重新创建 PR'));
-      case 'publishing':
-        if (previous.claim !== null && previous.claim.expiresAt > at) return err(conflict('正在发布，请稍后刷新'));
-        return err(conflict('上次发布中断且未落定；请先对账'));
-      case 'failed':
-        // 明确失败（没有不明副作用）可以用同一个批准键安全重试。
-        break;
-    }
-  }
-
-  const target = await bridges.resolveTarget(record);
-  if (!target.ok) return target;
-  const mismatch = targetProblem(record, target.value);
-  if (mismatch) return err(conflict(`工作树的${mismatch}与派工记录不一致，不能发布`));
-  if (target.value.headSha !== headSha) return err(conflict('worktree 的 HEAD 已经不是批准的提交；请重新确认'));
-
-  const git = bridges.git(record.workerId);
-  if (typeof git.publishRef !== 'function') return err(unavailable('这台机器不支持发布已批准的提交（Worker 版本过旧）'));
-
-  const host = bridges.gitHost ? await bridges.gitHost(project) : null;
-  if (!host) return err(unavailable('项目没有可用的 GitHub 应用凭据，不能创建 PR'));
-  const auth = bridges.repoAuth ? await bridges.repoAuth(record) : null;
-
-  const attempt = await claimAttempt(store, previous, {
-    delegationId: record.id,
-    approvalKey,
-    fingerprint,
-    headSha,
-    claim: newDelegationClaim(principal.user.id, newId(), at, DELEGATION_CLAIM_TTL_MS),
-    at
-  });
-  if (!attempt.ok) return attempt;
-  const owned = attempt.value;
-
-  const expected = { repo: repoName, headRef: record.branch, headSha, base: record.baseBranch };
-  const publishRef = git.publishRef.bind(git);
-  const base = {
-    path: record.worktreePath,
-    branch: record.branch,
-    sha: headSha,
-    expectedUrl: record.repoUrl,
-    baseBranch: record.baseBranch,
-    ...(auth ? { auth } : {})
-  };
-
-  try {
-    // 远端写之前重新核对租约：claim 不是栅栏，但租期过了就绝不再发远端动作。
-    const lease = await checkOwnership(store, owned, deps.now());
-    if (lease === 'lost') return err(conflict('发布尝试已被其他操作接管；请刷新'));
-    if (lease === 'expired') {
-      await settle(store, owned, {
-        state: 'failed',
-        at: deps.now(),
-        failure: { kind: 'fatal', message: '发布租期已过，没有做任何远端写', at: deps.now() }
-      });
-      return err(unavailable('发布租期已过；没有发布任何内容，可以重试'));
+      if (attempt.state === 'publishing' && attempt.claim !== null && attempt.claim.expiresAt > at) {
+        return err(conflict('发布正在进行，等它落定后再对账'));
+      }
+      return reconcileReadOnly(deps, store, bridges, record, project, repoName, attempt);
     }
 
-    const published = await publishRef(base);
-    if (!published.ok) {
-      // `publishRef` 的失败关闭错误都发生在创建 PR 之前；记录成 fatal，允许同一批准键安全重试。
-      await settle(store, owned, {
-        state: 'failed',
-        at: deps.now(),
-        failure: { kind: 'fatal', message: '发布分支失败，未创建 PR', at: deps.now() }
-      });
-      return err(published.error);
-    }
-    const outcome = published.value;
-    if (outcome.uncertain) {
-      await settle(store, owned, {
-        state: 'uncertain',
-        at: deps.now(),
-        remote: remoteFacts(outcome),
-        failure: { kind: 'uncertain', message: '远端状态无法确认，尚未创建 PR', at: deps.now() }
-      });
-      return err(unavailable('远端状态无法确认；已停止，不会创建 PR，请对账'));
-    }
-    if (!outcome.published) {
-      await settle(store, owned, {
-        state: 'failed',
-        at: deps.now(),
-        remote: remoteFacts(outcome),
-        failure: { kind: 'fatal', message: '远端分支没有更新为批准的提交，未创建 PR', at: deps.now() }
-      });
-      return err(conflict('远端分支没有更新为批准的提交；没有创建 PR，可以重试'));
-    }
-    if (outcome.sha !== headSha || outcome.branch !== record.branch || outcome.baseBranch !== record.baseBranch) {
-      await settle(store, owned, {
-        state: 'uncertain',
-        at: deps.now(),
-        remote: remoteFacts(outcome),
-        failure: { kind: 'uncertain', message: '远端核验结果与批准的提交 / 分支不一致', at: deps.now() }
-      });
-      return err(unavailable('远端核验结果与批准内容不一致；已停止，请对账'));
-    }
-    if (outcome.remoteSha !== null && outcome.remoteSha !== headSha) {
-      await settle(store, owned, {
-        state: 'uncertain',
-        at: deps.now(),
-        remote: remoteFacts(outcome),
-        failure: { kind: 'uncertain', message: '远端功能分支另有提交，无法证明发布结果', at: deps.now() }
-      });
-      return err(unavailable('远端功能分支另有提交；已停止，请对账'));
+    /* ───────────────────────── 正常发布 ───────────────────────── */
+    const headSha = expectedHeadSha as string;
+    const fingerprint = fingerprintOf(record, approvalKey, headSha);
+
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) return err(conflict('同一个批准键不能换提交 / 仓库 / 分支'));
+      switch (previous.state) {
+        case 'published': {
+          // 成功重放：只读记录，任何外部通道都不碰。
+          if (previous.pullRequest === null || previous.pullRequest.headSha !== headSha) {
+            return err(conflict('已发布记录不完整，无法重放'));
+          }
+          return ok(run(record, previous, { attempted: false, replayed: true, reconciled: false }));
+        }
+        case 'uncertain':
+          return err(conflict('上次发布结果不明；请先对账，不会重新创建 PR'));
+        case 'publishing':
+          if (previous.claim !== null && previous.claim.expiresAt > at) return err(conflict('正在发布，请稍后刷新'));
+          return err(conflict('上次发布中断且未落定；请先对账'));
+        case 'failed':
+          // 明确失败（没有不明副作用）可以用同一个批准键安全重试。
+          break;
+      }
     }
 
-    // 建 PR 之前先列一次：崩溃 / 超时后可能已经有一个 PR，认领它，绝不盲目再建。
-    const listed = await host.api.listPullRequestsByHead({ token: host.token, repo: repoName, head: record.branch });
-    if (!listed.ok) {
-      await settle(store, owned, {
-        state: 'uncertain',
-        at: deps.now(),
-        remote: remoteFacts(outcome),
-        failure: { kind: 'uncertain', message: '远端已发布，但无法核对是否已有 PR', at: deps.now() }
+    const target = await bridges.resolveTarget(record);
+    if (!target.ok) return target;
+    const mismatch = targetProblem(record, target.value);
+    if (mismatch) return err(conflict(`工作树的${mismatch}与派工记录不一致，不能发布`));
+    if (target.value.headSha !== headSha) return err(conflict('worktree 的 HEAD 已经不是批准的提交；请重新确认'));
+
+    const git = bridges.git(record.workerId);
+    if (typeof git.publishRef !== 'function') return err(unavailable('这台机器不支持发布已批准的提交（Worker 版本过旧）'));
+
+    const host = bridges.gitHost ? await bridges.gitHost(project) : null;
+    if (!host) return err(unavailable('项目没有可用的 GitHub 应用凭据，不能创建 PR'));
+    const auth = bridges.repoAuth ? await bridges.repoAuth(record) : null;
+
+    const attempt = await claimAttempt(store, previous, {
+      delegationId: record.id,
+      approvalKey,
+      fingerprint,
+      headSha,
+      claim: newDelegationClaim(principal.user.id, newId(), at, DELEGATION_CLAIM_TTL_MS),
+      at
+    });
+    if (!attempt.ok) return attempt;
+    const owned = attempt.value;
+
+    const expected = { repo: repoName, headRef: record.branch, headSha, base: record.baseBranch };
+    const publishRef = git.publishRef.bind(git);
+    const base = {
+      path: record.worktreePath,
+      branch: record.branch,
+      sha: headSha,
+      expectedUrl: record.repoUrl,
+      baseBranch: record.baseBranch,
+      ...(auth ? { auth } : {})
+    };
+
+    try {
+      // 远端写之前重新核对租约：claim 不是栅栏，但租期过了就绝不再发远端动作。
+      const lease = await checkOwnership(store, owned, deps.now());
+      if (lease === 'lost') return err(conflict('发布尝试已被其他操作接管；请刷新'));
+      if (lease === 'expired') {
+        await settle(store, owned, {
+          state: 'failed',
+          at: deps.now(),
+          failure: { kind: 'fatal', message: '发布租期已过，没有做任何远端写', at: deps.now() }
+        });
+        return err(unavailable('发布租期已过；没有发布任何内容，可以重试'));
+      }
+
+      const published = await publishRef(base);
+      if (!published.ok) {
+        // `publishRef` 的失败关闭错误都发生在创建 PR 之前；记录成 fatal，允许同一批准键安全重试。
+        await settle(store, owned, {
+          state: 'failed',
+          at: deps.now(),
+          failure: { kind: 'fatal', message: '发布分支失败，未创建 PR', at: deps.now() }
+        });
+        return err(published.error);
+      }
+      const outcome = published.value;
+      if (outcome.uncertain) {
+        await settle(store, owned, {
+          state: 'uncertain',
+          at: deps.now(),
+          remote: remoteFacts(outcome),
+          failure: { kind: 'uncertain', message: '远端状态无法确认，尚未创建 PR', at: deps.now() }
+        });
+        return err(unavailable('远端状态无法确认；已停止，不会创建 PR，请对账'));
+      }
+      if (!outcome.published) {
+        await settle(store, owned, {
+          state: 'failed',
+          at: deps.now(),
+          remote: remoteFacts(outcome),
+          failure: { kind: 'fatal', message: '远端分支没有更新为批准的提交，未创建 PR', at: deps.now() }
+        });
+        return err(conflict('远端分支没有更新为批准的提交；没有创建 PR，可以重试'));
+      }
+      if (outcome.sha !== headSha || outcome.branch !== record.branch || outcome.baseBranch !== record.baseBranch) {
+        await settle(store, owned, {
+          state: 'uncertain',
+          at: deps.now(),
+          remote: remoteFacts(outcome),
+          failure: { kind: 'uncertain', message: '远端核验结果与批准的提交 / 分支不一致', at: deps.now() }
+        });
+        return err(unavailable('远端核验结果与批准内容不一致；已停止，请对账'));
+      }
+      if (outcome.remoteSha !== null && outcome.remoteSha !== headSha) {
+        await settle(store, owned, {
+          state: 'uncertain',
+          at: deps.now(),
+          remote: remoteFacts(outcome),
+          failure: { kind: 'uncertain', message: '远端功能分支另有提交，无法证明发布结果', at: deps.now() }
+        });
+        return err(unavailable('远端功能分支另有提交；已停止，请对账'));
+      }
+
+      // 建 PR 之前先列一次：崩溃 / 超时后可能已经有一个 PR，认领它，绝不盲目再建。
+      const listed = await host.api.listPullRequestsByHead({ token: host.token, repo: repoName, head: record.branch });
+      if (!listed.ok) {
+        await settle(store, owned, {
+          state: 'uncertain',
+          at: deps.now(),
+          remote: remoteFacts(outcome),
+          failure: { kind: 'uncertain', message: '远端已发布，但无法核对是否已有 PR', at: deps.now() }
+        });
+        return err(unavailable('远端已发布，但无法核对是否已有 PR；已停止，请对账'));
+      }
+      const adoptable = listed.prs.filter((pr) => pullRequestProblem(pr, expected) === null);
+      if (adoptable.length > 1) {
+        await settle(store, owned, {
+          state: 'uncertain',
+          at: deps.now(),
+          remote: remoteFacts(outcome),
+          failure: { kind: 'uncertain', message: '同一 head 上有多条符合的草稿 PR，无法唯一认领', at: deps.now() }
+        });
+        return err(conflict('同一 head 上有多条符合的草稿 PR；请人工核对后再试'));
+      }
+      if (adoptable.length === 1) {
+        const cas = await settle(store, owned, {
+          state: 'published',
+          at: deps.now(),
+          remote: remoteFacts(outcome),
+          pullRequest: toPublishedPullRequest(adoptable[0]!, expected)
+        });
+        if (!cas) return err(conflict('发布结果被并发修改，请刷新'));
+        return ok(run(record, cas, { attempted: false, replayed: false, reconciled: false }));
+      }
+      const foreign = listed.prs.find((pr) => pr.headRef === record.branch && pr.state === 'open');
+      if (foreign) {
+        await settle(store, owned, {
+          state: 'failed',
+          at: deps.now(),
+          remote: remoteFacts(outcome),
+          failure: { kind: 'fatal', message: '同名分支已有不符合这次批准的开放 PR', at: deps.now() }
+        });
+        return err(conflict('同名分支已有不符合这次批准的开放 PR（可能不是草稿）；请人工核对'));
+      }
+
+      // 建 PR 也是远端写：再核对一次租约 / 持有者；租期过了或已被接管都不写。
+      const createLease = await checkOwnership(store, owned, deps.now());
+      if (createLease === 'lost') return err(conflict('发布尝试已被其他操作接管；请刷新'));
+      if (createLease === 'expired') {
+        await settle(store, owned, {
+          state: 'uncertain',
+          at: deps.now(),
+          remote: remoteFacts(outcome),
+          failure: { kind: 'uncertain', message: '创建 PR 前发布租期已过，PR 是否创建不明', at: deps.now() }
+        });
+        return err(unavailable('发布租期已过，PR 尚未创建；已停止，请对账'));
+      }
+
+      const created = await host.api.createPullRequest({
+        token: host.token,
+        repo: repoName,
+        base: record.baseBranch,
+        head: record.branch,
+        title: PULL_REQUEST_TITLE,
+        body: PULL_REQUEST_BODY,
+        draft: true
       });
-      return err(unavailable('远端已发布，但无法核对是否已有 PR；已停止，请对账'));
-    }
-    const adoptable = listed.prs.filter((pr) => pullRequestProblem(pr, expected) === null);
-    if (adoptable.length > 1) {
-      await settle(store, owned, {
-        state: 'uncertain',
-        at: deps.now(),
-        remote: remoteFacts(outcome),
-        failure: { kind: 'uncertain', message: '同一 head 上有多条符合的草稿 PR，无法唯一认领', at: deps.now() }
-      });
-      return err(conflict('同一 head 上有多条符合的草稿 PR；请人工核对后再试'));
-    }
-    if (adoptable.length === 1) {
+      if (!created.ok) {
+        // 创建请求可能已经在 GitHub 侧生效；这里绝不能重试创建。
+        await settle(store, owned, {
+          state: 'uncertain',
+          at: deps.now(),
+          remote: remoteFacts(outcome),
+          failure: { kind: 'uncertain', message: '创建 PR 的结果不明', at: deps.now() }
+        });
+        return err(unavailable('创建 PR 的结果不明；已停止，请对账（不会自动重试）'));
+      }
+      const createdProblem = pullRequestProblem(created.pr, expected);
+      if (createdProblem) {
+        await settle(store, owned, {
+          state: 'uncertain',
+          at: deps.now(),
+          remote: remoteFacts(outcome),
+          failure: { kind: 'uncertain', message: `返回的 PR 不符合批准内容：${createdProblem}`, at: deps.now() }
+        });
+        return err(unavailable(`返回的 PR 不符合批准内容（${createdProblem}）；已停止，请对账`));
+      }
       const cas = await settle(store, owned, {
         state: 'published',
         at: deps.now(),
         remote: remoteFacts(outcome),
-        pullRequest: toPublishedPullRequest(adoptable[0]!, expected)
+        pullRequest: toPublishedPullRequest(created.pr, expected)
       });
-      if (!cas) return err(conflict('发布结果被并发修改，请刷新'));
-      return ok(run(record, cas, { attempted: false, replayed: false, reconciled: false }));
-    }
-    const foreign = listed.prs.find((pr) => pr.headRef === record.branch && pr.state === 'open');
-    if (foreign) {
-      await settle(store, owned, {
-        state: 'failed',
-        at: deps.now(),
-        remote: remoteFacts(outcome),
-        failure: { kind: 'fatal', message: '同名分支已有不符合这次批准的开放 PR', at: deps.now() }
-      });
-      return err(conflict('同名分支已有不符合这次批准的开放 PR（可能不是草稿）；请人工核对'));
-    }
-
-    // 建 PR 也是远端写：再核对一次租约 / 持有者；租期过了或已被接管都不写。
-    const createLease = await checkOwnership(store, owned, deps.now());
-    if (createLease === 'lost') return err(conflict('发布尝试已被其他操作接管；请刷新'));
-    if (createLease === 'expired') {
-      await settle(store, owned, {
-        state: 'uncertain',
-        at: deps.now(),
-        remote: remoteFacts(outcome),
-        failure: { kind: 'uncertain', message: '创建 PR 前发布租期已过，PR 是否创建不明', at: deps.now() }
-      });
-      return err(unavailable('发布租期已过，PR 尚未创建；已停止，请对账'));
-    }
-
-    const created = await host.api.createPullRequest({
-      token: host.token,
-      repo: repoName,
-      base: record.baseBranch,
-      head: record.branch,
-      title: PULL_REQUEST_TITLE,
-      body: PULL_REQUEST_BODY,
-      draft: true
-    });
-    if (!created.ok) {
-      // 创建请求可能已经在 GitHub 侧生效；这里绝不能重试创建。
-      await settle(store, owned, {
-        state: 'uncertain',
-        at: deps.now(),
-        remote: remoteFacts(outcome),
-        failure: { kind: 'uncertain', message: '创建 PR 的结果不明', at: deps.now() }
-      });
-      return err(unavailable('创建 PR 的结果不明；已停止，请对账（不会自动重试）'));
-    }
-    const createdProblem = pullRequestProblem(created.pr, expected);
-    if (createdProblem) {
-      await settle(store, owned, {
-        state: 'uncertain',
-        at: deps.now(),
-        remote: remoteFacts(outcome),
-        failure: { kind: 'uncertain', message: `返回的 PR 不符合批准内容：${createdProblem}`, at: deps.now() }
-      });
-      return err(unavailable(`返回的 PR 不符合批准内容（${createdProblem}）；已停止，请对账`));
-    }
-    const cas = await settle(store, owned, {
-      state: 'published',
-      at: deps.now(),
-      remote: remoteFacts(outcome),
-      pullRequest: toPublishedPullRequest(created.pr, expected)
-    });
-    if (!cas) {
-      const reread = await store.byKey(record.id, approvalKey);
-      if (reread?.state === 'published' && reread.fingerprint === fingerprint) {
-        return ok(run(record, reread, { attempted: true, replayed: false, reconciled: false }));
+      if (!cas) {
+        const reread = await store.byKey(record.id, approvalKey);
+        if (reread?.state === 'published' && reread.fingerprint === fingerprint) {
+          return ok(run(record, reread, { attempted: true, replayed: false, reconciled: false }));
+        }
+        return err(conflict('发布结果被并发修改；PR 可能已经创建，请对账后再操作'));
       }
-      return err(conflict('发布结果被并发修改；PR 可能已经创建，请对账后再操作'));
+      return ok(run(record, cas, { attempted: true, replayed: false, reconciled: false }));
+    } catch (error) {
+      // 进程崩溃走不到这里；这里是编排层的意外异常。两种情况都只能落 uncertain，不能重试创建。
+      await settle(store, owned, {
+        state: 'uncertain',
+        at: deps.now(),
+        failure: { kind: 'uncertain', message: '发布中断且结果不明', at: deps.now() }
+      });
+      return err(unavailable('发布中断且结果不明；已停止，请对账'));
     }
-    return ok(run(record, cas, { attempted: true, replayed: false, reconciled: false }));
-  } catch (error) {
-    // 进程崩溃走不到这里；这里是编排层的意外异常。两种情况都只能落 uncertain，不能重试创建。
-    await settle(store, owned, {
-      state: 'uncertain',
-      at: deps.now(),
-      failure: { kind: 'uncertain', message: '发布中断且结果不明', at: deps.now() }
-    });
-    return err(unavailable('发布中断且结果不明；已停止，请对账'));
-  }
+  });
 }
 
 /** 被「这条派工的另一次发布」挡住时的确定性说明（都发生在任何外部写之前）。 */

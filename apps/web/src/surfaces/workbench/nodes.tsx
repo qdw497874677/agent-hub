@@ -281,7 +281,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
     }
   }
   const status = live?.status ?? session.status;
-  const phase = sessionPhase({ status, settledAt: session.settledAt });
+  const phase = sessionPhase({ status, settledAt: session.settledAt, lastSeq: live?.lastSeq ?? session.lastSeq });
   const settled = phase === 'settled';
   const failed = status === 'failed' || status === 'interrupted';
   const failureReason = failed ? (live?.reason ?? null) : null;

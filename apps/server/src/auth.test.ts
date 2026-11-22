@@ -32,6 +32,7 @@ function harness() {
 test('没登录：API 401，健康检查和账号接口放行', async () => {
   const { call } = harness();
   assert.equal((await call('/api/projects')).status, 401);
+  assert.equal((await call('/api/metadata-search?q=demo')).status, 401);
   assert.equal((await call('/api/health')).status, 200);
   assert.deepEqual((await call('/api/auth/state')).body, { user: null, registration: true, mailDelivery: false });
 });

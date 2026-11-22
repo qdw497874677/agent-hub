@@ -16,10 +16,10 @@ const VIEWS: readonly View[] = ['canvas', 'list', 'focus'];
 export function parseWorkbenchRoute(parts: readonly string[]): Route | null {
   if (parts[0] === 'home') return { page: 'home' };
   if (parts[0] !== 'p' || !parts[1]) return null;
-  const view = VIEWS.find((candidate) => candidate === parts[2]) ?? 'canvas';
+  const view = VIEWS.find((candidate) => candidate === parts[2]) ?? 'list';
   const sessionId = parts[3] ?? null;
-  // 专注对话一定要知道是谁；没有会话 id 的 focus 退回画布。
-  return { page: 'project', projectId: parts[1], view: view === 'focus' && !sessionId ? 'canvas' : view, sessionId };
+  // 专注对话一定要知道是谁；没有会话 id 的 focus 退回列表。
+  return { page: 'project', projectId: parts[1], view: view === 'focus' && !sessionId ? 'list' : view, sessionId };
 }
 
 export function formatWorkbenchRoute(route: Route): string | null {

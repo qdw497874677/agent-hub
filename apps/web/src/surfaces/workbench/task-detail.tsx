@@ -164,6 +164,10 @@ export function TaskDetail({
     mutationFn: (next: TaskDto['status']) => api.setTaskStatus(taskId, next),
     onSuccess: refresh
   });
+  const archive = useMutation({
+    mutationFn: (next: boolean) => api.archiveTask(taskId, next),
+    onSuccess: refresh
+  });
 
   if (!task) return null;
   const entries = log.data?.pages.flatMap((page) => page.entries) ?? [];
@@ -197,8 +201,30 @@ export function TaskDetail({
                 {action.label}
               </button>
             ))}
+            <button
+              type="button"
+              disabled={archive.isPending}
+              data-testid="task-archive"
+              className="min-h-[44px] rounded-sm border border-hair px-2 text-meta text-tertiary hover:border-strong hover:text-primary disabled:opacity-50 md:min-h-7"
+              onClick={() => archive.mutate(task.archivedAt == null)}
+            >
+              {task.archivedAt == null ? '归档' : '恢复'}
+            </button>
+            {task.archivedAt != null ? (
+              <span data-testid="task-archived" className="text-meta text-tertiary">已归档</span>
+            ) : null}
             {task.branch ? <span className="font-mono text-meta text-tertiary">⎇ {task.branch}</span> : null}
           </div>
+          {status.error ? (
+            <p role="alert" data-testid="task-status-error" className="mt-1 text-meta text-rust">
+              没改成功：{(status.error as Error).message}
+            </p>
+          ) : null}
+          {archive.error ? (
+            <p role="alert" data-testid="task-archive-error" className="mt-1 text-meta text-rust">
+              没{task.archivedAt == null ? '归档' : '恢复'}成功：{(archive.error as Error).message}
+            </p>
+          ) : null}
           {editingSummary === null ? (
             <p className="mt-2 text-sub text-secondary" data-testid="task-summary">
               <span className="text-tertiary">当前进展：</span>
@@ -206,7 +232,10 @@ export function TaskDetail({
               <button
                 type="button"
                 className="ml-1.5 text-meta text-tertiary hover:text-primary"
-                onClick={() => setEditingSummary(task.summary ?? '')}
+                onClick={() => {
+                  summary.reset();
+                  setEditingSummary(task.summary ?? '');
+                }}
               >
                 改
               </button>
@@ -234,6 +263,11 @@ export function TaskDetail({
               </button>
             </form>
           )}
+          {summary.error ? (
+            <p role="alert" data-testid="task-summary-error" className="mt-1 text-meta text-rust">
+              没保存成功：{(summary.error as Error).message}
+            </p>
+          ) : null}
           {sessions.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-1">
               {sessions.map((session) => (

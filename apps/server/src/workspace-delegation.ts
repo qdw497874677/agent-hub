@@ -659,6 +659,7 @@ export type DelegationDeps = Pick<
   | 'sessions'
   | 'stream'
   | 'tasks'
+  | 'taskGate'
   | 'workerPresence'
   | 'workspaces'
   | 'workspaceGroups'

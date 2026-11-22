@@ -17,6 +17,7 @@ import type { Deps } from './deps.ts';
 import { startSessionUseCase } from './start-session.ts';
 import { interruptSessionUseCase } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
+import { withActiveTask } from './task-admission.ts';
 
 /**
  * 「换个地方继续」（docs/design/workspaces.md §7）：agent 自己的会话文件只在原来那台机器上，搬不走。
@@ -40,11 +41,13 @@ export interface ContinueElsewhereCommand {
 
 /** 摘要的字数上限：够交代来龙去脉，又不至于一开口就吃掉半个上下文窗口。 */
 
+type ContinueElsewhereDeps = Pick<
+  Deps,
+  'agents' | 'artifacts' | 'bots' | 'fs' | 'gateway' | 'git' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaceGroups' | 'workspaces' | 'workLog' | 'access' | 'repoAuth'
+>;
+
 export async function continueElsewhereUseCase(
-  deps: Pick<
-    Deps,
-    'agents' | 'artifacts' | 'bots' | 'fs' | 'gateway' | 'git' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaceGroups' | 'workspaces' | 'workLog' | 'access' | 'repoAuth'
-  >,
+  deps: ContinueElsewhereDeps,
   command: ContinueElsewhereCommand
 ): Promise<Result<Session, DomainError>> {
   const source = await deps.sessions.byId(asSessionId(command.sessionId));
@@ -55,6 +58,15 @@ export async function continueElsewhereUseCase(
     return err(invalid('容器会话（不属于任何任务）暂不支持接着干到别处'));
   }
   const taskId = source.taskId as TaskId;
+  return withActiveTask(deps, taskId, () => continueElsewhereAdmitted(deps, command, source, taskId));
+}
+
+async function continueElsewhereAdmitted(
+  deps: ContinueElsewhereDeps,
+  command: ContinueElsewhereCommand,
+  source: Session,
+  taskId: TaskId
+): Promise<Result<Session, DomainError>> {
   const task = await deps.tasks.byId(taskId);
   if (!task) return err(notFound('来源会话所属的任务不存在'));
   const project = await deps.projects.byId(task.projectId);

@@ -23,7 +23,8 @@ for (const viewport of [{ width: 1280, height: 800, tag: 'desktop' }, { width: 3
     expect(wrong.status()).toBe(400);
 
     await page.goto('/');
-    await page.getByRole('button', { name: `删除项目 ${name}` }).click();
+    await page.getByRole('button', { name: `项目「${name}」的操作` }).click();
+    await page.getByTestId('project-menu-list').getByRole('menuitem', { name: '删除项目…' }).click();
     const dialog = page.getByRole('dialog', { name: '删除项目' });
     await expect(dialog.getByText('工作目录里的文件不会删除')).toBeVisible();
     const confirm = dialog.getByRole('button', { name: '移到回收站' });
@@ -33,7 +34,7 @@ for (const viewport of [{ width: 1280, height: 800, tag: 'desktop' }, { width: 3
     if (SHOTS) await page.screenshot({ path: join(SHOTS, `delete-project-${viewport.tag}.png`) });
     await confirm.click();
     await expect(dialog).toBeHidden();
-    await expect(page.getByRole('button', { name: `删除项目 ${name}` })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: `项目「${name}」的操作` })).toHaveCount(0);
     expect((await page.request.get(`/api/projects/${project.id}/canvas`)).status()).toBe(404);
     expect(existsSync(dir)).toBe(true);
 
@@ -43,7 +44,7 @@ for (const viewport of [{ width: 1280, height: 800, tag: 'desktop' }, { width: 3
     const item = trash.getByRole('listitem').filter({ hasText: name });
     if (SHOTS) await page.screenshot({ path: join(SHOTS, `trash-${viewport.tag}.png`) });
     await item.getByRole('button', { name: '还原' }).click();
-    await expect(page.getByRole('button', { name: `删除项目 ${name}` })).toBeVisible();
+    await expect(page.getByRole('button', { name: `项目「${name}」的操作` })).toBeVisible();
     expect((await page.request.get(`/api/projects/${project.id}/canvas`)).status()).toBe(200);
     expect((await page.request.delete(`/api/projects/${project.id}`, { data: { confirmName: name }, headers })).ok()).toBe(true);
     const purged = await page.request.post(`/api/projects/${project.id}/purge`, { data: { confirmName: name }, headers });

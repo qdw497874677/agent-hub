@@ -877,3 +877,47 @@ test('直接执行：说明送达前撤销授权 → uncertain，执行会话保
   assert.equal(retry.value.record.state, 'uncertain');
   assert.deepEqual(w.calls, { plan: 1, prepare: 1, start: 1, link: 0 });
 });
+
+test('归档准入：目标任务已归档 → 提案不分配、不规划', async () => {
+  const w = await world();
+  assert.equal(await w.world.deps.tasks.setArchived(w.task.id, 99, null), true);
+  const proposed = await proposeWorkspaceDelegationUseCase(w.world.deps, w.store, w.bridges, w.command);
+  assert.equal(proposed.ok, false);
+  assert.equal(!proposed.ok && proposed.error.code, 'conflict');
+  assert.match(!proposed.ok ? proposed.error.message : '', /已归档/);
+  assert.deepEqual(w.calls, { plan: 0, prepare: 0, start: 0, link: 0 });
+  assert.equal(w.store.rows.size, 0);
+  assert.deepEqual(w.store.writes, { allocate: 0, claim: 0, compareAndSet: 0 });
+});
+
+test('归档准入：确认时任务已归档 → 不领取、不准备，原记录保持不动', async () => {
+  const w = await world();
+  assert.ok((await delegateWorkspaceUseCase(w.world.deps, w.store, w.bridges, w.command)).ok);
+  assert.equal(await w.world.deps.tasks.setArchived(w.task.id, 99, null), true);
+
+  const confirm = await delegateWorkspaceUseCase(w.world.deps, w.store, w.bridges, w.command);
+  assert.equal(confirm.ok, false);
+  assert.equal(!confirm.ok && confirm.error.code, 'conflict');
+  assert.deepEqual(w.calls, { plan: 1, prepare: 1, start: 1, link: 1 });
+  assert.deepEqual(w.store.writes, { allocate: 1, claim: 1, compareAndSet: 1 });
+  assert.equal([...w.store.rows.values()][0]?.state, 'prepared');
+});
+
+test('归档准入：直接执行车道在分配前拒绝归档任务', async () => {
+  const w = await world();
+  const source = directSource(w.project.id, w.task.id);
+  assert.equal(await w.world.deps.tasks.setArchived(w.task.id, 99, null), true);
+  const seen: DelegationDirectAuthorizeInput[] = [];
+  const direct = await delegateWorkspaceDirectUseCase(
+    w.world.deps,
+    w.store,
+    directBridges(w, source),
+    authorizer(null, seen),
+    directCommand(w)
+  );
+  assert.equal(direct.ok, false);
+  assert.equal(!direct.ok && direct.error.code, 'conflict');
+  assert.deepEqual(w.calls, { plan: 0, prepare: 0, start: 0, link: 0 });
+  assert.equal(w.store.rows.size, 0);
+  assert.equal(seen.length, 0);
+});

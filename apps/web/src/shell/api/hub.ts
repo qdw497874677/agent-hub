@@ -14,6 +14,7 @@ import type {
   HomeDto,
   JournalEntryDto,
   LayoutDto,
+  MetadataSearchResponseDto,
   ProjectDto,
   ProjectFilesDto,
   PromptAckDto,
@@ -32,6 +33,13 @@ import type {
 } from '@agent-hub/contract';
 import type { WorkspaceGroupView } from '../../surfaces/workbench/workspace-group.ts';
 import type { CatalogComponentDto } from './assets.ts';
+
+export type {
+  MetadataSearchProjectDto,
+  MetadataSearchResponseDto,
+  MetadataSearchSessionDto,
+  MetadataSearchTaskDto
+} from '@agent-hub/contract';
 import { call, post } from './http.ts';
 import type { AgentMessageDto, SessionPeerDto } from './messages.ts';
 import type { ProjectReposCheckDto, ProjectReposPatch, ProjectWorktreePatch } from './projects.ts';
@@ -98,8 +106,13 @@ export const api = {
     name: string;
     rootPath?: string;
     workerId?: string | null;
+    /** 老的单仓库写法，新表单不再用；保留给旧入口。 */
     repoUrl?: string | null;
     defaultBranch?: string | null;
+    /** 多仓库清单：不传 = 不绑仓库；id 可由客户端给，供 primaryRepoId 引用。 */
+    repos?: ProjectReposPatch['repos'];
+    /** 组合会话的主仓库；不传 = 不指定（单仓行为）。 */
+    primaryRepoId?: string | null;
     description?: string | null;
   }) => post<ProjectDto>('/api/projects', input),
   setProjectDescription: (projectId: string, description: string | null) =>
@@ -186,6 +199,8 @@ export const api = {
     call<TaskDto>(`/api/tasks/${taskId}/status`, { method: 'PATCH', body: JSON.stringify({ status, note }) }),
   setTaskSummary: (taskId: string, summary: string) =>
     call<TaskDto>(`/api/tasks/${taskId}/summary`, { method: 'PATCH', body: JSON.stringify({ summary }) }),
+  archiveTask: (taskId: string, archived: boolean) =>
+    post<TaskDto>(`/api/tasks/${encodeURIComponent(taskId)}/archive`, { archived }),
   /** 任务级默认 Agent：盖过项目，`null` = 回到「跟随项目」。 */
   setTaskDefaultAgent: (taskId: string, defaultAgent: NonNullable<TaskDto['defaultAgent']> | null) =>
     call<TaskDto>(`/api/tasks/${encodeURIComponent(taskId)}/default-agent`, {
@@ -268,6 +283,11 @@ export const api = {
     call<JournalEntryDto[]>(`/api/sessions/${sessionId}/events${after > 0 ? `?after=${after}` : ''}`),
   search: (projectId: string, q: string) =>
     call<SearchResponseDto>(`/api/search?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent(q)}`),
+  /** 跨项目快速跳转：只搜项目名、任务标题、会话标题 / id；不读正文。 */
+  metadataSearch: (q: string, limit?: number) =>
+    call<MetadataSearchResponseDto>(
+      `/api/metadata-search?q=${encodeURIComponent(q)}${limit === undefined ? '' : `&limit=${encodeURIComponent(String(limit))}`}`
+    ),
   saveLayout: (projectId: string, patch: SaveLayoutRequest) =>
     call<LayoutDto>(`/api/projects/${projectId}/layout`, { method: 'PUT', body: JSON.stringify(patch) }),
   createSessionLink: (projectId: string, aSessionId: string, bSessionId: string) =>

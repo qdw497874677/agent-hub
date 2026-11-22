@@ -16,6 +16,7 @@ import type {
   CapabilityState,
   HomeView,
   JournalEntry,
+  MetadataSearchView,
   OptionCategory,
   Project,
   RuntimeOption,
@@ -35,6 +36,7 @@ import type {
   HomeDto,
   JournalEntryDto,
   LayoutDto,
+  MetadataSearchResponseDto,
   ProjectDto,
   RuntimeOptionDto,
   SearchHitDto,
@@ -70,6 +72,7 @@ export type ContractDrift = [
   Assert<Extends<RuntimeOption, RuntimeOptionDto>>,
   Assert<Extends<AgentDescriptor, AgentDto>>,
   Assert<Extends<SearchHit, SearchHitDto>>,
+  Assert<Extends<MetadataSearchView, MetadataSearchResponseDto>>,
   // actions / versionStatus 是响应端的投影（权限、以及不暴露 hub build 的版本关系），不属于 WorkerStatus 本身。
   Assert<Extends<WorkerStatus, Omit<WorkerInfoDto, 'actions' | 'versionStatus'>>>,
   Assert<Extends<HomeView, HomeDto>>,

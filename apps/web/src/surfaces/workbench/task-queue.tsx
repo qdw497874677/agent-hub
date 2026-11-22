@@ -30,6 +30,13 @@ export function TaskQueue() {
   if (!data || !data.caps || (data.queued.length + data.running.length + data.recent.length + data.pending.length === 0)) return null;
   const caps = data.caps;
   const slots = Array.from({ length: caps.global + caps.humanReserved }, (_, i) => data.running[i] ?? null);
+  // 超额审批就在首页上方；这里给一个直达那一条的入口，但不伪装成「进执行会话」。
+  const focusApproval = (id: string): void => {
+    const target = document.querySelector<HTMLElement>(`[data-notice-id="${CSS.escape(id)}"]`);
+    if (!target) return;
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    target.focus({ preventScroll: true });
+  };
   return (
     <section data-testid="task-queue" className="mb-4">
       <h2 className="mb-2 text-body font-medium text-primary">任务队列</h2>
@@ -69,6 +76,14 @@ export function TaskQueue() {
                   <span className="block truncate text-meta text-tertiary">超额 · 等你在「等我处理」里批准</span>
                 </span>
                 <span className="shrink-0 rounded bg-strong px-1.5 text-[11px] leading-[18px] text-secondary">待批准</span>
+                <button
+                  data-testid="dispatch-approve-link"
+                  aria-label={`去批准「${p.title}」`}
+                  className="flex min-h-[44px] shrink-0 items-center rounded-sm px-1.5 text-meta text-link hover:underline md:min-h-7"
+                  onClick={() => focusApproval(p.id)}
+                >
+                  去批准
+                </button>
               </li>
             ))}
           </ul>

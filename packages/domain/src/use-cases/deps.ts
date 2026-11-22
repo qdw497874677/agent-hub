@@ -1,4 +1,5 @@
 import type { DeliveryQueue } from '../ports/delivery-queue.ts';
+import type { TaskGate } from '../ports/task-gate.ts';
 import type { WorkspaceSweepStore } from '../ports/workspace-sweeps.ts';
 import type { PullRequestRepository } from '../ports/pull-requests.ts';
 import type { SessionId } from '../ids.ts';
@@ -28,6 +29,7 @@ import type { WorkspaceGit } from '../ports/workspace-git.ts';
 import type { SecretVault } from '../ports/secret-vault.ts';
 import type { WorkspaceFS } from '../ports/workspace-fs.ts';
 import type { SearchGateway } from '../ports/search-gateway.ts';
+import type { MetadataSearchGateway } from '../ports/metadata-search.ts';
 import type { SessionHosting } from '../ports/session-hosting.ts';
 import type { SessionQueue } from '../ports/session-queue.ts';
 import type { EnvironmentPlanner } from '../ports/environment.ts';
@@ -64,6 +66,7 @@ export interface Deps {
   readonly handoffTokenCap?: number;
   readonly projects: ProjectRepository;
   readonly tasks: TaskRepository;
+  readonly taskGate?: TaskGate;
   /** 任务工作日志（只追加）。 */
   readonly workLog: WorkLogRepository;
   readonly sessions: SessionRepository;
@@ -94,6 +97,8 @@ export interface Deps {
   /** 密钥箱（资产令牌 / 项目仓库令牌）。项目仓库的 credential 就存这里。 */
   readonly secrets: SecretVault;
   readonly search: SearchGateway;
+  /** 分组元数据搜索：项目名 / 任务标题 / 会话标题与精确 id；不读正文。 */
+  readonly metadataSearch: MetadataSearchGateway;
   /** 哪些会话此刻有 worker 托管；不在就得先 resume 再说话。 */
   readonly hosting: SessionHosting;
   /** 工具授权；用于判断托管中的进程是否还拿着有效令牌。不给 = 不检查。 */

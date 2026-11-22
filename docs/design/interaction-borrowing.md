@@ -4,6 +4,8 @@
 
 这份文档只列**要借的**和**明确不借的**，以及每条在我们仓库的落点。worktree 机制单独写在 `docs/design/worktree.md`。
 
+下一轮见 [VibeX 借鉴实施计划](./vibex-borrowing.md)。先完成并验收 T3 Code 借鉴方案，再启动 VibeX；两轮不并行实施。
+
 ## 1. 借：状态是注意力，不是一个布尔值
 
 T3：侧栏每条 thread 直接标 `working / 等我批准 / 等我回答 / 完成`，并显示跑了多久；做完的 thread 可以 **settle**——不删，移出活跃列表，PR 合并或闲置 7 天自动 settle。

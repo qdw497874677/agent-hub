@@ -11,18 +11,6 @@ import { agentReadinessSchema, defaultAgentSchema, runtimeProvisionSchema, attac
 /** 删除项目：项目名得一字不差地再输一遍。 */
 export const deleteProjectRequest = z.object({ confirmName: z.string().min(1).max(500) });
 
-export const createProjectRequest = z.object({
-  name: z.string().min(1).max(80),
-  /** 不给 / 空串 = 先不选目录：开始任务时再选机器和工作空间。 */
-  rootPath: z.string().optional(),
-  workerId: z.string().min(1).nullable().optional(),
-  /** 可选的 git 仓库：以后新建工作空间时 clone 它。 */
-  repoUrl: z.string().max(500).nullable().optional(),
-  defaultBranch: z.string().max(200).nullable().optional(),
-  /** 可选的项目说明（markdown），会交给 agent。 */
-  description: z.string().max(8000).nullable().optional()
-});
-
 /** 改项目说明：null 或空串 = 清掉。 */
 export const setProjectDescriptionRequest = z.object({ description: z.string().max(8000).nullable() });
 
@@ -53,6 +41,22 @@ export const projectRepoInput = z.object({
    * 空串 = 清掉这个仓库的令牌；省略 = 不动已有的。响应里只有 `hasToken`。
    */
   credential: z.string().max(512).optional()
+});
+
+export const createProjectRequest = z.object({
+  name: z.string().min(1).max(80),
+  /** 不给 / 空串 = 先不选目录：开始任务时再选机器和工作空间。 */
+  rootPath: z.string().optional(),
+  workerId: z.string().min(1).nullable().optional(),
+  /** 可选单仓库（老写法）：以后新建工作空间时 clone 它；与 repos 互斥。 */
+  repoUrl: z.string().max(500).nullable().optional(),
+  defaultBranch: z.string().max(200).nullable().optional(),
+  /** 多仓库清单（docs/design/multi-repo.md §11.2）；空数组 = 不绑仓库；与 repoUrl 互斥。 */
+  repos: z.array(projectRepoInput).max(8).optional(),
+  /** 组合会话的主仓库（必须是 repos 里的 id；没给 repos 时不能指定）。 */
+  primaryRepoId: z.string().nullable().optional(),
+  /** 可选的项目说明（markdown），会交给 agent。 */
+  description: z.string().max(8000).nullable().optional()
 });
 
 /** 只改仓库清单（不动 worktree / 预览端口 / 检查命令）：空数组 = 解除全部绑定。 */
@@ -156,6 +160,7 @@ export type CreateServiceRequestDto = z.infer<typeof createServiceRequest>;
 
 export const setTaskSummaryRequest = z.object({ summary: z.string().max(2000) });
 export const setTaskStatusRequest = z.object({ status: taskStatusSchema, note: z.string().max(2000).optional() });
+export const setTaskArchivedRequest = z.object({ archived: z.boolean() });
 
 // ── 工作日志（tasks-and-capabilities.md §2.2）──────────────────
 export const logLinkSchema = z.object({
@@ -448,6 +453,8 @@ export const recentSessionSchema = z.object({
   sessionId: id,
   taskId: id.nullable(),
   taskTitle: z.string(),
+  /** 会话自己的名字；缺省 = 没起名，界面回退到短标识 / 首句。老服务端不发这个字段。 */
+  sessionTitle: z.string().optional(),
   projectId: id,
   projectName: z.string(),
   agentId: id,

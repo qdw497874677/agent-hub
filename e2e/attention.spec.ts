@@ -86,13 +86,21 @@ test('等我处理：四种要人的状态上榜，角标和标题带数，稍�
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/attention-390.png` });
 
     // 稍后：收起这一条
-    await inbox.getByTestId('attention-item').filter({ hasText: '待办·问号结尾' }).getByTestId('attention-later').click();
-    await expect(inbox.getByTestId('attention-item').filter({ hasText: '待办·问号结尾' })).toHaveCount(0);
+    const laterItem = inbox.getByTestId('attention-item').filter({ hasText: '待办·问号结尾' });
+    await laterItem.getByTestId('attention-menu').click();
+    await page.getByTestId('attention-row-menu').getByRole('menuitem', { name: '稍后处理' }).click();
+    await expect(laterItem).toHaveCount(0);
     // 打开会话停几秒 = 看过
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto(`/#/p/${project.id}/focus/${ids.review}`);
     await expect(page.getByTestId('attention-badge')).toContainText(String(n - 1));
     await expect(page.getByTestId('attention-badge')).toContainText(String(n - 2), { timeout: 15_000 });
+    // 需要人回答的条目打开后仍然留着：不能靠「看过」替用户把问题吞掉。
+    await page.goto(`/#/p/${project.id}/focus/${ids.answer}`);
+    await page.waitForTimeout(4_500);
+    await expect(page.getByTestId('attention-badge')).toContainText(String(n - 2));
+    await page.goto('/');
+    await expect(page.getByTestId('attention-item').filter({ hasText: '待办·显式提问' })).toHaveCount(1);
     // 阶段变了重新上榜：失败那条再说一句提问
     await page.request.post(`/api/sessions/${ids.maybe}/prompt`, { data: { text: 'please-asktool' }, headers });
     await expect.poll(async () => {

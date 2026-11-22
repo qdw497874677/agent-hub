@@ -28,9 +28,9 @@ test('各种路由 format → parse 往返一致', () => {
   }
 });
 
-test('不认识的视图回退画布；没有会话的 focus 也回退画布', () => {
-  assert.deepEqual(parseRoute('#/p/p1/zzz'), { page: 'project', projectId: 'p1', view: 'canvas', sessionId: null });
-  assert.deepEqual(parseRoute('#/p/p1/focus'), { page: 'project', projectId: 'p1', view: 'canvas', sessionId: null });
+test('不认识的视图回退列表；没有会话的 focus 也回退列表', () => {
+  assert.deepEqual(parseRoute('#/p/p1/zzz'), { page: 'project', projectId: 'p1', view: 'list', sessionId: null });
+  assert.deepEqual(parseRoute('#/p/p1/focus'), { page: 'project', projectId: 'p1', view: 'list', sessionId: null });
   assert.deepEqual(parseRoute('#/whatever'), { page: 'home' });
 });
 

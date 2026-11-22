@@ -15,6 +15,7 @@ import { interruptSessionUseCase, recordEvent } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
 import { buildHandoff, type HandoffResult } from '../handoff.ts';
 import { locationsOf, projectOfSession } from './workspaces.ts';
+import { withActiveTask } from './task-admission.ts';
 
 /**
  * 回滚到某条消息（ADR 0027 阶段 4）：「⋯ → 从这里重来」。
@@ -32,7 +33,7 @@ export interface RewindFiles {
 
 export type RewindDeps = Pick<
   Deps,
-  'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workLog' | 'access' | 'deliveries' | 'workspaceGroups' | 'bots'
+  'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaces' | 'workLog' | 'access' | 'deliveries' | 'workspaceGroups' | 'bots'
 > & { readonly files: RewindFiles; readonly turnRefs: TurnRefStore };
 
 /** 对话怎么接上（ADR 0028）：native = 原生从这条消息分叉；summary = 新开会话 + 摘要交接；none = 第一条消息，不用交接。 */
@@ -173,85 +174,87 @@ export function createRewindService(deps: RewindDeps) {
     async rewind(actor: Subject | null, sessionId: string, promptSeq: number, withFiles: boolean): Promise<Result<RewindOutcome, DomainError>> {
       const found = await find(actor, sessionId, promptSeq);
       if (!found.ok) return found;
-      const { session: source, workspace } = found.value;
-      if (withFiles) {
-        const blocked = await filesBlocked(actor, found.value);
-        if (blocked) return err(conflict(blocked));
-      }
-      const workers = await deps.gateway.status();
-      const placed = placeSession(workers, { agentId: source.agentId, requested: source.workerId, projectWorker: source.workerId, model: source.model });
-      if (!placed.ok) return placed;
-      const allowed = await authorizeWorker(deps.access, actor, placed.value);
-      if (!allowed.ok) return allowed;
-
-      // 原会话还在跑就先停下：不然它会接着改文件 / 接着说
-      if (source.status === 'running') await interruptSessionUseCase(deps, source.id);
-
-      let files: RewindOutcome['files'] = null;
-      if (withFiles) {
-        const restored = await deps.files.restoreTurn(source.id, promptSeq);
-        if (!restored.ok) return restored;
-        files = restored.value;
-      }
-
-      const created = forkSession({
-        source,
-        atSeq: (promptSeq - 1) as never,
-        allowEmpty: true,
-        options: source.options,
-        agentId: source.agentId,
-        model: source.model,
-        now: deps.now(),
-        workerId: placed.value,
-        workspaceId: source.workspaceId,
-        createdBy: principalOfSubject(actor)?.user.id ?? null
-      });
-      if (!created.ok) return created;
-      const session = { ...created.value, workerId: placed.value };
-      await deps.sessions.save(session);
-      const planned = await plan(found.value, placed.value);
-      // 原生分叉（ADR 0028）：worker 从原 agent 会话的这条消息之前分出去；不行就新开（resume = null），之前的对话用摘要交接
-      // plan 留在保存之后、派发之前：plan 抛错时会话已在，但还不是 failed，也不托管。
-      const started = await startSessionUseCase(deps, {
-        session,
-        workspaceRoot: found.value.root || workspace?.path || '',
-        resume: null,
-        ...(planned.branch ? { branch: planned.branch } : {}),
-        inheritedOptions: source.options
-      });
-      if (!started.ok) return started;
-
-      if (planned.mode !== 'none') {
-        const earlier = (await deps.sessions.eventsAfter(source.id, 0 as never)).filter((e) => e.seq < promptSeq);
-        const brief = buildHandoff(earlier, {
-          from: '同一会话（从一条消息处重来）',
-          to: '同一个工作目录',
-          root: found.value.root,
-          code: files
-            ? `文件已回滚到这条消息之前（第 ${files.turn} 轮开始前）的样子。`
-            : '注意：文件没有回滚，工作目录里可能还留着之后那几轮的改动。'
-        }, { sourceSessionId: source.id, ...(handoffCap ? { cap: handoffCap } : {}) });
-        if (planned.mode === 'native') {
-          await pendingBriefs.set(session.id, brief);
-        } else {
-          await recordEvent(deps, {
-            sessionId: session.id,
-            event: { kind: 'diagnostic', level: 'warn', text: `没法原生分叉（${planned.reason}），改用摘要交接：agent 只看到之前对话的摘要` }
-          });
-          const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief.text, briefing: true, handoff: brief.stats });
-          if (!seeded.ok) return err(seeded.error);
+      return withActiveTask(deps, found.value.session.taskId, async () => {
+        const { session: source, workspace } = found.value;
+        if (withFiles) {
+          const blocked = await filesBlocked(actor, found.value);
+          if (blocked) return err(conflict(blocked));
         }
-      }
-      // 原会话留个记号（不删任何内容，ADR 0006）
-      await recordEvent(deps, {
-        sessionId: source.id,
-        event: {
-          kind: 'diagnostic',
-          level: 'info',
-          text: `已从第 ${promptSeq} 步那条消息重来${files ? `，文件已回滚（改回 ${files.restored} 个、删掉 ${files.removed} 个）` : '（文件未回滚）'} → 新会话 ${session.id.slice(0, 8)}`
+        const workers = await deps.gateway.status();
+        const placed = placeSession(workers, { agentId: source.agentId, requested: source.workerId, projectWorker: source.workerId, model: source.model });
+        if (!placed.ok) return placed;
+        const allowed = await authorizeWorker(deps.access, actor, placed.value);
+        if (!allowed.ok) return allowed;
+
+        // 原会话还在跑就先停下：不然它会接着改文件 / 接着说
+        if (source.status === 'running') await interruptSessionUseCase(deps, source.id);
+
+        let files: RewindOutcome['files'] = null;
+        if (withFiles) {
+          const restored = await deps.files.restoreTurn(source.id, promptSeq);
+          if (!restored.ok) return restored;
+          files = restored.value;
         }
+
+        const created = forkSession({
+          source,
+          atSeq: (promptSeq - 1) as never,
+          allowEmpty: true,
+          options: source.options,
+          agentId: source.agentId,
+          model: source.model,
+          now: deps.now(),
+          workerId: placed.value,
+          workspaceId: source.workspaceId,
+          createdBy: principalOfSubject(actor)?.user.id ?? null
+        });
+        if (!created.ok) return created;
+        const session = { ...created.value, workerId: placed.value };
+        await deps.sessions.save(session);
+        const planned = await plan(found.value, placed.value);
+        // 原生分叉（ADR 0028）：worker 从原 agent 会话的这条消息之前分出去；不行就新开（resume = null），之前的对话用摘要交接
+        // plan 留在保存之后、派发之前：plan 抛错时会话已在，但还不是 failed，也不托管。
+        const started = await startSessionUseCase(deps, {
+          session,
+          workspaceRoot: found.value.root || workspace?.path || '',
+          resume: null,
+          ...(planned.branch ? { branch: planned.branch } : {}),
+          inheritedOptions: source.options
+        });
+        if (!started.ok) return started;
+
+        if (planned.mode !== 'none') {
+          const earlier = (await deps.sessions.eventsAfter(source.id, 0 as never)).filter((e) => e.seq < promptSeq);
+          const brief = buildHandoff(earlier, {
+            from: '同一会话（从一条消息处重来）',
+            to: '同一个工作目录',
+            root: found.value.root,
+            code: files
+              ? `文件已回滚到这条消息之前（第 ${files.turn} 轮开始前）的样子。`
+              : '注意：文件没有回滚，工作目录里可能还留着之后那几轮的改动。'
+          }, { sourceSessionId: source.id, ...(handoffCap ? { cap: handoffCap } : {}) });
+          if (planned.mode === 'native') {
+            await pendingBriefs.set(session.id, brief);
+          } else {
+            await recordEvent(deps, {
+              sessionId: session.id,
+              event: { kind: 'diagnostic', level: 'warn', text: `没法原生分叉（${planned.reason}），改用摘要交接：agent 只看到之前对话的摘要` }
+            });
+            const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief.text, briefing: true, handoff: brief.stats });
+            if (!seeded.ok) return err(seeded.error);
+          }
+        }
+        // 原会话留个记号（不删任何内容，ADR 0006）
+        await recordEvent(deps, {
+          sessionId: source.id,
+          event: {
+            kind: 'diagnostic',
+            level: 'info',
+            text: `已从第 ${promptSeq} 步那条消息重来${files ? `，文件已回滚（改回 ${files.restored} 个、删掉 ${files.removed} 个）` : '（文件未回滚）'} → 新会话 ${session.id.slice(0, 8)}`
+          }
+        });
+        return ok({ session: (await deps.sessions.byId(session.id)) ?? session, prompt: found.value.prompt, files, mode: planned.mode });
       });
-      return ok({ session: (await deps.sessions.byId(session.id)) ?? session, prompt: found.value.prompt, files, mode: planned.mode });
     },
 
     /** worker 报来这一轮的原生标识：挂到最近一次 ended 之后的第一条消息上（标识在 ended 之前报，消息是立刻记的，不排队）。 */

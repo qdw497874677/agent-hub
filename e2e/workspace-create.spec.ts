@@ -27,7 +27,7 @@ test('新建持久工作目录：先选目录（可就地新建文件夹），�
     const title = `选目录-${tag}`;
     const task = await page.request.post('/api/tasks', { data: { projectId: project.id, title }, headers });
     expect(task.ok(), await task.text()).toBe(true);
-    await page.goto(`/#/p/${project.id}`);
+    await page.goto(`/#/p/${project.id}/canvas`);
     await page.locator('.react-flow__node-task').filter({ hasText: title }).getByRole('button', { name: '＋ 会话' }).click();
     const run = page.getByRole('dialog', { name: '开始会话' });
     await run.getByRole('radio', { name: /新建持久工作目录/ }).click();

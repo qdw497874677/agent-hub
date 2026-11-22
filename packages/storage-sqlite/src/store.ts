@@ -15,6 +15,7 @@ import type {
 } from '@agent-hub/domain';
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
+import { createMetadataSearch } from './metadata-search.ts';
 import { createAccountRepositories } from './accounts.ts';
 import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, MessageStore, GroupStore, ContextSettingsStore, SessionBaseStore, CheckpointStore,
   TurnRefStore, DeliveryQueue, ProvenanceStore, AttentionStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository, SessionLinkRepository, AgentProfileRepository, BotRepository, WorkerAgentsRepository } from '@agent-hub/domain';
@@ -61,6 +62,8 @@ import type { RepositorySet } from './mappers.ts';
 export interface SqliteStore extends RepositorySet {
   readonly listTasklessSessionsByOriginProject: (projectId: ProjectId) => Promise<readonly Session[]>;
   readonly search: ReturnType<typeof createSearch>;
+  /** 分组元数据搜索：只读项目名 / 任务标题 / 会话标题与精确 id，不读正文。 */
+  readonly metadataSearch: ReturnType<typeof createMetadataSearch>;
   readonly users: UserRepository;
   readonly logins: LoginRepository;
   readonly teams: TeamRepository;
@@ -200,6 +203,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!taskColumns.some((column) => column.name === 'default_agent')) {
     db.exec('ALTER TABLE tasks ADD COLUMN default_agent TEXT');
   }
+  // 任务归档时间：只加列；NULL = 老数据 / 未归档。归档 / 恢复只走 setArchived 的 CAS。
+  if (!taskColumns.some((column) => column.name === 'archived_at')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN archived_at INTEGER');
+  }
   // 子模块策略：NULL / 'off' = 不拉（老数据）；'recursive' = 之后新建的 clone / worktree 递归初始化。
   if (!projectColumns.some((column) => column.name === 'submodules')) {
     db.exec("ALTER TABLE projects ADD COLUMN submodules TEXT");
@@ -303,13 +310,14 @@ export function openSqliteStore(file: string): SqliteStore {
   const selectDeletedProjects = db.prepare('SELECT * FROM projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC');
 
   const upsertTask = db.prepare(
-    'INSERT INTO tasks(id, project_id, title, goal, status, owner_id, branch, base_branch, summary, default_agent, log_seq, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO tasks(id, project_id, title, goal, status, owner_id, branch, base_branch, summary, default_agent, archived_at, log_seq, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET title = excluded.title, goal = excluded.goal, ' +
       // branch 只有写方知道时才覆盖：派生/更新任务时常拿到一份 branch 为 null 的旧对象，
       // 直接覆盖会把 worktree 已经回写的分支清掉。
       'status = excluded.status, owner_id = excluded.owner_id, branch = COALESCE(excluded.branch, tasks.branch), base_branch = excluded.base_branch, summary = excluded.summary, ' +
       'default_agent = excluded.default_agent, ' +
+      // archived_at 刻意不在这里更新：归档 / 恢复后迟到的旧快照不能把状态盖回去，唯一写点是 setArchived。
       'log_seq = MAX(tasks.log_seq, excluded.log_seq), updated_at = excluded.updated_at'
   );
   const selectTask = db.prepare('SELECT * FROM tasks WHERE id = ?');
@@ -331,6 +339,9 @@ export function openSqliteStore(file: string): SqliteStore {
     "UPDATE sessions SET status = 'running', updated_at = ? WHERE id = ? AND status = 'interrupted'"
   );
   const updateTaskBranch = db.prepare('UPDATE tasks SET branch = ? WHERE id = ? AND ? IS NOT NULL');
+  // 归档 / 恢复的唯一写入点：NULL 安全比较（`IS` 同时匹配 NULL），只有当前值仍等于 expected 才落库。
+  // 只写 archived_at，不碰 status / 摘要 / updatedAt；相同值重复调用不产生额外变化。
+  const updateTaskArchived = db.prepare('UPDATE tasks SET archived_at = ? WHERE id = ? AND archived_at IS ?');
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
       'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, origin_project_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, asset_ids, asset_set_ids, mcp_disabled, created_at, updated_at) ' +
@@ -554,6 +565,7 @@ export function openSqliteStore(file: string): SqliteStore {
         task.baseBranch,
         task.summary,
         task.defaultAgent == null ? null : JSON.stringify(task.defaultAgent),
+        task.archivedAt ?? null,
         task.logSeq,
         task.createdAt,
         task.updatedAt
@@ -563,6 +575,10 @@ export function openSqliteStore(file: string): SqliteStore {
       // 只写 branch 一列：并发改了 status/摘要的任务不会被整行 save 盖回去。
       // null = 不动（保持既有约定：空分支不落库），返回是否真的写到。
       return Number(updateTaskBranch.run(branch, id, branch).changes) > 0;
+    },
+    async setArchived(id: Parameters<typeof asTaskId>[0], archivedAt: number | null, expectedArchivedAt: number | null): Promise<boolean> {
+      // CAS：expected 过期（别处已归档 / 恢复）就什么都不写，让调用方重读后再决定。
+      return Number(updateTaskArchived.run(archivedAt, id, expectedArchivedAt).changes) > 0;
     },
     async byId(id: Parameters<typeof asTaskId>[0]): Promise<Task | null> {
       const row = selectTask.get(id);
@@ -783,6 +799,7 @@ export function openSqliteStore(file: string): SqliteStore {
     bots: createSqliteBotRepository(db),
     workerAgents: createSqliteWorkerAgents(db),
     search: createSearch(db),
+    metadataSearch: createMetadataSearch(db),
     ...accountRepos,
     access: createSqliteAccess(db),
     db,

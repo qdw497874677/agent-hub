@@ -9,6 +9,7 @@ import {
   asAgentId,
   asProjectId,
   asSessionId,
+  asTaskId,
   createArtifact,
   createProject,
   createTask,
@@ -463,6 +464,72 @@ test('tasks.setBranch 只写 branch：并发改过的 status / 标题不会被�
   assert.equal(after?.title, '改过的标题');
   assert.notEqual(stale.branch, after?.branch);
   store.close();
+});
+
+test('tasks.setArchived 是比较并设置：过期期望不写、重复同值幂等、只碰归档列', async () => {
+  const store = openSqliteStore(':memory:');
+  const { task } = await seeded(store);
+
+  assert.equal(await store.tasks.setArchived(task.id, now + 10, null), true, '未归档 → 归档');
+  assert.equal((await store.tasks.byId(task.id))?.archivedAt, now + 10);
+  // 相同目标值 + 相同期望：幂等成功，不产生额外变化
+  assert.equal(await store.tasks.setArchived(task.id, now + 10, now + 10), true);
+  assert.equal((await store.tasks.byId(task.id))?.archivedAt, now + 10);
+  // expected 过期（别处已归档）→ 不写
+  assert.equal(await store.tasks.setArchived(task.id, null, null), false);
+  assert.equal((await store.tasks.byId(task.id))?.archivedAt, now + 10);
+
+  // 恢复同样走 CAS
+  assert.equal(await store.tasks.setArchived(task.id, null, now + 10), true);
+  assert.equal((await store.tasks.byId(task.id))?.archivedAt, null);
+  assert.equal(await store.tasks.setArchived(task.id, null, null), true, '重复恢复幂等');
+  assert.equal((await store.tasks.byId(task.id))?.updatedAt, task.updatedAt, 'setArchived 不碰 updatedAt');
+  assert.equal(await store.tasks.setArchived(asTaskId('task_missing'), now + 10, null), false);
+  store.close();
+});
+
+test('归档字段只走 setArchived：迟到的整行旧快照在归档后不还原、恢复后也不重新归档', async () => {
+  const store = openSqliteStore(':memory:');
+  const { project, task } = await seeded(store);
+
+  // 归档后，另一个写方还拿着 archivedAt=null 的旧快照整行回写
+  assert.equal(await store.tasks.setArchived(task.id, now + 10, null), true);
+  await store.tasks.save({ ...task, summary: '归档后迟到的旧快照', updatedAt: now + 11 });
+  assert.equal((await store.tasks.byId(task.id))?.archivedAt, now + 10, '旧快照不能清掉归档');
+  // 列表不过滤归档：数据还在，只是展示层决定要不要藏
+  assert.equal((await store.tasks.listByProject(project.id)).length, 1);
+
+  // 恢复之后，另一个写方拿着 archivedAt=now+10 的旧快照整行回写
+  assert.equal(await store.tasks.setArchived(task.id, null, now + 10), true);
+  await store.tasks.save({ ...task, archivedAt: now + 10, summary: '恢复前迟到的旧快照', updatedAt: now + 12 });
+  assert.equal((await store.tasks.byId(task.id))?.archivedAt, null, '旧快照不能把任务重新归档');
+  assert.equal((await store.tasks.byId(task.id))?.summary, '恢复前迟到的旧快照', '其它列仍然按整行 save 更新');
+  store.close();
+});
+
+test('老库迁移：tasks 没有 archived_at 时补列，老任务读作未归档且可归档', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-hub-archive-'));
+  const file = join(dir, 'legacy.db');
+  try {
+    const first = openSqliteStore(file);
+    const { task } = await seeded(first);
+    first.close();
+
+    // 模拟老库：迁移前的 tasks 表没有 archived_at 这一列
+    const legacy = new DatabaseSync(file);
+    legacy.exec('ALTER TABLE tasks DROP COLUMN archived_at');
+    legacy.close();
+
+    const store = openSqliteStore(file);
+    const loaded = await store.tasks.byId(task.id);
+    assert.equal(loaded?.title, task.title, '老任务其它字段不受迁移影响');
+    assert.equal(loaded?.archivedAt, null, '老任务读作未归档');
+    assert.equal(await store.tasks.setArchived(task.id, now + 20, null), true);
+    assert.equal((await store.tasks.byId(task.id))?.archivedAt, now + 20);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('收起时间存得下、恢复后读回不带这个字段（和没收起的会话一样）', async () => {

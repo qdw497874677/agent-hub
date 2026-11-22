@@ -9,7 +9,6 @@ interface Props {
   readonly projects: readonly ProjectDto[];
   readonly stream: StreamState;
   readonly view: View;
-  readonly canFocus: boolean;
   onView(view: View): void;
   onMenu(): void;
   onSwitchProject(project: ProjectDto): void;
@@ -50,7 +49,7 @@ export function ProjectHeader(props: Props) {
           <Icon name="warning" size={14} />
         </span>
       ) : null}
-      <ViewSwitch view={props.view} canFocus={props.canFocus} onView={props.onView} iconOnly />
+      <ViewSwitch view={props.view} onView={props.onView} iconOnly />
       <button className={ICON_BUTTON} onClick={props.onSearch} title="搜索任务与会话" aria-label="搜索">
         <Icon name="search" />
       </button>

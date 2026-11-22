@@ -1,13 +1,54 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { agentToDto } from '@agent-hub/contract/codec';
-import type { AgentDescriptor, DeliveryQueue, EnvironmentPlanner, JournalEntry, Session, SessionEvent, SessionId, Task } from '@agent-hub/domain';
-import { asAgentId, asSessionId, recordEvent, unavailable } from '@agent-hub/domain';
+import type { AgentDescriptor, DeliveryQueue, EnvironmentPlanner, JournalEntry, MetadataSearchGateway, MetadataSearchQuery, Session, SessionEvent, SessionId, Task } from '@agent-hub/domain';
+import { asAgentId, asProjectId, asSessionId, asTaskId, createProject, createTask, recordEvent, unavailable, withActiveTask, ok } from '@agent-hub/domain';
 import { fakeHosting, fakeSessions, fakeTasks, inMemoryDeliveries, inMemoryDeps } from '@agent-hub/domain/testing';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
+import { createTaskGate } from './task-gate.ts';
+
+test('archive route refuses competing work and unknown publication, then archives and restores without dispatch', async () => {
+  const taskGate = createTaskGate();
+  const deliveries = inMemoryDeliveries();
+  const { deps, dispatched } = inMemoryDeps({ taskGate, deliveries });
+  const now = deps.now();
+  const project = createProject({ name: 'Archive route', now });
+  assert.ok(project.ok);
+  await deps.projects.save(project.value);
+  const task = createTask({ projectId: project.value.id, title: 'Archive me', now });
+  assert.ok(task.ok);
+  const taskId = task.value.id;
+  await deps.tasks.save(task.value);
+  let unresolvedPublish = false;
+  const app = createApp({ deps, hub: createStreamHub(), token: null, taskArchiveBlockers: async () => unresolvedPublish ? 'publish' : null });
+  const archive = (archived: boolean) => app.request(`/api/tasks/${taskId}/archive`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ archived })
+  });
+  const leave = taskGate.enter(taskId);
+  assert.ok(leave);
+  assert.equal((await archive(true)).status, 409);
+  leave();
+  unresolvedPublish = true;
+  assert.equal((await archive(true)).status, 409);
+  assert.equal((await deps.tasks.byId(taskId))?.archivedAt, null);
+  unresolvedPublish = false;
+  const archived = await archive(true);
+  assert.equal(archived.status, 200);
+  const archiveTime = (await archived.json() as { archivedAt: number }).archivedAt;
+  assert.ok(archiveTime >= now);
+  assert.equal((await archive(true)).status, 200);
+  assert.equal((await deps.tasks.byId(taskId))?.archivedAt, archiveTime);
+  const admission = await withActiveTask(deps, taskId, async () => { throw new Error('archived work admitted'); });
+  assert.equal(admission.ok, false);
+  const restored = await archive(false);
+  assert.equal(restored.status, 200);
+  assert.equal((await restored.json() as { archivedAt: number | null }).archivedAt, null);
+  assert.deepEqual(await withActiveTask(deps, taskId, async () => ok('ready')), ok('ready'));
+  assert.deepEqual(dispatched, []);
+});
 
 /**
  * HTTP 层的合同测试：用内存假件把整个 server 跑起来，
@@ -55,7 +96,7 @@ const descriptor: AgentDescriptor = {
   ]
 };
 
-function harness(token: string | null = null, environment?: EnvironmentPlanner, deliveries?: DeliveryQueue) {
+function harness(token: string | null = null, environment?: EnvironmentPlanner, deliveries?: DeliveryQueue, metadataSearch?: MetadataSearchGateway) {
   const tasks = fakeTasks();
   const sessions = fakeSessions(tasks.rows);
   const hosting = fakeHosting();
@@ -64,6 +105,7 @@ function harness(token: string | null = null, environment?: EnvironmentPlanner, 
     sessions,
     hosting,
     ...(deliveries ? { deliveries } : {}),
+    ...(metadataSearch ? { metadataSearch } : {}),
     stream: createStreamHub().stream,
     agents: createLiveCatalog(),
     now: () => 1_700_000_000_000,
@@ -100,6 +142,80 @@ function harness(token: string | null = null, environment?: EnvironmentPlanner, 
 
   return { deps, app, call, dispatched, sessions, hub, live };
 }
+
+test('元数据搜索路由：q / 可选 limit 接线，返回三组稳定 DTO', async () => {
+  const calls: MetadataSearchQuery[] = [];
+  const metadataSearch: MetadataSearchGateway = {
+    async search(query) {
+      calls.push(query);
+      return {
+        projects: [{ projectId: asProjectId('p-meta') }],
+        tasks: [{ taskId: asTaskId('t-meta'), projectId: asProjectId('p-meta'), title: '元数据任务' }],
+        sessions: [
+          {
+            sessionId: asSessionId('s-meta'),
+            taskId: null,
+            projectId: null,
+            originProjectId: asProjectId('p-meta'),
+            title: '元数据会话',
+            taskTitle: null,
+            updatedAt: 1_700_000_000_123
+          }
+        ]
+      };
+    }
+  };
+  const { deps, call } = harness(null, undefined, undefined, metadataSearch);
+  const project = createProject({ id: asProjectId('p-meta'), name: '元数据项目', now: 1 });
+  assert.ok(project.ok);
+  await deps.projects.save(project.value);
+
+  const limited = await call('/api/metadata-search?q=元数据&limit=2');
+  assert.equal(limited.status, 200);
+  assert.deepEqual(limited.body, {
+    projects: [{ projectId: 'p-meta', name: '元数据项目' }],
+    tasks: [{ taskId: 't-meta', projectId: 'p-meta', title: '元数据任务', projectName: '元数据项目' }],
+    sessions: [
+      {
+        sessionId: 's-meta',
+        taskId: null,
+        projectId: 'p-meta',
+        projectName: '元数据项目',
+        title: '元数据会话',
+        taskTitle: null,
+        updatedAt: 1_700_000_000_123
+      }
+    ]
+  });
+  assert.equal(calls[0]?.query, '元数据');
+  assert.equal(calls[0]?.limitPerGroup, 2);
+
+  assert.equal((await call('/api/metadata-search?q=元数据')).status, 200);
+  assert.equal(calls[1]?.limitPerGroup, 10, '不传 limit 用默认上限');
+
+  const invalid = await call(`/api/metadata-search?q=${'x'.repeat(161)}`);
+  assert.equal(invalid.status, 400);
+  assert.equal(calls.length, 2, '非法输入不落到存储层');
+});
+
+test('创建项目一次绑定多个仓库，返回主仓和令牌状态而不回显凭据', async () => {
+  const { call } = harness();
+  const credential = 'synthetic-repo-token-for-http-test';
+  const created = await call('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'multi', primaryRepoId: 'web', repos: [
+      { id: 'api', name: 'api', url: 'https://git.example.test/example/api.git', defaultBranch: 'main' },
+      { id: 'web', name: 'web', url: 'https://git.example.test/example/web.git', defaultBranch: 'develop', credential }
+    ] })
+  });
+  assert.equal(created.status, 201);
+  const result = created.body as { primaryRepoId: string; repos: { id: string; defaultBranch: string; hasToken?: boolean }[] };
+  assert.equal(result.primaryRepoId, 'web');
+  assert.deepEqual(result.repos.map((repo) => [repo.id, repo.defaultBranch, repo.hasToken === true]), [
+    ['api', 'main', false], ['web', 'develop', true]
+  ]);
+  assert.doesNotMatch(JSON.stringify(created.body), /synthetic-repo-token|"(?:tokenSecret|credential)":/);
+});
 
 test('建项目 → 建任务 → 派生会话，整条纵切走通', async () => {
   const { deps, call, dispatched } = harness();

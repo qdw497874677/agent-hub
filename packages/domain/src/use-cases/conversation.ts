@@ -20,6 +20,7 @@ import { recordEvent, recordSessionOptions } from './sessions.ts';
 import { otherEnd } from '../session-link.ts';
 import { taskBriefing, type BriefingRepo, type ProjectContext } from '../task-briefing.ts';
 import { groupLayout, groupSessionRoot, isPrimaryMember, memberBriefingPath, type WorkspaceGroup } from '../workspace-group.ts';
+import { withActiveTask } from './task-admission.ts';
 
 /*
  * 「会话在跑」这一侧的用例：用户发话，以及 worker 回报的一切。
@@ -145,11 +146,13 @@ async function peerBriefingFor(
 }
 
 /** 发消息：先记下「用户说了什么」，再确保有人托管，最后才叫 agent。 */
+type PromptSessionDeps = Pick<
+  Deps,
+  'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaces' | 'workspaceGroups' | 'bots'
+> & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links' | 'peerBriefing'>>;
+
 export async function promptSessionUseCase(
-  deps: Pick<
-    Deps,
-    'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots'
-  > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links' | 'peerBriefing'>>,
+  deps: PromptSessionDeps,
   command: PromptCommand
 ): Promise<Result<PromptAck, DomainError>> {
   const sessionId = asSessionId(command.sessionId);
@@ -165,6 +168,15 @@ export async function promptSessionUseCase(
     }
   }
 
+  return withActiveTask(deps, session.taskId, () => promptSessionAdmitted(deps, command, session, sessionId));
+}
+
+async function promptSessionAdmitted(
+  deps: PromptSessionDeps,
+  command: PromptCommand,
+  session: Session,
+  sessionId: SessionId
+): Promise<Result<PromptAck, DomainError>> {
   const attachments = command.attachments ?? [];
   if (command.text.trim() === '' && attachments.length === 0) return err(invalid('消息不能为空'));
   const prepared = await prepareAttachments(deps, session, attachments);

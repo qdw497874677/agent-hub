@@ -93,7 +93,7 @@ export function RowMenu({
             data-testid={testId === undefined ? undefined : `${testId}-${item.id}`}
             title={item.hint}
             disabled={item.disabled}
-            className={`flex min-h-11 items-center px-3 text-left text-sub outline-none disabled:opacity-40 pointer-fine:min-h-8 ${
+            className={`flex min-h-[44px] items-center px-3 text-left text-sub outline-none disabled:opacity-40 ${
               item.danger
                 ? 'text-rust hover:bg-rust/10 focus-visible:bg-rust/10'
                 : 'text-secondary hover:bg-hover hover:text-primary focus-visible:bg-hover focus-visible:text-primary'

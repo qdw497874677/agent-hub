@@ -26,7 +26,7 @@ async function openPickerFor(page: Page, name: string) {
     expect(task.ok(), await task.text()).toBe(true);
   }
   // 同一 hash 的 goto 不会刷新页面，上一段的对话框会残留；强制重载
-  await page.goto(`/#/p/${projectId}`);
+  await page.goto(`/#/p/${projectId}/canvas`);
   await page.reload();
   await page.locator(".react-flow__node-task").filter({ hasText: TASK }).getByRole("button", { name: "＋ 会话" }).click();
   const panel = page.getByRole("dialog", { name: "开始会话" });

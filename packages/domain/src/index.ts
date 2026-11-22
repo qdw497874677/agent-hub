@@ -39,6 +39,7 @@ export * from './workspace-group.ts';
 export * from './runtime-install.ts';
 
 export type { TaskRepository } from './ports/task-repository.ts';
+export type { TaskGate } from './ports/task-gate.ts';
 export type { TaskCreationStore, TaskCreationOutcome } from './ports/task-creation-store.ts';
 export type * from './ports/operation-receipt-store.ts';
 export type { WorkLogRepository, WorkLogQuery } from './ports/work-log-repository.ts';
@@ -77,6 +78,20 @@ export type { DirectoryEntry, WorkspaceFS } from './ports/workspace-fs.ts';
 export type { CommitInput, CommitOutcome, CommitPreview, GhOutcome, GhRequest, PushOutcome, RemotePullRequest, PublishRefInput, PublishRefOutcome, PrepareDelegationWorktreeInput, PrepareDelegationWorktreeOutcome, CloneInput, GitAuth, GitInspection, GitStatus, PreviewOptions, RemoveKind, RemoveOptions, RemoveOutcome, RepoProbe, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
 export type { ImportCommitInput, ImportCommitOutcome } from './ports/workspace-git.ts';
 export type { SearchGateway, SearchHit, SearchQuery } from './ports/search-gateway.ts';
+export {
+  METADATA_SEARCH_GROUP_LIMIT,
+  METADATA_SEARCH_GROUP_MAX,
+  METADATA_SEARCH_QUERY_MAX
+} from './ports/metadata-search.ts';
+export type {
+  MetadataSearchGateway,
+  MetadataSearchGroups,
+  MetadataSearchQuery,
+  MetadataSearchScope,
+  ProjectMetadataHit,
+  SessionMetadataHit,
+  TaskMetadataHit
+} from './ports/metadata-search.ts';
 
 export type { SessionHosting } from './ports/session-hosting.ts';
 export type { EnvironmentPlanner, PreparedStart } from './ports/environment.ts';
@@ -90,6 +105,8 @@ export * from './use-cases/delete-session.ts';
 export * from './use-cases/settle-session.ts';
 export * from './use-cases/session-pin.ts';
 export * from './use-cases/tasks.ts';
+export { withActiveTask } from './use-cases/task-admission.ts';
+export * from './use-cases/task-archive.ts';
 export * from './request-replay.ts';
 export * from './use-cases/task-creation.ts';
 export * from './use-cases/work-log.ts';
@@ -99,6 +116,7 @@ export * from './use-cases/stall.ts';
 export * from './use-cases/canvas.ts';
 export * from './use-cases/agent-profiles.ts';
 export * from './use-cases/search.ts';
+export * from './use-cases/metadata-search.ts';
 export * from './use-cases/hosting.ts';
 export * from './use-cases/conversation.ts';
 export * from './use-cases/home.ts';

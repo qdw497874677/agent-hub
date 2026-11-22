@@ -618,6 +618,20 @@ test('首页：最近会话按时间倒序、受条数限制、项目按活跃�
   assert.equal(home.recentSessions[0]?.projectName, 'demo');
 });
 
+test('首页：归档任务及其会话从计数和最近列表移除，恢复后重新出现', async () => {
+  const w = await world();
+  const session = await derived(w);
+  assert.ok(session.taskId);
+  assert.equal(await w.deps.tasks.setArchived(session.taskId, 12, null), true);
+  const home = await loadHome(w.deps);
+  assert.equal(home.projects[0]?.taskCount, 0);
+  assert.equal(home.projects[0]?.sessionCount, 0);
+  assert.deepEqual(home.recentSessions, []);
+  assert.equal((await w.deps.sessions.byId(session.id))?.id, session.id);
+  assert.equal(await w.deps.tasks.setArchived(session.taskId, null, 12), true);
+  assert.deepEqual((await loadHome(w.deps)).recentSessions.map((row) => row.sessionId), [session.id]);
+});
+
 test('首页：仅展示登记且来源匹配的无任务主会话', async () => {
   const w = await world();
   const first = await derived(w);
@@ -632,6 +646,34 @@ test('首页：仅展示登记且来源匹配的无任务主会话', async () =>
     { sessionId: main.id, taskId: null, taskTitle: '主会话' }
   ]);
   assert.deepEqual((await loadHome(w.deps, undefined, () => false, async () => assert.fail('不查询不可见项目'))).recentSessions, []);
+});
+
+test('首页：会话名作为附加字段带出；同一任务多条各带各的，没起名的不带', async () => {
+  const w = await world();
+  const alpha = await derived(w);
+  const beta = await derived(w);
+  assert.equal(alpha.taskId, beta.taskId);
+  await w.deps.sessions.setTitle(alpha.id, '  改登录  ', 10);
+  const home = await loadHome(w.deps);
+  const rows = new Map(home.recentSessions.map((row) => [row.sessionId, row]));
+  assert.equal(rows.get(alpha.id)?.sessionTitle, '改登录');
+  assert.equal(rows.get(alpha.id)?.taskTitle, '写测试');
+  assert.equal(rows.get(beta.id)?.taskTitle, '写测试');
+  // 没起名 → 字段缺省，不是空串；界面自己回退到短标识。
+  assert.equal('sessionTitle' in (rows.get(beta.id) ?? {}), false);
+});
+
+test('首页：登记的无任务主会话也带自己的名字', async () => {
+  const w = await world();
+  const base = await derived(w);
+  const main = { ...base, taskId: null, originProjectId: w.project.id };
+  await w.deps.sessions.save(main);
+  await w.deps.sessions.setTitle(main.id, '主会话 A', 10);
+  // 内存 fake 的 save 不回写 originProjectId，协调器这里直接给带标题的会话对象（真实路径从库里读）。
+  const home = await loadHome(w.deps, undefined, () => true, async () => [{ ...main, title: '主会话 A' }]);
+  const row = home.recentSessions.find((entry) => entry.sessionId === main.id);
+  assert.equal(row?.taskTitle, '主会话');
+  assert.equal(row?.sessionTitle, '主会话 A');
 });
 
 test('保存布局：从空布局开始，逐个放置', async () => {

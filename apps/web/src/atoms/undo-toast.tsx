@@ -12,6 +12,8 @@ export function UndoToast({
   actionLabel = '撤销',
   pending = false,
   error,
+  testId = 'undo-toast',
+  actionTestId = 'undo-toast-action',
   onAction,
   onDismiss
 }: {
@@ -20,6 +22,8 @@ export function UndoToast({
   pending?: boolean;
   /** 撤销失败的原因：有它就不自动消失，等用户看清再点 × 或重试。 */
   error?: string | null;
+  testId?: string;
+  actionTestId?: string;
   onAction(): void;
   onDismiss(): void;
 }) {
@@ -33,7 +37,7 @@ export function UndoToast({
 
   return (
     <div
-      data-testid="undo-toast"
+      data-testid={testId}
       role="status"
       aria-live="polite"
       className="pointer-events-none fixed inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-[70] flex justify-center px-3"
@@ -45,7 +49,7 @@ export function UndoToast({
         </span>
         <button
           type="button"
-          data-testid="undo-toast-action"
+          data-testid={actionTestId}
           className="flex min-h-[44px] shrink-0 items-center rounded-sm px-2 text-sub text-link hover:underline disabled:opacity-50 md:min-h-[32px]"
           disabled={pending}
           onClick={onAction}

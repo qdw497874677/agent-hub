@@ -97,6 +97,21 @@ test('attention：记下之后不再列，撤销之后回来（刷新读同一�
   );
 });
 
+test('attention：会话名作为附加字段带出；同一任务多条各带各的，没起名的不带', async () => {
+  const { deps, session, task } = await setup();
+  await deps.sessions.setTitle(session.id, '  这条要批  ', 2);
+  const second = deriveSession({ task, agentId: asAgentId('a'), model: 'm', now: 2, createdBy: 'u1' });
+  assert.ok(second.ok);
+  await deps.sessions.save({ ...second.value, status: 'failed' });
+  const view = await loadAttention(deps, { accountId: 'u1', now: 100 });
+  const rows = new Map(view.items.map((item) => [item.sessionId, item]));
+  assert.equal(rows.get(session.id)?.sessionTitle, '这条要批');
+  assert.equal(rows.get(session.id)?.taskTitle, 't');
+  assert.equal(rows.get(second.value.id)?.taskTitle, 't');
+  // 没起名 → 字段缺省，不是空串；界面自己回退到短标识。
+  assert.equal('sessionTitle' in (rows.get(second.value.id) ?? {}), false);
+});
+
 test('attention：撤销只动精确的那一条，别的阶段 / 进入时刻不受影响', async () => {
   const { deps, attention, session } = await setup();
   const base = { accountId: 'u1', sessionId: session.id, acked: true } as const;

@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import type { agentSchema, agentProfileSchema, agentProfileInputSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, teamWorkspaceViewSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
+import type { agentSchema, agentProfileSchema, agentProfileInputSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, metadataSearchProjectSchema, metadataSearchResponseSchema, metadataSearchSessionSchema, metadataSearchTaskSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, teamWorkspaceViewSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
 import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTeamWorkspaceRequest, createTaskRequest, checkProjectReposRequest, projectReposCheckDto, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, createSessionLinkRequest, sessionStreamFrameSchema, workerActionsSchema, workerVersionStatusSchema, workerInfoSchema } from './wire/http.ts';
 import type { resourceSampleSchema, workerMetricsHistorySchema, workerResourcesSchema } from './wire/resources.ts';
 import type { serverToWorkerSchema, workerToServerSchema } from './wire/worker.ts';
@@ -37,6 +37,10 @@ export type SessionEventDto = z.infer<typeof sessionEventSchema>;
 export type JournalEntryDto = z.infer<typeof journalEntrySchema>;
 export type SearchHitDto = z.infer<typeof searchHitSchema>;
 export type SearchResponseDto = z.infer<typeof searchResponseSchema>;
+export type MetadataSearchProjectDto = z.infer<typeof metadataSearchProjectSchema>;
+export type MetadataSearchTaskDto = z.infer<typeof metadataSearchTaskSchema>;
+export type MetadataSearchSessionDto = z.infer<typeof metadataSearchSessionSchema>;
+export type MetadataSearchResponseDto = z.infer<typeof metadataSearchResponseSchema>;
 export type WorkerActionsDto = z.infer<typeof workerActionsSchema>;
 export type WorkerVersionStatusDto = z.infer<typeof workerVersionStatusSchema>;
 export type WorkerInfoDto = z.infer<typeof workerInfoSchema>;

@@ -8,6 +8,7 @@ import { conflict, forbidden, invalid, notFound, unavailable } from '../errors.t
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { authorizeProject, authorizeWorker } from './authorization.ts';
+import { withActiveTask } from './task-admission.ts';
 import {
   newDelegationClaim,
   type DelegationAllocation,
@@ -389,163 +390,166 @@ async function runWorkspaceDelegation(
   const repo = project.repos.find((candidate) => candidate.id === command.repoId);
   if (!repo || repo.url.trim() === '') return err(invalid('仓库不在项目的仓库清单里'));
 
-  const authorizeDirect = async (
-    step: DelegationDirectStep,
-    plan: DelegationPlan,
-    record: WorkspaceDelegation | null,
-    prepared: DelegationPrepared | null = null,
-    started: DelegationStarted | null = null
-  ): Promise<Result<void, DomainError>> => {
-    if (!direct) return ok(undefined);
-    const fresh = await direct.recheck();
-    if (!fresh || !sameDirectSource(fresh, direct.source)) {
-      return err(forbidden('直接执行的来源会话已漂移'));
-    }
-    return direct.authorize({
-      step,
-      actor,
-      source: fresh,
-      project,
-      task,
-      repo,
-      plan,
-      record,
-      prepared,
-      started
-    });
-  };
-
-  const existing = await store.byCoordinatorRequest(command.coordinatorSessionId, requestKey, mode);
-
-  let plan: DelegationPlan;
-  let record: WorkspaceDelegation;
-  let allocation: 'created' | 'reused';
-
-  if (existing) {
-    // 仓库身份按 URL 固定：项目里同 id 的仓库换了地址，旧记录不能继续写。
-    if (existing.repoUrl !== repo.url) {
-      return err(conflict('同一请求键对应的仓库地址已变更'));
-    }
-    // 复用记录里冻结的 plan，避免重试时重新规划出不同路径 / 分支；再按当前请求复算指纹。
-    plan = planOf(existing);
-    if (plan.baseBranch !== requestedBaseBranch) {
-      return err(conflict('同一请求键对应的基线分支已变更'));
-    }
-    const fingerprint = requestFingerprint(mode, command, requestedBaseBranch, project, task, repo, plan);
-    if (fingerprint !== existing.requestFingerprint) {
-      return err(conflict('同一请求键对应了不同的派工内容'));
-    }
-    // 旧记录 / 配置缺失时不能猜默认 agent / model；提案确认必须失败关闭。
-    if (!existing.startup) {
-      return err(conflict('同一请求键对应的派工记录缺少冻结的启动配置，不能确认'));
-    }
-    if (startupKey(existing.startup) !== startupKey(startupOf(command))) {
-      return err(conflict('同一请求键对应的启动配置已变更'));
-    }
-    // 重放也要先过当前授权；已完成的记录返回前不允许绕过来源 / 权限漂移。
-    const allowed = await authorizeDirect('create', plan, existing);
-    if (!allowed.ok) return allowed;
-    record = existing;
-    allocation = 'reused';
-  } else {
-    try {
-      plan = await bridges.plan({
+  // 任务准入：分配 / 复用确认 / 直接建链之前共享持有目标任务；归档独占期间 fail-closed。
+  return withActiveTask(deps, task.id, async () => {
+    const authorizeDirect = async (
+      step: DelegationDirectStep,
+      plan: DelegationPlan,
+      record: WorkspaceDelegation | null,
+      prepared: DelegationPrepared | null = null,
+      started: DelegationStarted | null = null
+    ): Promise<Result<void, DomainError>> => {
+      if (!direct) return ok(undefined);
+      const fresh = await direct.recheck();
+      if (!fresh || !sameDirectSource(fresh, direct.source)) {
+        return err(forbidden('直接执行的来源会话已漂移'));
+      }
+      return direct.authorize({
+        step,
         actor,
-        coordinator: binding,
+        source: fresh,
         project,
         task,
         repo,
-        mode,
-        requestKey
+        plan,
+        record,
+        prepared,
+        started
       });
-    } catch (error) {
-      return err(unavailable(`无法规划派工：${messageOf(error)}`));
-    }
-    if (plan.workerId === '' || plan.baseBranch === '' || plan.worktreePath === '' || plan.branch === '') {
-      return err(invalid('派工计划缺少 Worker / 基线 / 工作树 / 分支'));
-    }
-    // 用户选的基线不能被规划悄悄换掉；不等就停在任何副作用之前。
-    if (plan.baseBranch !== requestedBaseBranch) {
-      return err(invalid('派工计划的基线分支与请求不一致'));
-    }
-
-    // 提案车道与直接车道都在分配记录与任何 Git 副作用之前过 Worker 授权；
-    // 直接车道之后还要经过注入谓词的 worker.use 语义复核。
-    const canUseWorker = await authorizeWorker(deps.access, actor, plan.workerId);
-    if (!canUseWorker.ok) return canUseWorker;
-
-    // 直接车道在分配记录前确认一次当前授权；被拒绝时不会留下 pending 记录。
-    const allowed = await authorizeDirect('create', plan, null);
-    if (!allowed.ok) return allowed;
-
-    const executionSessionId = newSessionId();
-    const fingerprint = requestFingerprint(mode, command, requestedBaseBranch, project, task, repo, plan);
-    const at = deps.now();
-    const input: DelegationAllocation = {
-      id: newId(),
-      accountId: principal.user.id,
-      coordinatorSessionId: command.coordinatorSessionId,
-      mode,
-      requestKey,
-      requestFingerprint: fingerprint,
-      projectId: project.id,
-      taskId: task.id,
-      repoId: repo.id,
-      repoUrl: repo.url,
-      workerId: plan.workerId,
-      baseBranch: plan.baseBranch,
-      instructions: command.instructions,
-      startup: startupOf(command),
-      executionSessionId,
-      worktreePath: plan.worktreePath,
-      branch: plan.branch,
-      at
     };
 
-    let allocated;
-    try {
-      allocated = await store.allocate(input);
-    } catch (error) {
-      return err(unavailable(`派工记录分配失败：${messageOf(error)}`));
-    }
-    if (allocated.outcome === 'conflict') {
-      return err(conflict('同一请求键已用于不同的派工内容，或预留的执行会话已被占用'));
-    }
-    record = allocated.record;
-    allocation = allocated.outcome;
-    // 并发双击时可能刚好由另一请求分配成功；以库里那条为准，使用它预留的身份。
-    // 同时再核对仓库 / 基线没有被另一个并发请求换成别的内容。
-    if (record.repoUrl !== repo.url) {
-      return err(conflict('同一请求键对应的仓库地址已变更'));
-    }
-    if (record.baseBranch !== requestedBaseBranch) {
-      return err(conflict('同一请求键对应的基线分支已变更'));
-    }
-    if (!record.startup) {
-      return err(conflict('同一请求键对应的派工记录缺少冻结的启动配置，不能确认'));
-    }
-    if (startupKey(record.startup) !== startupKey(startupOf(command))) {
-      return err(conflict('同一请求键对应的启动配置已变更'));
-    }
-    plan = planOf(record);
-  }
+    const existing = await store.byCoordinatorRequest(command.coordinatorSessionId, requestKey, mode);
 
-  // 对复用的记录也要做一次 Worker 授权；没有 Worker 就不允许再次触碰。
-  const canUseWorker = await authorizeWorker(deps.access, actor, record.workerId);
-  if (!canUseWorker.ok) return canUseWorker;
+    let plan: DelegationPlan;
+    let record: WorkspaceDelegation;
+    let allocation: 'created' | 'reused';
 
-  if (!effects) {
-    // 纯提案：只允许分配 pending / 读取既有记录；绝不领取或调用任何副作用桥。
-    // 同键重放不会重新规划，也不会修改记录。
-    return ok({ record, allocation, claimed: false });
-  }
+    if (existing) {
+      // 仓库身份按 URL 固定：项目里同 id 的仓库换了地址，旧记录不能继续写。
+      if (existing.repoUrl !== repo.url) {
+        return err(conflict('同一请求键对应的仓库地址已变更'));
+      }
+      // 复用记录里冻结的 plan，避免重试时重新规划出不同路径 / 分支；再按当前请求复算指纹。
+      plan = planOf(existing);
+      if (plan.baseBranch !== requestedBaseBranch) {
+        return err(conflict('同一请求键对应的基线分支已变更'));
+      }
+      const fingerprint = requestFingerprint(mode, command, requestedBaseBranch, project, task, repo, plan);
+      if (fingerprint !== existing.requestFingerprint) {
+        return err(conflict('同一请求键对应了不同的派工内容'));
+      }
+      // 旧记录 / 配置缺失时不能猜默认 agent / model；提案确认必须失败关闭。
+      if (!existing.startup) {
+        return err(conflict('同一请求键对应的派工记录缺少冻结的启动配置，不能确认'));
+      }
+      if (startupKey(existing.startup) !== startupKey(startupOf(command))) {
+        return err(conflict('同一请求键对应的启动配置已变更'));
+      }
+      // 重放也要先过当前授权；已完成的记录返回前不允许绕过来源 / 权限漂移。
+      const allowed = await authorizeDirect('create', plan, existing);
+      if (!allowed.ok) return allowed;
+      record = existing;
+      allocation = 'reused';
+    } else {
+      try {
+        plan = await bridges.plan({
+          actor,
+          coordinator: binding,
+          project,
+          task,
+          repo,
+          mode,
+          requestKey
+        });
+      } catch (error) {
+        return err(unavailable(`无法规划派工：${messageOf(error)}`));
+      }
+      if (plan.workerId === '' || plan.baseBranch === '' || plan.worktreePath === '' || plan.branch === '') {
+        return err(invalid('派工计划缺少 Worker / 基线 / 工作树 / 分支'));
+      }
+      // 用户选的基线不能被规划悄悄换掉；不等就停在任何副作用之前。
+      if (plan.baseBranch !== requestedBaseBranch) {
+        return err(invalid('派工计划的基线分支与请求不一致'));
+      }
 
-  const request: DelegationRequest = { actor, coordinator: binding, project, task, repo, mode };
-  const guard: LaunchGuard | null = direct
-    ? async (step, state) => authorizeDirect(step, state.plan, state.record, state.prepared, state.started)
-    : null;
+      // 提案车道与直接车道都在分配记录与任何 Git 副作用之前过 Worker 授权；
+      // 直接车道之后还要经过注入谓词的 worker.use 语义复核。
+      const canUseWorker = await authorizeWorker(deps.access, actor, plan.workerId);
+      if (!canUseWorker.ok) return canUseWorker;
 
-  return launchWorkspaceDelegation(deps, store, effects, request, record, plan, allocation, guard);
+      // 直接车道在分配记录前确认一次当前授权；被拒绝时不会留下 pending 记录。
+      const allowed = await authorizeDirect('create', plan, null);
+      if (!allowed.ok) return allowed;
+
+      const executionSessionId = newSessionId();
+      const fingerprint = requestFingerprint(mode, command, requestedBaseBranch, project, task, repo, plan);
+      const at = deps.now();
+      const input: DelegationAllocation = {
+        id: newId(),
+        accountId: principal.user.id,
+        coordinatorSessionId: command.coordinatorSessionId,
+        mode,
+        requestKey,
+        requestFingerprint: fingerprint,
+        projectId: project.id,
+        taskId: task.id,
+        repoId: repo.id,
+        repoUrl: repo.url,
+        workerId: plan.workerId,
+        baseBranch: plan.baseBranch,
+        instructions: command.instructions,
+        startup: startupOf(command),
+        executionSessionId,
+        worktreePath: plan.worktreePath,
+        branch: plan.branch,
+        at
+      };
+
+      let allocated;
+      try {
+        allocated = await store.allocate(input);
+      } catch (error) {
+        return err(unavailable(`派工记录分配失败：${messageOf(error)}`));
+      }
+      if (allocated.outcome === 'conflict') {
+        return err(conflict('同一请求键已用于不同的派工内容，或预留的执行会话已被占用'));
+      }
+      record = allocated.record;
+      allocation = allocated.outcome;
+      // 并发双击时可能刚好由另一请求分配成功；以库里那条为准，使用它预留的身份。
+      // 同时再核对仓库 / 基线没有被另一个并发请求换成别的内容。
+      if (record.repoUrl !== repo.url) {
+        return err(conflict('同一请求键对应的仓库地址已变更'));
+      }
+      if (record.baseBranch !== requestedBaseBranch) {
+        return err(conflict('同一请求键对应的基线分支已变更'));
+      }
+      if (!record.startup) {
+        return err(conflict('同一请求键对应的派工记录缺少冻结的启动配置，不能确认'));
+      }
+      if (startupKey(record.startup) !== startupKey(startupOf(command))) {
+        return err(conflict('同一请求键对应的启动配置已变更'));
+      }
+      plan = planOf(record);
+    }
+
+    // 对复用的记录也要做一次 Worker 授权；没有 Worker 就不允许再次触碰。
+    const canUseWorker = await authorizeWorker(deps.access, actor, record.workerId);
+    if (!canUseWorker.ok) return canUseWorker;
+
+    if (!effects) {
+      // 纯提案：只允许分配 pending / 读取既有记录；绝不领取或调用任何副作用桥。
+      // 同键重放不会重新规划，也不会修改记录。
+      return ok({ record, allocation, claimed: false });
+    }
+
+    const request: DelegationRequest = { actor, coordinator: binding, project, task, repo, mode };
+    const guard: LaunchGuard | null = direct
+      ? async (step, state) => authorizeDirect(step, state.plan, state.record, state.prepared, state.started)
+      : null;
+
+    return launchWorkspaceDelegation(deps, store, effects, request, record, plan, allocation, guard);
+  });
 }
 
 /**

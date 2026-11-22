@@ -27,6 +27,8 @@ import { MarketPage } from './market/page.tsx';
 import { modKeyLabel, useNarrow } from './device.ts';
 import { Sheet } from './dialog-shell.tsx';
 import { TaskDetail } from '../surfaces/workbench/task-detail.tsx';
+import { UndoToast } from '../atoms/undo-toast.tsx';
+import { splitArchivedTasks } from '../atoms/task-display.ts';
 import type { View } from './route.ts';
 
 const LAST_PROJECT = 'agent-hub:last-project';
@@ -58,10 +60,11 @@ function RedirectToMachines() {
 
 function Workspace() {
   const [route, navigate] = useRoute();
-  // 手机上画布没法用手指精确拖拽，默认进列表；桌面默认进画布。
+  // 项目默认落在列表：画布是刻意进去看的全局关系，不是每次打开项目的必经页。
   const narrow = useNarrow();
-  const homeView: View = narrow ? 'list' : 'canvas';
+  const homeView: View = 'list';
   const [newTask, setNewTask] = useState(false);
+  const [createdTask, setCreatedTask] = useState<TaskDto | null>(null);
   // 新开主会话（不是任务）：入口在侧栏动作区，和新建任务并排。
   const [newCoordinator, setNewCoordinator] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -105,9 +108,9 @@ function Workspace() {
   }, [route, projectRoute, project, projects.data, projects.isFetching, navigate, homeView]);
 
   const goProject = useCallback(
-    (picked: ProjectDto, next: View, sessionId: string | null) => {
+    (picked: ProjectDto, next: View, sessionId: string | null, state?: unknown) => {
       localStorage.setItem(LAST_PROJECT, picked.id);
-      navigate({ page: 'project', projectId: picked.id, view: next, sessionId });
+      navigate({ page: 'project', projectId: picked.id, view: next, sessionId }, 'push', state);
     },
     [navigate]
   );
@@ -126,6 +129,9 @@ function Workspace() {
     // Worker 还没上线时自己轮询：别让「等 worker」变成用户要记住的手动刷新
     refetchInterval: (query) => ((query.state.data?.agents.length ?? 0) === 0 ? 2000 : false)
   });
+
+  // 列表 / 画布 / 侧栏只看未归档任务；直接会话链接、任务详情和搜索仍用上面的原始 canvas。
+  const display = useMemo(() => (canvas.data ? splitArchivedTasks(canvas.data) : null), [canvas.data]);
 
   const refresh = useCallback(() => {
     if (project) void queryClient.invalidateQueries({ queryKey: ['canvas', project.id] });
@@ -194,10 +200,35 @@ function Workspace() {
   /** 进会话说话。画布卡上的「对话」/双击、列表里点行、首页点最近会话，都走这里。 */
   const openSession = useCallback(
     (sessionId: string) => {
-      if (projectRoute) navigate({ ...projectRoute, view: 'focus', sessionId });
+      if (!projectRoute) return;
+      const existing = window.history.state as { returnTo?: string; fromHub?: boolean } | null;
+      const state = {
+        fromHub: true,
+        returnTo: (projectRoute.view === 'focus' ? existing?.returnTo : null) ?? window.location.hash
+      };
+      // 已经在会话里换会话用 replace：历史里只留「来源 → 当前会话」，返回键仍然回来源。
+      navigate(
+        { ...projectRoute, view: 'focus', sessionId },
+        projectRoute.view === 'focus' ? 'replace' : 'push',
+        state
+      );
     },
     [projectRoute, navigate]
   );
+
+  /** 会话里的「返回」：从应用里进来的按历史回来源；直链进来没有来源，退回列表。 */
+  const backFromFocus = useCallback(() => {
+    const state = window.history.state as { fromHub?: boolean } | null;
+    if (state?.fromHub) {
+      window.history.back();
+      return;
+    }
+    if (projectRoute) {
+      navigate({ ...projectRoute, view: 'list', sessionId: null }, 'replace');
+    } else {
+      navigate({ page: 'home' }, 'replace');
+    }
+  }, [projectRoute, navigate]);
 
   const setTaskStatus = useCallback(
     (taskId: string, status: TaskDto['status']) => {
@@ -316,8 +347,14 @@ function Workspace() {
       <HomePage
         onOpen={(picked, sessionId) => {
           // 「接着干」= 直接进那条会话说话，不是先看画布再自己找。
-          goProject(picked, sessionId ? 'focus' : homeView, sessionId ?? null);
+          const state = sessionId ? { fromHub: true, returnTo: window.location.hash } : undefined;
+          goProject(picked, sessionId ? 'focus' : homeView, sessionId ?? null, state);
           if (sessionId) setFocus({ id: sessionId, nonce: Date.now() });
+        }}
+        onOpenTask={(picked, taskId) => {
+          // 任务命中先进项目的列表，再把任务日志/状态开成浮层；关掉浮层仍在列表，能接着看别的。
+          goProject(picked, 'list', null);
+          setTaskDetail(taskId);
         }}
       />
     );
@@ -361,7 +398,7 @@ function Workspace() {
       project={project}
       projects={projects.data ?? []}
       selectedId={selected}
-      canvas={canvas.data ?? null}
+      canvas={display?.canvas ?? null}
       live={live}
       onInterrupt={interruptSession}
       onExpandSession={(sessionId) => {
@@ -410,14 +447,13 @@ function Workspace() {
         </Sheet>
       ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ProjectBar project={project} view={view} canFocus={selectedSession !== null} stream={stream} onView={setView} />
+        <ProjectBar project={project} view={view} stream={stream} onView={setView} />
         <div className="lg:hidden">
           <ProjectHeader
             project={project}
             projects={projects.data ?? []}
             stream={stream}
             view={view}
-            canFocus={selectedSession !== null}
             onView={setView}
             onMenu={() => setSidebarOpen(true)}
             onSwitchProject={(picked) => {
@@ -436,7 +472,7 @@ function Workspace() {
           live={resolveLive(selectedSession, canvas.data.previews[selectedSession.id] ?? [], live[selectedSession.id])}
           draft={drafts[selectedSession.id] ?? ''}
           onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
-          onBack={() => setView(homeView)}
+          onBack={backFromFocus}
           onChanged={refresh}
           onOpenSession={openSession}
           onSeedDraft={(id, text) => setDrafts((current) => ({ ...current, [id]: text }))}
@@ -449,18 +485,21 @@ function Workspace() {
       <div className="flex min-h-0 min-w-0 flex-1">
         {/* min-w-0：不然行里截断的长标题会按 min-content 把这一栏撑出屏（390 宽下整页能横滑 200px） */}
         <div className="relative min-w-0 flex-1">
-          {canvas.data && view === 'list' ? (
+          {display && view === 'list' ? (
             <ListView
-              canvas={canvas.data}
+              canvas={display.canvas}
+              archivedTasks={display.archived}
               live={live}
               onOpen={openSession}
               onDerive={setDeriveFor}
               onTaskDetail={setTaskDetail}
               onNewTask={() => setNewTask(true)}
+              onChanged={refresh}
+              focusTaskId={createdTask?.id ?? null}
             />
-          ) : canvas.data ? (
+          ) : display ? (
             <CanvasView
-              canvas={{ ...canvas.data, layout: canvas.data.layout }}
+              canvas={{ ...display.canvas, layout: display.canvas.layout }}
               live={live}
               onDerive={setDeriveFor}
               onOpen={openSession}
@@ -514,7 +553,13 @@ function Workspace() {
           actions={paletteActions}
         />
       ) : null}
-      {newTask ? <NewTaskDialog projectId={project.id} onDone={() => setNewTask(false)} /> : null}
+      {newTask ? (
+        <NewTaskDialog
+          projectId={project.id}
+          onDone={() => setNewTask(false)}
+          onCreated={(task) => setCreatedTask(task)}
+        />
+      ) : null}
       {taskDetail && canvas.data ? (
         <TaskDetail
           canvas={canvas.data}
@@ -547,6 +592,20 @@ function Workspace() {
             setDeriveFor(null);
             openSession(session.id);
           }}
+        />
+      ) : null}
+      {createdTask ? (
+        <UndoToast
+          testId="task-created-toast"
+          actionTestId="task-created-start"
+          message={`任务「${createdTask.title}」已创建`}
+          actionLabel="开始会话"
+          onAction={() => {
+            const taskId = createdTask.id;
+            setCreatedTask(null);
+            setDeriveFor(taskId);
+          }}
+          onDismiss={() => setCreatedTask(null)}
         />
       ) : null}
       </div>

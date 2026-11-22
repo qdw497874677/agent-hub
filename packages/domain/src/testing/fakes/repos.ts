@@ -254,13 +254,27 @@ export function fakeTasks(shared: Map<string, Task> = new Map()): TaskRepository
 export function taskOps(rows: Map<string, Task>): TaskRepository {
   return {
     async save(task) {
-      rows.set(task.id, task);
+      const existing = rows.get(task.id);
+      if (!existing) {
+        rows.set(task.id, task);
+        return;
+      }
+      // 与 SQLite 整行 upsert 对齐：更新已有行时不写 archivedAt（归档 / 恢复只走 setArchived）。
+      rows.set(task.id, existing.archivedAt === undefined ? withoutArchive(task) : { ...task, archivedAt: existing.archivedAt });
     },
     async setBranch(id, branch) {
       if (branch === null) return false;
       const existing = rows.get(id);
       if (!existing) return false;
       rows.set(id, { ...existing, branch });
+      return true;
+    },
+    async setArchived(id, archivedAt, expectedArchivedAt) {
+      const existing = rows.get(id);
+      if (!existing) return false;
+      // CAS：期望过期就什么都不写；相同目标值重复调用幂等（仍返回 true）。
+      if ((existing.archivedAt ?? null) !== expectedArchivedAt) return false;
+      rows.set(id, { ...existing, archivedAt });
       return true;
     },
     async byId(id) {
@@ -270,6 +284,12 @@ export function taskOps(rows: Map<string, Task>): TaskRepository {
       return [...rows.values()].filter((task) => task.projectId === projectId);
     }
   };
+}
+
+/** 去掉 archivedAt（保留「没有这个字段」与 null 的区别），供整行 save 模拟 SQLite 不写归档列。 */
+function withoutArchive(task: Task): Task {
+  const { archivedAt: _archivedAt, ...rest } = task;
+  return rest;
 }
 
 export function fakeWorkLog(): WorkLogRepository & { rows: WorkLogEntry[] } {

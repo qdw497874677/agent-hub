@@ -8,6 +8,7 @@ import type { Deps } from './deps.ts';
 import type { DeliveryQueue } from '../ports/delivery-queue.ts';
 import { ensureHosted } from './hosting.ts';
 import { recordEvent } from './sessions.ts';
+import { withActiveTask } from './task-admission.ts';
 
 /**
  * 送达（ADR 0031 D2）。只有「依赖不在线」（unavailable）才重试：
@@ -15,7 +16,7 @@ import { recordEvent } from './sessions.ts';
  */
 export type DeliveryDeps = Pick<
   Deps,
-  'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots'
+  'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaces' | 'workspaceGroups' | 'bots'
 > & { readonly deliveries: DeliveryQueue; readonly random?: () => number };
 
 export interface PromptPayload {
@@ -141,37 +142,39 @@ async function attemptClaimed(deps: DeliveryDeps, delivery: Delivery): Promise<R
     await deps.deliveries.reschedule(delivery.id, now, now + TURN_WAIT_MS);
     return ok(undefined);
   }
-  // 条件认领：定时泵、回合结束放行、立即重试可能同时看见这条，
-  // 只有把状态原子翻成 sending 的那一个才派发，避免同一句话投递两次。
-  if (!(await deps.deliveries.claimSend(delivery.id, deps.now()))) return ok(undefined);
   const session = await deps.sessions.byId(sessionId);
-  let failure: DomainError | null = null;
-  if (!session) failure = notFound('会话不存在');
-  else {
-    const hosted = await ensureHosted(deps, session);
-    if (!hosted.ok) failure = hosted.error;
+  return withActiveTask(deps, session?.taskId ?? null, async () => {
+    // 条件认领：定时泵、回合结束放行、立即重试可能同时看见这条，
+    // 只有把状态原子翻成 sending 的那一个才派发，避免同一句话投递两次。
+    if (!(await deps.deliveries.claimSend(delivery.id, deps.now()))) return ok(undefined);
+    let failure: DomainError | null = null;
+    if (!session) failure = notFound('会话不存在');
     else {
-      const payload = delivery.payload as PromptPayload;
-      const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text: payload.text, parts: payload.parts, deliveryId: delivery.id });
-      if (!sent.ok) failure = sent.error;
+      const hosted = await ensureHosted(deps, session);
+      if (!hosted.ok) failure = hosted.error;
+      else {
+        const payload = delivery.payload as PromptPayload;
+        const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text: payload.text, parts: payload.parts, deliveryId: delivery.id });
+        if (!sent.ok) failure = sent.error;
+      }
     }
-  }
-  const now = deps.now();
-  if (!failure) {
-    // claimSend 已经把状态写成 sending、updatedAt 记成派发时间；这里不再写 delivered。
-    // 只有持久化的、带同一个 deliveryId 的 ended 才能通过 finishSending 收掉它。
+    const now = deps.now();
+    if (!failure) {
+      // claimSend 已经把状态写成 sending、updatedAt 记成派发时间；这里不再写 delivered。
+      // 只有持久化的、带同一个 deliveryId 的 ended 才能通过 finishSending 收掉它。
+      return ok(undefined);
+    }
+    const next = failure.code === 'unavailable'
+      ? afterFailure(delivery, failure.message, now, deps.random)
+      : { ...delivery, attempt: delivery.attempt + 1, state: 'undelivered' as const, nextAt: null, lastError: failure.message, updatedAt: now };
+    await deps.deliveries.save(next);
+    if (next.state === 'undelivered') {
+      // 已经在 attemptDelivery 的会话队列里：再调 queue.run 会等自己（队列不可重入）。
+      await recordEvent(deps, { sessionId, event: { kind: 'ended', outcome: 'failed', reason: `未送达：${failure.message}` } });
+      return err(failure);
+    }
     return ok(undefined);
-  }
-  const next = failure.code === 'unavailable'
-    ? afterFailure(delivery, failure.message, now, deps.random)
-    : { ...delivery, attempt: delivery.attempt + 1, state: 'undelivered' as const, nextAt: null, lastError: failure.message, updatedAt: now };
-  await deps.deliveries.save(next);
-  if (next.state === 'undelivered') {
-    // 已经在 attemptDelivery 的会话队列里：再调 queue.run 会等自己（队列不可重入）。
-    await recordEvent(deps, { sessionId, event: { kind: 'ended', outcome: 'failed', reason: `未送达：${failure.message}` } });
-    return err(failure);
-  }
-  return ok(undefined);
+  });
 }
 
 /**

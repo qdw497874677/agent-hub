@@ -194,6 +194,7 @@ async function createTaskAction(
       {
         projects: deps.delegationDeps.projects,
         tasks: deps.delegationDeps.tasks,
+        taskGate: deps.delegationDeps.taskGate,
         taskCreations: deps.taskCreations,
         now: deps.delegationDeps.now
       },

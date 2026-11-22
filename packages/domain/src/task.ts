@@ -26,6 +26,12 @@ export interface Task {
   readonly baseBranch: string | null;
   /** 「当前进展」一句话：最近一条人或 agent 写的日志自动刷新，也可手改。 */
   readonly summary: string | null;
+  /**
+   * 归档时间；null / 缺省 = 未归档（老数据也读作 null）。
+   * 只经 `TaskRepository.setArchived` 的比较并设置写：整行 save 在更新时不碰这个字段，
+   * 否则归档 / 恢复后迟到的旧快照会把状态盖回去。
+   */
+  readonly archivedAt?: number | null;
   /** 任务默认 Agent：覆盖项目默认；会话里显式选的仍然优先。null = 没配。 */
   readonly defaultAgent?: AgentRef | null;
   /**
@@ -91,6 +97,7 @@ export function createTask(input: CreateTaskInput): Result<Task, DomainError> {
     baseBranch: baseBranch.value,
     parentTaskId,
     summary: null,
+    archivedAt: null,
     defaultAgent: null,
     logSeq: 0,
     createdAt: input.now,

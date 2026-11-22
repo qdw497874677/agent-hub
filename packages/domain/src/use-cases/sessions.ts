@@ -24,6 +24,7 @@ import { defaultWorkspaceFor, locationOf, usableByProject } from './workspaces.t
 import { authorizeSession, authorizeWorker, projectOfSessionOrigin } from './authorization.ts';
 import { agentProfileForUse } from './agent-profiles.ts';
 import { resolveDefaultAgent } from './resolve-default-agent.ts';
+import { withActiveTask } from './task-admission.ts';
 
 export interface DeriveCommand {
   /** 归属任务。容器会话（群角色 / bot P2P，#221 步骤 7）不传，改用 `projectId` 定位项目。 */
@@ -71,7 +72,17 @@ export interface DeriveCommand {
  * 派生会话：唯一入口。
  * 常规会话必须落到一个真实任务上；容器会话（群角色 / bot P2P）没有任务，靠 `projectId` 落项目。
  */
+type DeriveSessionDeps = Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'taskGate' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles' | 'workspaceGroups' | 'agentDefaults'>;
+
 export async function deriveSessionUseCase(
+  deps: DeriveSessionDeps,
+  command: DeriveCommand
+): Promise<Result<Session, DomainError>> {
+  const taskId = command.taskId ? asTaskId(command.taskId) : null;
+  return withActiveTask(deps, taskId, () => deriveSessionAdmitted(deps, command));
+}
+
+async function deriveSessionAdmitted(
   deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles' | 'workspaceGroups' | 'agentDefaults'>,
   command: DeriveCommand
 ): Promise<Result<Session, DomainError>> {
@@ -245,7 +256,7 @@ export interface ForkCommand {
 }
 
 export async function forkSessionUseCase(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'taskGate' | 'workLog' | 'workspaces' | 'access'>,
   command: ForkCommand
 ): Promise<Result<Session, DomainError>> {
   const source = await deps.sessions.byId(asSessionId(command.sessionId));
@@ -265,65 +276,67 @@ export async function forkSessionUseCase(
     // 边界（#221 步骤 7）：容器会话不挂在任务上，分叉要按任务算项目与落点，这里先明确拒绝。
     return err(invalid('容器会话（不属于任何任务）暂不支持分叉'));
   }
-  const sourceTask = await deps.tasks.byId(sourceTaskId);
-  if (!sourceTask) return err(notFound('来源会话所属的任务不存在'));
-  const project = await deps.projects.byId(sourceTask.projectId);
-  if (!project) return err(notFound('项目不存在'));
+  return withActiveTask(deps, sourceTaskId, async () => {
+    const sourceTask = await deps.tasks.byId(sourceTaskId);
+    if (!sourceTask) return err(notFound('来源会话所属的任务不存在'));
+    const project = await deps.projects.byId(sourceTask.projectId);
+    if (!project) return err(notFound('项目不存在'));
 
-  // 分叉会继承 agentSessionRef，等于能读来源会话的 agent 文件：和 prompt 一样只认会话创建者
-  // （团队 owner / admin 或被显式授权的人也放行），不能因为项目被共享就越权。
-  const sourceAllowed = await authorizeSession(deps.access, command.actor ?? null, project, source, 'session.fork');
-  if (!sourceAllowed.ok) return sourceAllowed;
+    // 分叉会继承 agentSessionRef，等于能读来源会话的 agent 文件：和 prompt 一样只认会话创建者
+    // （团队 owner / admin 或被显式授权的人也放行），不能因为项目被共享就越权。
+    const sourceAllowed = await authorizeSession(deps.access, command.actor ?? null, project, source, 'session.fork');
+    if (!sourceAllowed.ok) return sourceAllowed;
 
-  const agentId = asAgentId(command.agentId);
-  if (!deps.agents.descriptor(agentId)) {
-    return err(conflict(`没有在线节点提供 ${command.agentId}`));
-  }
+    const agentId = asAgentId(command.agentId);
+    if (!deps.agents.descriptor(agentId)) {
+      return err(conflict(`没有在线节点提供 ${command.agentId}`));
+    }
 
-  // 分叉要读来源会话的 agent 会话文件，那份文件只在来源的那台机器上：钉死在它上面。
-  const workers = await deps.gateway.status();
-  const homeWorker = source.workerId ?? workers.find((worker) => worker.origin === 'local')?.workerId ?? null;
-  if (homeWorker !== null) {
-    const early = await authorizeWorker(deps.access, command.actor ?? null, homeWorker);
-    if (!early.ok) return early;
-  }
-  const placed = placeSession(workers, {
-    agentId,
-    requested: source.workerId,
-    projectWorker: source.workerId,
-    model: command.model
+    // 分叉要读来源会话的 agent 会话文件，那份文件只在来源的那台机器上：钉死在它上面。
+    const workers = await deps.gateway.status();
+    const homeWorker = source.workerId ?? workers.find((worker) => worker.origin === 'local')?.workerId ?? null;
+    if (homeWorker !== null) {
+      const early = await authorizeWorker(deps.access, command.actor ?? null, homeWorker);
+      if (!early.ok) return early;
+    }
+    const placed = placeSession(workers, {
+      agentId,
+      requested: source.workerId,
+      projectWorker: source.workerId,
+      model: command.model
+    });
+    if (!placed.ok) return placed;
+    const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
+    if (!allowed.ok) return allowed;
+    const model = checkModelOn(workers, placed.value, agentId, command.model);
+    if (!model.ok) return model;
+
+    const created = forkSession({
+      source,
+      atSeq,
+      agentId,
+      model: model.value,
+      now: deps.now(),
+      workerId: placed.value,
+      createdBy: principalOfSubject(command.actor)?.user.id ?? null,
+      options: source.options
+    });
+    if (!created.ok) return created;
+
+    const session = { ...created.value, workerId: placed.value };
+    await deps.sessions.save(session);
+
+    const { root } = await locationOf(deps, project, session);
+    const started = await startSessionUseCase(deps, {
+      session,
+      workspaceRoot: root,
+      resume: { agentSessionRef: source.agentSessionRef, cursor: atSeq },
+      inheritedOptions: source.options
+    });
+    if (!started.ok) return started;
+    await noteSessionStarted(deps, session, `从会话 ${source.id.slice(0, 8)} 的最新处（第 ${atSeq} 步）分叉出 ${session.agentId} 会话`);
+    return ok(session);
   });
-  if (!placed.ok) return placed;
-  const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
-  if (!allowed.ok) return allowed;
-  const model = checkModelOn(workers, placed.value, agentId, command.model);
-  if (!model.ok) return model;
-
-  const created = forkSession({
-    source,
-    atSeq,
-    agentId,
-    model: model.value,
-    now: deps.now(),
-    workerId: placed.value,
-    createdBy: principalOfSubject(command.actor)?.user.id ?? null,
-    options: source.options
-  });
-  if (!created.ok) return created;
-
-  const session = { ...created.value, workerId: placed.value };
-  await deps.sessions.save(session);
-
-  const { root } = await locationOf(deps, project, session);
-  const started = await startSessionUseCase(deps, {
-    session,
-    workspaceRoot: root,
-    resume: { agentSessionRef: source.agentSessionRef, cursor: atSeq },
-    inheritedOptions: source.options
-  });
-  if (!started.ok) return started;
-  await noteSessionStarted(deps, session, `从会话 ${source.id.slice(0, 8)} 的最新处（第 ${atSeq} 步）分叉出 ${session.agentId} 会话`);
-  return ok(session);
 }
 
 export interface RecordEventCommand {

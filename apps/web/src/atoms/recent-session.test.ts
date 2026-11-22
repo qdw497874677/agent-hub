@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { homeSessionRows, homeSessionSearch, homeSessionTitle, UNASSIGNED_SESSION } from './recent-session.ts';
+import { homeSessionRows, homeSessionSearch, homeSessionTitle } from './recent-session.ts';
 import type { RecentSessionDto } from '@agent-hub/contract';
 
 const base = {
@@ -13,26 +13,33 @@ const base = {
   updatedAt: 1
 };
 
-test('有任务：还是显示任务名，搜索也算上项目名', () => {
-  const [row] = homeSessionRows([{ ...base, taskId: 'tsk_1', taskTitle: '查登录 bug' } as unknown as RecentSessionDto]);
+test('有会话名：显示会话名，任务名只进搜索和次级信息', () => {
+  const [row] = homeSessionRows([
+    {
+      ...base,
+      taskId: 'tsk_1',
+      taskTitle: '查登录 bug',
+      sessionTitle: '复现登录超时'
+    } as unknown as RecentSessionDto
+  ]);
   assert.ok(row);
-  assert.equal(homeSessionTitle(row), '查登录 bug');
-  assert.equal(homeSessionSearch(row), '查登录 bug agent-hub');
+  assert.equal(homeSessionTitle(row), '复现登录超时');
+  assert.equal(homeSessionSearch(row), '复现登录超时 查登录 bug agent-hub');
 });
 
-test('无任务会话：有名字用名字，没有就如实说「没有任务的会话」，不显示 null', () => {
+test('同一任务下的无标题会话用短 ID 分开，不拿任务名冒充会话名', () => {
   const rows = homeSessionRows([
-    { ...base, sessionId: 'ses_2', taskId: null, taskTitle: '', title: '项目主会话' },
-    { ...base, sessionId: 'ses_3', taskId: null, taskTitle: '' }
+    { ...base, sessionId: 'ses_abcdef', taskId: 'tsk_1', taskTitle: '查登录 bug' },
+    { ...base, sessionId: 'ses_uvwxyz', taskId: 'tsk_1', taskTitle: '查登录 bug' }
   ] as unknown as RecentSessionDto[]);
-  assert.deepEqual(rows.map(homeSessionTitle), ['项目主会话', UNASSIGNED_SESSION]);
-  // 空字符串 / 纯空白任务名都不能冒出来
-  assert.equal(homeSessionTitle({ ...rows[1]!, taskTitle: '   ' }), UNASSIGNED_SESSION);
+  assert.deepEqual(rows.map(homeSessionTitle), ['会话 ses_ab', '会话 ses_uv']);
+  assert.notEqual(homeSessionTitle(rows[0]!), homeSessionTitle(rows[1]!));
 });
 
-test('契约还没补上 title 时也不炸：缺字段走任务名/兜底', () => {
-  const [row] = homeSessionRows([{ ...base, taskId: 'tsk_2', taskTitle: '改文档' } as unknown as RecentSessionDto]);
-  assert.ok(row);
-  assert.equal(homeSessionTitle({ ...row, title: undefined }), '改文档');
-  assert.equal(homeSessionTitle({ ...row, title: '  ' }), '改文档');
+test('无任务会话也显示会话名；空白名回退短 ID，不显示 null', () => {
+  const rows = homeSessionRows([
+    { ...base, sessionId: 'ses_2', taskId: null, taskTitle: '', sessionTitle: '项目主会话' },
+    { ...base, sessionId: 'ses_3', taskId: null, taskTitle: '', sessionTitle: '   ' }
+  ] as unknown as RecentSessionDto[]);
+  assert.deepEqual(rows.map(homeSessionTitle), ['项目主会话', '会话 ses_3']);
 });

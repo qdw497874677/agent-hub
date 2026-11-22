@@ -174,7 +174,7 @@ test('启动：没有 environment 端口也按原指令派发（环境准备不�
   const { environment: _dropped, ...withoutEnvironment } = w.deps;
 
   const started = await startSessionUseCase(
-    withoutEnvironment as Pick<Deps, 'gateway' | 'hosting' | 'now' | 'sessions' | 'workspaces'>,
+    withoutEnvironment as Pick<Deps, 'gateway' | 'hosting' | 'now' | 'sessions' | 'tasks' | 'taskGate' | 'workspaces'>,
     {
       session,
       workspaceRoot: '',

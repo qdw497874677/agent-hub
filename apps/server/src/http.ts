@@ -35,6 +35,7 @@ import {
   setDefaultAgentRequest,
   homeSchema,
   searchResponseSchema,
+  metadataSearchResponseSchema,
   createTaskRequest,
   deriveSessionRequest,
   createWorkspaceRequest,
@@ -60,6 +61,7 @@ import {
   createSessionLinkRequest,
   agentProfileInputSchema,
   setTaskStatusRequest,
+  setTaskArchivedRequest,
   setTaskSummaryRequest,
   appendLogRequest,
   editLogRequest,
@@ -142,7 +144,10 @@ import {
   readSessionAttachment,
   saveLayoutUseCase,
   searchUseCase,
+  metadataSearchUseCase,
   setTaskStatusUseCase,
+  setTaskArchivedUseCase,
+  type TaskArchiveBlockers,
   setTaskDefaultAgentUseCase,
   setTaskSummaryUseCase,
   setProjectPreviewPortUseCase,
@@ -192,6 +197,7 @@ import type { OpenApiOptions } from './openapi/app.ts';
 import type { ApiTokenDeps } from '@agent-hub/domain';
 
 export interface AppOptions {
+  readonly taskArchiveBlockers?: TaskArchiveBlockers;
   readonly deps: Deps;
   readonly hub: StreamHub;
   readonly token: string | null;
@@ -795,6 +801,17 @@ export function createApp(options: AppOptions): Hono {
     return result.ok ? c.json(searchResponseSchema.parse({ hits: result.value })) : fail(c, result.error);
   });
 
+  /** 快速跳转：项目名 / 任务标题 / 会话标题或精确 id；不读正文，按可见项目分组返回。 */
+  app.get('/api/metadata-search', async (c) => {
+    const rawLimit = c.req.query('limit');
+    const limitPerGroup = rawLimit === undefined || rawLimit === '' ? undefined : Number(rawLimit);
+    const result = await metadataSearchUseCase(deps, subjectOf(c), {
+      query: c.req.query('q') ?? '',
+      ...(limitPerGroup === undefined ? {} : { limitPerGroup })
+    });
+    return result.ok ? c.json(metadataSearchResponseSchema.parse(result.value)) : fail(c, result.error);
+  });
+
   app.post('/api/tasks', async (c) => {
     const input = await body(c, createTaskRequest);
     if (!input.ok) return input.response;
@@ -879,6 +896,20 @@ export function createApp(options: AppOptions): Hono {
     if (result.ok && (status === 'done' || status === 'abandoned')) {
       void sweepTemporaryWorkspacesUseCase(deps, { taskId: result.value.id }).catch(() => undefined);
     }
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+
+  app.post('/api/tasks/:taskId/archive', async (c) => {
+    const blockers = options.taskArchiveBlockers;
+    if (!blockers) return fail(c, unavailable('任务归档暂不可用'));
+    const input = await body(c, setTaskArchivedRequest);
+    if (!input.ok) return input.response;
+    const taskId = asTaskId(c.req.param('taskId'));
+    const task = await deps.tasks.byId(taskId);
+    if (!task) return fail(c, notFound('任务不存在'));
+    const allowed = await authorizeProject(deps.access, subjectOf(c), await deps.projects.byId(task.projectId), 'task.update');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const result = await setTaskArchivedUseCase(deps, blockers, taskId, input.value.archived, principalOf(c)?.user.displayName);
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 

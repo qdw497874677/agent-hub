@@ -3,9 +3,23 @@ import { AccountMenu } from '../../shell/auth.tsx';
 import { NotificationBell } from '../../shell/market/notifications.tsx';
 import { AttentionBadge, AttentionInbox } from '../../atoms/attention.tsx';
 import { TaskQueue } from './task-queue.tsx';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode
+} from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ProjectDto, RecentSessionDto } from '../../shell/api.ts';
+import type {
+  MetadataSearchResponseDto,
+  MetadataSearchSessionDto,
+  MetadataSearchTaskDto,
+  ProjectDto,
+  RecentSessionDto
+} from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
 import { MachinesBadge } from '../../shell/workers.tsx';
 import { DeleteProjectDialog, TrashList } from './delete-project.tsx';
@@ -14,7 +28,13 @@ import { ProjectListSheet, ProjectRow } from './project-list.tsx';
 import { UndoToast } from '../../atoms/undo-toast.tsx';
 import { Icon } from '../../atoms/icons.tsx';
 import { DialogShell, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
-import { homeSessionRows, homeSessionSearch, homeSessionTitle, type HomeSessionRow } from '../../atoms/recent-session.ts';
+import { homeSessionRows, homeSessionTitle, type HomeSessionRow } from '../../atoms/recent-session.ts';
+import { NewProjectRepos } from './new-project-repos.tsx';
+import { newProjectPrimaryProblem, newProjectReposProblem } from './new-project-repos.ts';
+import { repoRowsValue, type ProjectRepoRow } from './project-repos.ts';
+
+/** 「返回首页」时把搜索词带回来：返回的是刚才那一屏，不重置。 */
+const HOME_FILTER_KEY = 'agent-hub.home.filter';
 
 /**
  * 首页。
@@ -25,13 +45,26 @@ import { homeSessionRows, homeSessionSearch, homeSessionTitle, type HomeSessionR
  *
  * 仍然不做看板：这里是清单，不是按状态分列的卡片墙。
  */
+type SearchHit =
+  | { readonly kind: 'project'; readonly key: string; readonly project: ProjectDto }
+  | { readonly kind: 'task'; readonly key: string; readonly project: ProjectDto; readonly task: MetadataSearchTaskDto }
+  | { readonly kind: 'session'; readonly key: string; readonly project: ProjectDto; readonly session: MetadataSearchSessionDto };
+
 export function HomePage({
-  onOpen
+  onOpen,
+  onOpenTask
 }: {
   onOpen: (project: ProjectDto, sessionId?: string) => void;
+  onOpenTask: (project: ProjectDto, taskId: string) => void;
 }) {
   const [creating, setCreating] = useState(false);
-  const [filter, setFilter] = useState('');
+  const [filter, setFilter] = useState(() => {
+    try {
+      return sessionStorage.getItem(HOME_FILTER_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  });
   const [deleting, setDeleting] = useState<ProjectDto | null>(null);
   const [sheet, setSheet] = useState(false);
   /** 标题被截断时用这个看全文：native title 在触屏和键盘上都摸不到。 */
@@ -43,33 +76,130 @@ export function HomePage({
 
   const projects = home.data?.projects ?? [];
   const recent = useMemo(() => homeSessionRows(home.data?.recentSessions ?? []), [home.data]);
-  const needle = filter.trim().toLowerCase();
-  const shown = useMemo(
-    () =>
-      needle === ''
-        ? recent
-        : recent.filter((session) => homeSessionSearch(session).toLowerCase().includes(needle)),
-    [recent, needle]
-  );
+  const needle = filter.trim();
+  const deferredNeedle = useDeferredValue(needle);
+  const shown = recent;
   const groups = useMemo(() => groupByDay(shown), [shown]);
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
+  const [activeHit, setActiveHit] = useState(0);
 
-  // 过滤结果给读屏播报一句就够，而且等手停下来再说：每个键都念会把输入打断。
+  const metadata = useQuery({
+    queryKey: ['metadata-search', deferredNeedle],
+    queryFn: () => api.metadataSearch(deferredNeedle, 8),
+    // 空串是「看最近」，不是一次全站搜索；这里不发请求。
+    enabled: deferredNeedle !== '',
+    staleTime: 10_000,
+    retry: false
+  });
+
+  const hits = useMemo<SearchHit[]>(() => {
+    const data = metadata.data;
+    if (!data) return [];
+    const found: SearchHit[] = [];
+    for (const hit of data.projects) {
+      const project = projectById.get(hit.projectId);
+      if (project) found.push({ kind: 'project', key: `project:${hit.projectId}`, project });
+    }
+    for (const task of data.tasks) {
+      const project = projectById.get(task.projectId);
+      if (project) found.push({ kind: 'task', key: `task:${task.taskId}`, project, task });
+    }
+    for (const session of data.sessions) {
+      const project = projectById.get(session.projectId);
+      if (project) found.push({ kind: 'session', key: `session:${session.sessionId}`, project, session });
+    }
+    return found;
+  }, [metadata.data, projectById]);
+
+  const searching = needle !== '';
+  const resultCount = hits.length;
+  const active = resultCount === 0 ? null : Math.min(activeHit, resultCount - 1);
+
+  useEffect(() => {
+    setActiveHit(0);
+  }, [deferredNeedle, metadata.data]);
+
+  // 搜索结果给读屏播报一句就够，而且等手停下来再说：每个键都念会把输入打断。
   useEffect(() => {
     if (needle === '') {
       setAnnouncement('');
       return;
     }
     const timer = window.setTimeout(() => {
-      setAnnouncement(shown.length === 0 ? `没有匹配「${filter.trim()}」的会话` : `找到 ${shown.length} 条会话`);
+      if (metadata.isPending) {
+        setAnnouncement('正在搜索项目、任务和会话');
+      } else if (metadata.error) {
+        setAnnouncement('搜索失败，可以重试');
+      } else {
+        const counts = metadata.data;
+        setAnnouncement(
+          counts === undefined
+            ? '正在搜索项目、任务和会话'
+            : resultCount === 0
+              ? `没有匹配「${needle}」的项目、任务或会话`
+              : `找到 ${counts.projects.length} 个项目、${counts.tasks.length} 个任务、${counts.sessions.length} 条会话`
+        );
+      }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [filter, needle, shown.length]);
+  }, [needle, metadata.isPending, metadata.error, metadata.data, resultCount]);
+
+  function rememberFilter(): void {
+    try {
+      sessionStorage.setItem(HOME_FILTER_KEY, filter);
+    } catch {
+      // 隐私模式 / 禁用存储时忽略：搜索词带不回去，但不影响打开结果。
+    }
+  }
 
   function open(session: HomeSessionRow): void {
     const project = projectById.get(session.projectId);
-    if (project) onOpen(project, session.sessionId);
+    if (project) {
+      rememberFilter();
+      onOpen(project, session.sessionId);
+    }
   }
+
+  function openHit(hit: SearchHit): void {
+    rememberFilter();
+    if (hit.kind === 'project') onOpen(hit.project);
+    else if (hit.kind === 'task') onOpenTask(hit.project, hit.task.taskId);
+    else onOpen(hit.project, hit.session.sessionId);
+  }
+
+  function onSearchKeyDown(event: ReactKeyboardEvent<HTMLInputElement>): void {
+    if (!searching) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setFilter('');
+      return;
+    }
+    if (resultCount === 0) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      setActiveHit((current) => (current + step + resultCount) % resultCount);
+      return;
+    }
+    if (event.key === 'Enter' && active !== null) {
+      event.preventDefault();
+      const hit = hits[active];
+      if (hit) openHit(hit);
+    }
+  }
+
+  useEffect(() => {
+    if (!searching || active === null) return;
+    document.getElementById(`home-search-hit-${active}`)?.scrollIntoView({ block: 'nearest' });
+  }, [active, searching]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(HOME_FILTER_KEY, filter);
+    } catch {
+      // 同上，忽略存储失败。
+    }
+  }, [filter]);
 
   // 项目行现在走「⋯」菜单（见 project-list.tsx），删除后给一条真能还原的撤销条。
   const [undo, setUndo] = useState<{ project: ProjectDto } | null>(null);
@@ -194,14 +324,22 @@ export function HomePage({
               }}
             />
           ) : (
-            <div className="mb-5 flex items-center gap-2 rounded-md border border-hair bg-card px-3 py-1 max-md:min-h-[44px] md:py-2">
+            <div className="mb-1 flex items-center gap-2 rounded-md border border-hair bg-card px-3 py-1 max-md:min-h-[44px] md:py-2">
               <span className="text-tertiary">⌕</span>
               <input
                 ref={searchRef}
                 className="min-w-0 flex-1 bg-transparent text-body text-primary outline-none placeholder:text-tertiary"
-                placeholder="搜会话、任务或项目"
+                aria-label="搜项目、任务或会话"
+                placeholder="搜项目、任务或会话"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={searching && !metadata.isPending}
+                aria-controls={searching ? 'home-search-results' : undefined}
+                aria-activedescendant={searching && active !== null ? `home-search-hit-${active}` : undefined}
+                maxLength={160}
                 value={filter}
                 onChange={(event) => setFilter(event.target.value)}
+                onKeyDown={onSearchKeyDown}
               />
               {filter === '' ? null : (
                 // 44 是手指能稳稳点到的最小边；whitespace-nowrap + shrink-0 防它在窄屏被压成竖排两字。
@@ -218,7 +356,22 @@ export function HomePage({
               )}
             </div>
           )}
+          {searching ? (
+            <p className="mb-4 px-1 text-meta text-tertiary">
+              全站搜索只找项目名、任务标题、会话标题或会话 ID，不搜聊天内容。
+            </p>
+          ) : null}
 
+          {searching ? (
+            <SearchResults
+              query={needle}
+              queryResult={metadata}
+              hits={hits}
+              active={active}
+              onActive={setActiveHit}
+              onOpen={openHit}
+            />
+          ) : (
           <section aria-labelledby="recent-title">
             <h2 id="recent-title" className="sr-only">
               最近的会话
@@ -259,17 +412,16 @@ export function HomePage({
               </div>
             ))}
 
-            {!home.isPending && !home.error && shown.length === 0 ? (
+            {!home.isPending && !home.error && recent.length === 0 ? (
               <p className="rounded-md border border-hair bg-panel px-4 py-6 text-body text-secondary">
-                {needle === ''
-                  ? '还没有会话。选一个项目，建一条任务，点任务卡上的「＋ 会话」派生第一条会话。'
-                  : `没有匹配「${filter}」的会话。`}
+                还没有会话。选一个项目，建一条任务，点任务卡上的「＋ 会话」派生第一条会话。
               </p>
             ) : null}
-            <p role="status" aria-live="polite" data-testid="search-status" className="sr-only">
-              {announcement}
-            </p>
           </section>
+          )}
+          <p role="status" aria-live="polite" data-testid="search-status" className="sr-only">
+            {announcement}
+          </p>
         </div>
       </main>
 
@@ -339,6 +491,207 @@ export function HomePage({
   );
 }
 
+/**
+ * 全站搜索的结果：项目 / 任务 / 会话三组。
+ *
+ * 和「最近会话」不是一回事：这里只回答「跳到哪」，不读正文，也不冒充对话搜索。
+ * 结果按组显示，但键盘把三组当成一条纵向列表走，避免在一个输入框里再分上下左右。
+ */
+function SearchResults({
+  query,
+  queryResult,
+  hits,
+  active,
+  onActive,
+  onOpen
+}: {
+  query: string;
+  queryResult: {
+    readonly isPending: boolean;
+    readonly error: unknown;
+    readonly data: MetadataSearchResponseDto | undefined;
+    readonly refetch: () => unknown;
+  };
+  hits: readonly SearchHit[];
+  active: number | null;
+  onActive: (index: number) => void;
+  onOpen: (hit: SearchHit) => void;
+}) {
+  if (queryResult.isPending) {
+    return (
+      <div role="status" data-testid="metadata-search-loading" className="mb-5 space-y-1.5" aria-label="正在搜索">
+        {[0, 1, 2].map((row) => (
+          <div key={row} className="h-9 animate-pulse rounded-sm bg-card" />
+        ))}
+        <p className="px-1 text-meta text-tertiary">正在搜索项目、任务和会话…</p>
+      </div>
+    );
+  }
+
+  if (queryResult.error) {
+    return (
+      <div
+        role="alert"
+        data-testid="metadata-search-error"
+        className="mb-5 rounded-md border border-rust/40 bg-panel px-4 py-3 text-body text-secondary"
+      >
+        <p>搜索失败：{(queryResult.error as Error).message}</p>
+        <button className="mt-1 min-h-[44px] text-meta text-link hover:underline" onClick={() => void queryResult.refetch()}>
+          重新搜索
+        </button>
+      </div>
+    );
+  }
+
+  if (hits.length === 0) {
+    return (
+      <p
+        data-testid="metadata-search-empty"
+        className="mb-5 rounded-md border border-hair bg-panel px-4 py-6 text-body text-secondary"
+      >
+        没有匹配「{query}」的项目、任务或会话。换个名字或会话 ID 试试；这里不搜聊天内容。
+      </p>
+    );
+  }
+
+  const numbered = hits.map((hit, index) => ({ hit, index }));
+  const projectRows = numbered.filter(({ hit }) => hit.kind === 'project');
+  const taskRows = numbered.filter(({ hit }) => hit.kind === 'task');
+  const sessionRows = numbered.filter(({ hit }) => hit.kind === 'session');
+  return (
+    <section aria-labelledby="metadata-search-title" data-testid="metadata-search-results" className="mb-5">
+      <h2 id="metadata-search-title" className="sr-only">
+        全站搜索结果
+      </h2>
+      <div id="home-search-results" role="listbox" aria-label="项目、任务和会话搜索结果" className="space-y-3">
+        <HitGroup title="项目" testId="metadata-projects" empty={projectRows.length === 0}>
+          {projectRows.map(({ hit, index }) => (
+            <HitOption
+              key={hit.key}
+              index={index}
+              active={active === index}
+              testId="metadata-project"
+              label={hit.kind === 'project' ? `${hit.project.name}，项目` : ''}
+              onActive={onActive}
+              onOpen={() => onOpen(hit)}
+              icon="folder"
+              primary={hit.kind === 'project' ? hit.project.name : ''}
+              secondary="项目"
+            />
+          ))}
+        </HitGroup>
+
+        <HitGroup title="任务" testId="metadata-tasks" empty={taskRows.length === 0}>
+          {taskRows.map(({ hit, index }) => (
+            <HitOption
+              key={hit.key}
+              index={index}
+              active={active === index}
+              testId="metadata-task"
+              label={hit.kind === 'task' ? `${hit.task.title}，任务，${hit.task.projectName}` : ''}
+              onActive={onActive}
+              onOpen={() => onOpen(hit)}
+              icon="check"
+              primary={hit.kind === 'task' ? hit.task.title : ''}
+              secondary={hit.kind === 'task' ? `${hit.task.projectName} · 任务` : ''}
+            />
+          ))}
+        </HitGroup>
+
+        <HitGroup title="会话" testId="metadata-sessions" empty={sessionRows.length === 0}>
+          {sessionRows.map(({ hit, index }) => {
+            const session = hit.kind === 'session' ? hit.session : null;
+            const title = session === null ? '' : session.title?.trim() || `会话 ${session.sessionId.slice(0, 6)}`;
+            const meta =
+              session === null
+                ? ''
+                : [session.taskTitle?.trim(), session.projectName, '会话'].filter((part) => Boolean(part)).join(' · ');
+            return (
+              <HitOption
+                key={hit.key}
+                index={index}
+                active={active === index}
+                testId="metadata-session"
+                label={`${title}，会话，${meta}`}
+                onActive={onActive}
+                onOpen={() => onOpen(hit)}
+                icon="message"
+                primary={title}
+                secondary={meta}
+              />
+            );
+          })}
+        </HitGroup>
+      </div>
+    </section>
+  );
+}
+
+function HitGroup({
+  title,
+  testId,
+  empty,
+  children
+}: {
+  title: string;
+  testId: string;
+  empty: boolean | undefined;
+  children: ReactNode;
+}) {
+  if (empty !== false) return null;
+  return (
+    <div role="group" aria-label={title} data-testid={testId}>
+      <h3 className="mb-1 px-1 text-meta text-tertiary">{title}</h3>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function HitOption({
+  index,
+  active,
+  testId,
+  label,
+  primary,
+  secondary,
+  icon,
+  onActive,
+  onOpen
+}: {
+  index: number;
+  active: boolean;
+  testId: string;
+  label: string;
+  primary: string;
+  secondary: string;
+  icon: 'folder' | 'check' | 'message';
+  onActive: (index: number) => void;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      id={`home-search-hit-${index}`}
+      role="option"
+      aria-selected={active}
+      aria-label={label}
+      data-testid={testId}
+      data-active={active ? 'true' : undefined}
+      className="flex min-h-[44px] w-full items-center gap-3 rounded-sm px-2 py-1.5 text-left hover:bg-card data-[active=true]:bg-card"
+      onMouseEnter={() => onActive(index)}
+      onClick={onOpen}
+    >
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-sm border border-hair text-tertiary">
+        <Icon name={icon} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-body text-primary">{primary}</span>
+        <span className="block truncate text-meta text-tertiary">{secondary}</span>
+      </span>
+    </button>
+  );
+}
+
 function CreateProjectPanel({
   onCancel,
   onCreated
@@ -347,20 +700,25 @@ function CreateProjectPanel({
   onCreated: (project: ProjectDto) => void;
 }) {
   const [name, setName] = useState('');
-  const [repoUrl, setRepoUrl] = useState('');
-  const [defaultBranch, setDefaultBranch] = useState('');
   const [description, setDescription] = useState('');
-  const [gitOpen, setGitOpen] = useState(false);
+  const [repos, setRepos] = useState<readonly ProjectRepoRow[]>([]);
+  const [primaryRepoId, setPrimaryRepoId] = useState<string | null>(null);
+  const [reposOpen, setReposOpen] = useState(false);
+  const [repoError, setRepoError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const create = useMutation({
-    mutationFn: () =>
-      api.createProject({
+    mutationFn: () => {
+      // 0 个仓库 = 不传 repos（不是传空数组）；老的单仓库字段也不再带。
+      const values = repos.length === 0 ? null : repoRowsValue(repos);
+      return api.createProject({
         name: name.trim(),
-        ...(repoUrl.trim() === '' ? {} : { repoUrl: repoUrl.trim(), defaultBranch: defaultBranch.trim() || null }),
-        ...(description.trim() === '' ? {} : { description })
-      }),
+        ...(description.trim() === '' ? {} : { description }),
+        ...(values === null ? {} : { repos: values }),
+        ...(values !== null && primaryRepoId !== null ? { primaryRepoId } : {})
+      });
+    },
     onSuccess: async (created) => {
       // 路由靠 ['projects'] 认项目；只刷 ['home'] 会让新项目在跳过去时「查无此项」。
       await Promise.all([
@@ -381,7 +739,16 @@ function CreateProjectPanel({
         onSubmit={(event) => {
           event.preventDefault();
           if (name.trim() === '' || create.isPending) return;
+          const problem = repos.length === 0 ? null : newProjectReposProblem(repos);
+          const primaryProblem = repos.length === 0 ? null : newProjectPrimaryProblem(repos, primaryRepoId);
+          if (problem !== null || primaryProblem !== null) {
+            // 行内问题已经在行下面写着；这里只负责展开并把主仓库这类整体问题说出来。
+            setReposOpen(true);
+            setRepoError(primaryProblem);
+            return;
+          }
           setError(null);
+          setRepoError(null);
           create.mutate();
         }}
       >
@@ -412,44 +779,18 @@ function CreateProjectPanel({
       />
 
       {/* 项目只是 hub 里的一条记录，不绑机器；工作目录在开始任务时（选机器 → 选工作目录）再定。 */}
-      <button
-        type="button"
-        aria-expanded={gitOpen}
-        aria-controls="new-project-git"
-        className="mb-2 flex min-h-[36px] items-center gap-1.5 text-meta text-secondary hover:text-primary"
-        onClick={() => setGitOpen((open) => !open)}
-      >
-        <span aria-hidden className="inline-block w-3 text-center">{gitOpen ? '▾' : '▸'}</span>
-        git 仓库（可选）
-        {!gitOpen && repoUrl.trim() !== '' ? <span className="min-w-0 truncate font-mono text-tertiary">· {repoUrl.trim()}</span> : null}
-      </button>
-
-      {gitOpen ? (
-        <div id="new-project-git" className="mb-3">
-          <div className="flex flex-wrap gap-2">
-            <input
-              aria-label="git 仓库"
-              className="min-w-0 flex-[3_1_220px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-ring"
-              value={repoUrl}
-              placeholder="https://… 或 git@…"
-              spellCheck={false}
-              autoCapitalize="off"
-              onChange={(event) => setRepoUrl(event.target.value)}
-            />
-            <input
-              aria-label="默认分支"
-              className="min-w-0 flex-[1_1_120px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-ring disabled:opacity-40"
-              value={defaultBranch}
-              placeholder="默认分支（可选）"
-              spellCheck={false}
-              autoCapitalize="off"
-              disabled={repoUrl.trim() === ''}
-              onChange={(event) => setDefaultBranch(event.target.value)}
-            />
-          </div>
-          <p className="mt-1.5 text-meta text-tertiary">新建工作目录时会把仓库下载到那台机器。</p>
-        </div>
-      ) : null}
+      <NewProjectRepos
+        open={reposOpen}
+        onToggle={() => setReposOpen((open) => !open)}
+        rows={repos}
+        primaryRepoId={primaryRepoId}
+        error={repoError}
+        onChange={(nextRows, nextPrimaryRepoId) => {
+          setRepos(nextRows);
+          setPrimaryRepoId(nextPrimaryRepoId);
+          setRepoError(null);
+        }}
+      />
 
       {error ? <p className="mb-2 text-meta text-rust">{error}</p> : null}
 
@@ -579,7 +920,11 @@ function RecentSessionRow({
           {ago(session.updatedAt)}
         </span>
         <span className="col-span-2 col-start-2 row-start-2 flex min-w-0 items-center gap-1.5 text-meta text-tertiary md:col-span-1 md:col-start-3 md:row-start-1">
-          <span className="truncate">
+          <span
+            className="truncate"
+            title={session.taskTitle?.trim() ? `${session.taskTitle.trim()} · ${session.agentId} · ${session.projectName}` : undefined}
+          >
+            {session.taskTitle?.trim() ? `${session.taskTitle.trim()} · ` : ''}
             {session.agentId} · {session.projectName}
           </span>
           {isSettled ? <span className="shrink-0">已收起</span> : null}
@@ -630,6 +975,7 @@ function SessionTitleDialog({
         {homeSessionTitle(session)}
       </p>
       <p className="text-meta text-tertiary">
+        {session.taskTitle?.trim() ? `${session.taskTitle.trim()} · ` : ''}
         {session.agentId} · {session.projectName} · {ago(session.updatedAt)}
         {settled(session) ? ' · 已收起' : ''}
       </p>

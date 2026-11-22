@@ -74,6 +74,8 @@ export interface AttentionItemDto {
   readonly sessionId: string;
   readonly taskId: string;
   readonly taskTitle: string;
+  /** 会话自己的名字；缺省 = 没起名，界面回退到短标识。老服务端不发这个字段。 */
+  readonly sessionTitle?: string;
   readonly projectId: string;
   readonly projectName: string;
   readonly agentId: string;

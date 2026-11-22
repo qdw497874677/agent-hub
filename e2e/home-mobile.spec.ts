@@ -178,6 +178,10 @@ async function seedRichHome(page: Page, baseURL: string): Promise<{
       expect(derived.ok(), await derived.text()).toBe(true);
       return ((await derived.json()) as { id: string }).id;
     };
+    const rename = async (sessionId: string, title: string): Promise<void> => {
+      const renamed = await page.request.put(`/api/sessions/${sessionId}/title`, { data: { title }, headers });
+      expect(renamed.ok(), await renamed.text()).toBe(true);
+    };
 
     // 待办：4 条「可能在等你」+ 2 条「等回答」+ 1 条「失败了」，凑够 7 条角标。
     const todo = await project('首页待办', { workerId });
@@ -188,6 +192,7 @@ async function seedRichHome(page: Page, baseURL: string): Promise<{
     const attentionIds: string[] = [];
     for (const [index, title] of attentionTitles.entries()) {
       const id = await derive(await task(todo.id, title!));
+      await rename(id, title!);
       attentionIds.push(id);
       expect((await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: prompts[index]! }, headers })).ok()).toBe(true);
     }
@@ -195,12 +200,16 @@ async function seedRichHome(page: Page, baseURL: string): Promise<{
     // 近会话：12 条，把「接着干哪条」拉长到要滚动才看得完。挂同一台机器，派生时派发才成功（否则会话会躺在 failed 里，混进待办）。
     const recents = await project('首页近项目', { workerId });
     const recentTitles = Array.from({ length: 12 }, (_, i) => `首页近会话 ${String(i + 1).padStart(2, '0')} ${tag}`);
-    for (const title of recentTitles) await derive(await task(recents.id, title));
+    for (const title of recentTitles) {
+      const id = await derive(await task(recents.id, title));
+      await rename(id, title);
+    }
 
     // 一条长标题会话：手机上标题一定会被截断，「全文」入口只在真截断时出现
     const longProject = await project('首页长标题', { workerId });
     const longTitle = `把会话标题写得很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长以验证手机上的截断 ${tag}`;
-    await derive(await task(longProject.id, longTitle));
+    const longId = await derive(await task(longProject.id, longTitle));
+    await rename(longId, longTitle);
 
     // 再塞 8 个空项目：项目清单在窄屏上远超一屏。
     const extraProjectNames = Array.from({ length: 8 }, (_, i) => `首页空项目 ${String(i + 1).padStart(2, '0')} ${tag}`);
@@ -254,7 +263,7 @@ test('手机首页：一个滚动源、角标直达标题、末条可达、视�
     // —— 首屏：搜索在上，第一条会话也在 844 里（手机上先看见「接着干哪条」）
     await expect(page.getByTestId('home-session-row').first()).toBeVisible();
     const firstRowBox = await page.getByTestId('home-session-row').first().boundingBox();
-    const searchFieldBox = await page.getByPlaceholder('搜会话、任务或项目').boundingBox();
+    const searchFieldBox = await page.getByPlaceholder('搜项目、任务或会话').boundingBox();
     expect(searchFieldBox!.y, '搜索排在会话之前').toBeLessThan(firstRowBox!.y);
     expect(firstRowBox!.y + firstRowBox!.height, '首屏能看到第一条会话').toBeLessThanOrEqual(845);
 
@@ -274,7 +283,7 @@ test('手机首页：一个滚动源、角标直达标题、末条可达、视�
     }
 
     // —— 搜索：按钮不换行、清除回焦、过滤与恢复都对，结果条数防抖后播报
-    const searchInput = page.getByPlaceholder('搜会话、任务或项目');
+    const searchInput = page.getByPlaceholder('搜项目、任务或会话');
     const rowCount = () => page.getByTestId('home-session-row').count();
     const totalRows = await rowCount();
     expect(totalRows, '播种的会话应该都在').toBeGreaterThan(2);
@@ -282,10 +291,12 @@ test('手机首页：一个滚动源、角标直达标题、末条可达、视�
     // 不是每敲一个键都播报：刚输入完还没到播报点
     const status = page.getByTestId('search-status');
     expect((await status.textContent()) ?? '', '输入瞬间不播报').toBe('');
-    await expect(status).toHaveText(/找到 \d+ 条会话/);
-    const filteredRows = await rowCount();
-    expect(filteredRows, '过滤真的筛掉了别的').toBeGreaterThan(0);
-    expect(filteredRows).toBeLessThan(totalRows);
+    await expect(status).toHaveText(/找到 \d+ 个项目、\d+ 个任务、\d+ 条会话/);
+    await expect(page.getByTestId('metadata-search-results')).toBeVisible();
+    const sessionHits = page.getByTestId('metadata-session');
+    expect(await sessionHits.count(), '全站搜索先按会话名找').toBeGreaterThan(0);
+    // 搜索时收起「最近会话」，避免同一屏既有全站命中又有另一套近况列表。
+    await expect(page.getByTestId('home-session-row')).toHaveCount(0);
     const clearButton = page.getByRole('button', { name: '清除搜索' });
     const clearBox = await clearButton.boundingBox();
     expect(clearBox!.width, '清除按钮不换行').toBeLessThanOrEqual(60);
@@ -379,7 +390,7 @@ test('手机首页：一个滚动源、角标直达标题、末条可达、视�
     // —— 视口收窄（软键盘）：搜索框聚焦后能滚进可见区，不会被上段挤没
     await page.setViewportSize({ width: 390, height: 430 });
     await page.goto('/#/home');
-    const search = page.getByPlaceholder('搜会话、任务或项目');
+    const search = page.getByPlaceholder('搜项目、任务或会话');
     await search.scrollIntoViewIfNeeded();
     await search.focus();
     await expect(search).toBeInViewport();
@@ -538,7 +549,7 @@ test('阶段二：顺序与焦点、完整内容、真实撤销、抽屉', async
       '手机上会话排在项目之前，DOM 与视觉一致'
     ).toBe(true);
 
-    await page.getByPlaceholder('搜会话、任务或项目').focus();
+    await page.getByPlaceholder('搜项目、任务或会话').focus();
     const seen: string[] = [];
     for (let i = 0; i < 8; i++) {
       await page.keyboard.press('Tab');

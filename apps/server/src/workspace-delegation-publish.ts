@@ -38,6 +38,7 @@ import {
   type SecretVault,
   type SessionRepository,
   type Subject,
+  type TaskGate,
   type TaskRepository,
   type Workspace,
   type WorkspaceDelegation,
@@ -75,6 +76,7 @@ export interface DelegationPublishDeps extends DelegationTargetDeps {
   readonly secrets: Pick<SecretVault, 'reveal'>;
   readonly access?: AccessPolicy;
   readonly now: () => number;
+  readonly taskGate?: TaskGate;
   /** hub 直调 GitHub REST 的实现（`createGitHubApi()`）；不经过 Worker 的 gh。 */
   readonly gitHost: GitHostApi;
   readonly gitHostTokens: Pick<GitHostTokenStore, 'reveal'>;
@@ -103,7 +105,7 @@ export function createDelegationPublisher(
     // 不能等后面再按 workerId 查一次（那会允许「解析用 A、写用 B」的竞态）。
     let resolved: ResolvedTarget | null = null;
     return publishWorkspaceDelegationUseCase(
-      { projects: deps.projects, tasks: deps.tasks, access: deps.access, now: deps.now },
+      { projects: deps.projects, tasks: deps.tasks, access: deps.access, now: deps.now, taskGate: deps.taskGate },
       store,
       {
         loadRecord: (delegationId) => delegations.byId(delegationId),
