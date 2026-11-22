@@ -2,6 +2,7 @@
  * 地址栏就是导航状态：`#/home` 首页，`#/p/<项目>/<视图>[/<会话>]`，`#/admin/<分页>` 运营后台，`#/assets/<分页>` / `#/assets/review/<提交>` 资产市场与审核，`#/memory[/<作用域>]` 记忆，`#/bots[/<项目>]` Bot（常驻成员）。
  *
  * `#/observe` 可观测列表，`#/observe/<来源>/<id>` 一条链。
+ * `#/machines` 机器（跑 agent 的机器）列表，`#/machines/<workerId>[/<页签>]` 一台机器的详情——可直链、可刷新。
  * 为什么用 hash 而不是 history 路由：server 只托管一个 index.html，hash 不需要它配合回退；
  * 手机上「返回」手势、刷新、把链接发给自己另一台设备，都能回到同一个画面。
  * 纯函数在这里，React 的那一层在 use-route.ts。
@@ -13,6 +14,10 @@ export const ADMIN_TABS: readonly AdminTab[] = ['overview', 'users', 'workers', 
 
 export type MarketTab = 'catalog' | 'mine' | 'pending' | 'settings';
 export const MARKET_TABS: readonly MarketTab[] = ['catalog', 'mine', 'pending', 'settings'];
+
+/** 机器详情的页签：进 URL（`#/machines/<id>/agent`），刷新和发链接都停在同一页。 */
+export type MachineTab = 'overview' | 'agent' | 'settings';
+export const MACHINE_TABS: readonly MachineTab[] = ['overview', 'agent', 'settings'];
 
 import { imSurface } from '../surfaces/im/manifest.ts';
 import { workbenchSurface } from '../surfaces/workbench/manifest.ts';
@@ -30,6 +35,7 @@ export type Route =
   | { readonly page: 'home' }
   | { readonly page: 'workspaces' }
   | { readonly page: 'access' }
+  | { readonly page: 'machines'; readonly workerId: string | null; readonly tab: MachineTab | null }
   | { readonly page: 'assets'; readonly tab: MarketTab; readonly reviewId: string | null }
   | { readonly page: 'admin'; readonly tab: AdminTab }
   | { readonly page: 'memory'; readonly scope: string | null }
@@ -42,6 +48,13 @@ export type Route =
 function parseShellRoute(parts: readonly string[]): Route | null {
   if (parts[0] === 'admin') return { page: 'admin', tab: ADMIN_TABS.find((tab) => tab === parts[1]) ?? 'overview' };
   if (parts[0] === 'workspaces') return { page: 'workspaces' };
+  if (parts[0] === 'machines') {
+    return {
+      page: 'machines',
+      workerId: parts[1] ?? null,
+      tab: MACHINE_TABS.find((tab) => tab === parts[2]) ?? null
+    };
+  }
   if (parts[0] === 'access') return { page: 'access' };
   if (parts[0] === 'memory') return { page: 'memory', scope: parts[1] ?? null };
   if (parts[0] === 'observe') return { page: 'observe', source: parts[1] ?? null, id: parts[2] ?? null };
@@ -68,6 +81,12 @@ export function formatRoute(route: Route): string {
     if (href) return href;
   }
   if (route.page === 'workspaces') return '#/workspaces';
+  if (route.page === 'machines') {
+    if (!route.workerId) return '#/machines';
+    return route.tab
+      ? `#/machines/${encodeURIComponent(route.workerId)}/${route.tab}`
+      : `#/machines/${encodeURIComponent(route.workerId)}`;
+  }
   if (route.page === 'access') return '#/access';
   if (route.page === 'admin') return `#/admin/${route.tab}`;
   if (route.page === 'memory') return route.scope ? `#/memory/${encodeURIComponent(route.scope)}` : '#/memory';

@@ -9,6 +9,7 @@ const ICONS: Readonly<Record<string, IconName>> = {
   bots: 'bot',
   memory: 'brain',
   workspaces: 'folder',
+  machines: 'server',
   market: 'package',
   observe: 'activity',
   admin: 'shield'

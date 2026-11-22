@@ -21,7 +21,7 @@ const ARMED_DANGER = 'shrink-0 rounded-sm border border-rust bg-rust px-2 py-1 t
  * 切换 / 安装都只对下次新建的会话生效，正在跑的会话继续用旧的。
  * 老 Worker 不报 provision，这一节整个不出现。
  */
-export function RuntimeSection({ worker }: { worker: WorkerInfoDto }) {
+export function RuntimeSection({ worker, canInstall = false }: { worker: WorkerInfoDto; canInstall?: boolean }) {
   const harnesses = (worker.agentModels ?? []).filter((harness) => harness.provision);
   if (harnesses.length === 0) return null;
   const job = worker.runtimeJob;
@@ -32,9 +32,14 @@ export function RuntimeSection({ worker }: { worker: WorkerInfoDto }) {
       <dd className="min-w-0" data-testid="runtime-section">
         <ul className="flex flex-col gap-1">
           {harnesses.map((harness) => (
-            <RuntimeRow key={harness.agentId} worker={worker} harness={harness} busy={running} />
+            <RuntimeRow key={harness.agentId} worker={worker} harness={harness} busy={running} canInstall={canInstall} />
           ))}
         </ul>
+        {canInstall ? null : (
+          <p className="mt-1 text-meta text-tertiary" data-testid="runtime-readonly-note">
+            只看状态：装和换由接入这台机器的人来。
+          </p>
+        )}
         {job ? <JobPanel job={job} /> : null}
       </dd>
     </>
@@ -43,7 +48,7 @@ export function RuntimeSection({ worker }: { worker: WorkerInfoDto }) {
 
 type Arming = 'install' | 'upgrade' | 'uninstall' | 'switch';
 
-function RuntimeRow({ worker, harness, busy }: { worker: WorkerInfoDto; harness: Harness; busy: boolean }) {
+function RuntimeRow({ worker, harness, busy, canInstall }: { worker: WorkerInfoDto; harness: Harness; busy: boolean; canInstall: boolean }) {
   const queryClient = useQueryClient();
   const id = harness.agentId;
   const view = runtimeView(harness.provision!);
@@ -105,7 +110,7 @@ function RuntimeRow({ worker, harness, busy }: { worker: WorkerInfoDto; harness:
         {view.both ? '（生效中）' : ''}
         {view.other ? ` · ${view.other.label}` : ''}
       </span>
-      {view.install ? (
+      {canInstall && view.install ? (
         armed === 'install' ? (
           <span className="flex min-w-0 flex-wrap items-center gap-1">
             <input
@@ -147,9 +152,9 @@ function RuntimeRow({ worker, harness, busy }: { worker: WorkerInfoDto; harness:
           </button>
         )
       ) : null}
-      {upgradeTo ? chip('upgrade', `升级到 v${upgradeTo}`, `确认升级到 v${upgradeTo}`, () => start.mutate({ action: 'install', version: upgradeTo })) : null}
-      {other ? chip('switch', other.button, '确认切换', () => start.mutate({ action: 'switch', source: other.side })) : null}
-      {view.hub ? chip('uninstall', '卸载', '确认卸载', () => start.mutate({ action: 'uninstall' })) : null}
+      {canInstall && upgradeTo ? chip('upgrade', `升级到 v${upgradeTo}`, `确认升级到 v${upgradeTo}`, () => start.mutate({ action: 'install', version: upgradeTo })) : null}
+      {canInstall && other ? chip('switch', other.button, '确认切换', () => start.mutate({ action: 'switch', source: other.side })) : null}
+      {canInstall && view.hub ? chip('uninstall', '卸载', '确认卸载', () => start.mutate({ action: 'uninstall' })) : null}
       {armed ? (
         <span className="text-meta text-warning" data-testid={`runtime-${id}-confirm-hint`}>
           再点一次确认 · 10 秒内有效
@@ -213,7 +218,7 @@ type Drift = NonNullable<WorkerInfoDto['drift']>;
  * 套件清单（ADR 0021 §7，P1 只读）：运行时 + 组件。外部安装的只显示（不由 hub 管理、不参与调度）；
  * 漂移的组件标「不可信」，修复要人手动触发（P2 才有安装入口）。老 Worker 不报清单，这一节不出现。
  */
-export function InventorySection({ worker }: { worker: WorkerInfoDto }) {
+export function InventorySection({ worker, canInstall = false }: { worker: WorkerInfoDto; canInstall?: boolean }) {
   const inventory: Inventory | undefined = worker.inventory;
   if (!inventory) return null;
   const drift: Drift = worker.drift ?? { items: [], trusted: [], untrusted: [] };
@@ -252,7 +257,7 @@ export function InventorySection({ worker }: { worker: WorkerInfoDto }) {
               ⚠ 缺失：{item.componentId} {item.expected}（{nameOf(item.runtime)}），能力不可信，需要重新安装
             </p>
           ))}
-        {inventory.componentInstall ? <ComponentActions worker={worker} /> : null}
+        {canInstall && inventory.componentInstall ? <ComponentActions worker={worker} /> : null}
         <p className="text-tertiary" data-testid="inventory-drift">
           漂移：{problems.length === 0 ? '无' : `${problems.length} 项`}　上次清单：{localTime(inventory.collectedAt)}
         </p>

@@ -7,7 +7,7 @@ import { Icon } from '../../atoms/icons.tsx';
 import { MessagesEntry } from '../../atoms/messages-entry.tsx';
 import { NotificationBell } from '../../shell/market/notifications.tsx';
 import { WorkspacesDialog } from './workspaces-dialog.tsx';
-import { WorkersBadge } from '../../shell/workers.tsx';
+import { MachinesBadge } from '../../shell/workers.tsx';
 import { coarsePointer, modKeyLabel } from '../../shell/device.ts';
 import { PHASE_DOT, activeSessions, elapsedLabel, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
 import { waitingForReply, type LiveMap } from '../../atoms/live.ts';
@@ -333,6 +333,15 @@ export function ProjectSidebar({
         <div className="my-1 h-px w-6 bg-hair" />
         <GlobalNav layout="rail" />
         <div className="mt-auto flex flex-col items-center gap-1">
+          <a
+            href="#/machines"
+            className={GHOST_ICON}
+            aria-label="机器"
+            title="机器：跑 agent 的机器"
+            data-testid="machines-rail"
+          >
+            <Icon name="server" />
+          </a>
           <button className={GHOST_ICON} title="项目设置" aria-label="项目设置" onClick={() => setSettings(true)}>
             <Icon name="settings" />
           </button>
@@ -468,7 +477,7 @@ export function ProjectSidebar({
 
       <div className="flex items-center gap-0.5 border-t border-hair px-2 py-1.5">
         <div className="min-w-0 flex-1">
-          <WorkersBadge placement="up" />
+          <MachinesBadge />
         </div>
         <AttentionBadge onClick={onHome} compact />
         <MessagesEntry />

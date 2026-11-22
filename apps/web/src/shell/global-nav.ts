@@ -49,6 +49,8 @@ const ADMIN_ONLY_GROUPS: ReadonlySet<GlobalNavGroupId> = new Set<GlobalNavGroupI
 /** 壳自己的入口：不属于任何产品形态，跨形态共用。 */
 export const SHELL_NAV: readonly SurfaceNavItem[] = [
   { id: 'memory', label: '记忆', href: '#/memory', page: 'memory', group: 'library', order: 10 },
+  // 机器是所有人的入口，不是运维面板：能看到哪些机器由服务端按团队 / 权限过滤。
+  { id: 'machines', label: '机器', href: '#/machines', page: 'machines', group: 'library', order: 15 },
   { id: 'workspaces', label: '工作目录', href: '#/workspaces', page: 'workspaces', group: 'library', order: 20 },
   // 资产市场的真实路由是 `#/assets/<tab>`（route.ts），没有 `#/market`。
   { id: 'market', label: '资产', href: '#/assets/catalog', page: 'assets', group: 'library', order: 30 },

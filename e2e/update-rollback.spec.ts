@@ -37,14 +37,18 @@ test('自动回退后，运营后台显示「已回退」和原因', async ({ pa
       env: { PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: label, WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes') },
       stdio: 'ignore'
     });
-    await page.goto('/#/admin/workers');
-    const row = page.getByTestId('admin-worker').filter({ hasText: label });
-    const update = row.getByTestId('worker-update');
+    await page.goto(`/#/machines/${workerId}`);
+    const update = page.getByTestId('worker-update-line');
     await expect(update).toContainText('已回退', { timeout: 30_000 });
     await expect(update).toContainText('新版本 ccccccc 没能正常启动，已自动回退到 ddddddd');
-    await update.locator('summary').click();
-    await expect(update.locator('pre')).toContainText('Error: e2e 故意坏掉');
-    await expect(update.locator('span').first()).toHaveClass(/text-rust/);
+    const logs = page.getByTestId('machine-update-logs');
+    await logs.locator('summary').click();
+    await expect(logs.locator('pre')).toContainText('Error: e2e 故意坏掉');
+    await expect(update).toHaveClass(/text-rust/);
+    // 失败时只给一个「重试」，不是「更新」和「重试」并排两个
+    const panel = page.getByTestId('machine-update');
+    await expect(panel.getByRole('button')).toHaveCount(1);
+    await expect(panel.getByRole('button')).toHaveText('重试');
     await expect.poll(() => existsSync(note), { timeout: 10_000 }).toBe(false);
   } finally {
     worker?.kill();

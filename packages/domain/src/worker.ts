@@ -6,6 +6,7 @@ import { conflict, unavailable, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
 import type { RuntimeJob, RuntimeProvision } from './runtime-install.ts';
 import type { DriftReport, WorkerInventory } from './runtime-bundle.ts';
+import { canInvoke } from './worker-capability.ts';
 
 /** Worker 的对外状态。Server / Worker 是适配器，但它得有地方被看见（S1.2）。 */
 export type WorkerState = 'online' | 'offline';
@@ -155,6 +156,40 @@ export function isOutdated(worker: Pick<WorkerStatus, 'build'>, hub: BuildInfo):
   if (build.protocol !== hub.protocol) return true;
   if (build.commit && hub.commit) return build.commit !== hub.commit;
   return build.version !== hub.version;
+}
+
+/**
+ * 这台 Worker 相对 hub 的版本关系。只回答「同 / 不同 / 不知道」，不把 hub 的
+ * 提交号或版本带出去；没报 build 的老 Worker 无法判断，返回 unknown。
+ */
+export type WorkerVersionStatus = 'current' | 'outdated' | 'unknown';
+
+export function workerVersionStatus(
+  worker: Pick<WorkerStatus, 'build'>,
+  hub: BuildInfo
+): WorkerVersionStatus {
+  if (!worker.build) return 'unknown';
+  return isOutdated(worker, hub) ? 'outdated' : 'current';
+}
+
+/**
+ * 能不能向这台 Worker 发更新（不含调用者权限）：在线、不是本机、不在更新 / 试运行中、
+ * 凭据允许 `update`。已是最新的也返回 true——单台更新本来就会让 Worker 回「无需更新」，
+ * 作为通道演练。批量更新和页面上的单台按钮共用这个判断，避免批量去碰页面明确不给更新的机器，
+ * 也避免试运行期间再发一次更新。
+ */
+export function workerUpdateApplicable(
+  worker: Pick<WorkerStatus, 'origin' | 'state' | 'update' | 'capabilities'>,
+  hubCommit: string | null
+): boolean {
+  return (
+    hubCommit !== null &&
+    worker.origin === 'remote' &&
+    worker.state === 'online' &&
+    worker.update?.state !== 'updating' &&
+    worker.update?.state !== 'trial' &&
+    canInvoke(worker.capabilities, 'update')
+  );
 }
 
 export interface PlacementRequest {

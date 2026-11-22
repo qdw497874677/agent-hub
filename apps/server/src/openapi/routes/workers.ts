@@ -1,7 +1,7 @@
 // workers 能力段的路由定义（从 routes.ts 原样搬出；顺序即注册顺序）。
 import { z } from '@hono/zod-openapi';
 import {
-  workerInfoSchema
+  publicWorkerInfoSchema
 } from '@agent-hub/contract';
 import { V1, json, body, route } from './base.ts';
 import {
@@ -16,7 +16,7 @@ export const workers = {
       '列出令牌能看见的机器。agentModels 里会把调用方能用的 hub 托管模型（hub-<slug>/<modelId>）放在每台 agent 清单前面，再跟机器本地模型。\n' +
       '更完整的模型目录（含提供商 / 路由信息）用 list_models。\n' +
       '错误：401 令牌无效；403 没有 workers:read。',
-    responses: { 200: json(z.array(workerInfoSchema)) }
+    responses: { 200: json(z.array(publicWorkerInfoSchema)) }
   }, { module: 'workers', need: 'worker.read', expose: 'list_workers' }),
   listModels: route('workers:read', {
     method: 'get', path: `${V1}/models`, tags: ['workers'], summary: '开会话能用的模型',

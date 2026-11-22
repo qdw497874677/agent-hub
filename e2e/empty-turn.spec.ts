@@ -44,17 +44,17 @@ test('空回合显示红色错误，模型自检失败显示在机器列表', as
       stdio: 'ignore'
     });
 
-    // 1) 控制台：坏 agent 的模型自检失败（红字），好 agent 通过
+    // 1) 机器页：坏 agent 的模型自检失败（红字），好 agent 通过
     await page.setViewportSize({ width: 1280, height: 800 });
-    await page.goto('/#/admin/workers');
-    const row = page.getByTestId('admin-worker').filter({ hasText: label });
-    const check = row.getByTestId('harness-check');
+    await page.goto(`/#/machines/${workerId}/agent`);
+    const harnesses = page.getByTestId('worker-harnesses');
+    const check = harnesses.getByTestId('harness-check');
     await expect(check).toContainText('模型自检失败', { timeout: 60_000 });
     await expect(check).toContainText('fakebroken');
     await expect(check).toContainText('agent 没有返回任何内容');
     await expect(check).not.toContainText('livesecret');
-    await expect(row.locator('[data-check="ok"]')).toHaveCount(1);
-    await row.scrollIntoViewIfNeeded();
+    await expect(harnesses.locator('[data-check="ok"]')).toHaveCount(1);
+    await harnesses.scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(SHOTS, 'selfcheck-1280.png') });
 
     // 2) 会话：空回合 → 红色错误，带 stopReason 和脱敏后的 stderr
@@ -78,9 +78,9 @@ test('空回合显示红色错误，模型自检失败显示在机器列表', as
     await page.reload();
     await expect(page.getByText('agent 没有返回任何内容（可能是模型/鉴权/网络问题）').first()).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: join(SHOTS, 'session-390.png') });
-    await page.goto('/#/admin/workers');
-    await expect(page.getByTestId('admin-worker').filter({ hasText: label }).getByTestId('harness-check')).toBeVisible({ timeout: 30_000 });
-    await page.getByTestId('admin-worker').filter({ hasText: label }).scrollIntoViewIfNeeded();
+    await page.goto(`/#/machines/${workerId}/agent`);
+    await expect(page.getByTestId('worker-harnesses').getByTestId('harness-check')).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId('worker-harnesses').scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(SHOTS, 'selfcheck-390.png') });
     rmSync(dir, { recursive: true, force: true });
   } finally {

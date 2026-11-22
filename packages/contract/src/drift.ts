@@ -70,7 +70,8 @@ export type ContractDrift = [
   Assert<Extends<RuntimeOption, RuntimeOptionDto>>,
   Assert<Extends<AgentDescriptor, AgentDto>>,
   Assert<Extends<SearchHit, SearchHitDto>>,
-  Assert<Extends<WorkerStatus, WorkerInfoDto>>,
+  // actions / versionStatus 是响应端的投影（权限、以及不暴露 hub build 的版本关系），不属于 WorkerStatus 本身。
+  Assert<Extends<WorkerStatus, Omit<WorkerInfoDto, 'actions' | 'versionStatus'>>>,
   Assert<Extends<HomeView, HomeDto>>,
   Assert<Extends<CanvasLayout, LayoutDto>>,
   Assert<Same<TaskStatus, z.infer<typeof taskStatusSchema>>>,

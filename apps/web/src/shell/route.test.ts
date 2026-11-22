@@ -17,7 +17,10 @@ test('各种路由 format → parse 往返一致', () => {
     { page: 'project', projectId: 'p1', view: 'list', sessionId: 's9' },
     { page: 'project', projectId: 'p 中文', view: 'focus', sessionId: 's/1' },
     { page: 'observe', source: null, id: null },
-    { page: 'observe', source: 'connector', id: 'run/1' }
+    { page: 'observe', source: 'connector', id: 'run/1' },
+    { page: 'machines', workerId: null, tab: null },
+    { page: 'machines', workerId: 'w1', tab: null },
+    { page: 'machines', workerId: 'w 中文', tab: 'settings' }
   ];
   for (const route of routes) {
     const hash = formatRoute(route);
@@ -47,4 +50,14 @@ test('bot 页：#/bots[/<项目>]，/new 不算项目之外的段', () => {
   assert.deepEqual(parseRoute('#/bots/p1/new'), { page: 'bots', projectId: 'p1' });
   assert.equal(formatRoute({ page: 'bots', projectId: 'p 1' }), '#/bots/p%201');
   assert.equal(formatRoute({ page: 'bots', projectId: null }), '#/bots');
+});
+
+test('机器：#/machines 是列表，/<id> 是那一台，页签可选；不认识的页签回落到上次的', () => {
+  assert.deepEqual(parseRoute('#/machines'), { page: 'machines', workerId: null, tab: null });
+  assert.deepEqual(parseRoute('#/machines/w1'), { page: 'machines', workerId: 'w1', tab: null });
+  assert.deepEqual(parseRoute('#/machines/w1/agent'), { page: 'machines', workerId: 'w1', tab: 'agent' });
+  assert.deepEqual(parseRoute('#/machines/w1/zzz'), { page: 'machines', workerId: 'w1', tab: null });
+  assert.equal(formatRoute({ page: 'machines', workerId: null, tab: null }), '#/machines');
+  // 老地址还能解析（App 里换成新家，门禁之前）
+  assert.deepEqual(parseRoute('#/admin/workers'), { page: 'admin', tab: 'workers' });
 });

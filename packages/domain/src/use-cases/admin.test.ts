@@ -173,6 +173,27 @@ test('更新机器：只发 hub 的提交、记审计；离线/不存在报错�
   assert.ok(updates.every((u) => u.commit === hub.commit));
 });
 
+test('更新全部过期：跳过本机、没有 update 能力、正在试运行的机器；单台仍可做「已最新」演练', async () => {
+  const { deps, workerList, updates, owner } = await setup();
+  const hub = deps.workers.hubBuild();
+  const older = { ...hub, commit: 'b'.repeat(40) };
+  workerList.push(
+    { ...worker('local', 'local', 'online'), build: older },
+    { ...worker('w-no-update', 'remote', 'online'), build: older, capabilities: ['sessions'] },
+    {
+      ...worker('w-trial', 'remote', 'online'),
+      build: older,
+      update: { state: 'trial', message: '试运行中', logTail: '', at: 1 }
+    },
+    { ...worker('w-ok', 'remote', 'online'), build: older }
+  );
+  const all = await updateOutdatedWorkers(deps, owner.principal);
+  assert.ok(all.ok);
+  assert.deepEqual(updates.map((row) => row.id), ['w-ok']);
+  // 单台更新没有新增「必须过期」的限制：已是最新的仍然发一次，作为通道演练。
+  assert.ok((await updateWorker(deps, owner.principal, 'local')).ok, '已是最新也能发：演练');
+});
+
 test('概览：刚派生/刚分叉、还没发过话的会话是「就绪」，不算运行中', async () => {
   const { deps, sessionList } = await setup();
   const base = { status: 'running', lastSeq: 0 } as unknown as Session;

@@ -216,14 +216,13 @@ test('节点在线状态可见，任务的收尾与放弃是两个动作', async
   await enterProject(page, PROJECT_NAME);
   await expect(sessionNode(page)).toHaveCount(1);
 
-  // S1.2：「它挂了」和「我改坏了配置」要能分辨，所以节点状态是常驻可查的
-  const badge = page.getByRole('button', { name: /^机器：/ }).first();
-  await badge.click();
-  await expect(page.getByText(/\d+ 在线/)).toBeVisible();
-  await expect(page.getByRole('listitem').filter({ hasText: '本机' }).first()).toBeVisible();
-  // 浮层可能盖住徽标，用 Esc 收起，避免点击被拦截。
-  await page.keyboard.press('Escape');
-  await expect(badge).toHaveAttribute('aria-expanded', 'false');
+  // S1.2：「它挂了」和「我改坏了配置」要能分辨，所以机器状态是常驻可查的
+  await page.getByRole('link', { name: /^机器：/ }).first().click();
+  await expect(page.getByTestId('machines-summary')).toContainText(/在线/);
+  await expect(page.getByTestId('machine-row').filter({ hasText: '本机' }).first()).toBeVisible();
+  // 机器有自己的页面：退回来，接着看画布。
+  await page.goBack();
+  await expect(sessionNode(page)).toHaveCount(1);
 
   // S4.2：收尾不是放弃。先收尾，卡片改口，再重开回到进行中
   await taskNode(page, TASK_TITLE).hover();

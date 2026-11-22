@@ -19,7 +19,7 @@ test('每组的项与顺序', () => {
     groups.map((group) => group.items.map((item) => item.label)),
     // 「群」是导航项名，组标题仍是「消息」（同一页本来就是群列表）。
     // 可观测在库里：它没有角色门禁，不能靠运维组来「收口」。
-    [['首页'], ['群', 'Bot'], ['记忆', '工作目录', '资产', '运行记录'], ['运营后台']]
+    [['首页'], ['群', 'Bot'], ['记忆', '机器', '工作目录', '资产', '运行记录'], ['运营后台']]
   );
 });
 
@@ -49,6 +49,7 @@ test('每个路由只高亮自己那一项', () => {
     ['bots', 'bots'],
     ['workspaces', 'workspaces'],
     ['assets', 'market'],
+    ['machines', 'machines'],
     ['observe', 'observe'],
     ['admin', 'admin'],
     ['project', null],
@@ -66,6 +67,14 @@ test('链接都是仓里真实存在的路由', () => {
     globalNavGroups(true)
       .flatMap((group) => group.items.map((item) => item.href))
       .sort(),
-    ['#/admin/overview', '#/assets/catalog', '#/bots', '#/home', '#/memory', '#/messages', '#/observe', '#/workspaces'].sort()
+    ['#/admin/overview', '#/assets/catalog', '#/bots', '#/home', '#/machines', '#/memory', '#/messages', '#/observe', '#/workspaces'].sort()
   );
+});
+
+test('机器是所有人的入口：不进运维组，不需要管理员', () => {
+  const ids = (admin: boolean) => globalNavGroups(admin).flatMap((group) => group.items.map((item) => item.id));
+  assert.equal(ids(false).includes('machines'), true);
+  assert.equal(ids(true).includes('machines'), true);
+  const library = globalNavGroups(false).find((group) => group.id === 'library');
+  assert.equal(library?.items.some((item) => item.id === 'machines'), true, '机器在「库」组，跟运维门禁无关');
 });

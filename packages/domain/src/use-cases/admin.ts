@@ -9,7 +9,7 @@ import type { Result } from '../result.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { WorkerControl } from '../ports/worker-control.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
-import { isOutdated } from '../worker.ts';
+import { isOutdated, workerUpdateApplicable } from '../worker.ts';
 import { isBusy } from '../session.ts';
 import type { WorkerStatus } from '../worker.ts';
 import type { AccountDeps } from './accounts.ts';
@@ -244,7 +244,10 @@ export async function updateWorker(
   return ok(worker);
 }
 
-/** 「更新全部过期」：只动在线且过期、没在更新中的；返回发出了更新的那些。 */
+/**
+ * 「更新全部过期」：只动在线、已过期、没在更新中，且单台更新入口也会给出更新的机器
+ * （本机 / 凭据没有 `update` 能力的不碰）；返回发出了更新的那些。
+ */
 export async function updateOutdatedWorkers(
   deps: AdminDeps,
   actor: Principal
@@ -252,7 +255,7 @@ export async function updateOutdatedWorkers(
   const hub = deps.workers.hubBuild();
   if (!hub.commit) return err(conflict('hub 不是从 git 仓库启动的，不知道该更新到哪个版本'));
   const targets = (await deps.workers.list()).filter(
-    (worker) => worker.state === 'online' && worker.update?.state !== 'updating' && isOutdated(worker, hub)
+    (worker) => workerUpdateApplicable(worker, hub.commit) && isOutdated(worker, hub)
   );
   const started: WorkerStatus[] = [];
   for (const worker of targets) {

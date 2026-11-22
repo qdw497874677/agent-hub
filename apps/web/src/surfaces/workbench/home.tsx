@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, RecentSessionDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
-import { WorkersBadge } from '../../shell/workers.tsx';
+import { MachinesBadge } from '../../shell/workers.tsx';
 import { DeleteProjectDialog, TrashList } from './delete-project.tsx';
 import { GlobalNav } from '../../shell/global-nav.tsx';
 import { ProjectListSheet, ProjectRow } from './project-list.tsx';
@@ -296,7 +296,7 @@ export function HomePage({
         <TrashList />
       </div>
       <div className="order-8 mt-auto border-t border-hair px-4 pb-4 pt-3 md:col-start-1 md:row-start-5 md:mt-0 md:border-t-0 md:px-3 md:py-3">
-        <WorkersBadge placement="up" />
+        <MachinesBadge />
       </div>
 
       {deleting ? (

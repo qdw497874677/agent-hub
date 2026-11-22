@@ -4,6 +4,7 @@ import type { AttachmentInputDto, CanvasDto, ProjectDto, PromptAckDto, TaskDto }
 import { api } from './api.ts';
 import { HomePage } from '../surfaces/workbench/home.tsx';
 import { AdminPage } from './admin/page.tsx';
+import { MachinesPage } from './machines.tsx';
 import { resolveLive, useLiveStream } from '../atoms/live.ts';
 import { CanvasView, type LayoutPatch } from '../surfaces/workbench/canvas.tsx';
 import { NoTasksHint } from '../surfaces/workbench/empty-tasks.tsx';
@@ -33,6 +34,7 @@ const LAST_PROJECT = 'agent-hub:last-project';
 /** 运营后台与工作台互不相干：分开渲染，各自的数据各自拉。 */
 export function App() {
   const [route] = useRoute();
+  if (route?.page === 'machines') return <MachinesPage workerId={route.workerId} tab={route.tab} />;
   if (route?.page === 'workspaces') return <TeamWorkspacesPage />;
   if (route?.page === 'memory') return <MemoryPage scope={route.scope} />;
   if (route?.page === 'access') return <AccessPage />;
@@ -40,7 +42,18 @@ export function App() {
   if (route?.page === 'observe') return <ObservePage source={route.source} id={route.id} />;
   if (route?.page === 'messages') return <MessagesPage projectId={route.projectId} groupId={route.groupId} />;
   if (route?.page === 'assets') return <MarketPage tab={route.tab} reviewId={route.reviewId} />;
+  // 「机器」以前在运营后台里（#/admin/workers）。老书签直接换到新家，且要赶在管理员门禁前面，
+  // 否则非管理员会先撞上「只有 hub 管理员能进运营后台」。
+  if (route?.page === 'admin' && route.tab === 'workers') return <RedirectToMachines />;
   return route?.page === 'admin' ? <AdminPage tab={route.tab} /> : <Workspace />;
+}
+
+function RedirectToMachines() {
+  const [, navigate] = useRoute();
+  useEffect(() => {
+    navigate({ page: 'machines', workerId: null, tab: null }, 'replace');
+  }, [navigate]);
+  return null;
 }
 
 function Workspace() {
@@ -334,6 +347,7 @@ function Workspace() {
     { id: 'theme-dark', group: '主题', label: '主题：深色', icon: 'moon', keywords: 'theme dark', run: () => setThemePref('dark') },
     { id: 'theme-light', group: '主题', label: '主题：浅色', icon: 'sun', keywords: 'theme light', run: () => setThemePref('light') },
     { id: 'go-home', group: '前往', label: '首页', icon: 'home', keywords: 'home', run: () => navigate({ page: 'home' }) },
+    { id: 'go-machines', group: '前往', label: '机器', icon: 'server', keywords: 'machines workers', run: () => navigate({ page: 'machines', workerId: null, tab: null }) },
     { id: 'go-memory', group: '前往', label: '记忆', icon: 'brain', keywords: 'memory', run: () => navigate({ page: 'memory', scope: null }) },
     { id: 'go-assets', group: '前往', label: '资产', icon: 'package', keywords: 'assets market', run: () => navigate({ page: 'assets', tab: 'catalog', reviewId: null }) },
     { id: 'go-workspaces', group: '前往', label: '团队工作目录', icon: 'folder', keywords: 'workspaces', run: () => navigate({ page: 'workspaces' }) },

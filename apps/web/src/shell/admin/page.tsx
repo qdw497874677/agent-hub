@@ -3,7 +3,6 @@ import { AppShell, PageBody, PageHeader } from '../page-shell.tsx';
 import { formatRoute, type AdminTab } from '../route.ts';
 import { Overview } from './overview.tsx';
 import { Users } from './users.tsx';
-import { Workers } from './workers.tsx';
 import { Audit } from './audit.tsx';
 import { Components } from './components.tsx';
 import { Assets, useUpgradableCount } from './assets.tsx';
@@ -56,7 +55,6 @@ export function AdminPage({ tab }: { tab: AdminTab }) {
       <PageBody wide>
           {active === 'overview' && <Overview />}
           {active === 'users' && <Users />}
-          {active === 'workers' && <Workers />}
           {active === 'assets' && <Assets />}
           {active === 'components' && <Components />}
           {active === 'audit' && <Audit />}

@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import type { agentSchema, agentProfileSchema, agentProfileInputSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, teamWorkspaceViewSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
-import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTeamWorkspaceRequest, createTaskRequest, checkProjectReposRequest, projectReposCheckDto, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, createSessionLinkRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
+import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTeamWorkspaceRequest, createTaskRequest, checkProjectReposRequest, projectReposCheckDto, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, createSessionLinkRequest, sessionStreamFrameSchema, workerActionsSchema, workerVersionStatusSchema, workerInfoSchema } from './wire/http.ts';
 import type { resourceSampleSchema, workerMetricsHistorySchema, workerResourcesSchema } from './wire/resources.ts';
 import type { serverToWorkerSchema, workerToServerSchema } from './wire/worker.ts';
 
@@ -37,6 +37,8 @@ export type SessionEventDto = z.infer<typeof sessionEventSchema>;
 export type JournalEntryDto = z.infer<typeof journalEntrySchema>;
 export type SearchHitDto = z.infer<typeof searchHitSchema>;
 export type SearchResponseDto = z.infer<typeof searchResponseSchema>;
+export type WorkerActionsDto = z.infer<typeof workerActionsSchema>;
+export type WorkerVersionStatusDto = z.infer<typeof workerVersionStatusSchema>;
 export type WorkerInfoDto = z.infer<typeof workerInfoSchema>;
 export type ResourceSampleDto = z.infer<typeof resourceSampleSchema>;
 export type WorkerResourcesDto = z.infer<typeof workerResourcesSchema>;

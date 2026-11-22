@@ -85,28 +85,37 @@ test("主人在后台停用并启用一个成员、关开注册，审计里都�
         .getByRole("button", { name: "停用" }),
     ).toHaveCount(0);
 
-    // 机器：本机在列
-    await page.getByRole("link", { name: "机器" }).click();
-    await expect(page.getByTestId("admin-worker").first()).toContainText(
-      "本机",
-    );
-    // 版本：本机和 hub 同一份代码，不显示过期；点「更新」是一次演练，回「无需更新」
-    const local = page.getByTestId("admin-worker").filter({ hasText: "本机" });
+    // 机器：不再占后台分页，全站导航的「机器」是它的家
+    await page
+      .getByRole("navigation", { name: "全站导航" })
+      .getByRole("link", { name: "机器" })
+      .click();
+    await expect(page).toHaveURL(/#\/machines$/);
+    const localRow = page.getByTestId("machine-row").filter({ hasText: "本机" });
+    await expect(localRow.first()).toBeVisible();
+    await localRow.first().getByRole("link").click();
+    await expect(page.getByTestId("worker-detail")).toBeVisible();
+    // 版本：本机和 hub 同一份代码，不显示过期，也没有远程更新按钮
     await expect(page.getByTestId("hub-version")).toContainText(/hub v\S+ · [0-9a-f]{7}/);
-    await expect(local.getByTestId("worker-version")).toContainText(/v\S+ · [0-9a-f]{7}/);
-    await expect(local.getByTestId("worker-outdated")).toHaveCount(0);
-    await local.getByRole("button", { name: "更新" }).click();
-    await expect(local.getByTestId("worker-update")).toContainText("无需更新");
+    await expect(page.getByTestId("worker-version")).toContainText(/v\S+ · [0-9a-f]{7}/);
+    await expect(page.getByTestId("worker-outdated")).toHaveCount(0);
+    await expect(page.getByTestId("machine-update")).toContainText("和 hub 同源");
+    await expect(page.getByTestId("machine-update-button")).toHaveCount(0);
 
     // harness 就绪：本机列出各 harness；「重新检测」真的发到 Worker（202），不报「不在线」
-    await expect(local.getByTestId("worker-harnesses")).toContainText("pi");
+    await page.getByTestId("worker-tab-agent").click();
+    await expect(page.getByTestId("worker-harnesses")).toContainText("pi");
     const probed = page.waitForResponse((r) => /\/api\/workers\/[^/]+\/probe$/.test(r.url()));
-    await local.getByTestId("harness-recheck").click();
+    await page.getByTestId("harness-recheck").click();
     expect((await probed).status()).toBe(202);
-    await expect(local.getByTestId("harness-recheck")).toBeEnabled({ timeout: 10_000 });
-    await expect(local.getByTestId("worker-harnesses")).not.toContainText("不在线");
+    await expect(page.getByTestId("harness-recheck")).toBeEnabled({ timeout: 10_000 });
+    await expect(page.getByTestId("worker-harnesses")).not.toContainText("不在线");
 
     // 平台设置并进了概览底部（后台不再有「设置」分页），开关还是原来的 role=switch
+    await page
+      .getByRole("navigation", { name: "全站导航" })
+      .getByRole("link", { name: "运营后台" })
+      .click();
     await page.getByRole("link", { name: "概览" }).click();
     const open = page.getByRole("switch", { name: /开放注册/ });
     await expect(open).toBeChecked();
@@ -126,9 +135,6 @@ test("主人在后台停用并启用一个成员、关开注册，审计里都�
     await page.getByRole("link", { name: "审计" }).click();
     const audit = page.getByTestId("audit-entry");
     await expect(audit.first()).toContainText("改设置");
-    await expect(
-      page.getByTestId("audit-entry").filter({ hasText: "更新机器" }),
-    ).not.toHaveCount(0);
     await expect(
       page.getByTestId("audit-entry").filter({ hasText: "停用用户" }),
     ).not.toHaveCount(0);

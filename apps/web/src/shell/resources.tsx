@@ -58,7 +58,7 @@ export function ResourceSummary({ worker }: { worker: WorkerInfoDto }) {
 }
 
 /** 展开后的明细：各盘、GPU、原因，以及「满了拒绝新会话」开关。 */
-export function ResourceDetails({ worker }: { worker: WorkerInfoDto }) {
+export function ResourceDetails({ worker, canConfigure = false }: { worker: WorkerInfoDto; canConfigure?: boolean }) {
   const r = worker.resources;
   if (worker.state !== 'online' || !r) return null;
   const m = r.sample.machine;
@@ -81,18 +81,26 @@ export function ResourceDetails({ worker }: { worker: WorkerInfoDto }) {
             GPU{index} {gpu.name} · {gpu.utilPercent ?? '—'}% · 显存 {gpu.memUsed === null ? '—' : formatBytes(gpu.memUsed)} / {gpu.memTotal === null ? '—' : formatBytes(gpu.memTotal)}
           </span>
         ))}
-        <RefuseToggle worker={worker} on={r.refuseWhenFull} />
+        <RefuseToggle worker={worker} on={r.refuseWhenFull} canConfigure={canConfigure} />
       </dd>
     </>
   );
 }
 
-function RefuseToggle({ worker, on }: { worker: WorkerInfoDto; on: boolean }) {
+function RefuseToggle({ worker, on, canConfigure }: { worker: WorkerInfoDto; on: boolean; canConfigure: boolean }) {
   const queryClient = useQueryClient();
   const change = useMutation({
     mutationFn: (next: boolean) => api.setResourcePolicy(worker.workerId, next),
     onSettled: () => void queryClient.invalidateQueries({ queryKey: ['workers'] })
   });
+  // 管不了这台机器的人只看到当前状态，不给一个点了会 403 的开关。
+  if (!canConfigure) {
+    return (
+      <span className="mt-1 block text-tertiary" data-testid="refuse-when-full-readonly">
+        资源紧张时{on ? '会' : '不会'}拒绝新会话
+      </span>
+    );
+  }
   return (
     <label className="mt-1 flex items-center gap-1.5 text-tertiary">
       <input type="checkbox" data-testid="refuse-when-full" checked={on} disabled={change.isPending} onChange={(event) => change.mutate(event.target.checked)} />

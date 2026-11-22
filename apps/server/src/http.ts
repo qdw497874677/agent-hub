@@ -14,6 +14,7 @@ import { installContextRoutes } from './context-routes.ts';
 import { installFilesRoutes } from './files-routes.ts';
 import { installGitRoutes } from './git-routes.ts';
 import { installRewindRoutes } from './rewind-routes.ts';
+import { workerActionsFor } from './worker-actions.ts';
 import type { ContextService, WorkspaceFilesService, GitWorkflowService, RewindService } from '@agent-hub/domain';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
@@ -79,6 +80,8 @@ import {
   workerReader,
   inventoryViewer,
   redactInventory,
+  workerCredentials,
+  workerVersionStatus,
   ATTACHMENT_LIMITS,
   asProjectId,
   asSessionId,
@@ -484,13 +487,28 @@ export function createApp(options: AppOptions): Hono {
   });
 
   app.get('/api/workers', async (c) => {
-    const readable = await workerReader(deps.access, subjectOf(c));
-    const fullInventory = await inventoryViewer(deps.access, subjectOf(c));
+    const subject = subjectOf(c);
+    const readable = await workerReader(deps.access, subject);
+    const fullInventory = await inventoryViewer(deps.access, subject);
+    const credentials = options.enrollment ? await workerCredentials({ enrollment: options.enrollment.deps.enrollment }) : new Map();
+    const workerControl = options.admin?.deps.workers;
+    const hubBuild = workerControl?.hubBuild() ?? null;
+    const actionContext = {
+      access: deps.access,
+      subject,
+      principal: principalOf(c),
+      now: deps.now(),
+      hubCommit: hubBuild?.commit ?? null,
+      canRotate: typeof workerControl?.rotateCredential === 'function' || typeof options.enrollment?.deps.workers.rotateCredential === 'function'
+    };
     const workers = [];
     for (const worker of await listWorkers(deps)) {
       if (!(await readable(worker.workerId))) continue;
-      if (!(await fullInventory(worker))) workers.push(redactInventory(worker));
-      else workers.push(worker.runtimeJob?.component ? { ...worker, runtimeJob: { ...worker.runtimeJob, componentId: worker.runtimeJob.component.componentId } } : worker);
+      const actions = await workerActionsFor(worker, { ...actionContext, credential: credentials.get(worker.workerId) ?? null });
+      const view = (await fullInventory(worker))
+        ? (worker.runtimeJob?.component ? { ...worker, runtimeJob: { ...worker.runtimeJob, componentId: worker.runtimeJob.component.componentId } } : worker)
+        : redactInventory(worker);
+      workers.push({ ...view, actions, versionStatus: hubBuild ? workerVersionStatus(worker, hubBuild) : 'unknown' });
     }
     return c.json(workerInfoSchema.array().parse(workers));
   });

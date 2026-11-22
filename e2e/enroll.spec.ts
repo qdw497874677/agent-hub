@@ -15,8 +15,9 @@ const SHOTS = process.env['E2E_SCREENSHOTS'];
 test('添加机器：一行命令、倒计时、凭码接入、吊销后断开', async ({ page, baseURL }) => {
   await loginByApi(page);
   await page.goto('/');
-  await page.getByRole('button', { name: /^机器：/ }).first().click();
-  await page.getByRole('button', { name: '添加机器' }).click();
+  await page.getByRole('link', { name: /^机器：/ }).first().click();
+  await expect(page.getByTestId('machines-page')).toBeVisible();
+  await page.getByTestId('machines-add').click();
 
   const dialog = page.getByRole('dialog', { name: '添加机器' });
   const command = dialog.getByLabel('安装命令');
@@ -74,13 +75,12 @@ test('添加机器：一行命令、倒计时、凭码接入、吊销后断开',
     await expect(dialog.getByText('✓ e2e 新机器 已连上')).toBeVisible();
     await dialog.getByRole('button', { name: '完成' }).click();
 
-    await page.getByRole('button', { name: /^机器：/ }).first().click();
-    await page.getByRole('button', { name: /e2e 新机器/ }).click();
+    await page.getByRole('link', { name: /e2e 新机器/ }).first().click();
     // 机器详情分页签：凭据和吊销在「设置」页
     await page.getByTestId('worker-tab-settings').click();
     await page.getByRole('button', { name: '吊销这台机器' }).click();
     await page.getByRole('button', { name: '确认吊销' }).click();
-    await expect(page.getByRole('button', { name: /e2e 新机器/ })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: /e2e 新机器/ })).toHaveCount(0);
 
     const audit = (await (await page.request.get('/api/admin/audit')).json()) as { action: string; target: string }[];
     expect(audit.slice(0, 3).map((entry) => entry.action)).toEqual(['worker.revoke', 'worker.enroll', 'worker.pair']);
@@ -98,8 +98,8 @@ test('窄屏：添加机器贴底成 sheet，命令可读可复制', async ({ pa
   await page.setViewportSize({ width: 390, height: 844 });
   await loginByApi(page);
   await page.goto('/');
-  await page.getByRole('button', { name: /^机器：/ }).first().click();
-  await page.getByRole('button', { name: '添加机器' }).click();
+  await page.getByRole('link', { name: /^机器：/ }).first().click();
+  await page.getByTestId('machines-add').click();
   const dialog = page.getByRole('dialog', { name: '添加机器' });
   await expect(dialog.getByLabel('安装命令')).toContainText('HUB_PAIR=ahw_pair_');
   const box = await dialog.boundingBox();
@@ -113,8 +113,8 @@ test('窄屏：添加机器贴底成 sheet，命令可读可复制', async ({ pa
 test('权限预设与凭据轮换：只读机器、轮换后新凭据写进 worker.env', async ({ page, baseURL }) => {
   await loginByApi(page);
   await page.goto('/');
-  await page.getByRole('button', { name: /^机器：/ }).first().click();
-  await page.getByRole('button', { name: '添加机器' }).click();
+  await page.getByRole('link', { name: /^机器：/ }).first().click();
+  await page.getByTestId('machines-add').click();
   const dialog = page.getByRole('dialog', { name: '添加机器' });
   const command = dialog.getByLabel('安装命令');
   await expect(command).toContainText('HUB_PAIR=ahw_pair_');
@@ -162,8 +162,7 @@ test('权限预设与凭据轮换：只读机器、轮换后新凭据写进 work
     await expect(dialog.getByText('✓ e2e 只读机器 已连上')).toBeVisible();
     await dialog.getByRole('button', { name: '完成' }).click();
 
-    await page.getByRole('button', { name: /^机器：/ }).first().click();
-    await page.getByRole('button', { name: /e2e 只读机器/ }).click();
+    await page.getByRole('link', { name: /e2e 只读机器/ }).first().click();
     await page.getByTestId('worker-tab-settings').click();
     const rotation = page.getByTestId('credential-rotation');
     await expect(rotation).toContainText('从未轮换');
@@ -181,7 +180,7 @@ test('权限预设与凭据轮换：只读机器、轮换后新凭据写进 work
 
     await page.getByRole('button', { name: '吊销这台机器' }).click();
     await page.getByRole('button', { name: '确认吊销' }).click();
-    await expect(page.getByRole('button', { name: /e2e 只读机器/ })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: /e2e 只读机器/ })).toHaveCount(0);
   } finally {
     worker?.kill();
     rmSync(state, { recursive: true, force: true });

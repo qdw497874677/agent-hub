@@ -489,12 +489,45 @@ export const makeDirectoryRequest = z.object({
   name: z.string().min(1).max(255)
 });
 
+/**
+ * 这台机器相对 hub 的版本关系。只给关系，不带 hub 的版本 / 提交号；
+ * 供看不到运营后台的普通成员判断「落后 / 最新 / 版本未知」。
+ */
+export const workerVersionStatusSchema = z.enum(['current', 'outdated', 'unknown']);
+
+/**
+ * 当前登录的人对这台机器能做哪些管理动作。权限和状态都在服务端算好：
+ * 页面只按 true / false 决定显示什么，不自己推断角色或凭据。
+ */
+export const workerActionsSchema = z.object({
+  /** 触发远程自更新（运营后台权限 + 在线 + 不是本机 + 未在更新 / 试运行 + Worker 允许自更新）。 */
+  update: z.boolean(),
+  /** 能看这次更新的日志（只有 hub 管理员，且确实有日志）。 */
+  updateLogs: z.boolean(),
+  /** 断开在线远端机器（运营后台权限）。 */
+  disconnect: z.boolean(),
+  /** 轮换这台机器正在用的凭据。 */
+  rotateCredential: z.boolean(),
+  /** 吊销这台机器的凭据 / 让它别再连回来。 */
+  revokeCredential: z.boolean(),
+  /** 在这台机器上装卸 agent 运行时（runtime.install，不含组件）。 */
+  installRuntime: z.boolean(),
+  /** 在这台机器上装卸运行时组件（runtime.component.install，不含运行时）。 */
+  installComponent: z.boolean(),
+  /** 修改机器满了以后是否拒绝新会话。 */
+  configureResources: z.boolean()
+});
+
 /** `/api/workers` 的响应：UI 靠它区分「它挂了」和「我改坏了配置」（S1.2）。 */
 export const workerInfoSchema = z.object({
   workerId: z.string(),
   label: z.string(),
   origin: z.enum(['local', 'remote']),
   state: z.enum(['online', 'offline']),
+  /** 相对 hub 的版本关系；不暴露 hub build。 */
+  versionStatus: workerVersionStatusSchema,
+  /** 当前登录的人在这台机器上能做什么；按服务端权限与机器状态算好。 */
+  actions: workerActionsSchema,
   reason: z.string().optional(),
   agentIds: z.array(z.string()).optional(),
   /** 每个 agent 在这台机器上的模型清单：派生对话框按选中的机器列模型。 */
@@ -564,6 +597,12 @@ export const workerInfoSchema = z.object({
     })
     .optional()
 });
+
+/**
+ * 开放 API `/openapi/v1/workers` 的响应投影：和 `/api/workers` 共用机器字段，
+ * 但动作与版本关系是「当前登录会话」的事，令牌接口不下发，保持既有的对外形状。
+ */
+export const publicWorkerInfoSchema = workerInfoSchema.omit({ actions: true, versionStatus: true });
 
 /** 在一台机器上装 / 卸 / 切换 agent 运行时；version 不填 = 推荐版本，switch 要指明 source。 */
 export const runtimeJobRequest = z
