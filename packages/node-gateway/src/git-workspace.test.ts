@@ -548,6 +548,14 @@ test('checkRepo：ls-remote 读默认分支和分支存在性；坏地址不抛'
   assert.equal(missing.value.defaultBranch, 'main');
   assert.equal(missing.value.branchExists, false);
 
+  // Git 的模式会匹配路径尾部；只接受完整 refs/heads/...，不能把相似分支或标签当成目标。
+  sh(url, 'update-ref', 'refs/heads/prefix/refs/heads/target', 'HEAD');
+  sh(url, 'update-ref', 'refs/tags/target', 'HEAD');
+  const exact = await git.checkRepo(url, 'target');
+  assert.ok(exact.ok && exact.value.reachable && !exact.value.branchExists);
+  const nested = await git.checkRepo(url, 'prefix/refs/heads/target');
+  assert.ok(nested.ok && nested.value.branchExists);
+
   // 不填分支 = 用远端默认分支，永远成立
   const any = await git.checkRepo(url, null);
   assert.ok(any.ok && any.value.branchExists === true);

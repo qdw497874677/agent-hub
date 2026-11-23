@@ -117,6 +117,33 @@ export const checkProjectReposRequest = z.object({
   workerId: z.string().min(1).max(120).nullable().optional()
 });
 
+/**
+ * 新建项目前检查（POST /api/repo-check）：形状与保存前检查一致，但还没有项目可归属，
+ * 所以只会用请求里显式给的 `credential`，绝不读取任何已保存的令牌，也不落盘。
+ * 权限是 project.create。
+ */
+export const repoCheckRequest = z.object({
+  repos: z.array(projectRepoInput).max(8),
+  workerId: z.string().min(1).max(120).nullable().optional()
+});
+
+/**
+ * 这次检查实际选了哪种凭据（不代表后端真的接受了它）：
+ * - `draft`：请求里显式带的令牌（还没保存）；
+ * - `saved`：按项目 / 仓库解析到的已保存令牌；
+ * - `worker`：不带令牌，靠那台机器自己的 SSH key / agent。
+ */
+export const repoCheckCredentialSource = z.enum(['draft', 'saved', 'worker']);
+
+/**
+ * 失败类别（保守分类，不是精确诊断）：只有能确定时才给。
+ * - `authentication`：上游明确说认证失败；**不把「仓库不存在」这类模糊结果算成认证失败**；
+ * - `branch_missing`：连得上，但填的分支不在；
+ * - `unreachable`：连不上 / 超时 / 其它非认证失败；
+ * - `credential_unavailable`：项目里记了令牌，但密钥箱里已经找不到它（不会静默改用机器凭据）。
+ */
+export const repoCheckFailureKind = z.enum(['authentication', 'branch_missing', 'unreachable', 'credential_unavailable']);
+
 /** 检查结果：不可用（没有在线机器）不是错误，unavailable 给文案、results 为空。 */
 export const projectReposCheckDto = z.object({
   workerId: z.string().nullable(),
@@ -129,7 +156,11 @@ export const projectReposCheckDto = z.object({
       branch: z.string().nullable(),
       ok: z.boolean(),
       defaultBranch: z.string().nullable(),
-      message: z.string().nullable()
+      message: z.string().nullable(),
+      /** 本次检查选用的凭据来源；新增字段，老客户端忽略。 */
+      credentialSource: repoCheckCredentialSource.optional(),
+      /** 失败类别；只在能可靠归类时给，新增字段，老客户端忽略。 */
+      failureKind: repoCheckFailureKind.optional()
     })
   )
 });
@@ -245,8 +276,11 @@ export const createWorkspaceRequest = z.discriminatedUnion('kind', [
     workerId: z.string().min(1).nullable().default(null),
     kind: z.literal('temporary'),
     taskId: id,
-    /** 显式要一个临时空间时默认隔离（现建 worktree）；要共用长期目录才写 shared。 */
-    mode: z.enum(['shared', 'isolated']).optional()
+    /**
+     * 显式要一个临时空间时默认隔离（现建 worktree）；要共用长期目录才写 shared。
+     * empty = 明确只要一个空的临时目录（纯聊天），不碰仓库、不跑准备命令。
+     */
+    mode: z.enum(['shared', 'isolated', 'empty']).optional()
   })
 ]);
 

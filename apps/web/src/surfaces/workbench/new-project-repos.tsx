@@ -1,6 +1,17 @@
+import { useState } from 'react';
+import { api } from '../../shell/api.ts';
 import { INPUT } from '../../shell/dialog-shell.tsx';
-import { PROJECT_REPOS_MAX, REPO_TOKEN_MAX, repoUrlPatch, type ProjectRepoRow } from './project-repos.ts';
+import { useWorkers } from '../../shell/workers.tsx';
+import {
+  PROJECT_REPOS_MAX,
+  REPO_TOKEN_MAX,
+  repoProbeAffected,
+  repoRowsValue,
+  repoUrlPatch,
+  type ProjectRepoRow
+} from './project-repos.ts';
 import { newProjectRepoRow, newProjectRepoRowProblem, newProjectReposSummary } from './new-project-repos.ts';
+import { RepoProbeHint, RepoProbeMachine, RepoProbeStatus, useRepoProbes } from './repo-probe.tsx';
 
 /**
  * 新建项目里的「git 仓库（可选）」。
@@ -26,8 +37,14 @@ export function NewProjectRepos({
   onChange: (rows: readonly ProjectRepoRow[], primaryRepoId: string | null) => void;
 }) {
   const summary = newProjectReposSummary(rows);
+  // 新建项目还没有项目 id：单行检查走草稿入口，只读，不保存也不 clone
+  const workers = useWorkers();
+  const [probeWorkerId, setProbeWorkerId] = useState<string | null>(null);
+  const probes = useRepoProbes((repo, workerId) => api.checkDraftRepos([repo], workerId));
 
   const update = (index: number, patch: Partial<ProjectRepoRow>) => {
+    // 地址 / 分支 / 令牌变了，这一行的旧结论就过期了；请求还在路上也一样
+    if (repoProbeAffected(patch)) probes.invalidate(index);
     onChange(
       rows.map((row, at) => (at === index ? { ...row, ...patch } : row)),
       primaryRepoId
@@ -36,16 +53,27 @@ export function NewProjectRepos({
 
   const add = () => {
     if (rows.length >= PROJECT_REPOS_MAX) return;
+    probes.clear();
     onChange([...rows, newProjectRepoRow(rows)], primaryRepoId);
   };
 
   const remove = (index: number) => {
     const row = rows[index];
     if (row === undefined) return;
+    // 行号会前移，旧的按行号结论不能再用
+    probes.clear();
     onChange(
       rows.filter((_, at) => at !== index),
       primaryRepoId === row.id ? null : primaryRepoId
     );
+  };
+
+  const checkRow = (index: number) => {
+    const row = rows[index];
+    if (row === undefined) return;
+    const value = repoRowsValue([row])[0];
+    if (value === undefined) return;
+    probes.check(index, value, probeWorkerId);
   };
 
   const togglePrimary = (id: string) => {
@@ -76,6 +104,21 @@ export function NewProjectRepos({
             只登记仓库，不会现在下载；开始任务、选好机器和工作目录后再克隆。
           </p>
 
+          {rows.length > 0 ? (
+            <>
+              <RepoProbeMachine
+                workers={workers.list}
+                value={probeWorkerId}
+                onChange={(id) => {
+                  // 换机器 = 之前的结论不再代表这台机器
+                  setProbeWorkerId(id);
+                  probes.clear();
+                }}
+              />
+              <RepoProbeHint />
+            </>
+          ) : null}
+
           {rows.length === 0 ? (
             <div
               className="rounded-sm border border-dashed border-hair px-3 py-2.5 text-meta text-tertiary"
@@ -88,6 +131,7 @@ export function NewProjectRepos({
           {rows.map((row, index) => {
             const primary = primaryRepoId === row.id;
             const rowProblem = newProjectRepoRowProblem(row, rows);
+            const probe = probes.get(index);
             return (
               <div
                 key={row.id}
@@ -117,15 +161,28 @@ export function NewProjectRepos({
                       {primary ? '取消主仓库' : '设为主仓库'}
                     </button>
                   </span>
-                  <button
-                    type="button"
-                    aria-label={`删除仓库 ${index + 1}`}
-                    className="shrink-0 text-meta text-tertiary hover:text-rust"
-                    data-testid="new-project-repo-remove"
-                    onClick={() => remove(index)}
-                  >
-                    删除
-                  </button>
+                  <span className="flex shrink-0 items-center gap-3">
+                    <button
+                      type="button"
+                      aria-label={`检查仓库 ${index + 1}`}
+                      className="text-meta text-secondary hover:text-primary disabled:opacity-40"
+                      data-testid="new-project-repo-check"
+                      title="在这台机器上试着读一下；不保存、不创建、不 clone"
+                      disabled={rowProblem !== null || probe?.state === 'checking'}
+                      onClick={() => checkRow(index)}
+                    >
+                      {probe?.state === 'checking' ? '检查中…' : '检查'}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`删除仓库 ${index + 1}`}
+                      className="shrink-0 text-meta text-tertiary hover:text-rust"
+                      data-testid="new-project-repo-remove"
+                      onClick={() => remove(index)}
+                    >
+                      删除
+                    </button>
+                  </span>
                 </div>
 
                 <div className="grid gap-2 md:grid-cols-[minmax(0,0.8fr)_minmax(0,2fr)_minmax(0,0.8fr)]">
@@ -189,6 +246,7 @@ export function NewProjectRepos({
                     {rowProblem}
                   </p>
                 ) : null}
+                <RepoProbeStatus probe={probe} testId="new-project-repo-check-result" />
               </div>
             );
           })}

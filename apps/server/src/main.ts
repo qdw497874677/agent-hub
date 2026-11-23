@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdir } from 'node:fs/promises';
+import { lstat, mkdir } from 'node:fs/promises';
 
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -114,6 +114,7 @@ import { createProjectSessionHandoffActions } from './project-session-handoff.ts
 import { gitForWorker } from './workspace-delegation.ts';
 import { createModelDistiller } from './model-distiller.ts';
 import { createApp } from './http.ts';
+import { createProjectGitHttpsProbe } from './project-git-https-probe.ts';
 import { createConnectorObserveReader } from './observe-connector.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createTurnFinisher, finishFromJournalTail, type TurnOutcome } from './turn-finish.ts';
@@ -1083,7 +1084,38 @@ const botDeps = {
   contextSettings: store.contextSettings,
   detach: (actor: Parameters<typeof groupChat.detachAgent>[0], projectId: Parameters<typeof groupChat.detachAgent>[1], name: string) => groupChat.detachAgent(actor, projectId, name)
 };
+// 隔离探测只能在不运行本机 Agent 的 Hub 上显式启用。旧的 Worker Git 路径不认识专用密钥名。
+const probeOrigins = (readEnv('HUB_PROJECT_GIT_PROBE_ORIGINS') ?? '').split(',').map((value) => value.trim()).filter(Boolean);
+const probeProjects = new Set((readEnv('HUB_PROJECT_GIT_PROBE_PROJECTS') ?? '').split(',').map((value) => value.trim()).filter(Boolean));
+// 隔离凭据是 Hub 级密钥，必须和普通项目令牌隔开。除了不 spawn 本机 Worker，还要求数据目录
+// 本身是当前用户所有、组/其他用户完全无权限、且不是符号链接：只在显式启用隔离探测时检查，
+// 不改变普通 Hub 启动，也不替运营 chmod 目录。目录由运营预先建好（0700）。
+const probeRequested = spawnWorker === '0' && probeOrigins.length > 0 && probeProjects.size > 0;
+let probeDataDirPrivate = false;
+if (probeRequested) {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (uid !== null) {
+    try {
+      const info = await lstat(dataDir);
+      probeDataDirPrivate = info.isDirectory() && !info.isSymbolicLink() && info.uid === uid && (info.mode & 0o077) === 0;
+    } catch {
+      probeDataDirPrivate = false;
+    }
+  }
+  if (!probeDataDirPrivate) {
+    console.warn(`[hub] 隔离探测要求数据目录本身属于当前用户、无组/其他权限且不是符号链接（当前 ${dataDir}）；已保持关闭`);
+  }
+}
+const projectGitProbe = probeDataDirPrivate
+  ? createProjectGitHttpsProbe({ allowedOrigins: probeOrigins })
+  : null;
+// 不交给 Deps / 资产展开 / Worker 凭据桥：隔离凭据只由隔离路由持有。
+const projectGitProbeVault = projectGitProbe ? createSecretVault(store.db, secretKey, 'project_git_probe_secrets') : null;
 const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, guard,
+  ...(projectGitProbe && projectGitProbeVault ? { projectGitProbe: {
+    projects: deps.projects, secrets: projectGitProbeVault, access: deps.access, probe: projectGitProbe, now: deps.now,
+    allows: (projectId: string, _repoId: string, url: string) => probeProjects.has(projectId) && probeOrigins.includes(new URL(url).origin)
+  } } : {}),
   taskArchiveBlockers: createTaskArchiveBlockers(store.db),
   observe: {
     enabled: observeEnabled,

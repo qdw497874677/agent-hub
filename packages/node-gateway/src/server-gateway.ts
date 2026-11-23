@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { ProcessInfo, WorkspaceBrowser } from '@agent-hub/domain';
 import { createRemoteBrowsers } from './remote-workspace-browser.ts';
+import type { ProjectGitBundleImportInput, ProjectGitBundleImportOutcome } from './project-git-bundle-import.ts';
 import type { AgentDto, RpcChannel, RpcOutcome, RpcPort, ServerToWorker, SessionAssetRequestWire, WorkerToServer } from '@agent-hub/contract';
 import {
   PROTOCOL_MISMATCH_CLOSE,
@@ -11,6 +12,7 @@ import {
   WORKER_CAPABILITY_DURABLE_DELIVERY,
   WORKER_CAPABILITY_METRICS,
   WORKER_CAPABILITY_NATIVE_BRANCH,
+  WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT,
   assetsSync,
   providerTest,
   createRpcChannel,
@@ -44,6 +46,7 @@ import {
   wsPublishRef,
   wsPrepareDelegationWorktree,
   wsImportCommit,
+  wsImportProjectGitBundle,
   wsGh,
   wsStatus,
   linkEcho
@@ -185,6 +188,8 @@ export interface GatewayOptions {
   readonly echoTimeoutMs?: number;
   /** 目录浏览这类请求-回复的超时。 */
   readonly requestTimeoutMs?: number;
+  /** 项目 Git bundle 导入的上限（默认 5 分钟）：要经 WS 传 ≤ 8 MiB 再落盘 / 建 ref。 */
+  readonly projectGitBundleTimeoutMs?: number;
   /** 连上之后多久内必须 hello；不说话的连接不该一直占着。 */
   readonly helloTimeoutMs?: number;
   readonly now?: () => number;
@@ -253,6 +258,8 @@ interface Registered {
   capabilities: readonly string[] | null;
   /** 这条连接的 Worker 声明了 durable_delivery 没有（#269）；每次 hello 重建。 */
   durableDelivery: boolean;
+  /** 这条连接的 Worker 显式 opt-in 了项目 Git bundle 导入没有（hello 能力）；每次 hello 重建。 */
+  projectGitBundleImport: boolean;
   /** 这条连接做过终端对账没有（重连 / inventory 只做一次）。 */
   terminalReconciled: boolean;
   /** 这条连接做过服务对账没有。 */
@@ -347,6 +354,15 @@ export interface ServerGateway {
    * 还没进 domain 的 NodeGateway 端口（那一步在别的 lane 做），先挂在网关自己身上给用例用。
    */
   groups(workerId: string): WorkspaceGroupOps;
+  /**
+   * 项目 Git bundle 导入（docs/design/project-git-access.md 第二个增量）：**独立的**网关方法，
+   * 不挂到通用 `WorkspaceGit` 上，也不回退到任何带凭据的本地 / RPC 路径。
+   *
+   * - Worker 离线 → `unavailable`；凭据没有 `git` → `forbidden`；
+   * - 这条连接没有声明 opt-in 能力（老 / 未启用隔离的 Worker）→ 发送前就 `not_implemented`，一个字节都不发；
+   * - 聚合超时 → `unavailable`，消息说明「结果未知、不要自动重放」（导入可能已经在 Worker 上完成）。
+   */
+  importProjectGitBundle(workerId: string, input: ProjectGitBundleImportInput): Promise<Result<ProjectGitBundleImportOutcome, DomainError>>;
   close(): void;
 }
 
@@ -410,6 +426,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   }
   const helloTimeoutMs = options.helloTimeoutMs ?? 10_000;
   const requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
+  const projectGitBundleTimeoutMs = options.projectGitBundleTimeoutMs ?? 5 * 60_000;
 
   const online = (workerId: string): Registered | null => {
     const entry = registry.get(workerId);
@@ -828,6 +845,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           channel: null,
           capabilities: verdict.capabilities ?? null,
           durableDelivery: frame.capabilities?.includes(WORKER_CAPABILITY_DURABLE_DELIVERY) === true,
+          projectGitBundleImport: frame.capabilities?.includes(WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT) === true,
           terminalReconciled: false,
           serviceReconciled: false,
           connection: { at: now(), address: clientAddress, version: build?.commit ?? null }
@@ -1098,6 +1116,11 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     return online(workerId)?.channel ?? null;
   }
   const offline = (workerId: string) => ({ ok: false as const, error: unavailable(`Worker「${labelOf(workerId)}」不在线`) });
+  /** 项目 Git 导入在「可能已有副作用」后的统一说法：不假装失败，也不允许自动重放。 */
+  const projectGitBundleUnknown = (workerId: string) => ({
+    ok: false as const,
+    error: unavailable(`Worker「${labelOf(workerId)}」没有确认项目 Git bundle 导入的结果（可能已创建 ref），结果未知；先核对 ref，不要自动重放`)
+  });
   function toDomain<T>(outcome: RpcOutcome<T>, what: string, workerId: string): Result<T, DomainError> {
     if (outcome.ok) return outcome;
     const { code, message } = outcome.error;
@@ -1283,6 +1306,59 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         remove: (input) => call((c) => c.request(wsGroupRemove, { root: input.root, id: input.id }, limit), '删组合工作空间目录'),
         newWorktree: (input) => call((c) => c.request(wsNewWorktree, { ...input, base: input.base ?? null, ...(input.auth ? { auth: input.auth } : {}) }, limit), '在组合工作空间里开分支')
       };
+    },
+    async importProjectGitBundle(workerId, input) {
+      const entry = online(workerId);
+      if (!entry) return offline(workerId);
+      // 先看 live hello 能力：老 / 未 opt-in 的 Worker 明确拒绝，绝不回退到带凭据的 RPC 或本地路径。
+      if (!entry.projectGitBundleImport) {
+        return {
+          ok: false as const,
+          error: { code: 'not_implemented' as const, message: `Worker「${labelOf(workerId)}」没有启用项目 Git bundle 导入（未 opt-in），已拒绝` }
+        };
+      }
+      const channel = entry.channel;
+      if (!channel) return offline(workerId);
+      // 正常授权闸门：通道自己也会再判一次；这里提前判是为了「未授权时一个字节都不发」。
+      if (!canInvoke(entry.capabilities, 'git')) return { ok: false as const, error: forbidden(capabilityDenied('git')) };
+      const params = {
+        path: input.path,
+        expectedUrl: input.expectedUrl,
+        bundleBase64: input.bundleBase64,
+        bundleSha256: input.bundleSha256,
+        tipSha: input.tipSha,
+        ref: input.ref
+      };
+      // 出站同样按协议 schema 校验：通道只校验入站，8 MiB 上限 / strict 字段 / ref 绑定
+      // 必须在这里、在发送前生效，否则超大 bundle 会先被整包塞进 WebSocket。
+      const checked = wsImportProjectGitBundle.params.safeParse(params);
+      if (!checked.success) {
+        return { ok: false as const, error: invalid('项目 Git bundle 导入参数不合法（大小 / 字段 / ref 绑定），未发送') };
+      }
+      const outcome = await channel.request(wsImportProjectGitBundle, checked.data, { timeoutMs: projectGitBundleTimeoutMs });
+      if (outcome.ok) {
+        // 响应 schema 只保证自洽；还要和这次请求的 ref / tip 对得上，否则同样只能说「结果未知」。
+        if (outcome.value.ref !== checked.data.ref || outcome.value.tipSha !== checked.data.tipSha) {
+          return projectGitBundleUnknown(workerId);
+        }
+        return outcome;
+      }
+      // 超时 / 断线 / 响应不合协议都发生在「可能已经落盘并建好 ref」之后：只能报结果未知，不能重放。
+      if (outcome.error.code === 'timeout' || outcome.error.code === 'closed' || outcome.error.code === 'bad_result') {
+        return projectGitBundleUnknown(workerId);
+      }
+      // 对端明确回 unknown_method：请求一定没执行，可以诚实报未实现（仍然不回退、不重放）。
+      if (outcome.error.code === 'unknown_method') {
+        return {
+          ok: false as const,
+          error: { code: 'not_implemented' as const, message: `Worker「${labelOf(workerId)}」没有实现项目 Git bundle 导入，已拒绝` }
+        };
+      }
+      if (outcome.error.code === 'invalid' || outcome.error.code === 'conflict' || outcome.error.code === 'forbidden' || outcome.error.code === 'not_found' || outcome.error.code === 'unsupported') {
+        return toDomain(outcome, '项目 Git bundle 导入', workerId);
+      }
+      // 其余 code（含 bad_params / failed）也可能携带通道原始文案：不猜，一律按结果未知。
+      return projectGitBundleUnknown(workerId);
     },
     metrics(workerId: string): readonly ResourceSample[] {
       return [...(usage.get(workerId)?.samples ?? [])];

@@ -19,6 +19,7 @@ import { startDirectGitOrigin } from './workspace-delegation-origin.ts';
  */
 
 const SYNTHETIC_HEADER = `Authorization: Basic ${Buffer.from('x-access-token:synthetic-regression-token').toString('base64')}`;
+const WIRE_AUTH = SYNTHETIC_HEADER.slice('Authorization: '.length);
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync('git', args, {
@@ -43,7 +44,7 @@ test('clone：内部构造的 GIT_CONFIG_COUNT 不被 simple-git 守卫拒绝，
     await mkdir(join(root, 'origin'));
     git(root, 'clone', '-q', '--bare', seed, bare);
 
-    const origin = await startDirectGitOrigin({ bare, workDir: join(root, 'tls') });
+    const origin = await startDirectGitOrigin({ bare, workDir: join(root, 'tls'), requiredAuthorization: WIRE_AUTH });
     try {
       // 隔离 HOME：只让本次测试的 git 信任这张现场生成的 CA；repo URL 是唯一目标。
       const home = join(root, 'home');
@@ -55,11 +56,28 @@ test('clone：内部构造的 GIT_CONFIG_COUNT 不被 simple-git 守卫拒绝，
       process.env.HOME = home;
 
       const workspace = createGitWorkspace(async () => null);
+      const auth = { header: SYNTHETIC_HEADER, url: origin.url };
+      const valid = await workspace.checkRepo(origin.url, 'main', auth);
+      assert.deepEqual(valid, { ok: true, value: { reachable: true, defaultBranch: 'main', branchExists: true, message: null } });
+      const missing = await workspace.checkRepo(origin.url, 'not-a-branch', auth);
+      assert.deepEqual(missing, { ok: true, value: { reachable: true, defaultBranch: 'main', branchExists: false, message: null } });
+      const wrong = await workspace.checkRepo(origin.url, 'main', { ...auth, header: 'Authorization: Basic c3ludGhldGljLXdyb25n' });
+      assert.ok(wrong.ok && !wrong.value.reachable);
+      const unauthenticated = await workspace.checkRepo(origin.url, 'main');
+      assert.ok(unauthenticated.ok && !unauthenticated.value.reachable);
+      assert.ok(origin.requests.length > 0);
+      assert.ok(origin.requests.every((line) =>
+        line === 'GET /demo.git/info/refs?service=git-upload-pack' || line === 'POST /demo.git/git-upload-pack'
+      ), JSON.stringify(origin.requests));
+      assert.equal(git(bare, 'rev-parse', 'refs/heads/main').trim(), head);
+      origin.requests.length = 0;
+      origin.authorization.length = 0;
+
       const cloned = await workspace.clone({
         repoUrl: origin.url,
         parent: join(root, 'dest'),
         name: 'demo',
-        auth: { header: SYNTHETIC_HEADER, url: origin.url }
+        auth
       });
       assert.ok(cloned.ok, cloned.ok ? '' : cloned.error.message);
 
@@ -72,7 +90,7 @@ test('clone：内部构造的 GIT_CONFIG_COUNT 不被 simple-git 守卫拒绝，
       const authorized = origin.authorization.filter((value) => value !== '');
       assert.ok(authorized.length > 0, `origin 没收到 Authorization 头，请求：${origin.requests.join(', ')}`);
       // Node 的 request.headers.authorization 只是头的值（不含 "Authorization:"）。
-      assert.deepEqual(new Set(authorized), new Set([SYNTHETIC_HEADER.slice('Authorization: '.length)]));
+      assert.deepEqual(new Set(authorized), new Set([WIRE_AUTH]));
       assert.ok(
         origin.requests.some((line) => line === 'GET /demo.git/info/refs?service=git-upload-pack'),
         `没看到预期的 upload-pack 请求：${origin.requests.join(', ')}`

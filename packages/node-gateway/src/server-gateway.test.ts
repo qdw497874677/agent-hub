@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
-import type { ServerToWorker } from '@agent-hub/contract';
-import { createServerGateway, type GatewayHooks } from './server-gateway.ts';
+import type { RpcChannel, ServerToWorker } from '@agent-hub/contract';
+import { PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, createRpcChannel, wsImportProjectGitBundle } from '@agent-hub/contract';
+import { createServerGateway, type GatewayHooks, type GatewayOptions } from './server-gateway.ts';
+import { serveProjectGitBundleImport } from './worker-fs-rpc.ts';
+import type { ProjectGitBundleImportInput, ProjectGitBundleImporter } from './project-git-bundle-import.ts';
 
 interface Call {
   readonly method: string;
@@ -23,6 +26,10 @@ interface HarnessOptions {
   readonly onTerminalExit?: GatewayHooks['onTerminalExit'];
   readonly knownTerminals?: GatewayHooks['knownTerminals'];
   readonly reply?: (method: string, params: unknown) => unknown;
+  /** 网关选项：超时这类要用小值。 */
+  readonly gateway?: GatewayOptions;
+  /** 模拟 Worker 收到但不回复（聚合超时）。 */
+  readonly drop?: (method: string) => boolean;
 }
 
 async function harness(options: HarnessOptions = {}) {
@@ -41,7 +48,7 @@ async function harness(options: HarnessOptions = {}) {
     ...(options.onTerminalData ? { onTerminalData: options.onTerminalData } : {}),
     ...(options.onTerminalExit ? { onTerminalExit: options.onTerminalExit } : {}),
     ...(options.knownTerminals ? { knownTerminals: options.knownTerminals } : {})
-  });
+  }, options.gateway ?? {});
   const server: Server = createServer();
   server.on('upgrade', (request, socket, head) => gateway.handleUpgrade(request, socket, head));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -66,6 +73,7 @@ async function harness(options: HarnessOptions = {}) {
       if (frame.kind === 'rpc' && frame.frame?.rpc === 'call') {
         const { id, method, params } = frame.frame;
         calls.push({ method, params });
+        if (options.drop?.(method)) return;
         const outcome = reply(method, params);
         ws.send(
           JSON.stringify({
@@ -189,4 +197,213 @@ test('终端帧：worker 的 terminal_data / terminal_exit 按 terminalId 送到
   assert.equal(input.data, 'bHM=');
   assert.equal(gateway.sendTerminalInput('offline', 's1:1', 'bHM='), false);
   await stop(wire);
+});
+
+const bundleInput: ProjectGitBundleImportInput = {
+  path: '/work/repo',
+  expectedUrl: 'https://git.example.com/o/r.git',
+  bundleBase64: 'aGVsbG8=',
+  bundleSha256: 'b'.repeat(64),
+  tipSha: 'c'.repeat(40),
+  ref: `refs/agent-hub/fetch/project-1/${'c'.repeat(40)}`
+};
+
+test('项目 Git bundle 导入：未 opt-in 的 Worker 在发送前就拒绝（not_implemented），不回退', async () => {
+  const { gateway, connect, stop } = await harness();
+  const wire = await connect();
+  const outcome = await gateway.importProjectGitBundle('w1', bundleInput);
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.ok === false && outcome.error.code, 'not_implemented');
+  assert.equal(wire.calls.some((call) => call.method === 'ws.import_project_git_bundle'), false, '未声明能力时不该发任何 RPC');
+  await stop(wire);
+});
+
+test('项目 Git bundle 导入：凭据没有 git 能力时 forbidden，也不发 RPC', async () => {
+  const { gateway, connect, stop } = await harness({ authenticate: async () => ({ ok: true, capabilities: ['files.read'] }) });
+  const wire = await connect('w1', { credential: 'c1', capabilities: [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] });
+  const outcome = await gateway.importProjectGitBundle('w1', bundleInput);
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.ok === false && outcome.error.code, 'forbidden');
+  assert.equal(wire.calls.some((call) => call.method === 'ws.import_project_git_bundle'), false);
+  await stop(wire);
+});
+
+test('项目 Git bundle 导入：opt-in 后六个字段原样发出，结果原样返回', async () => {
+  const reply = { ref: bundleInput.ref, tipSha: bundleInput.tipSha, alreadyPresent: true };
+  const { gateway, connect, stop } = await harness({
+    reply: (method) => (method === 'ws.import_project_git_bundle' ? reply : { ok: true })
+  });
+  const wire = await connect('w1', { capabilities: [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] });
+  const outcome = await gateway.importProjectGitBundle('w1', bundleInput);
+  assert.deepEqual(outcome, { ok: true, value: reply });
+  const calls = wire.calls.filter((call) => call.method === 'ws.import_project_git_bundle');
+  assert.deepEqual(calls.map((call) => call.params), [bundleInput]);
+  await stop(wire);
+});
+
+test('项目 Git bundle 导入：聚合超时只报「结果未知」，不自动重放', async () => {
+  const { gateway, connect, stop } = await harness({
+    drop: (method) => method === 'ws.import_project_git_bundle',
+    gateway: { projectGitBundleTimeoutMs: 20 }
+  });
+  const wire = await connect('w1', { capabilities: [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] });
+  const outcome = await gateway.importProjectGitBundle('w1', bundleInput);
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) throw new Error('应当超时');
+  assert.equal(outcome.error.code, 'unavailable');
+  assert.match(outcome.error.message, /结果未知/);
+  assert.match(outcome.error.message, /不要自动重放/);
+  assert.equal(wire.calls.filter((call) => call.method === 'ws.import_project_git_bundle').length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(wire.calls.filter((call) => call.method === 'ws.import_project_git_bundle').length, 1, '超时后不应自动重发');
+  await stop(wire);
+});
+
+test('项目 Git bundle 导入：出站参数不合法（SHA / 字段 / ref 绑定）在发送前拒绝，一个字节都不发', async () => {
+  const { gateway, connect, stop } = await harness();
+  const wire = await connect('w1', { capabilities: [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] });
+  const outcome = await gateway.importProjectGitBundle('w1', { ...bundleInput, tipSha: 'C'.repeat(40) });
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.ok === false && outcome.error.code, 'invalid');
+  assert.equal(wire.calls.filter((call) => call.method === 'ws.import_project_git_bundle').length, 0, '参数不合法时不该发任何 RPC');
+  await stop(wire);
+});
+
+test('项目 Git bundle 导入：超过固定 8 MiB（base64 上限）在发送前拒绝，一个字节都不发', async () => {
+  const { gateway, connect, stop } = await harness();
+  const wire = await connect('w1', { capabilities: [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] });
+  const outcome = await gateway.importProjectGitBundle('w1', {
+    ...bundleInput,
+    bundleBase64: 'A'.repeat(PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES + 1)
+  });
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.ok === false && outcome.error.code, 'invalid');
+  assert.equal(wire.calls.filter((call) => call.method === 'ws.import_project_git_bundle').length, 0, '超大 bundle 不该被塞进 WebSocket');
+  await stop(wire);
+});
+
+test('项目 Git bundle 导入：响应自洽但 ref / tip 不是这次请求的，按「结果未知」处理且不重放', async () => {
+  const otherSha = 'e'.repeat(40);
+  const { gateway, connect, stop } = await harness({
+    reply: (method) =>
+      method === 'ws.import_project_git_bundle'
+        ? { ref: `refs/agent-hub/fetch/project-2/${otherSha}`, tipSha: otherSha, alreadyPresent: true }
+        : { ok: true }
+  });
+  const wire = await connect('w1', { capabilities: [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] });
+  const outcome = await gateway.importProjectGitBundle('w1', bundleInput);
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) throw new Error('应当报结果未知');
+  assert.equal(outcome.error.code, 'unavailable');
+  assert.match(outcome.error.message, /结果未知/);
+  assert.match(outcome.error.message, /不要自动重放/);
+  assert.equal(wire.calls.filter((call) => call.method === 'ws.import_project_git_bundle').length, 1);
+  await stop(wire);
+});
+
+test('项目 Git bundle 导入：响应不合协议（bad_result）同样报「结果未知」，不重放', async () => {
+  const { gateway, connect, stop } = await harness({
+    reply: (method) => (method === 'ws.import_project_git_bundle' ? { ref: bundleInput.ref, tipSha: 'not-a-sha' } : { ok: true })
+  });
+  const wire = await connect('w1', { capabilities: [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] });
+  const outcome = await gateway.importProjectGitBundle('w1', bundleInput);
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) throw new Error('应当报结果未知');
+  assert.equal(outcome.error.code, 'unavailable');
+  assert.match(outcome.error.message, /结果未知/);
+  assert.equal(wire.calls.filter((call) => call.method === 'ws.import_project_git_bundle').length, 1);
+  await stop(wire);
+});
+
+test('项目 Git bundle 导入：对端明确 unknown_method 时诚实报未实现，不回退也不重放', async () => {
+  const { gateway, connect, stop } = await harness({
+    reply: (method) =>
+      method === 'ws.import_project_git_bundle' ? { error: { code: 'unknown_method', message: 'unknown method' } } : { ok: true }
+  });
+  const wire = await connect('w1', { capabilities: [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] });
+  const outcome = await gateway.importProjectGitBundle('w1', bundleInput);
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.ok === false && outcome.error.code, 'not_implemented');
+  assert.equal(wire.calls.filter((call) => call.method === 'ws.import_project_git_bundle').length, 1);
+  await stop(wire);
+});
+
+test('项目 Git bundle 导入：等待期间断线按「结果未知」处理，不自动重放', async () => {
+  const { gateway, connect, stop } = await harness({ drop: (method) => method === 'ws.import_project_git_bundle' });
+  const wire = await connect('w1', { capabilities: [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] });
+  const pending = gateway.importProjectGitBundle('w1', bundleInput);
+  await until(() => wire.calls.some((call) => call.method === 'ws.import_project_git_bundle'));
+  wire.ws.close();
+  const outcome = await pending;
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) throw new Error('断线应当报结果未知');
+  assert.equal(outcome.error.code, 'unavailable');
+  assert.match(outcome.error.message, /结果未知/);
+  assert.equal(wire.calls.filter((call) => call.method === 'ws.import_project_git_bundle').length, 1);
+  await stop(wire);
+});
+
+/** 两条内存 RPC 通道直连：验证 Worker 侧 handler 的输入 / 单飞 / 错误翻译。 */
+function rpcPair(): { readonly a: RpcChannel; readonly b: RpcChannel } {
+  const ends: RpcChannel[] = [];
+  ends.push(createRpcChannel({ idPrefix: 'a', timeoutMs: 500, send: (frame) => (queueMicrotask(() => ends[1]?.receive(frame)), true) }));
+  ends.push(createRpcChannel({ idPrefix: 'b', timeoutMs: 500, send: (frame) => (queueMicrotask(() => ends[0]?.receive(frame)), true) }));
+  return { a: ends[0]!, b: ends[1]! };
+}
+
+test('项目 Git bundle 导入（Worker 侧）：注入的导入器收到精确六字段；单飞期间第二个请求 conflict，settle 后才释放', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const seen: ProjectGitBundleImportInput[] = [];
+  const importer: ProjectGitBundleImporter = {
+    async importBundle(input) {
+      seen.push({ ...input });
+      await gate;
+      return { ok: true, value: { ref: input.ref, tipSha: input.tipSha, alreadyPresent: false } };
+    }
+  };
+  const { a, b } = rpcPair();
+  serveProjectGitBundleImport(b, importer);
+
+  const first = a.request(wsImportProjectGitBundle, bundleInput);
+  await until(() => seen.length === 1);
+  const otherSha = 'd'.repeat(40);
+  const second = await a.request(wsImportProjectGitBundle, { ...bundleInput, tipSha: otherSha, ref: `refs/agent-hub/fetch/project-1/${otherSha}` });
+  assert.equal(second.ok, false);
+  assert.equal(second.ok === false && second.error.code, 'conflict');
+  assert.equal(seen.length, 1, '第二个请求不该进入导入器');
+
+  release();
+  assert.deepEqual(await first, { ok: true, value: { ref: bundleInput.ref, tipSha: bundleInput.tipSha, alreadyPresent: false } });
+  assert.deepEqual(seen[0], bundleInput);
+});
+
+test('项目 Git bundle 导入（Worker 侧）：导入器失败只翻译 code，文案固定中性（不回传导入器 message）', async () => {
+  const { a, b } = rpcPair();
+  serveProjectGitBundleImport(b, {
+    async importBundle() {
+      return { ok: false, error: { code: 'conflict', message: '工作目录 /secret/path 状态不允许导入' } };
+    }
+  });
+  assert.deepEqual(await a.request(wsImportProjectGitBundle, bundleInput), {
+    ok: false,
+    error: { code: 'conflict', message: '工作目录状态与项目 Git bundle 导入冲突，未创建 ref' }
+  });
+});
+
+test('项目 Git bundle 导入（Worker 侧）：导入器抛错也换成固定中性文案，不泄露原始信息', async () => {
+  const { a, b } = rpcPair();
+  serveProjectGitBundleImport(b, {
+    async importBundle() {
+      throw new Error('git failed at /home/u/repo: bad object deadbeef');
+    }
+  });
+  const outcome = await a.request(wsImportProjectGitBundle, bundleInput);
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) throw new Error('应当失败');
+  assert.equal(outcome.error.code, 'failed');
+  assert.equal(outcome.error.message, '项目 Git bundle 导入失败（结果未知；先核对 ref，不要自动重放）');
+  assert.equal(/deadbeef|\/home\/u\/repo/.test(outcome.error.message), false);
 });

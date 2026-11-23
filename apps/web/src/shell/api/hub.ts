@@ -151,6 +151,15 @@ export const api = {
       ...(workerId === null ? {} : { workerId })
     }),
   /**
+   * 新建项目抽屉里的单行检查：还没有项目 id，所以走草稿入口。
+   * 只读 —— 后端不会保存项目，也不会 clone；跟保存前的检查共用同一份 DTO。
+   */
+  checkDraftRepos: (repos: ProjectReposPatch['repos'], workerId: string | null = null) =>
+    post<ProjectReposCheckDto>('/api/repo-check', {
+      repos,
+      ...(workerId === null ? {} : { workerId })
+    }),
+  /**
    * 组合工作目录（docs/design/multi-repo.md §11.5）：一个任务在项目的每个仓库里各开一个 worktree，
    * agent 在总目录里干活。建组本身就 clone / 开分支，可能要几十秒；前端按「准备中」显示。
    */

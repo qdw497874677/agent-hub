@@ -241,6 +241,7 @@ export function DeriveDialog({
   const workspaceSummary = (() => {
     if (choice === null) return '还没选工作目录';
     if (choice.type === 'existing') return chosenWorkspace === null ? '已有的工作目录' : workspaceName(chosenWorkspace);
+    if (choice.type === 'new_empty') return '仅对话 · 空的临时目录';
     if (choice.type === 'new_temporary') return '新建临时工作目录';
     if (choice.type === 'new_worktree') return '新建隔离目录（新分支）';
     if (choice.type === 'new_group') return `新建组合工作目录（${choice.repoIds.length} 个仓库）`;
@@ -282,23 +283,22 @@ export function DeriveDialog({
       else if (!groupNew) {
         setPhase('preparing');
         // 进度只说这一趟真正在做的事（下载仓库 / 建目录 / 登记），别拿「下载」概括所有准备。
-        setBusy(
-          choice.type === 'new_temporary'
-            ? { title: '正在新建临时工作目录…', scope: place }
-            : choice.mode === 'link'
-              ? { title: '正在登记持久工作目录…', scope: `${place} · ${shortPath(choice.path ?? '')}` }
-              : canvas.project.repo
-                ? {
-                    title: '正在下载仓库…',
-                    scope: `${place} · ${repoName(canvas.project.repo.url)} → ${shortPath(choice.path ?? '')}`
-                  }
-                : { title: '正在新建持久工作目录…', scope: `${place} · ${shortPath(choice.path ?? '')}` }
-        );
+        if (choice.type === 'new_empty') setBusy({ title: '正在新建空的临时目录…', scope: place });
+        else if (choice.type === 'new_temporary') setBusy({ title: '正在新建临时工作目录…', scope: place });
+        else if (choice.mode === 'link') setBusy({ title: '正在登记持久工作目录…', scope: `${place} · ${shortPath(choice.path ?? '')}` });
+        else if (canvas.project.repo)
+          setBusy({
+            title: '正在下载仓库…',
+            scope: `${place} · ${repoName(canvas.project.repo.url)} → ${shortPath(choice.path ?? '')}`
+          });
+        else setBusy({ title: '正在新建持久工作目录…', scope: `${place} · ${shortPath(choice.path ?? '')}` });
         const made = await api.createWorkspace(
           projectId,
-          choice.type === 'new_temporary'
-            ? { workerId: machine, kind: 'temporary', taskId }
-            : longLivedRequest(machine, choice)
+          choice.type === 'new_empty'
+            ? { workerId: machine, kind: 'temporary', taskId, mode: 'empty' }
+            : choice.type === 'new_temporary'
+              ? { workerId: machine, kind: 'temporary', taskId }
+              : longLivedRequest(machine, choice)
         );
         workspaceId = made.id;
         // 建好了就记成「已有的」：重试时不再新建第二个
@@ -470,6 +470,7 @@ export function DeriveDialog({
             }}
             hubProtocols={hubProtocols}
             groups
+            chatOnly
           />
         </div>
         <div className="mb-3 max-md:order-6">

@@ -161,6 +161,64 @@ test('worktree 失败（同名分支已在别处检出等）：不登记，原�
   assert.equal((await w.deps.workspaces.byTask(w.task.id)).length, 0);
 });
 
+test('显式 empty：绑了仓库、有长期空间、也配了准备命令，仍只建空目录，不 clone / worktree / 跑准备', async () => {
+  const w = await world('https://example.com/demo.git');
+  const long = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'remote-1', plan: { mode: 'create' }, home: '/home/me' });
+  assert.ok(long.ok);
+  const configured = await setProjectWorktreeUseCase(w.deps, {
+    projectId: w.project.id,
+    worktree: { mode: 'isolated', setup: { command: 'pnpm i', waitForSetup: true, timeoutSeconds: 600 } }
+  });
+  assert.ok(configured.ok, configured.ok ? '' : configured.error.message);
+  const before = w.git.calls.length;
+  const made = await prepareTemporaryWorkspaceUseCase(w.deps, {
+    projectId: w.project.id,
+    taskId: w.task.id,
+    workerId: 'remote-1',
+    home: '/home/me',
+    mode: 'empty'
+  });
+  assert.ok(made.ok, made.ok ? '' : made.error.message);
+  assert.equal(made.value.kind, 'temporary');
+  assert.equal(made.value.source, 'created');
+  assert.equal(made.value.isGit, false);
+  assert.equal(made.value.branch, null);
+  assert.equal(made.value.baseWorkspaceId, null);
+  assert.equal(made.value.setup, null, '空目录不继承项目准备命令');
+  assert.equal(made.value.state, 'ready');
+  assert.equal(made.value.ownerTaskId, w.task.id, '仍归任务所有，走同一套清理生命周期');
+  assert.match(made.value.path, /^\/srv\/work\/agent-hub-workspaces\/\.tmp\/fix-login-[0-9a-f]{8,12}$/);
+  const after = w.git.calls.slice(before);
+  assert.equal(
+    after.some((call) => call.includes(':worktree:') || call.includes(':clone:') || call.includes(':fetch:') || call.includes(':run_setup:')),
+    false,
+    `不应该动 git：${after.join('\n')}`
+  );
+  const stored = await w.deps.tasks.byId(w.task.id);
+  assert.equal(stored?.branch, null, '空目录不回写任务分支');
+});
+
+test('empty 和 branch / base 同时给：冲突，不建目录', async () => {
+  const w = await world('https://example.com/demo.git');
+  for (const extra of [{ branch: 'feature' }, { base: 'origin/main' }]) {
+    const made = await prepareTemporaryWorkspaceUseCase(w.deps, {
+      projectId: w.project.id,
+      taskId: w.task.id,
+      workerId: 'remote-1',
+      home: '/home/me',
+      mode: 'empty',
+      ...extra
+    });
+    assert.equal(made.ok, false, JSON.stringify(extra));
+    if (!made.ok) {
+      assert.equal(made.error.code, 'conflict');
+      assert.match(made.error.message, /空工作空间/);
+    }
+  }
+  assert.equal((await w.deps.workspaces.byProject(w.project.id)).length, 0);
+  assert.equal(w.git.calls.some((call) => call.includes(':worktree:') || call.includes(':clone:')), false);
+});
+
 test('ADR 0026 唯一性：同团队同一目录复用并关联，上下级目录互相嵌套的拒绝', async () => {
   const w = await world();
   const other = await createProjectUseCase(w.deps, { name: 'other' });

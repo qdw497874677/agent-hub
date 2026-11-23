@@ -41,6 +41,8 @@ export interface ProjectReposCheckDto {
   workerId: string | null;
   workerLabel: string | null;
   unavailable: string | null;
+  /** 这次用的是哪份凭据；旧后端没有这个字段。 */
+  credentialSource?: 'draft' | 'saved' | 'worker' | null;
   results: {
     name: string;
     url: string;
@@ -48,5 +50,8 @@ export interface ProjectReposCheckDto {
     ok: boolean;
     defaultBranch: string | null;
     message: string | null;
+    /** 后端给的失败分类；旧后端没有，界面不猜原因。 */
+    failureKind?: 'authentication' | 'branch_missing' | 'unreachable' | 'credential_unavailable' | null;
+    credentialSource?: 'draft' | 'saved' | 'worker' | null;
   }[];
 }

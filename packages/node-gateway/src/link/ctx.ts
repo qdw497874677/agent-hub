@@ -13,6 +13,7 @@ import type {
   WorkerInventory
 } from '@agent-hub/domain';
 import type { WorkerFiles } from '../worker-files.ts';
+import type { ProjectGitBundleImporter } from '../project-git-bundle-import.ts';
 import type { WorkerAssets } from '../worker-assets.ts';
 import type { ProcessInfo } from '../process-scan.ts';
 import type { TerminalHost } from '../terminal.ts';
@@ -75,6 +76,12 @@ export interface WorkerLinkOptions {
    * 都过 WORKER_ROOTS 边界。不给就回「这台不支持」，附件也不落盘。
    */
   readonly files?: WorkerFiles;
+  /**
+   * 项目 Git 对象导入（docs/design/project-git-access.md 第二个增量）：显式注入才启用。
+   * 不注入 = hello 不声明 `project_git_bundle_import`、不注册 `ws.import_project_git_bundle`；
+   * hub 在发送前就拒绝，不回退到带凭据的 RPC。
+   */
+  readonly gitBundleImport?: ProjectGitBundleImporter;
   /** ADR 0027 D10：新建 worktree 的位置（WORKER_WORKTREES_DIR）；省略 = 仓库旁 `.worktrees/`。 */
   readonly worktreesDir?: string;
   /** 组合工作空间（docs/design/multi-repo.md §12.5）：容器与成员只能落在这下面（WORKER_GROUPS_DIR）。省略 = 不支持。 */

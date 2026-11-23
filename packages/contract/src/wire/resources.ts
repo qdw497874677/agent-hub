@@ -71,3 +71,10 @@ export const WORKER_CAPABILITY_NATIVE_BRANCH = 'native_branch';
  * 无条件声明；新 hub 见到才肯把投递队列的（带键）prompt 发给它，老 hub 会直接丢掉这个字符串。
  */
 export const WORKER_CAPABILITY_DURABLE_DELIVERY = 'durable_delivery';
+
+/**
+ * Worker 认项目 Git bundle 导入（`ws.import_project_git_bundle`，docs/design/project-git-access.md 第二个增量）。
+ * 只有显式注入 `ProjectGitBundleImporter` 的 Worker 才声明；它和凭据能力 `git` 是两回事：
+ * 老 / 未启用隔离的 Worker 不声明，hub 在发送前就明确拒绝，不回退到带凭据的 RPC。
+ */
+export const WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT = 'project_git_bundle_import';

@@ -129,17 +129,13 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       try {
         // 只读：ls-remote 不进本地目录、不 clone。20 秒够了，慢网络 / 私有仓库也别把保存请求挂住。
         const git = networkGit(tmpdir(), 20_000, binding.auth, url);
-        const head = await git.raw(['ls-remote', '--symref', url, 'HEAD']);
-        // 第一行形如 `ref: refs/heads/master\tHEAD`；没有 symref（裸提交号 / 老服务端）时按未知处理。
-        const defaultBranch = /^ref:\s+refs\/heads\/(.+?)\s+HEAD$/m.exec(head)?.[1]?.trim() ?? null;
-        const heads = await git.raw(['ls-remote', '--heads', url]);
-        const names = heads
-          .split('\n')
-          .slice(0, 500)
-          .map((line) => /^[0-9a-f]+\s+refs\/heads\/(.+)$/i.exec(line.trim())?.[1] ?? null)
-          .filter((name): name is string => name !== null);
         const wanted = branch?.trim() ?? '';
-        return { ok: true, value: { reachable: true, defaultBranch, branchExists: wanted === '' || names.includes(wanted), message: null } };
+        const ref = `refs/heads/${wanted}`;
+        const refs = await git.raw(['ls-remote', '--symref', '--', url, 'HEAD', ...(wanted === '' ? [] : [ref])]);
+        // 第一行形如 `ref: refs/heads/master\tHEAD`；没有 symref（裸提交号 / 老服务端）时按未知处理。
+        const defaultBranch = /^ref:\s+refs\/heads\/(.+?)\s+HEAD$/m.exec(refs)?.[1]?.trim() ?? null;
+        const branchExists = wanted === '' || refs.split('\n').some((line) => /^[0-9a-f]+\t(.+)$/i.exec(line)?.[1] === ref);
+        return { ok: true, value: { reachable: true, defaultBranch, branchExists, message: null } };
       } catch (error) {
         // 失败不抛：回 reachable=false，原因抹掉 URL 里的凭据；截到 2000 与 RPC 契约一致。
         const reason = gitMessage(error).slice(0, 2000);

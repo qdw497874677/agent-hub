@@ -328,3 +328,232 @@ test('POST /api/projects/:id/repos/check：credential 透传给 git，响应用�
   assert.equal(ssh.status, 200, JSON.stringify(ssh.body));
   assert.deepEqual(world.git.authCalls, []);
 });
+
+async function setupMember() {
+  const h = await setup();
+  await addTeamMember(h.accounts, 'member@b.co', PASSWORD);
+  const member = h.browser();
+  assert.equal((await member('/api/auth/login', post({ email: 'member@b.co', password: PASSWORD }))).status, 200);
+  return { ...h, member };
+}
+
+test('POST /api/repo-check：viewer 403；member 对只有本机的集群 403（worker.use），不落任何东西', async () => {
+  const { viewer, member, world, accounts } = await setupMember();
+
+  const denied = await viewer('/api/repo-check', post({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git' }] }));
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+
+  const localOnly = await member('/api/repo-check', post({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git' }] }));
+  assert.equal(localOnly.status, 403, JSON.stringify(localOnly.body));
+  assert.match(localOnly.body.error.message, /机器权限/);
+  assert.deepEqual(world.git.calls, []);
+  assert.deepEqual(world.git.authCalls, []);
+  assert.equal(accounts.auditRows.some((row) => row.target === 'draft'), false);
+});
+
+test('POST /api/repo-check：未登录 401，不触网', async () => {
+  const { world, browser } = await setup();
+  const anonymous = browser();
+  const res = await anonymous('/api/repo-check', post({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git' }] }));
+  assert.equal(res.status, 401, JSON.stringify(res.body));
+  assert.deepEqual(world.git.calls, []);
+});
+
+test('POST /api/repo-check：member 自动挑有权限的远端机器，不碰本机', async () => {
+  const { member, world } = await setupMember();
+  world.workers.push({ workerId: 'remote1', label: '远端一', origin: 'remote', state: 'online', capabilities: ['git'] });
+
+  const res = await member('/api/repo-check', post({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git', defaultBranch: 'main' }] }));
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.workerId, 'remote1');
+  assert.equal(res.body.workerLabel, '远端一');
+  assert.deepEqual(world.git.calls, ['remote1:check_repo:https://gitlab.test/me/api.git@main']);
+
+  // 明确点名本机：403，不静默换到远端
+  world.git.calls.length = 0;
+  const local = await member('/api/repo-check', post({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git' }], workerId: 'local' }));
+  assert.equal(local.status, 403, JSON.stringify(local.body));
+  assert.deepEqual(world.git.calls, []);
+});
+
+test('POST /api/projects/:id/repos/check：member 改自己项目可以，但用本机仍要 worker.use → 403', async () => {
+  const { member, world } = await setupMember();
+  const project = (await member('/api/projects', post({ name: 'member-own' }))).body;
+  assert.ok(project.id);
+
+  const res = await member(`/api/projects/${project.id}/repos/check`, post({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git' }], workerId: 'local' }));
+  assert.equal(res.status, 403, JSON.stringify(res.body));
+  assert.match(res.body.error.message, /本机 Worker/);
+  assert.deepEqual(world.git.calls, []);
+});
+
+test('POST /api/repo-check：显式草稿令牌能用，但只用于这次检查；不进密钥箱、不外泄', async () => {
+  const { david, world, accounts } = await setup();
+  const target = 'https://gitlab.test/me/api.git';
+
+  const res = await david('/api/repo-check', post({ repos: [{ name: 'api', url: target, defaultBranch: 'main', credential: 'glpat-draft' }] }));
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.results[0].credentialSource, 'draft');
+  assert.equal(res.body.results[0].ok, true);
+  assert.deepEqual(world.git.authCalls, [`local:check_repo:${target}:${authHeaderFor('glpat-draft', target).header}`]);
+  assert.deepEqual([...vaultRows(world.deps).keys()], [], '草稿检查不写密钥箱');
+  assert.equal(JSON.stringify(res.body).includes('glpat-draft'), false);
+  const draftAudit = accounts.auditRows.filter((row) => row.target === 'draft');
+  assert.ok(draftAudit.length > 0);
+  assert.equal(JSON.stringify(draftAudit).includes('glpat-draft'), false);
+});
+
+test('POST /api/repo-check：永远不读已保存令牌（只有草稿显式给的才算）', async () => {
+  const { david, world, accounts } = await setup();
+  const target = 'https://gitlab.test/me/api.git';
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const saved = await david(`/api/projects/${project.id}`, patch({ repos: [{ name: 'api', url: target, credential: 'glpat-saved' }] }));
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  world.git.authCalls.length = 0;
+
+  // 同一个 URL、甚至带上已存仓库的 id，也不能把项目里的令牌拿到草稿检查里用
+  const res = await david(
+    '/api/repo-check',
+    post({ repos: [{ id: saved.body.repos[0].id, name: 'api', url: target, defaultBranch: 'main' }] })
+  );
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.results[0].credentialSource, 'worker');
+  assert.deepEqual(world.git.authCalls, []);
+
+  const draft = accounts.auditRows.filter((row) => row.target === 'draft');
+  assert.ok(draft.length > 0);
+  assert.equal(JSON.stringify(draft).includes('glpat'), false);
+});
+
+test('POST /api/projects/:id/repos/check：已存令牌只认同项目 + 同仓库 id/URL；空串不回落', async () => {
+  const { david, world } = await setup();
+  const target = 'https://gitlab.test/me/api.git';
+  const other = 'https://gitlab.test/me/web.git';
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const saved = await david(`/api/projects/${project.id}`, patch({ repos: [{ name: 'api', url: target, credential: 'glpat-saved' }] }));
+  const repoId = saved.body.repos[0].id as string;
+  const check = (repo: Record<string, unknown>) => david(`/api/projects/${project.id}/repos/check`, post({ repos: [repo] }));
+
+  // 显式空串 = 明确不用令牌
+  world.git.authCalls.length = 0;
+  const cleared = await check({ id: repoId, name: 'api', url: target, defaultBranch: 'main', credential: '' });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.equal(cleared.body.results[0].credentialSource, 'worker');
+  assert.deepEqual(world.git.authCalls, []);
+
+  // id 对上、URL 对上 → 用已存的
+  world.git.authCalls.length = 0;
+  const exact = await check({ id: repoId, name: 'api', url: target, defaultBranch: 'main' });
+  assert.equal(exact.body.results[0].credentialSource, 'saved');
+  assert.deepEqual(world.git.authCalls, [`local:check_repo:${target}:${authHeaderFor('glpat-saved', target).header}`]);
+
+  // 给了 id 但地址变了 → 不用旧令牌（地址换了不能把凭据带过去）
+  world.git.authCalls.length = 0;
+  const moved = await check({ id: repoId, name: 'api', url: other, defaultBranch: 'main' });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(moved.body.results[0].credentialSource, 'worker');
+  assert.deepEqual(world.git.authCalls, []);
+
+  // id 对不上 → 即使 URL 一样也不用（没有 id 才按 URL 兼容旧客户端）
+  world.git.authCalls.length = 0;
+  const wrongId = await check({ id: 'repo_deadbeef', name: 'api', url: target, defaultBranch: 'main' });
+  assert.equal(wrongId.body.results[0].credentialSource, 'worker');
+  assert.deepEqual(world.git.authCalls, []);
+
+  // 不带 id：保持旧行为，按 URL 匹配
+  world.git.authCalls.length = 0;
+  const legacy = await check({ name: 'api', url: target, defaultBranch: 'main' });
+  assert.equal(legacy.body.results[0].credentialSource, 'saved');
+  assert.deepEqual(world.git.authCalls, [`local:check_repo:${target}:${authHeaderFor('glpat-saved', target).header}`]);
+});
+
+test('POST /api/projects/:id/repos/check：令牌标还在但密钥箱丢了 → 明确报 credential_unavailable，不静默改用机器凭据', async () => {
+  const { david, world } = await setup();
+  const target = 'https://gitlab.test/me/api.git';
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const saved = await david(`/api/projects/${project.id}`, patch({ repos: [{ name: 'api', url: target, credential: 'glpat-gone' }] }));
+  const repoId = saved.body.repos[0].id as string;
+  vaultRows(world.deps).delete(repoTokenKey(project.id, repoId));
+  world.git.calls.length = 0;
+  world.git.authCalls.length = 0;
+
+  const res = await david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ id: repoId, name: 'api', url: target, defaultBranch: 'main' }] }));
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.results[0].ok, false);
+  assert.equal(res.body.results[0].credentialSource, 'saved');
+  assert.equal(res.body.results[0].failureKind, 'credential_unavailable');
+  assert.match(res.body.results[0].message, /密钥箱/);
+  assert.deepEqual(world.git.calls, [], '不能退回机器凭据去「碰巧成功」');
+  assert.deepEqual(world.git.authCalls, []);
+});
+
+test('POST /api/projects/:id/repos/check：failureKind 保守分类，认证失败只给通用话术', async () => {
+  const { david, world } = await setup();
+  const target = 'https://gitlab.test/me/api.git';
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const check = (repo: Record<string, unknown>) => david(`/api/projects/${project.id}/repos/check`, post({ repos: [repo] }));
+
+  world.git.repoChecks.set(`${target}@main`, {
+    reachable: false,
+    defaultBranch: null,
+    branchExists: false,
+    message: "fatal: Authentication failed for 'https://x-access-token:ghp_leaked@gitlab.test/me/api.git/'"
+  });
+  const auth = await check({ name: 'api', url: target, defaultBranch: 'main', credential: 'glpat-live' });
+  assert.equal(auth.body.results[0].failureKind, 'authentication');
+  assert.equal(auth.body.results[0].credentialSource, 'draft');
+  assert.equal(auth.body.results[0].message, '认证失败：请检查仓库地址、令牌，或这台机器上的凭据');
+  assert.equal(JSON.stringify(auth.body).includes('ghp_leaked'), false);
+  assert.equal(JSON.stringify(auth.body).includes('glpat-live'), false);
+
+  world.git.repoChecks.set(`${target}@dev`, { reachable: true, defaultBranch: 'master', branchExists: false, message: null });
+  const missing = await check({ name: 'api', url: target, defaultBranch: 'dev' });
+  assert.equal(missing.body.results[0].failureKind, 'branch_missing');
+  assert.match(missing.body.results[0].message, /没有分支 dev/);
+  assert.equal(missing.body.results[0].credentialSource, 'worker');
+
+  world.git.repoChecks.set(`${target}@main`, { reachable: false, defaultBranch: null, branchExists: false, message: 'Could not resolve host: gitlab.test' });
+  const unreachable = await check({ name: 'api', url: target, defaultBranch: 'main' });
+  assert.equal(unreachable.body.results[0].failureKind, 'unreachable');
+  assert.match(unreachable.body.results[0].message, /Could not resolve host/);
+
+  // 模糊的 not found 不硬说是认证问题
+  world.git.repoChecks.set(`${target}@main`, { reachable: false, defaultBranch: null, branchExists: false, message: 'remote: Repository not found.' });
+  const vague = await check({ name: 'api', url: target, defaultBranch: 'main' });
+  assert.equal(vague.body.results[0].failureKind, 'unreachable');
+});
+
+test('仓库检查只接受安全的 HTTPS / SSH 地址（两个端点一致），保存仍走老规则', async () => {
+  const { david, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const bad = [
+    'http://gitlab.test/me/api.git',
+    'file:///srv/api.git',
+    '/srv/api.git',
+    'ext::sh -c echo',
+    'https://user:pass@gitlab.test/me/api.git',
+    'https://user@gitlab.test/me/api.git',
+    'ssh://git:pass@gitlab.test/me/api.git',
+    '-oProxyCommand=id',
+    'gitlab.test/me/api.git',
+    'https://gitlab.test/me/ api.git'
+  ];
+  for (const url of bad) {
+    const draft = await david('/api/repo-check', post({ repos: [{ name: 'api', url }] }));
+    assert.equal(draft.status, 400, `${url} -> ${JSON.stringify(draft.body)}`);
+    const saved = await david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ name: 'api', url }] }));
+    assert.equal(saved.status, 400, `${url} -> ${JSON.stringify(saved.body)}`);
+  }
+  assert.deepEqual(world.git.calls, []);
+
+  // 标准 scp / ssh:// 写法可以用
+  const scp = await david('/api/repo-check', post({ repos: [{ name: 'web', url: 'git@gitlab.test:me/web.git' }] }));
+  assert.equal(scp.status, 200, JSON.stringify(scp.body));
+  const ssh = await david('/api/repo-check', post({ repos: [{ name: 'web', url: 'ssh://git@gitlab.test:22/me/web.git' }] }));
+  assert.equal(ssh.status, 200, JSON.stringify(ssh.body));
+
+  // 保存接口保持原有宽松行为（http 仍可存；老项目不能被这次收紧弄坏）
+  const legacyPatch = (body: unknown) => ({ method: 'PATCH', body: JSON.stringify(body) });
+  const legacy = await david(`/api/projects/${project.id}`, legacyPatch({ repos: [{ name: 'old', url: 'http://gitlab.test/me/old.git' }] }));
+  assert.equal(legacy.status, 200, JSON.stringify(legacy.body));
+});

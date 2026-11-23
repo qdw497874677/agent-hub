@@ -1,5 +1,7 @@
 # agent 的 git / 分支工具（issue #216）
 
+空白 Worker 如何通过会话内工具使用项目级 HTTPS/SSH 凭证，见后续提案 [项目 Git 授权](project-git-access.md)。
+
 状态：设计中（2026-11-15）。来源：GitHub issue #216「MCP 缺口：agent 无法经 hub 提交/推送/建 PR，任务也不能绑定分支」。
 
 ## 1. 问题

@@ -62,7 +62,7 @@ export function installWorkspaces(app: OpenAPIHono<Env>, rt: V1Runtime): void {
             taskId: input.taskId ?? '',
             workerId: input.workerId ?? null,
             home: homedir(),
-            mode: input.mode === 'shared' ? 'shared' : 'isolated',
+            mode: input.mode === 'shared' || input.mode === 'empty' ? input.mode : 'isolated',
             actor
           })
         : await prepareLongLivedWorkspaceUseCase(rt.deps, {

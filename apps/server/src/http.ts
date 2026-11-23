@@ -9,6 +9,7 @@ import { installDelegationPublishRoutes, type DelegationPublishRouteOptions } fr
 import { installDelegationAcceptanceRoutes, type DelegationAcceptanceRouteOptions } from './workspace-delegation-acceptance.ts';
 import type { WorkspaceDelegationHandoffProjectionService } from './workspace-delegation-handoff.ts';
 import { installProjectReposRoutes } from './project-repos-routes.ts';
+import { installProjectGitProbeRoutes, type ProjectGitProbeRouteOptions } from './project-git-probe-routes.ts';
 import { projectDto } from './project-dto.ts';
 import { installPreviewRoutes, type PreviewApiOptions } from './preview-routes.ts';
 import { installServiceRoutes, type ServiceApiOptions } from './service-routes.ts';
@@ -200,6 +201,7 @@ import type { ApiTokenDeps } from '@agent-hub/domain';
 
 export interface AppOptions {
   readonly taskArchiveBlockers?: TaskArchiveBlockers;
+  readonly projectGitProbe?: ProjectGitProbeRouteOptions;
   readonly deps: Deps;
   readonly hub: StreamHub;
   readonly token: string | null;
@@ -366,6 +368,7 @@ export function createApp(options: AppOptions): Hono {
     ({ principalOf, subjectOf } = installAuth(app, options.auth));
     // 授权中间件要先于下面所有路由注册（Hono 按注册顺序走）。
     installAccess(app, deps, subjectOf);
+    if (options.projectGitProbe) installProjectGitProbeRoutes(app, options.projectGitProbe, subjectOf);
     if (options.admin) installAdmin(app, options.admin, principalOf);
     if (options.auth.team) installTeam(app, options.auth.team, principalOf);
     if (options.auth.accessAdmin) installAccessRoutes(app, options.auth.accessAdmin, subjectOf);
@@ -677,6 +680,7 @@ export function createApp(options: AppOptions): Hono {
             workerId: request.workerId,
             home: homedir(),
             // 显式「新建临时空间」= 要一个一次性目录：默认隔离；derive 自己按项目档位走。
+            // mode=empty 是调用方明确只要空目录，原样交给 domain（没选档位才落 isolated）。
             mode: request.mode ?? 'isolated',
             actor: subjectOf(c)
           })

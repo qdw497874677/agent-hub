@@ -6,14 +6,15 @@ import { api } from '../../shell/api.ts';
 import { useAccount } from '../../shell/auth.tsx';
 import { canAdminister } from '../../shell/account-context.ts';
 import { INPUT, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
+import { useWorkers } from '../../shell/workers.tsx';
 import {
   PROJECT_REPOS_MAX,
   REPO_TOKEN_MAX,
   clearCredential,
   emptyRepoRow,
   repoCheckBlocksSave,
-  repoCheckLine,
   repoCheckSummary,
+  repoProbeAffected,
   repoRowsProblem,
   repoRowsValue,
   primaryRepoIdFrom,
@@ -25,6 +26,7 @@ import {
   type ProjectRepoValue,
   type ReposCheck
 } from './project-repos.ts';
+import { RepoProbeHint, RepoProbeMachine, RepoProbeStatus, useRepoProbes } from './repo-probe.tsx';
 
 /**
  * 项目设置 · 代码与工作目录 · 「仓库」（docs/design/multi-repo.md §7）。
@@ -55,6 +57,19 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
   // 检查是异步的：回来时草稿可能又被改过，这时存的是旧值，宁可不存
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
+  // 单行检查：不保存、不创建、不 clone，只让选中的机器试着读一下
+  const workers = useWorkers();
+  const [probeWorkerId, setProbeWorkerId] = useState<string | null>(null);
+  // 保存前的整份检查在途时换了机器：晚到的结论不属于眼前这台机器，不能拿来挡保存/铺到行里
+  const probeWorkerIdRef = useRef(probeWorkerId);
+  probeWorkerIdRef.current = probeWorkerId;
+  const probes = useRepoProbes((repo, workerId) => api.checkProjectRepos(project.id, [repo], workerId));
+  const probesRef = useRef(probes);
+  probesRef.current = probes;
+  // 已保存清单被外面改掉时，行号可能对不上，旧结论一律不要
+  useEffect(() => {
+    probesRef.current.clear();
+  }, [stored, storedPrimary, project.id]);
 
   const save = useMutation({
     mutationFn: (input: { repos: readonly ProjectRepoValue[]; primaryRepoId: string | null }) =>
@@ -62,6 +77,8 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
     onSuccess: async () => {
       // 结论已经被用掉了：别让过期的检查结果继续挂在界面上
       setCheck(null);
+      setSkipped(null);
+      probesRef.current.clear();
       // 令牌已经存进去了：草稿里那份明文马上丢掉，别留在输入框里
       setRows((current) => current.map((row) => ({ ...row, credential: '', clearToken: false })));
       await Promise.all([
@@ -80,6 +97,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
   // 点「仍然保存」= 跳过检查，直接走原来的保存
   const forceSave = () => {
     resetCheck();
+    probes.clear();
     save.mutate({ repos: repoRowsValue(rows), primaryRepoId });
   };
   /**
@@ -92,16 +110,24 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
     resetCheck();
     const snapshot = repoRowsValue(rows);
     const serialized = JSON.stringify(snapshot);
+    const workerId = probeWorkerId;
     setChecking(true);
     let result: ReposCheck | null = null;
     try {
-      result = await api.checkProjectRepos(project.id, snapshot);
+      // 保存前的整份检查也听同一台机器的选择，别出现「明明选了 omarchy，却在别处查」
+      result = await api.checkProjectRepos(project.id, snapshot, workerId);
     } catch {
       result = null;
     }
     setChecking(false);
     // 等结果的这段时间里又改了草稿：这次检查说的不是眼前的值，留着下次再存
     if (JSON.stringify(repoRowsValue(rowsRef.current)) !== serialized) return;
+    // 换过机器：结论和眼前的选择对不上，别保存，也别把结论挂出来
+    if (probeWorkerIdRef.current !== workerId) return;
+    if (result !== null) {
+      // 保存前这轮整份检查也铺到每一行，别让行里还挂着更早的结论
+      probes.apply(result);
+    }
     if (result !== null && repoCheckBlocksSave(result)) {
       setCheck(result);
       return;
@@ -110,20 +136,38 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
     save.mutate({ repos: snapshot, primaryRepoId });
   };
 
+  /** 单行检查：只把这一行发给后端试读，不碰保存 / 创建 / clone。 */
+  const checkRow = (index: number) => {
+    const row = rows[index];
+    if (row === undefined) return;
+    if (checking || save.isPending) return;
+    const value = repoRowsValue([row])[0];
+    if (value === undefined) return;
+    if (save.isError || save.isSuccess) save.reset();
+    // 单行重查会推翻整份检查里的那一条：旧的总结 / 「仍然保存」不要再挂着
+    resetCheck();
+    probes.check(index, value, probeWorkerId);
+  };
+
   const update = (index: number, patch: Partial<ProjectRepoRow>) => {
     // 一改就清掉上一次保存的失败 / 成功提示：那是针对旧值的结论
     if (save.isError || save.isSuccess) save.reset();
     resetCheck();
+    // 地址 / 分支 / 令牌一变，行的检查结论就不再是眼前这行的了（请求在路上也一样）
+    if (repoProbeAffected(patch)) probes.invalidate(index);
     setRows((current) => current.map((row, at) => (at === index ? { ...row, ...patch } : row)));
   };
   const add = () => {
     if (save.isError || save.isSuccess) save.reset();
     resetCheck();
+    probes.clear();
     setRows((current) => (current.length >= PROJECT_REPOS_MAX ? current : [...current, emptyRepoRow()]));
   };
   const remove = (index: number) => {
     if (save.isError || save.isSuccess) save.reset();
     resetCheck();
+    // 删掉中间一行会让后面的行号前移，旧结论按行号对不上，全部清掉
+    probes.clear();
     setRows((current) => current.filter((_, at) => at !== index));
   };
   const error = problem ?? save.error?.message ?? null;
@@ -140,6 +184,23 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
 
       {editable ? (
         <>
+          {rows.length > 0 ? (
+            <>
+              <RepoProbeMachine
+                workers={workers.list}
+                value={probeWorkerId}
+                onChange={(id) => {
+                  // 换机器 = 之前的结论不再代表这台机器；在途的保存前检查也立刻作废
+                  probeWorkerIdRef.current = id;
+                  setProbeWorkerId(id);
+                  probes.clear();
+                }}
+              />
+              <div className="mb-2">
+                <RepoProbeHint />
+              </div>
+            </>
+          ) : null}
           <div className="space-y-2">
             {rows.length === 0 ? (
               <p className="text-meta text-tertiary" data-testid="repos-empty">
@@ -148,9 +209,8 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
             ) : null}
             {rows.map((row, index) => {
               const rowProblem = repoRowProblem(row, rows);
-              // 检查失败的仓库把后端的话原样贴在行下面（成功的不打扰）
-              const checked = check?.results[index];
-              const checkError = checked !== undefined && !checked.ok ? (repoCheckLine(checked) ?? '仓库检查没通过') : null;
+              const probe = probes.get(index);
+              const rowChecking = probe?.state === 'checking';
               return (
                 <div
                   key={row.id === '' ? `new-${index}` : row.id}
@@ -181,18 +241,31 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
                         </button>
                       ) : null}
                     </span>
-                    <button
-                      type="button"
-                      className="text-meta text-tertiary hover:text-rust disabled:opacity-40"
-                      data-testid="repo-remove"
-                      title="从清单里删掉这个仓库"
-                      onClick={() => {
-                        if (primaryRepoId !== null && primaryRepoId === row.id) setPrimaryRepoId(null);
-                        remove(index);
-                      }}
-                    >
-                      删除
-                    </button>
+                    <span className="flex shrink-0 items-center gap-3">
+                      <button
+                        type="button"
+                        className="text-meta text-secondary hover:text-primary disabled:opacity-40"
+                        data-testid="repo-check"
+                        aria-label={`检查仓库 ${index + 1}`}
+                        title="在这台机器上试着读一下；不保存、不创建、不 clone"
+                        disabled={rowProblem !== null || rowChecking || checking || save.isPending}
+                        onClick={() => checkRow(index)}
+                      >
+                        {rowChecking ? '检查中…' : '检查'}
+                      </button>
+                      <button
+                        type="button"
+                        className="text-meta text-tertiary hover:text-rust disabled:opacity-40"
+                        data-testid="repo-remove"
+                        title="从清单里删掉这个仓库"
+                        onClick={() => {
+                          if (primaryRepoId !== null && primaryRepoId === row.id) setPrimaryRepoId(null);
+                          remove(index);
+                        }}
+                      >
+                        删除
+                      </button>
+                    </span>
                   </div>
                   <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,0.8fr)]">
                     <label className="block text-meta text-secondary">
@@ -266,11 +339,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
                     </p>
                   ) : null}
                   {rowProblem !== null ? <p className="mt-1 text-meta text-rust">{rowProblem}</p> : null}
-                  {checkError !== null ? (
-                    <p className="mt-1 text-meta text-rust" data-testid="repo-check-error">
-                      {checkError}
-                    </p>
-                  ) : null}
+                  <RepoProbeStatus probe={probe} testId="repo-check-result" />
                 </div>
               );
             })}

@@ -20,6 +20,7 @@ import {
   wsPublishRef,
   wsPrepareDelegationWorktree,
   wsImportCommit,
+  wsImportProjectGitBundle,
   wsGh,
   wsStatus,
   filesChanged,
@@ -42,6 +43,7 @@ import { createGitWorkspace, createGroupWorktrees, type GitWorkspaceOptions } fr
 import { createGroupDir } from './group-dir.ts';
 import { createWorkspaceBrowser } from './workspace-browser.ts';
 import type { WorkerFiles } from './worker-files.ts';
+import type { ProjectGitBundleImporter } from './project-git-bundle-import.ts';
 
 /**
  * Worker 侧文件操作适配器：RPC 端口上的 fs.* 方法 → WorkerFiles（WORKER_ROOTS 边界在它里面）。
@@ -199,5 +201,48 @@ function serveWorkspaceBrowser(port: RpcPort, files: WorkerFiles | undefined): v
     watches.get(watchId)?.();
     watches.delete(watchId);
     return {};
+  });
+}
+
+/**
+ * 项目 Git bundle 导入（docs/design/project-git-access.md 第二个增量）：只有显式注入的导入器才注册，
+ * 不注入的 Worker 连 handler 都没有（hub 侧靠 hello 能力在发送前拒绝）。
+ *
+ * 同一时刻只跑一个导入：它要写工作目录的 object store 与一个专用 ref，并发没有收益、失败也更难解释。
+ * 只有导入器 settle 后才释放（取消 / 超时也不提前放行）。导入器自己已经失败关闭校验路径、源地址、
+ * base64 / SHA 与 ref；这里只做排队和错误 code 翻译，响应文案固定且中性（不外传导入器 message / 抛错原文）。
+ */
+export function serveProjectGitBundleImport(port: RpcPort, importer: ProjectGitBundleImporter): void {
+  let busy = false;
+  port.handle(wsImportProjectGitBundle, async (input) => {
+    if (busy) throw new RpcFailure('conflict', '这台 Worker 正在导入另一个项目 Git bundle，稍后再试');
+    busy = true;
+    try {
+      const outcome = await importer.importBundle(input);
+      if (!outcome.ok) {
+        // 只翻译 code，不回传导入器的 message：响应里不能出现路径 / Git 原始输出等上下文。
+        switch (outcome.error.code) {
+          case 'invalid':
+            throw new RpcFailure('invalid', '项目 Git bundle 导入参数或对象校验未通过，未创建 ref');
+          case 'conflict':
+            throw new RpcFailure('conflict', '工作目录状态与项目 Git bundle 导入冲突，未创建 ref');
+          case 'forbidden':
+            throw new RpcFailure('forbidden', '项目 Git bundle 导入被拒绝');
+          case 'not_found':
+            throw new RpcFailure('not_found', '项目 Git bundle 导入的目标不存在');
+          case 'not_implemented':
+            throw new RpcFailure('unsupported', '这台 Worker 未实现项目 Git bundle 导入');
+          default:
+            throw new RpcFailure('failed', '项目 Git bundle 导入失败（结果未知；先核对 ref，不要自动重放）');
+        }
+      }
+      return outcome.value;
+    } catch (error) {
+      // 导入器抛出的原始错误也不外泄：固定中性文案，避免通道把底层信息原样带到 hub。
+      if (error instanceof RpcFailure) throw error;
+      throw new RpcFailure('failed', '项目 Git bundle 导入失败（结果未知；先核对 ref，不要自动重放）');
+    } finally {
+      busy = false;
+    }
   });
 }

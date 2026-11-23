@@ -5,6 +5,7 @@ import {
   WORKER_CAPABILITY_DURABLE_DELIVERY,
   WORKER_CAPABILITY_METRICS,
   WORKER_CAPABILITY_NATIVE_BRANCH,
+  WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT,
   createRpcChannel,
   linkEcho,
   serverToWorkerSchema
@@ -13,6 +14,7 @@ import { RECONNECT_POLICY, commandCapability, reconnectDelay, workerWatchdogMs }
 import { agentToDto } from '@agent-hub/contract/codec';
 import { sameReadiness } from '../harness-registry.ts';
 import { serveWorkerFiles } from '../worker-fs-rpc.ts';
+import { serveProjectGitBundleImport } from '../worker-fs-rpc.ts';
 import { denial, type LinkCtx, type TransportHandlers } from './ctx.ts';
 
 export interface Transport {
@@ -148,6 +150,8 @@ export function installTransport(ctx: LinkCtx): Transport {
     ...(options.worktreesDir ? { worktreesDir: options.worktreesDir } : {}),
     ...(options.groupsDir ? { groupsDir: options.groupsDir } : {})
   });
+  // opt-in 的项目 Git 对象导入：不注入导入器就不注册 handler，也不在 hello 里声明能力。
+  if (options.gitBundleImport) serveProjectGitBundleImport(channel, options.gitBundleImport);
   channel.handle(linkEcho, async ({ at }) => ({ at }));
 
   const send = (frame: WorkerToServer): void => {
@@ -252,7 +256,12 @@ export function installTransport(ctx: LinkCtx): Transport {
           sessions: [...ctx.sessions.keys()],
           ...(options.build ? { build: options.build } : {}),
           // durable_delivery 无条件声明：本版 Worker 一定认带 deliveryId 的 prompt。
-          capabilities: [...(options.resources ? [WORKER_CAPABILITY_METRICS] : []), WORKER_CAPABILITY_DURABLE_DELIVERY],
+          // 项目 Git 导入只在显式注入导入器时声明：老 hub 不认识会丢掉这个字符串，不会误发。
+          capabilities: [
+            ...(options.resources ? [WORKER_CAPABILITY_METRICS] : []),
+            ...(options.gitBundleImport ? [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] : []),
+            WORKER_CAPABILITY_DURABLE_DELIVERY
+          ],
           ...(ctx.droppedReported > 0 ? { dropped: ctx.droppedReported } : {}),
           ...(trial ? { update: { id: trial.id, phase: 'trial' as const, inventory: trial.inventory } } : {})
         } satisfies WorkerToServer)

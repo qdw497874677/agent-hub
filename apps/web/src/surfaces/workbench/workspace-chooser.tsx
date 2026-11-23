@@ -14,13 +14,15 @@ import { useNarrow } from '../../shell/device.ts';
 /**
  * 运行面板的核心（docs/design/workspaces.md §9.3）：「在哪台机器、哪个工作目录干活？」
  * - 第一行选机器（只有一台在线就直接用它）；
- * - 下面单选：已有的工作目录 / 新建持久工作目录 / 新建临时工作目录。
+ * - 下面单选：已有的工作目录 / 仅对话 / 新建持久工作目录 / 新建临时工作目录。
  * - 不预选：持久和临时之间没有默认，也不记上次；没选之前「开始」是灰的。
  */
 export type WorkspaceChoice =
   | { readonly type: 'existing'; readonly workspaceId: string }
   | { readonly type: 'new_long_lived'; readonly mode: 'create' | 'link'; readonly path: string | null }
   | { readonly type: 'new_temporary' }
+  /** 只聊天：开一个空的临时目录，不下载仓库、不跑准备命令。 */
+  | { readonly type: 'new_empty' }
   /** 按项目配置在这台机器上现建一个隔离 worktree（新分支），准备命令跑完才起 agent。 */
   | { readonly type: 'new_worktree' }
   /** 多仓库项目：每个仓库各开一个 worktree，agent 在总目录里工作（docs/design/multi-repo.md §11.5）。 */
@@ -82,7 +84,8 @@ export function WorkspaceChooser({
   onChoice,
   hubProtocols = [],
   groups = false,
-  longLivedOnly = false
+  longLivedOnly = false,
+  chatOnly = false
 }: {
   canvas: CanvasDto;
   taskId: string;
@@ -105,6 +108,11 @@ export function WorkspaceChooser({
    * 不是灰掉禁用，是本来就只该有这一种。
    */
   longLivedOnly?: boolean;
+  /**
+   * 显示「仅对话」：给这条任务开一个空的临时目录，不下载仓库、不跑准备命令。
+   * 只有派生新会话时给；「换个地方继续」还是原来那几种，免得悄悄换掉会话的目录类型。
+   */
+  chatOnly?: boolean;
 }) {
   const views = useWorkspaceViews(canvas.project.id);
   // 「这台机器没有 git 基座」时那个动作按钮：加一就让下面的关联面板展开并滚进视野
@@ -313,6 +321,13 @@ export function WorkspaceChooser({
                 </button>
               );
             })}
+            {chatOnly && !longLivedOnly ? (
+              <NewEmpty
+                machineName={machineName}
+                selected={choice?.type === 'new_empty'}
+                onSelect={() => onChoice({ type: 'new_empty' })}
+              />
+            ) : null}
             {longLivedOnly ? null : (
             <NewTemporary
               canvas={canvas}
@@ -495,6 +510,43 @@ function NewLongLived({
 export function branchPreview(title: string): string {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32).replace(/-+$/, '');
   return `agent-hub/${slug === '' ? 'task' : slug}-…`;
+}
+
+/**
+ * 仅对话：这条任务不需要仓库里的代码，只要一个干净的临时目录聊天。
+ * 和「新建临时工作目录」的区别是它绝不碰仓库——不下载、不开 worktree、不跑准备命令。
+ */
+function NewEmpty({
+  machineName,
+  selected,
+  onSelect
+}: {
+  machineName: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      data-testid="ws-new-empty"
+      className={rowClass(selected)}
+      onClick={onSelect}
+    >
+      <Radio on={selected} />
+      <span className="min-w-0 flex-1">
+        <span className="block text-body text-primary">仅对话</span>
+        <span className="mt-0.5 block text-meta text-secondary">空的临时目录，不下载仓库、不运行准备命令</span>
+        {selected ? (
+          <span className="mt-1 block text-meta text-tertiary">
+            在 {machineName} 的 <span className="font-mono">~/agent-hub-workspaces/.tmp/</span> 下新建
+            <span className="block">有未保存的改动会保留并提醒你</span>
+          </span>
+        ) : null}
+      </span>
+    </button>
+  );
 }
 
 function NewTemporary({

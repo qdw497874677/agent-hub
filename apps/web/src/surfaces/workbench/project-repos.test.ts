@@ -7,9 +7,12 @@ import {
   clearCredential,
   emptyRepoRow,
   repoCheckBlocksSave,
+  repoCheckFailureLabel,
   repoCheckLine,
   repoCheckSummary,
   repoCredentialPatch,
+  repoProbeAffected,
+  repoProbeText,
   repoRowProblem,
   repoRowsProblem,
   repoRowsFrom,
@@ -266,4 +269,44 @@ test('访问令牌 · 超过 512 个字符先拦下来（后端 1..512）', () =
   const tooLong = 'x'.repeat(REPO_TOKEN_MAX + 1);
   assert.equal(repoRowProblem(row({ credential: tooLong }), [row({ credential: tooLong })]), `访问令牌最多 ${REPO_TOKEN_MAX} 个字符`);
   assert.equal(repoRowProblem(row({ credential: 'x'.repeat(REPO_TOKEN_MAX) }), [row({ credential: 'x'.repeat(REPO_TOKEN_MAX) })]), null);
+});
+
+test('单行检查 · 结论先说机器，再说仓库；成功带默认分支，失败贴后端原话、不重复分类', () => {
+  const ok = checked({ branch: 'dev', credentialSource: 'saved' });
+  assert.equal(repoProbeText(ok, 'omarchy'), '在 omarchy 上，可读取，分支 dev 存在 · 这次用的是已保存的令牌');
+  assert.equal(repoProbeText(checked({ branch: null }), 'omarchy'), '在 omarchy 上，可读取，默认分支是 master');
+  // 后端把凭据来源放在整份检查上而不是每条上，也要显示
+  assert.equal(
+    repoProbeText(checked({ branch: null }), 'omarchy', 'worker'),
+    '在 omarchy 上，可读取，默认分支是 master · 这次没带令牌，交给机器上的 git 配置'
+  );
+  assert.equal(
+    repoProbeText(checked({ ok: false, failureKind: 'branch_missing', branch: 'nope', message: '仓库里没有分支 nope，默认分支是 master' }), 'omarchy'),
+    '在 omarchy 上，仓库里没有分支 nope，默认分支是 master'
+  );
+  assert.equal(
+    repoProbeText(
+      checked({ ok: false, failureKind: 'authentication', message: '认证失败：请检查仓库地址、令牌，或这台机器上的凭据' }),
+      'omarchy'
+    ),
+    '在 omarchy 上，认证失败：请检查仓库地址、令牌，或这台机器上的凭据'
+  );
+  assert.equal(
+    repoProbeText(checked({ ok: false, failureKind: 'unreachable', message: '连不上这个仓库' }), 'omarchy'),
+    '在 omarchy 上，连不上这个仓库'
+  );
+  // 后端只给分类、没给话术时才用分类兜底
+  assert.equal(repoProbeText(checked({ ok: false, failureKind: 'authentication', message: null }), 'omarchy'), '在 omarchy 上，认证没通过');
+  // 旧后端没有 failureKind：只贴原话，不自己编「令牌失效」
+  assert.equal(repoProbeText(checked({ ok: false, message: '远端没有 main 分支' }), null), '远端没有 main 分支');
+  assert.equal(repoCheckFailureLabel('unreachable'), '连不上仓库');
+  assert.equal(repoCheckFailureLabel(undefined), null);
+});
+
+test('单行检查 · 只有地址 / 分支 / 令牌变化会让结论过期，改名字不会', () => {
+  assert.equal(repoProbeAffected({ name: 'web' }), false);
+  assert.equal(repoProbeAffected({ url: 'https://x/y.git' }), true);
+  assert.equal(repoProbeAffected({ defaultBranch: 'dev' }), true);
+  assert.equal(repoProbeAffected({ credential: 'x' }), true);
+  assert.equal(repoProbeAffected(clearCredential(row({ hasToken: true }))), true);
 });

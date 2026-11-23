@@ -629,6 +629,25 @@ test('开会话：workspaceMode=isolated 一定新开临时空间，不静默复
   assert.equal(made?.kind, 'temporary');
 });
 
+test('创建工作空间：显式 empty 在绑定仓库的项目里也不调用 Git，可用于开会话', async () => {
+  const { david, mint, api, world } = await setup();
+  const call = api((await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token);
+  const project = (await call('/projects', post({ name: 'p', repoUrl: 'https://example.com/private.git' }))).body;
+  const task = (await call('/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body;
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online', roots: ['/srv/work'] } as never);
+  const gitCalls = world.git.calls.length;
+
+  const made = await call(`/projects/${project.id}/workspaces`, post({ kind: 'temporary', mode: 'empty', taskId: task.id, workerId: 'w1' }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.equal(made.body.kind, 'temporary');
+  assert.equal(made.body.isGit, false);
+  assert.equal(made.body.ownerTaskId, task.id);
+  const session = await call('/sessions', post({ taskId: task.id, agentId: 'fake', model: 'm1', workspaceId: made.body.id }));
+  assert.equal(session.status, 201, JSON.stringify(session.body));
+  assert.equal(session.body.workspaceId, made.body.id);
+  assert.equal(world.git.calls.length, gitCalls);
+});
+
 test('同步仓库：项目绑定多个仓库时拒绝补克隆同级目录，引导使用组合工作空间', async () => {
   const { david, mint, api, world } = await setup();
   const call = api((await mint(david, ['projects:read', 'projects:write'])).token);

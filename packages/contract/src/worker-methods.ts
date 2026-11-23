@@ -295,6 +295,49 @@ export const wsImportCommit = method(
   })
 );
 
+/**
+ * 项目 Git 对象交付（docs/design/project-git-access.md「第二个增量」）：Hub 在隔离执行器里抓取登记仓库，
+ * 把 bundle 交给 Worker，由 Worker 在空暂存仓库验证后只建一个 `refs/agent-hub/fetch/<projectId>/<sha>`。
+ *
+ * 和 `ws.import_commit` 的区别：这里是**不带凭据**的对象导入，且必须显式 opt-in——
+ * hub 侧先看 live hello 能力，老 / 未启用隔离的 Worker 直接拒绝，不回退到带凭据的 RPC。
+ *
+ * 协议硬上限固定 8 MiB 原始对象（base64 上限 11,184,812 字节），没有调用方可传的 maxBundleBytes /
+ * 凭据 / 额外字段：`.strict()` 直接拒掉。ref 末尾 SHA 必须等于 tipSha，Worker 端再按同一规则失败关闭。
+ */
+export const PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES = 11_184_812;
+
+export const projectGitBundleRefPattern = /^refs\/agent-hub\/fetch\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})\/([0-9a-f]{40})$/;
+
+export const wsImportProjectGitBundle = method(
+  'ws.import_project_git_bundle', 'git',
+  z
+    .object({
+      path: z.string().min(1).max(4096),
+      expectedUrl: z.string().min(1).max(2000),
+      /** 原始对象 ≤ 8 MiB；base64 字符串本身不得超过固定上限。 */
+      bundleBase64: z.string().min(1).max(PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES).regex(/^[A-Za-z0-9+/]*={0,2}$/, 'bundleBase64 必须是标准 base64'),
+      bundleSha256: z.string().regex(/^[0-9a-f]{64}$/),
+      tipSha: z.string().regex(/^[0-9a-f]{40}$/),
+      ref: z.string().min(1).max(1024).regex(projectGitBundleRefPattern, 'ref 必须是 refs/agent-hub/fetch/<projectId>/<sha>')
+    })
+    .strict()
+    .refine((value) => projectGitBundleRefPattern.exec(value.ref)?.[2] === value.tipSha, {
+      message: 'ref 末尾的 SHA 必须等于 tipSha',
+      path: ['ref']
+    }),
+  z
+    .object({
+      ref: z.string().regex(projectGitBundleRefPattern),
+      tipSha: z.string().regex(/^[0-9a-f]{40}$/),
+      alreadyPresent: z.boolean()
+    })
+    .refine((value) => projectGitBundleRefPattern.exec(value.ref)?.[2] === value.tipSha, {
+      message: 'ref 末尾的 SHA 必须等于 tipSha',
+      path: ['ref']
+    })
+);
+
 export const wsGh = method(
   'ws.gh', 'git.remote',
   z.object({

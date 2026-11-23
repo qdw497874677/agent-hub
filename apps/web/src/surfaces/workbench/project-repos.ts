@@ -203,6 +203,9 @@ export function reposDirty(draft: readonly ProjectRepoRow[], saved: readonly Pro
 /**
  * 保存前的一次仓库检查（POST /api/projects/:id/repos/check）里一项的结果。
  * 形状跟后端约定好的字段一一对应；`message` 已经是能直接给用户看的话。
+ *
+ * `failureKind` / `credentialSource` 是新版后端给的提示。旧后端不带这两个字段，
+ * 所以界面只在字段存在时使用它，绝不从 `message` 反推「令牌失效」。
  */
 export interface RepoCheckResult {
   readonly name: string;
@@ -211,7 +214,15 @@ export interface RepoCheckResult {
   readonly ok: boolean;
   readonly defaultBranch: string | null;
   readonly message: string | null;
+  readonly failureKind?: RepoCheckFailureKind | null;
+  readonly credentialSource?: RepoCheckCredentialSource | null;
 }
+
+/** 后端对失败原因的分类；未知值按没有分类处理（只展示 message）。 */
+export type RepoCheckFailureKind = 'authentication' | 'branch_missing' | 'unreachable' | 'credential_unavailable';
+
+/** 这次检查实际用了哪份凭据：草稿里填的 / 服务端已存的 / 机器自己的 git 凭据。 */
+export type RepoCheckCredentialSource = 'draft' | 'saved' | 'worker';
 
 /** 整份检查结果。`unavailable` 非空 = 没检查成（比如没有在线的机器），不代表仓库有问题。 */
 export interface ReposCheck {
@@ -219,6 +230,8 @@ export interface ReposCheck {
   readonly workerLabel: string | null;
   readonly unavailable: string | null;
   readonly results: readonly RepoCheckResult[];
+  /** 整份结果共用的凭据来源；单项里的字段优先。 */
+  readonly credentialSource?: RepoCheckCredentialSource | null;
 }
 
 /**
@@ -247,6 +260,80 @@ export function repoCheckSummary(check: ReposCheck): string | null {
 export function repoCheckBlocksSave(check: ReposCheck): boolean {
   if (check.unavailable !== null && check.unavailable !== '') return false;
   return check.results.some((result) => !result.ok);
+}
+
+/** 后端的失败分类 → 一句人话；不认识的分类返回 null（不猜原因）。 */
+export function repoCheckFailureLabel(kind: RepoCheckFailureKind | null | undefined): string | null {
+  switch (kind) {
+    case 'authentication':
+      return '认证没通过';
+    case 'branch_missing':
+      return '分支不存在';
+    case 'unreachable':
+      return '连不上仓库';
+    case 'credential_unavailable':
+      return '没有可用凭据';
+    default:
+      return null;
+  }
+}
+
+/** 服务端告诉我们这次用的是哪份凭据；旧后端没这个字段就什么都不说。 */
+export function repoCredentialSourceNote(source: RepoCheckCredentialSource | null | undefined): string | null {
+  switch (source) {
+    case 'draft':
+      return '这次用的是填写的令牌';
+    case 'saved':
+      return '这次用的是已保存的令牌';
+    case 'worker':
+      // 后端只说明「没选草稿/已保存令牌，交给机器」；不替它断言机器上一定配了凭据
+      return '这次没带令牌，交给机器上的 git 配置';
+    default:
+      return null;
+  }
+}
+
+/**
+ * 单行检查 → 一行结论。开头先说清是哪台机器查的：同一个仓库换台机器结果可能不同。
+ *
+ * 成功时的「可读取」只代表这次请求读到了仓库；公开仓库不校验令牌，
+ * 所以界面另外放一句常驻提示，别把成功读成「令牌一定有效」。
+ * 失败原因优先贴后端给的话（认证失败时后端会换成固定话术）；后端只给了分类、
+ * 没给 message 时才用分类兜底，不自己推断「令牌无效」。
+ */
+export function repoProbeText(
+  result: RepoCheckResult,
+  workerLabel: string | null,
+  fallbackSource: RepoCheckCredentialSource | null = null
+): string {
+  const machine = workerLabel?.trim() ?? '';
+  const where = machine === '' ? '' : `在 ${machine} 上，`;
+  const message = result.message?.trim() ?? '';
+  let body: string;
+  if (result.ok) {
+    const branch = result.branch?.trim() ?? '';
+    body =
+      branch === ''
+        ? `可读取，默认分支是 ${result.defaultBranch ?? '未知'}`
+        : `可读取，分支 ${branch} 存在`;
+  } else if (result.failureKind === 'branch_missing') {
+    body = message === '' ? '仓库里没有这个分支' : message;
+  } else {
+    // 后端的 message 已经是给人看的（认证失败还会刻意换成固定话术），不要再套一层分类，
+    // 否则会出现「认证没通过：认证失败：…」这种重复。
+    const label = repoCheckFailureLabel(result.failureKind);
+    body = message !== '' ? message : (label ?? '仓库检查没通过');
+  }
+  const source = repoCredentialSourceNote(result.credentialSource ?? fallbackSource);
+  return `${where}${body}${source === null ? '' : ` · ${source}`}`;
+}
+
+/**
+ * 改这一行的哪些字段会让上一次检查结论过期。
+ * 只改仓库名不影响「能不能读到」；地址 / 分支 / 令牌（含清除）都必须重新查。
+ */
+export function repoProbeAffected(patch: Partial<ProjectRepoRow>): boolean {
+  return 'url' in patch || 'defaultBranch' in patch || 'credential' in patch || 'clearToken' in patch;
 }
 
 /** 契约里的仓库形状 → 草稿行（项目列表拿到的就是完整的 ProjectDto）。 */

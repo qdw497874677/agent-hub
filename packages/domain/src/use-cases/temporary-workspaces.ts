@@ -67,8 +67,12 @@ export interface PrepareTemporaryCommand {
   readonly branch?: string | null;
   /** 新分支从哪儿长（换个地方继续到同一台机器：从刚推送的 WIP 分支长）。 */
   readonly base?: string | null;
-  /** 档位：shared = 复用项目的长期空间（不建 worktree）；isolated = 新开 worktree。缺省按 project.worktree?.mode ?? 'shared'。 */
-  readonly mode?: 'shared' | 'isolated';
+  /**
+   * 档位：shared = 复用项目的长期空间（不建 worktree）；isolated = 新开 worktree；
+   * empty = 显式要一个空的临时目录（纯聊天，不碰仓库、不跑准备命令）。
+   * 缺省按 project.worktree?.mode ?? 'shared'。
+   */
+  readonly mode?: 'shared' | 'isolated' | 'empty';
   readonly actor?: Subject | null;
   /** 预分配的会话 id，写入分支名以免和别的会话撞 checkout。 */
   readonly sessionId?: string | null;
@@ -79,6 +83,8 @@ export interface PrepareTemporaryCommand {
  * - 这台机器上有这个项目的 git 长期工作空间（或项目绑了仓库，先 clone 一个）→ 在它旁边的 `.worktrees/` 下
  *   开 worktree，新分支 `agent-hub/<slug>-<短 id>`（source worktree）；
  * - 否则（非 git 项目）→ 新建空目录 `<roots[0]>/agent-hub-workspaces/.tmp/<slug>-<短 id>`（source created）。
+ * - 显式 mode='empty'（纯聊天）→ 总是新建上述空目录：不查仓库授权、不 clone / fetch、不开 worktree、
+ *   不跑准备命令，也不回写分支；目录仍归任务所有，走同一套清理生命周期。
  * 数量不限（§10 第 5 条），提示由界面给。
  */
 export async function prepareTemporaryWorkspaceUseCase(
@@ -95,8 +101,13 @@ export async function prepareTemporaryWorkspaceUseCase(
   if (!allowed.ok) return allowed;
   const machine = resolved.value;
   // 选了档位就用选定的；没选按项目配置，老项目保持 shared。要沿用已有分支（继续干活）只能是 worktree。
-  const mode: 'shared' | 'isolated' = command.branch ? 'isolated' : (command.mode ?? project.worktree?.mode ?? 'shared');
-  const setup = project.worktree?.setup ?? null;
+  // 空工作空间是显式选择：和 git 语义冲突时直接拒绝，不悄悄换成别的档位。
+  if (command.mode === 'empty' && (command.branch || command.base)) {
+    return err(conflict('空工作空间不能指定分支或起点'));
+  }
+  const mode: 'shared' | 'isolated' | 'empty' = command.branch ? 'isolated' : (command.mode ?? project.worktree?.mode ?? 'shared');
+  // 空工作空间不继承项目的准备命令：它根本不是一份仓库检出。
+  const setup = mode === 'empty' ? null : project.worktree?.setup ?? null;
 
   // ADR 0027 §3：清理只删了 checkout，分支还在 → 同一台机器上按原分支、原目录重建，会话历史 / 检查点接得上
   if (mode === 'isolated' && !command.branch) {

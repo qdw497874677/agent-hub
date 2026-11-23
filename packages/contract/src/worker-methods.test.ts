@@ -102,3 +102,35 @@ test('ws.import_commit：只接受 refs/agent-hub/imports/<id>/<sha> 且末尾 S
   assert.deepEqual(wsImportCommit.result.parse(outcome), outcome);
   assert.equal(wsImportCommit.result.safeParse({ ...outcome, alreadyPresent: 'no' }).success, false);
 });
+
+test('ws.import_project_git_bundle：固定 8 MiB 上限、strict 字段、ref 绑定 tipSha', async () => {
+  const { wsImportProjectGitBundle, PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES } = await import('./worker-methods.ts');
+  assert.equal(wsImportProjectGitBundle.name, 'ws.import_project_git_bundle');
+  assert.equal(wsImportProjectGitBundle.capability, 'git');
+  assert.equal(PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, 11_184_812, '8 MiB 原始对象的 base64 长度');
+  const tipSha = '0123456789abcdef0123456789abcdef01234567';
+  const base = {
+    path: '/work/repo',
+    expectedUrl: 'https://github.com/o/r.git',
+    bundleBase64: 'aGVsbG8=',
+    bundleSha256: 'a'.repeat(64),
+    tipSha,
+    ref: `refs/agent-hub/fetch/project-1/${tipSha}`
+  };
+  assert.equal(wsImportProjectGitBundle.params.safeParse(base).success, true);
+  // ref 命名空间固定，末尾 SHA 必须等于 tipSha
+  assert.equal(wsImportProjectGitBundle.params.safeParse({ ...base, tipSha: 'b'.repeat(40) }).success, false);
+  assert.equal(wsImportProjectGitBundle.params.safeParse({ ...base, ref: `refs/heads/${tipSha}` }).success, false);
+  assert.equal(wsImportProjectGitBundle.params.safeParse({ ...base, ref: `refs/agent-hub/fetch/p/${'b'.repeat(40)}` }).success, false);
+  // strict：凭据 / 调用方自带上限 / 其它字段一律拒绝
+  assert.equal(wsImportProjectGitBundle.params.safeParse({ ...base, maxBundleBytes: 1024 }).success, false);
+  assert.equal(wsImportProjectGitBundle.params.safeParse({ ...base, auth: { header: 'Authorization: Basic x' } }).success, false);
+  // SHA 必须小写
+  assert.equal(wsImportProjectGitBundle.params.safeParse({ ...base, tipSha: tipSha.toUpperCase() }).success, false);
+  assert.equal(wsImportProjectGitBundle.params.safeParse({ ...base, bundleSha256: 'A'.repeat(64) }).success, false);
+  // 硬上限：正好 11,184,812 字节可接受，多一个字节直接拒绝
+  assert.equal(wsImportProjectGitBundle.params.safeParse({ ...base, bundleBase64: 'A'.repeat(PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES) }).success, true);
+  assert.equal(wsImportProjectGitBundle.params.safeParse({ ...base, bundleBase64: 'A'.repeat(PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES + 1) }).success, false);
+  const outcome = { ref: base.ref, tipSha, alreadyPresent: false };
+  assert.deepEqual(wsImportProjectGitBundle.result.parse(outcome), outcome);
+});
