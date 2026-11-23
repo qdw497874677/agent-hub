@@ -216,6 +216,223 @@ export interface RepoCheckResult {
   readonly message: string | null;
   readonly failureKind?: RepoCheckFailureKind | null;
   readonly credentialSource?: RepoCheckCredentialSource | null;
+  /** 失败时的受控诊断；旧后端不带，界面就当没有（不猜原因）。 */
+  readonly diagnostic?: RepoCheckDiagnostic | null;
+}
+
+/**
+ * 一次失败检查的结构化诊断（新增字段，老后端没有）。
+ *
+ * 只收枚举和数字：不接收仓库地址、令牌、服务端原话或 stderr，
+ * 所以详情里能显示什么完全由这份结构决定，不会把请求内容漏出去。
+ */
+export interface RepoCheckDiagnostic {
+  /** 前后端 / 日志对得上的短编号（如 `repo-check-401-9f2c`）。 */
+  readonly id: string;
+  readonly stage: RepoCheckDiagnosticStage;
+  readonly code: RepoCheckDiagnosticCode;
+  readonly transport: 'https' | 'ssh';
+  readonly durationMs: number;
+  readonly httpStatus?: 401 | 403;
+}
+
+/** 失败发生在哪一步。 */
+export type RepoCheckDiagnosticStage = 'credential' | 'worker' | 'git' | 'branch';
+
+/** 受控的失败代码；`unknown` = 后端也没归类。 */
+export type RepoCheckDiagnosticCode =
+  | 'credential_unavailable'
+  | 'worker_unavailable'
+  | 'http_401'
+  | 'http_403'
+  | 'authentication_unknown'
+  | 'dns'
+  | 'tls'
+  | 'timeout'
+  | 'network'
+  | 'branch_missing'
+  | 'unknown';
+
+const DIAGNOSTIC_STAGES: readonly RepoCheckDiagnosticStage[] = ['credential', 'worker', 'git', 'branch'];
+const DIAGNOSTIC_CODES: readonly RepoCheckDiagnosticCode[] = [
+  'credential_unavailable',
+  'worker_unavailable',
+  'http_401',
+  'http_403',
+  'authentication_unknown',
+  'dns',
+  'tls',
+  'timeout',
+  'network',
+  'branch_missing',
+  'unknown'
+];
+
+/** 诊断编号只接受短、无空白的标识；带空格 / 换行的任意文本一律不显示（契约上限 80）。 */
+const DIAGNOSTIC_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
+/** 耗时上限：超过一天的数字没有参考价值，避免把异常值原样印出来。 */
+const DIAGNOSTIC_MAX_DURATION_MS = 86_400_000;
+
+const pickOne = <T extends string>(allowed: readonly T[], value: unknown): T | null =>
+  typeof value === 'string' && (allowed as readonly string[]).includes(value) ? (value as T) : null;
+
+/**
+ * 服务端字段 → 诊断；任一必填项缺失或形状不对就返回 null（宁可不显示，也不猜）。
+ * 可选 `httpStatus` 只认 401 / 403，其它值直接丢掉，不影响其余字段。
+ */
+export function repoDiagnosticFrom(value: unknown): RepoCheckDiagnostic | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+  if (!DIAGNOSTIC_ID_PATTERN.test(id)) return null;
+  const stage = pickOne(DIAGNOSTIC_STAGES, raw.stage);
+  const code = pickOne(DIAGNOSTIC_CODES, raw.code);
+  const transport = raw.transport === 'https' || raw.transport === 'ssh' ? raw.transport : null;
+  const duration = raw.durationMs;
+  if (stage === null || code === null || transport === null) return null;
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0) return null;
+  const httpStatus = raw.httpStatus === 401 || raw.httpStatus === 403 ? raw.httpStatus : undefined;
+  return {
+    id,
+    stage,
+    code,
+    transport,
+    durationMs: Math.min(Math.round(duration), DIAGNOSTIC_MAX_DURATION_MS),
+    ...(httpStatus === undefined ? {} : { httpStatus })
+  };
+}
+
+/** 耗时 → 人话：不到 1 秒说毫秒，之后按秒（10 秒以上不要小数）。 */
+export function repoDiagnosticDuration(durationMs: number): string {
+  const ms = Math.max(0, Math.round(durationMs));
+  if (ms < 1000) return `${ms} 毫秒`;
+  const seconds = ms / 1000;
+  if (seconds < 10) return `${seconds.toFixed(1).replace(/\.0$/, '')} 秒`;
+  return `${Math.round(seconds)} 秒`;
+}
+
+export function repoDiagnosticStageLabel(stage: RepoCheckDiagnosticStage): string {
+  switch (stage) {
+    case 'credential':
+      return '凭据';
+    case 'worker':
+      return '机器';
+    case 'git':
+      return 'Git 访问';
+    case 'branch':
+      return '分支';
+    default:
+      return '其它阶段';
+  }
+}
+
+/** 失败代码 → 一句人话；只说代码本身能支撑的事，不替用户判断「令牌一定无效」。 */
+export function repoDiagnosticCodeLabel(code: RepoCheckDiagnosticCode): string {
+  switch (code) {
+    case 'credential_unavailable':
+      // 已保存的令牌读不出来，检查根本没发出去；别写成「项目里没有令牌」。
+      return '无法读取已保存的令牌，未发起仓库检查';
+    case 'worker_unavailable':
+      // 机器可能在线，只是这次 RPC 没成；不能据此说它「不在线」。
+      return '机器未完成检查';
+    case 'http_401':
+      return '服务器返回 401（未授权）';
+    case 'http_403':
+      return '服务器返回 403（禁止访问）';
+    case 'authentication_unknown':
+      return '认证没通过，具体原因不明确';
+    case 'dns':
+      return '域名解析失败';
+    case 'tls':
+      return 'TLS / 证书握手失败';
+    case 'timeout':
+      return '连接超时';
+    case 'network':
+      return '网络连不上';
+    case 'branch_missing':
+      return '分支不存在';
+    default:
+      return '原因未分类';
+  }
+}
+
+export interface RepoDiagnosticRow {
+  readonly label: string;
+  readonly value: string;
+  /** 编号 / 耗时这类适合等宽字体的值。 */
+  readonly mono?: boolean;
+}
+
+export interface RepoDiagnosticContext {
+  /** 这次是在哪台机器上查的；跟结论行用的是同一个标签。 */
+  readonly workerLabel?: string | null;
+  readonly credentialSource?: RepoCheckCredentialSource | null;
+}
+
+/** 机器标签可能带路径或很长，收成一行并限长，别把复制的诊断撑散。 */
+const DIAGNOSTIC_MACHINE_MAX = 48;
+
+function oneLineMachine(value: string | null | undefined): string {
+  const text = value?.replace(/\s+/g, ' ').trim() ?? '';
+  return text.length > DIAGNOSTIC_MACHINE_MAX ? `${text.slice(0, DIAGNOSTIC_MACHINE_MAX - 1)}…` : text;
+}
+
+/** 检查没跑完时，凭据只说明「准备用哪份」，不代表已经发给仓库。 */
+function repoCredentialPlanNote(source: RepoCheckCredentialSource | null | undefined): string | null {
+  switch (source) {
+    case 'draft':
+      return '填写的令牌';
+    case 'saved':
+      return '已保存的令牌';
+    case 'worker':
+      return '机器上的 git 配置';
+    default:
+      return null;
+  }
+}
+
+/**
+ * 诊断 → 详情行。只放结构化字段和已经展示过的机器 / 凭据来源；
+ * 不放仓库名、地址、分支名、令牌或后端原话。
+ */
+export function repoDiagnosticRows(
+  diagnostic: RepoCheckDiagnostic,
+  context: RepoDiagnosticContext = {}
+): readonly RepoDiagnosticRow[] {
+  const rows: RepoDiagnosticRow[] = [
+    { label: '编号', value: diagnostic.id, mono: true },
+    { label: '阶段', value: repoDiagnosticStageLabel(diagnostic.stage) },
+    { label: '原因', value: repoDiagnosticCodeLabel(diagnostic.code) },
+    // 稳定枚举值给日志排查用，跟本地化原因并排但不混在一起。
+    { label: '代码', value: diagnostic.code, mono: true },
+    { label: '传输', value: diagnostic.transport === 'ssh' ? 'SSH' : 'HTTPS' },
+    { label: '耗时', value: repoDiagnosticDuration(diagnostic.durationMs), mono: true }
+  ];
+  if (diagnostic.httpStatus !== undefined) {
+    rows.push({ label: 'HTTP 状态', value: String(diagnostic.httpStatus), mono: true });
+  }
+  // 令牌读不出来时机器根本没参与，别让人以为是在那台机器上查失败的。
+  if (diagnostic.code !== 'credential_unavailable') {
+    const machine = oneLineMachine(context.workerLabel);
+    if (machine !== '') rows.push({ label: '机器', value: machine });
+  }
+  if (diagnostic.code === 'credential_unavailable') {
+    // 令牌没被用上，再说「这次用的是已保存的令牌」会自相矛盾。
+  } else if (diagnostic.code === 'worker_unavailable') {
+    // 机器没跑完检查，不能断言令牌已经到了仓库。
+    const plan = repoCredentialPlanNote(context.credentialSource);
+    if (plan !== null) rows.push({ label: '凭据', value: `${plan}（未确认送达仓库）` });
+  } else {
+    const source = repoCredentialSourceNote(context.credentialSource);
+    if (source !== null) rows.push({ label: '凭据', value: source });
+  }
+  return rows;
+}
+
+/** 诊断 → 纯文本（给复制按钮）；跟详情行一致，同样不含地址 / 令牌。 */
+export function repoDiagnosticText(diagnostic: RepoCheckDiagnostic, context: RepoDiagnosticContext = {}): string {
+  const lines = repoDiagnosticRows(diagnostic, context).map((row) => `${row.label}：${row.value}`);
+  return ['仓库检查诊断', ...lines].join('\n');
 }
 
 /** 后端对失败原因的分类；未知值按没有分类处理（只展示 message）。 */
@@ -272,7 +489,7 @@ export function repoCheckFailureLabel(kind: RepoCheckFailureKind | null | undefi
     case 'unreachable':
       return '连不上仓库';
     case 'credential_unavailable':
-      return '没有可用凭据';
+      return '无法读取已保存的令牌';
     default:
       return null;
   }
@@ -306,6 +523,13 @@ export function repoProbeText(
   workerLabel: string | null,
   fallbackSource: RepoCheckCredentialSource | null = null
 ): string {
+  const diagnostic = repoDiagnosticFrom(result.diagnostic);
+  const code = diagnostic?.code ?? null;
+  // 预检就没过：令牌读不出来，检查一步都没发出去。这时带上机器名反而像
+  // 「在那台机器上查失败了」，所以只留这一句可执行的结论。
+  if (!result.ok && code === 'credential_unavailable') {
+    return '无法读取已保存的令牌，未发起仓库检查；请重新输入令牌再检查';
+  }
   const machine = workerLabel?.trim() ?? '';
   const where = machine === '' ? '' : `在 ${machine} 上，`;
   const message = result.message?.trim() ?? '';
@@ -316,6 +540,9 @@ export function repoProbeText(
       branch === ''
         ? `可读取，默认分支是 ${result.defaultBranch ?? '未知'}`
         : `可读取，分支 ${branch} 存在`;
+  } else if (code === 'worker_unavailable') {
+    // 机器可能在线，只是这次 RPC 没成；后端的话优先，没话术就只说到「未完成检查」。
+    body = message === '' ? '机器未完成检查' : message;
   } else if (result.failureKind === 'branch_missing') {
     body = message === '' ? '仓库里没有这个分支' : message;
   } else {
@@ -324,7 +551,15 @@ export function repoProbeText(
     const label = repoCheckFailureLabel(result.failureKind);
     body = message !== '' ? message : (label ?? '仓库检查没通过');
   }
-  const source = repoCredentialSourceNote(result.credentialSource ?? fallbackSource);
+  // 令牌读不出来、或机器没跑完检查时，凭据来源要么没参与、要么没送达，
+  // 不能再说「这次用的是…」；成功 / Git / 分支的失败保持原有来源说明。
+  const credentialUnused =
+    code === 'credential_unavailable' ||
+    code === 'worker_unavailable' ||
+    (code === null && result.failureKind === 'credential_unavailable');
+  const source = credentialUnused
+    ? null
+    : repoCredentialSourceNote(result.credentialSource ?? fallbackSource);
   return `${where}${body}${source === null ? '' : ` · ${source}`}`;
 }
 

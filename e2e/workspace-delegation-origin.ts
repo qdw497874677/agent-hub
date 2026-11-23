@@ -114,7 +114,13 @@ export interface DirectGitOrigin {
  * 只给单文件回归用的直连 HTTPS origin：真实的 `git http-backend`，监听 127.0.0.1，
  * 证书按 IP SAN 现场生成，TLS 校验保持开启。出站只到本进程内；不碰系统信任库。
  */
-export async function startDirectGitOrigin(options: { bare: string; workDir: string; redirect?: boolean; requiredAuthorization?: string }): Promise<DirectGitOrigin> {
+export async function startDirectGitOrigin(options: {
+  bare: string;
+  workDir: string;
+  redirect?: boolean;
+  requiredAuthorization?: string;
+  deniedStatus?: 401 | 403;
+}): Promise<DirectGitOrigin> {
   const requests: string[] = [];
   const authorization: string[] = [];
   await mkdir(options.workDir, { recursive: true });
@@ -138,7 +144,8 @@ export async function startDirectGitOrigin(options: { bare: string; workDir: str
     if (options.requiredAuthorization !== undefined && request.headers.authorization !== options.requiredAuthorization) {
       requests.push(`${request.method} ${request.url}`);
       authorization.push(request.headers.authorization ?? '');
-      response.writeHead(401, { 'www-authenticate': 'Basic realm="Git fixture"' }).end();
+      const status = options.deniedStatus ?? 401;
+      response.writeHead(status, status === 401 ? { 'www-authenticate': 'Basic realm="Git fixture"' } : {}).end();
       return;
     }
     if (options.redirect === true && request.url?.startsWith(`${repoPath}/info/refs?`)) {

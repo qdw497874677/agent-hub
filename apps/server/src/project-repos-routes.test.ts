@@ -179,6 +179,9 @@ test('POST /api/projects/:id/repos/check：正常检查走本机 git，返回结
     [['api', 'main', true], ['web', null, true]]
   );
   assert.ok(world.git.calls.some((call) => call === 'local:check_repo:https://x.test/a.git@main'));
+  // 成功不产生诊断，避免把正常结果也包装成「排障事件」。
+  assert.equal('diagnostic' in res.body.results[0], false);
+  assert.equal(res.body.results[0].message, null);
   assert.ok(accounts.auditRows.some((row) => row.action === 'project.repos_check' && row.target === project.id));
 });
 
@@ -483,7 +486,38 @@ test('POST /api/projects/:id/repos/check：令牌标还在但密钥箱丢了 →
   assert.equal(res.body.results[0].credentialSource, 'saved');
   assert.equal(res.body.results[0].failureKind, 'credential_unavailable');
   assert.match(res.body.results[0].message, /密钥箱/);
+  assert.equal(res.body.results[0].diagnostic.stage, 'credential');
+  assert.equal(res.body.results[0].diagnostic.code, 'credential_unavailable');
+  assert.equal(res.body.results[0].diagnostic.transport, 'https');
+  assert.match(res.body.results[0].diagnostic.id, /^diag-[0-9a-f]{12}$/);
+  assert.equal(Number.isInteger(res.body.results[0].diagnostic.durationMs), true);
   assert.deepEqual(world.git.calls, [], '不能退回机器凭据去「碰巧成功」');
+  assert.deepEqual(world.git.authCalls, []);
+});
+
+test('POST /api/projects/:id/repos/check：密钥箱 reveal 抛错时同样不触网，报 credential_unavailable', async () => {
+  const { david, world } = await setup();
+  const target = 'https://gitlab.test/me/api.git';
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const saved = await david(`/api/projects/${project.id}`, patch({ repos: [{ name: 'api', url: target, credential: 'glpat-saved' }] }));
+  const repoId = saved.body.repos[0].id as string;
+  vaultRows(world.deps).set(repoTokenKey(project.id, repoId), 'glpat-saved');
+  (world.deps.secrets as { reveal: (names: readonly string[]) => Promise<Record<string, string>> }).reveal = async () => {
+    throw new Error('vault secret-internal unavailable');
+  };
+  world.git.calls.length = 0;
+  world.git.authCalls.length = 0;
+
+  const res = await david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ id: repoId, name: 'api', url: target, defaultBranch: 'main' }] }));
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.results[0].ok, false);
+  assert.equal(res.body.results[0].credentialSource, 'saved');
+  assert.equal(res.body.results[0].failureKind, 'credential_unavailable');
+  assert.equal(res.body.results[0].diagnostic.stage, 'credential');
+  assert.equal(res.body.results[0].diagnostic.code, 'credential_unavailable');
+  assert.equal(res.body.results[0].message, '这个仓库配了令牌，但密钥箱里找不到了；请重新输入令牌再检查');
+  assert.equal(JSON.stringify(res.body).includes('secret-internal'), false);
+  assert.deepEqual(world.git.calls, [], '密钥箱抛错也不能发 git 请求');
   assert.deepEqual(world.git.authCalls, []);
 });
 
@@ -502,7 +536,11 @@ test('POST /api/projects/:id/repos/check：failureKind 保守分类，认证失�
   const auth = await check({ name: 'api', url: target, defaultBranch: 'main', credential: 'glpat-live' });
   assert.equal(auth.body.results[0].failureKind, 'authentication');
   assert.equal(auth.body.results[0].credentialSource, 'draft');
-  assert.equal(auth.body.results[0].message, '认证失败：请检查仓库地址、令牌，或这台机器上的凭据');
+  assert.equal(auth.body.results[0].message, '认证失败：请检查仓库地址和这次填写的令牌');
+  assert.equal(auth.body.results[0].diagnostic.stage, 'git');
+  assert.equal(auth.body.results[0].diagnostic.code, 'authentication_unknown');
+  assert.equal(auth.body.results[0].diagnostic.transport, 'https');
+  assert.equal('httpStatus' in auth.body.results[0].diagnostic, false, '没有明确状态码就不给 httpStatus');
   assert.equal(JSON.stringify(auth.body).includes('ghp_leaked'), false);
   assert.equal(JSON.stringify(auth.body).includes('glpat-live'), false);
 
@@ -511,17 +549,246 @@ test('POST /api/projects/:id/repos/check：failureKind 保守分类，认证失�
   assert.equal(missing.body.results[0].failureKind, 'branch_missing');
   assert.match(missing.body.results[0].message, /没有分支 dev/);
   assert.equal(missing.body.results[0].credentialSource, 'worker');
+  assert.equal(missing.body.results[0].diagnostic.stage, 'branch');
+  assert.equal(missing.body.results[0].diagnostic.code, 'branch_missing');
 
   world.git.repoChecks.set(`${target}@main`, { reachable: false, defaultBranch: null, branchExists: false, message: 'Could not resolve host: gitlab.test' });
   const unreachable = await check({ name: 'api', url: target, defaultBranch: 'main' });
   assert.equal(unreachable.body.results[0].failureKind, 'unreachable');
-  assert.match(unreachable.body.results[0].message, /Could not resolve host/);
+  assert.equal(unreachable.body.results[0].message, '解析不了这个仓库的主机名：请检查仓库地址，以及这台机器的网络设置');
+  assert.equal(JSON.stringify(unreachable.body).includes('Could not resolve host'), false, '不回显上游原文');
+  assert.equal(unreachable.body.results[0].diagnostic.code, 'dns');
 
   // 模糊的 not found 不硬说是认证问题
   world.git.repoChecks.set(`${target}@main`, { reachable: false, defaultBranch: null, branchExists: false, message: 'remote: Repository not found.' });
   const vague = await check({ name: 'api', url: target, defaultBranch: 'main' });
   assert.equal(vague.body.results[0].failureKind, 'unreachable');
+  assert.equal(vague.body.results[0].diagnostic.code, 'unknown');
+  assert.equal(JSON.stringify(vague.body).includes('Repository not found'), false);
 });
+
+test('POST /api/projects/:id/repos/check：diagnostic 按明确措辞区分状态码 / DNS / TLS / 超时 / 网络 / 认证未知', async () => {
+  const { david, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const target = 'https://gitlab.test/me/api.git';
+  const check = (message: string) => {
+    world.git.repoChecks.set(`${target}@main`, { reachable: false, defaultBranch: null, branchExists: false, message });
+    return david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ name: 'api', url: target, defaultBranch: 'main' }] }));
+  };
+
+  const status401 = await check(
+    "fatal: unable to access 'https://gitlab.test/me/api.git/': The requested URL returned error: 401"
+  );
+  assert.equal(status401.body.results[0].diagnostic.code, 'http_401');
+  assert.equal(status401.body.results[0].diagnostic.httpStatus, 401);
+  assert.equal(status401.body.results[0].diagnostic.stage, 'git');
+  assert.equal(status401.body.results[0].diagnostic.transport, 'https');
+  assert.equal(status401.body.results[0].failureKind, 'authentication');
+  assert.equal(status401.body.results[0].message, '认证失败（HTTP 401）：请检查仓库地址，以及这台机器的 HTTPS 凭据设置');
+  assert.equal(status401.body.results[0].message.includes('没有可用的'), false, '不断言机器没有 HTTPS 凭据');
+
+  const status403 = await check('error: RPC failed; HTTP 403 curl 22 The requested operation returned error');
+  assert.equal(status403.body.results[0].diagnostic.code, 'http_403');
+  assert.equal(status403.body.results[0].diagnostic.httpStatus, 403);
+  assert.equal(status403.body.results[0].failureKind, 'unreachable', '403 不硬算成认证失败');
+  assert.equal(
+    status403.body.results[0].message,
+    '这个仓库拒绝了访问（HTTP 403）：请检查这台机器的 HTTPS 凭据是否有该仓库的权限'
+  );
+  assert.notEqual(status403.body.results[0].message, status401.body.results[0].message);
+
+  const dns = await check("fatal: unable to access 'https://gitlab.test/me/api.git/': Could not resolve host: gitlab.test");
+  assert.equal(dns.body.results[0].diagnostic.code, 'dns');
+  assert.equal('httpStatus' in dns.body.results[0].diagnostic, false);
+
+  const tls = await check('SSL certificate problem: unable to get local issuer certificate');
+  assert.equal(tls.body.results[0].diagnostic.code, 'tls');
+
+  const timeout = await check('block timeout reached');
+  assert.equal(timeout.body.results[0].diagnostic.code, 'timeout');
+
+  const network = await check("fatal: unable to access 'https://gitlab.test/me/api.git/': Connection refused");
+  assert.equal(network.body.results[0].diagnostic.code, 'network');
+
+  const auth = await check("fatal: Authentication failed for 'https://x-access-token:ghp_secret@gitlab.test/me/api.git/'");
+  assert.equal(auth.body.results[0].diagnostic.code, 'authentication_unknown');
+  assert.equal(auth.body.results[0].failureKind, 'authentication');
+  assert.equal(JSON.stringify(auth.body).includes('ghp_secret'), false, '诊断与话术都不回显令牌');
+
+  const unknown = await check('remote: Repository not found.');
+  assert.equal(unknown.body.results[0].diagnostic.code, 'unknown');
+  assert.equal(unknown.body.results[0].failureKind, 'unreachable');
+
+  for (const res of [status401, status403, dns, tls, timeout, network, auth, unknown]) {
+    const diagnostic = res.body.results[0].diagnostic;
+    assert.match(diagnostic.id, /^diag-[0-9a-f]{12}$/);
+    assert.equal(Number.isInteger(diagnostic.durationMs), true);
+    assert.equal(diagnostic.durationMs >= 0, true);
+    assert.equal(JSON.stringify(res.body).includes('fatal:'), false, '原始 git 诊断不进响应');
+  }
+});
+
+test('POST /api/projects/:id/repos/check：正文 / URL 里的裸 401 / 403 不会被误判成认证或 HTTP 状态', async () => {
+  const { david, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const target = 'https://gitlab.test/me/api.git';
+  const check = (message: string) => {
+    world.git.repoChecks.set(`${target}@main`, { reachable: false, defaultBranch: null, branchExists: false, message });
+    return david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ name: 'api', url: target, defaultBranch: 'main' }] }));
+  };
+
+  // 正文里只是提到 401 / 403，不是 git 的状态码句式
+  const prose = await check('remote: migration issue 403 and 401 were mentioned; see https://example.test/issues/401');
+  assert.equal(prose.body.results[0].diagnostic.code, 'unknown');
+  assert.equal('httpStatus' in prose.body.results[0].diagnostic, false);
+  assert.equal(prose.body.results[0].failureKind, 'unreachable');
+
+  // 远端回显的 `remote: … HTTP 403` 不能被当成状态码，也不能触发认证判断。
+  const remoteHttp = await check('remote: escalation HTTP 403');
+  assert.equal(remoteHttp.body.results[0].diagnostic.code, 'unknown');
+  assert.equal('httpStatus' in remoteHttp.body.results[0].diagnostic, false);
+  assert.equal(remoteHttp.body.results[0].failureKind, 'unreachable');
+
+  const remoteDns = await check('remote: Could not resolve host: gitlab.test');
+  assert.equal(remoteDns.body.results[0].diagnostic.code, 'unknown', 'remote: 行不参与任何分类');
+
+  // URL 路径里带 401 / 403 也不能当成状态码；真正的失败是网络层
+  const inUrl = await check("fatal: unable to access 'https://gitlab.test/me/403.git/': Connection refused");
+  assert.equal(inUrl.body.results[0].diagnostic.code, 'network');
+  assert.equal('httpStatus' in inUrl.body.results[0].diagnostic, false);
+
+  // 普通 404 不能被 `unable to access` / `RPC failed` 这类通用前缀误报成网络 / 超时。
+  const notFound = await check(
+    "fatal: unable to access 'https://gitlab.test/me/api.git/': The requested URL returned error: 404"
+  );
+  assert.equal(notFound.body.results[0].diagnostic.code, 'unknown');
+  assert.equal(notFound.body.results[0].failureKind, 'unreachable');
+  assert.equal(notFound.body.results[0].message, '检查没有通过，暂时无法归类原因：请检查仓库地址、网络和这台机器的 HTTPS 凭据设置');
+});
+
+test('POST /api/projects/:id/repos/check：SSH 传输不解析 HTTP 状态，避免把 SSH 输出说成 401 / 403', async () => {
+  const { david, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const ssh = 'git@gitlab.test:me/web.git';
+  world.git.repoChecks.set(`${ssh}@`, {
+    reachable: false,
+    defaultBranch: null,
+    branchExists: false,
+    message: "fatal: unable to access 'https://gitlab.test/me/api.git/': The requested URL returned error: 401"
+  });
+  const res = await david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ name: 'web', url: ssh }] }));
+  assert.equal(res.body.results[0].diagnostic.transport, 'ssh');
+  assert.equal(res.body.results[0].diagnostic.code, 'unknown');
+  assert.equal('httpStatus' in res.body.results[0].diagnostic, false);
+});
+
+test('POST /api/projects/:id/repos/check：固定话术按凭据来源 / 传输方式区分；审计只带诊断 id、代码和时长', async () => {
+  const { david, world, accounts } = await setup();
+  const target = 'https://gitlab.test/me/api.git';
+  const ssh = 'git@gitlab.test:me/web.git';
+  const rejected = "fatal: unable to access 'https://gitlab.test/me/api.git/': The requested URL returned error: 401";
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  world.git.repoChecks.set(`${target}@main`, { reachable: false, defaultBranch: null, branchExists: false, message: rejected });
+  world.git.repoChecks.set(`${ssh}@`, { reachable: false, defaultBranch: null, branchExists: false, message: rejected });
+  const check = (repo: Record<string, unknown>) => david(`/api/projects/${project.id}/repos/check`, post({ repos: [repo] }));
+
+  // 草稿令牌：只提这次填写的令牌，不提 SSH 密钥。
+  const draft = await check({ name: 'api', url: target, defaultBranch: 'main', credential: 'glpat-draft' });
+  assert.equal(draft.body.results[0].credentialSource, 'draft');
+  assert.equal(draft.body.results[0].message, '认证失败（HTTP 401）：请检查仓库地址和这次填写的令牌');
+  assert.equal(draft.body.results[0].message.includes('SSH'), false);
+
+  // 机器凭据 + HTTPS：提示 HTTPS 凭据，不把 HTTPS 用户往 SSH 密钥上引，也不断言「没有」凭据。
+  const workerHttps = await check({ name: 'api', url: target, defaultBranch: 'main' });
+  assert.equal(workerHttps.body.results[0].credentialSource, 'worker');
+  assert.equal(workerHttps.body.results[0].message, '认证失败（HTTP 401）：请检查仓库地址，以及这台机器的 HTTPS 凭据设置');
+  assert.equal(workerHttps.body.results[0].message.includes('SSH'), false);
+  assert.equal(workerHttps.body.results[0].message.includes('没有可用的'), false);
+
+  // 机器凭据 + SSH：才提示 SSH 密钥。
+  const workerSsh = await check({ name: 'web', url: ssh });
+  assert.equal(workerSsh.body.results[0].credentialSource, 'worker');
+  assert.equal(workerSsh.body.results[0].diagnostic.transport, 'ssh');
+  assert.equal(workerSsh.body.results[0].diagnostic.code, 'unknown', 'SSH 上不解析 HTTP 401');
+  assert.equal(workerSsh.body.results[0].message, '检查没有通过，暂时无法归类原因：请检查仓库地址、网络和这台机器上的 SSH 密钥');
+  assert.equal(workerSsh.body.results[0].message.includes('HTTPS'), false);
+
+  // 已保存令牌：说明是已保存令牌被拒，不暗示用户去查 SSH。
+  const saved = await david(`/api/projects/${project.id}`, patch({ repos: [{ name: 'api', url: target, defaultBranch: 'main', credential: 'glpat-saved' }] }));
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const savedCheck = await check({ name: 'api', url: target, defaultBranch: 'main' });
+  assert.equal(savedCheck.body.results[0].credentialSource, 'saved');
+  assert.equal(savedCheck.body.results[0].message, '认证失败（HTTP 401）：已保存的令牌没能通过认证；请检查仓库地址和令牌');
+
+  // 分支缺失也在诊断里，但审计不写分支名 / 地址。
+  world.git.repoChecks.set(`${target}@dev`, { reachable: true, defaultBranch: 'master', branchExists: false, message: null });
+  const branch = await check({ name: 'api', url: target, defaultBranch: 'dev' });
+  assert.equal(branch.body.results[0].diagnostic.stage, 'branch');
+  assert.equal(branch.body.results[0].diagnostic.code, 'branch_missing');
+
+  const sources = new Map([
+    [draft.body.results[0].diagnostic.id, 'draft'],
+    [workerHttps.body.results[0].diagnostic.id, 'worker'],
+    [workerSsh.body.results[0].diagnostic.id, 'worker'],
+    [savedCheck.body.results[0].diagnostic.id, 'saved'],
+    [branch.body.results[0].diagnostic.id, 'saved']
+  ]);
+  for (const res of [draft, workerHttps, workerSsh, savedCheck, branch]) {
+    const diagnostic = res.body.results[0].diagnostic;
+    const row = accounts.auditRows.find((entry) => entry.action === 'project.repos_check' && entry.detail.includes(diagnostic.id));
+    assert.ok(row, `审计里应能按诊断 id ${diagnostic.id} 关联到这次检查`);
+    assert.match(row.detail, new RegExp(`${diagnostic.id}:${sources.get(diagnostic.id)}/${diagnostic.stage}/${diagnostic.code}/${diagnostic.transport}/\\d+ms`));
+    assert.match(row.detail, /\/\d+ms/);
+    assert.equal(row.detail.includes('gitlab.test'), false, '审计不带仓库地址');
+    assert.equal(row.detail.includes('glpat'), false, '审计不带令牌');
+    assert.equal(row.detail.includes('dev'), false, '审计不带分支名');
+  }
+});
+
+test('POST /api/projects/:id/repos/check：Worker / 网关层失败归到 worker 阶段，不转述原始错误', async () => {
+  const { david, world, accounts } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  world.git.failNext = 'Worker secret-internal 掉线了';
+
+  const res = await david(
+    `/api/projects/${project.id}/repos/check`,
+    post({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git', defaultBranch: 'main' }] })
+  );
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.results[0].ok, false);
+  assert.equal(res.body.results[0].diagnostic.stage, 'worker');
+  assert.equal(res.body.results[0].diagnostic.code, 'worker_unavailable');
+  assert.equal(res.body.results[0].failureKind, 'unreachable');
+  assert.equal(res.body.results[0].message, '这台机器暂时连不上，检查没有完成：请稍后重试或换一台机器');
+  assert.equal(JSON.stringify(res.body).includes('secret-internal'), false);
+
+  const row = accounts.auditRows.find((entry) => entry.detail.includes(res.body.results[0].diagnostic.id));
+  assert.ok(row);
+  assert.equal(row.detail.includes('secret-internal'), false);
+});
+
+test('POST /api/projects/:id/repos/check：git 端口意外抛错时收成 worker_unavailable，不把异常序列化出去', async () => {
+  const { david, world, accounts } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  (world.deps.git as unknown as { checkRepo: () => Promise<never> }).checkRepo = async () => {
+    throw new Error('port exploded secret-internal');
+  };
+
+  const res = await david(
+    `/api/projects/${project.id}/repos/check`,
+    post({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git', defaultBranch: 'main' }] })
+  );
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.results[0].ok, false);
+  assert.equal(res.body.results[0].diagnostic.stage, 'worker');
+  assert.equal(res.body.results[0].diagnostic.code, 'worker_unavailable');
+  assert.equal(res.body.results[0].message, '这台机器暂时连不上，检查没有完成：请稍后重试或换一台机器');
+  assert.equal(JSON.stringify(res.body).includes('secret-internal'), false);
+  const row = accounts.auditRows.find((entry) => entry.detail.includes(res.body.results[0].diagnostic.id));
+  assert.ok(row);
+  assert.equal(row.detail.includes('secret-internal'), false);
+});
+
 
 test('仓库检查只接受安全的 HTTPS / SSH 地址（两个端点一致），保存仍走老规则', async () => {
   const { david, world } = await setup();

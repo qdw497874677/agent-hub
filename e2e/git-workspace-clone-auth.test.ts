@@ -98,7 +98,22 @@ test('clone：内部构造的 GIT_CONFIG_COUNT 不被 simple-git 守卫拒绝，
 
       const redirect = await startDirectGitOrigin({ bare, workDir: join(root, 'redirect-tls'), redirect: true });
       try {
-        await writeFile(join(home, '.gitconfig'), `[http "${redirect.url}"]\n\tsslCAInfo = ${redirect.caFile}\n`);
+        const denied = await startDirectGitOrigin({
+          bare, workDir: join(root, 'denied-tls'), requiredAuthorization: WIRE_AUTH, deniedStatus: 403
+        });
+        try {
+          await writeFile(join(home, '.gitconfig'),
+            `[http "${origin.url}"]\n\tsslCAInfo = ${origin.caFile}\n` +
+            `[http "${redirect.url}"]\n\tsslCAInfo = ${redirect.caFile}\n` +
+            `[http "${denied.url}"]\n\tsslCAInfo = ${denied.caFile}\n`);
+          const forbidden = await workspace.checkRepo(denied.url, 'main', {
+            url: denied.url, header: 'Authorization: Basic c3ludGhldGljLXdyb25n'
+          });
+          assert.ok(forbidden.ok && !forbidden.value.reachable);
+          assert.match(forbidden.value.message ?? '', /the requested URL returned error: 403/i);
+        } finally {
+          await denied.close();
+        }
         const redirected = await workspace.clone({
           repoUrl: redirect.url, parent: join(root, 'dest'), name: 'redirected',
           auth: { header: SYNTHETIC_HEADER, url: redirect.url }

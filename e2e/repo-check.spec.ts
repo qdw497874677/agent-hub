@@ -28,6 +28,25 @@ type ProbeReply = {
     message: string | null;
     failureKind?: 'authentication' | 'branch_missing' | 'unreachable' | 'credential_unavailable' | null;
     credentialSource?: 'draft' | 'saved' | 'worker' | null;
+    diagnostic?: {
+      id: string;
+      stage: 'credential' | 'worker' | 'git' | 'branch';
+      code:
+        | 'credential_unavailable'
+        | 'worker_unavailable'
+        | 'http_401'
+        | 'http_403'
+        | 'authentication_unknown'
+        | 'dns'
+        | 'tls'
+        | 'timeout'
+        | 'network'
+        | 'branch_missing'
+        | 'unknown';
+      transport: 'https' | 'ssh';
+      durationMs: number;
+      httpStatus?: 401 | 403;
+    };
   }>;
 };
 
@@ -317,4 +336,232 @@ test('手机宽度 · 行内检查按钮和结论都看得见，不撑破卡片'
 
   const rowBox = await panel.getByTestId('new-project-repo-row').boundingBox();
   expect(rowBox?.width ?? 0).toBeLessThanOrEqual(390);
+});
+
+test('失败诊断 · 窄屏用键盘展开，只显示受控字段；复制内容不含地址和令牌', async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await loginByApi(page);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: baseURL ?? 'http://127.0.0.1:7896' });
+  const token = `e2e-diagnostic-secret-${RUN}`;
+  await page.route('**/api/repo-check', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(
+        reply({
+          results: [
+            {
+              name: 'api',
+              url: REPO_URL,
+              branch: 'dev',
+              ok: false,
+              defaultBranch: 'main',
+              message: '服务器拒绝了这次访问（401），请检查令牌',
+              failureKind: 'authentication',
+              credentialSource: 'draft',
+              diagnostic: {
+                id: `repo-check-401-e2e-${RUN}`,
+                stage: 'git',
+                code: 'http_401',
+                transport: 'https',
+                durationMs: 412,
+                httpStatus: 401
+              }
+            }
+          ]
+        })
+      )
+    })
+  );
+
+  const panel = await openNewProject(page);
+  await panel.getByTestId('new-project-add-repo').click();
+  await panel.getByLabel('仓库 1 地址').fill(REPO_URL);
+  await panel.getByLabel('仓库 1 默认分支').fill('dev');
+  await panel.getByLabel('仓库 1 访问令牌').fill(token);
+  await panel.getByTestId('new-project-repo-check').click();
+
+  await expect(panel.getByTestId('new-project-repo-check-result')).toContainText('服务器拒绝了这次访问（401）');
+  const toggle = panel.getByTestId('new-project-repo-check-result-diagnostic-toggle');
+  const details = panel.getByTestId('new-project-repo-check-result-diagnostic-details');
+  // 诊断默认收起，不抢失败结论的注意力
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(details).toHaveCount(0);
+
+  // 窄屏上键盘可展开 / 收起
+  await toggle.focus();
+  await expect(toggle).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(details).toBeVisible();
+  await expect(details).toContainText('Git 访问');
+  await expect(details).toContainText('服务器返回 401（未授权）');
+  await expect(details).toContainText('http_401');
+  await expect(details).toContainText('412 毫秒');
+  await expect(details).toContainText('omarchy');
+  await expect(details).toContainText(`repo-check-401-e2e-${RUN}`);
+
+  // 详情与页面文字都不带地址 / 令牌；主结论仍可读到后端那句话
+  const panelText = await details.innerText();
+  expect(panelText).not.toContain(REPO_URL);
+  expect(panelText).not.toContain('acme/api');
+  expect(panelText).not.toContain(token);
+
+  await page.keyboard.press('Enter');
+  await expect(details).toHaveCount(0);
+
+  // 复制的是受控摘要，不是请求内容
+  await page.keyboard.press('Enter');
+  const copy = panel.getByTestId('new-project-repo-check-result-diagnostic-copy');
+  await expect(copy).toHaveAttribute('aria-label', '复制诊断信息');
+  await copy.click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain(`编号：repo-check-401-e2e-${RUN}`);
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied.startsWith('仓库检查诊断')).toBe(true);
+  expect(copied).toContain(`编号：repo-check-401-e2e-${RUN}`);
+  expect(copied).toContain('原因：服务器返回 401（未授权）');
+  expect(copied).toContain('代码：http_401');
+  expect(copied).not.toContain(REPO_URL);
+  expect(copied).not.toContain(token);
+  expect(await page.locator('body').innerText()).not.toContain(token);
+
+  // 展开后的详情不撑破窄屏卡片
+  const rowBox = await panel.getByTestId('new-project-repo-row').boundingBox();
+  expect(rowBox?.width ?? 0).toBeLessThanOrEqual(390);
+});
+
+test('失败诊断 · 剪贴板不可用或被拒绝时展开只读文本，选中同一段安全内容', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  // 部署在普通 HTTP 的非 loopback 地址上时，navigator.clipboard 根本不存在
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+  });
+  await loginByApi(page);
+  const token = `e2e-manual-secret-${RUN}`;
+  const diagnosticId = `repo-check-manual-${RUN}`;
+  await page.route('**/api/repo-check', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(
+        reply({
+          results: [
+            {
+              name: 'api',
+              url: REPO_URL,
+              branch: 'dev',
+              ok: false,
+              defaultBranch: 'main',
+              message: '服务器返回 401，请检查令牌',
+              failureKind: 'authentication',
+              credentialSource: 'draft',
+              diagnostic: {
+                id: diagnosticId,
+                stage: 'git',
+                code: 'http_401',
+                transport: 'https',
+                durationMs: 412,
+                httpStatus: 401
+              }
+            }
+          ]
+        })
+      )
+    })
+  );
+
+  const panel = await openNewProject(page);
+  await panel.getByTestId('new-project-add-repo').click();
+  await panel.getByLabel('仓库 1 地址').fill(REPO_URL);
+  await panel.getByLabel('仓库 1 默认分支').fill('dev');
+  await panel.getByLabel('仓库 1 访问令牌').fill(token);
+  await panel.getByTestId('new-project-repo-check').click();
+
+  const toggle = panel.getByTestId('new-project-repo-check-result-diagnostic-toggle');
+  await toggle.click();
+  const copy = panel.getByTestId('new-project-repo-check-result-diagnostic-copy');
+  // 窄屏上复制按钮是 44px 的点击目标
+  const copyBox = await copy.boundingBox();
+  expect(copyBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+  await copy.click();
+
+  // 不假装复制成功：给出说明 + 只读文本，并把内容选中
+  const manual = panel.getByTestId('new-project-repo-check-result-diagnostic-manual');
+  const textarea = panel.getByTestId('new-project-repo-check-result-diagnostic-manual-text');
+  await expect(manual).toContainText('没法写入剪贴板');
+  await expect(textarea).toBeVisible();
+  await expect(textarea).toBeFocused();
+  await expect(textarea).toHaveAttribute('readonly', '');
+  const expected = [
+    '仓库检查诊断',
+    `编号：${diagnosticId}`,
+    '阶段：Git 访问',
+    '原因：服务器返回 401（未授权）',
+    '代码：http_401',
+    '传输：HTTPS',
+    '耗时：412 毫秒',
+    'HTTP 状态：401',
+    '机器：omarchy',
+    '凭据：这次用的是填写的令牌'
+  ].join('\n');
+  await expect(textarea).toHaveValue(expected);
+  const selected = await textarea.evaluate((element) => {
+    const field = element as HTMLTextAreaElement;
+    return { start: field.selectionStart, end: field.selectionEnd, length: field.value.length };
+  });
+  expect(selected).toEqual({ start: 0, end: expected.length, length: expected.length });
+  // 选中内容只有受控摘要
+  expect(expected).not.toContain(REPO_URL);
+  expect(expected).not.toContain(token);
+
+  // 浏览器有剪贴板接口但权限被拒：同样落到手动复制，而不是静默失败
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: () => Promise.reject(new DOMException('denied', 'NotAllowedError')) }
+    });
+  });
+  await copy.click();
+  await expect(panel.getByTestId('new-project-repo-check-result-diagnostic-manual')).toHaveCount(1);
+  await expect(textarea).toHaveValue(expected);
+  await expect(textarea).toBeFocused();
+  expect(await page.locator('body').innerText()).not.toContain(token);
+});
+
+test('失败诊断 · 旧后端不带 diagnostic 时只显示原结论，不出现空的诊断入口', async ({ page }) => {
+  await loginByApi(page);
+  await page.route('**/api/repo-check', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(
+        reply({
+          results: [
+            {
+              name: 'api',
+              url: REPO_URL,
+              branch: 'dev',
+              ok: false,
+              defaultBranch: 'main',
+              message: '认证失败：请检查仓库地址、令牌，或这台机器上的凭据',
+              failureKind: 'authentication',
+              credentialSource: 'draft'
+            }
+          ]
+        })
+      )
+    })
+  );
+
+  const panel = await openNewProject(page);
+  await panel.getByTestId('new-project-add-repo').click();
+  await panel.getByLabel('仓库 1 地址').fill(REPO_URL);
+  await panel.getByLabel('仓库 1 默认分支').fill('dev');
+  await panel.getByTestId('new-project-repo-check').click();
+
+  await expect(panel.getByTestId('new-project-repo-check-result')).toContainText('认证失败');
+  await expect(panel.getByTestId('new-project-repo-check-result-diagnostic-toggle')).toHaveCount(0);
+  await expect(panel.getByTestId('new-project-repo-check-result-diagnostic')).toHaveCount(0);
 });

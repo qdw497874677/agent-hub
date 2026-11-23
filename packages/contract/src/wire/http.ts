@@ -144,6 +144,40 @@ export const repoCheckCredentialSource = z.enum(['draft', 'saved', 'worker']);
  */
 export const repoCheckFailureKind = z.enum(['authentication', 'branch_missing', 'unreachable', 'credential_unavailable']);
 
+/**
+ * 排障用的结构化诊断（只在失败时给；老客户端忽略）。
+ * - stage：失败发生在哪一层（凭据 / 机器 / git 传输 / 分支）
+ * - code：保守分类后的安全代码；`unknown` 就是暂时无法确定
+ * - transport：这个仓库走的是 HTTPS 还是 SSH
+ * - durationMs：这次检查（含网络探测）花了多久，仅用于排障
+ * - httpStatus：只有 git 真给了明确 HTTP 状态码时才出现（401 / 403）
+ *
+ * 这里只放固定枚举与数字；不包含地址、分支、上游原文或任何凭据。
+ */
+export const repoCheckDiagnosticStage = z.enum(['credential', 'worker', 'git', 'branch']);
+export const repoCheckDiagnosticCode = z.enum([
+  'credential_unavailable',
+  'worker_unavailable',
+  'http_401',
+  'http_403',
+  'authentication_unknown',
+  'dns',
+  'tls',
+  'timeout',
+  'network',
+  'branch_missing',
+  'unknown'
+]);
+export const repoCheckDiagnosticTransport = z.enum(['https', 'ssh']);
+export const repoCheckDiagnostic = z.object({
+  id: z.string().min(1).max(80),
+  stage: repoCheckDiagnosticStage,
+  code: repoCheckDiagnosticCode,
+  transport: repoCheckDiagnosticTransport,
+  durationMs: z.number().int().nonnegative(),
+  httpStatus: z.union([z.literal(401), z.literal(403)]).optional()
+});
+
 /** 检查结果：不可用（没有在线机器）不是错误，unavailable 给文案、results 为空。 */
 export const projectReposCheckDto = z.object({
   workerId: z.string().nullable(),
@@ -160,7 +194,9 @@ export const projectReposCheckDto = z.object({
       /** 本次检查选用的凭据来源；新增字段，老客户端忽略。 */
       credentialSource: repoCheckCredentialSource.optional(),
       /** 失败类别；只在能可靠归类时给，新增字段，老客户端忽略。 */
-      failureKind: repoCheckFailureKind.optional()
+      failureKind: repoCheckFailureKind.optional(),
+      /** 结构化排障信息；只在失败时给，内容是固定枚举 + 时长，不含地址 / 分支 / 原始 stderr。 */
+      diagnostic: repoCheckDiagnostic.optional()
     })
   )
 });

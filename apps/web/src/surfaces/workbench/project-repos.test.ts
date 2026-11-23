@@ -11,6 +11,12 @@ import {
   repoCheckLine,
   repoCheckSummary,
   repoCredentialPatch,
+  repoDiagnosticCodeLabel,
+  repoDiagnosticDuration,
+  repoDiagnosticFrom,
+  repoDiagnosticRows,
+  repoDiagnosticStageLabel,
+  repoDiagnosticText,
   repoProbeAffected,
   repoProbeText,
   repoRowProblem,
@@ -22,6 +28,7 @@ import {
   cloneErrorHint,
   reposDirty,
   type ProjectRepoRow,
+  type RepoCheckDiagnostic,
   type RepoCheckResult,
   type ReposCheck
 } from './project-repos.ts';
@@ -309,4 +316,179 @@ test('单行检查 · 只有地址 / 分支 / 令牌变化会让结论过期，�
   assert.equal(repoProbeAffected({ defaultBranch: 'dev' }), true);
   assert.equal(repoProbeAffected({ credential: 'x' }), true);
   assert.equal(repoProbeAffected(clearCredential(row({ hasToken: true }))), true);
+});
+
+const diagnostic = (over: Partial<RepoCheckDiagnostic> = {}): RepoCheckDiagnostic => ({
+  id: 'repo-check-401-9f2c',
+  stage: 'git',
+  code: 'http_401',
+  transport: 'https',
+  durationMs: 412,
+  httpStatus: 401,
+  ...over
+});
+
+test('诊断 · 服务端字段按契约收下；缺必填项、未知枚举或奇怪编号一律不显示', () => {
+  assert.deepEqual(repoDiagnosticFrom({ ...diagnostic() }), diagnostic());
+  // 没有 httpStatus 也能用
+  assert.deepEqual(repoDiagnosticFrom({ ...diagnostic({ httpStatus: undefined }) }), {
+    id: 'repo-check-401-9f2c',
+    stage: 'git',
+    code: 'http_401',
+    transport: 'https',
+    durationMs: 412
+  });
+  // 老后端 / 形状不对：没有诊断，别猜
+  assert.equal(repoDiagnosticFrom(undefined), null);
+  assert.equal(repoDiagnosticFrom(null), null);
+  assert.equal(repoDiagnosticFrom('repo-check-401'), null);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), code: 'token_invalid' }), null);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), stage: 'network' }), null);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), transport: 'file' }), null);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), id: '' }), null);
+  // 编号只接受短标识：带空格 / 换行的任意文本不进详情
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), id: 'repo check 401' }), null);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), id: 'repo-check\n401' }), null);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), id: 'a'.repeat(81) }), null);
+  // 契约允许到 80，别把合法的编号挡掉（后端的 diag-<12 hex> 也是这个形状）
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), id: 'a'.repeat(80) })?.id.length, 80);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), id: 'diag-0a1b2c3d4e5f' })?.id, 'diag-0a1b2c3d4e5f');
+});
+
+test('诊断 · 耗时必须是有限非负数；异常值封顶，httpStatus 只认 401 / 403', () => {
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), durationMs: -1 }), null);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), durationMs: Number.NaN }), null);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), durationMs: Number.POSITIVE_INFINITY }), null);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), durationMs: '412' }), null);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), durationMs: 1_234.6 })?.durationMs, 1_235);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), durationMs: 999_999_999 })?.durationMs, 86_400_000);
+  // 不认识的 HTTP 状态不影响其它字段，只是不显示
+  assert.equal(repoDiagnosticFrom({ ...diagnostic({ httpStatus: undefined }), httpStatus: 500 })?.httpStatus, undefined);
+  assert.equal(repoDiagnosticFrom({ ...diagnostic(), httpStatus: 403 })?.httpStatus, 403);
+});
+
+test('诊断 · 代码和阶段翻成人话，耗时按量级显示', () => {
+  assert.equal(repoDiagnosticStageLabel('credential'), '凭据');
+  assert.equal(repoDiagnosticStageLabel('git'), 'Git 访问');
+  assert.equal(repoDiagnosticCodeLabel('http_401'), '服务器返回 401（未授权）');
+  assert.equal(repoDiagnosticCodeLabel('credential_unavailable'), '无法读取已保存的令牌，未发起仓库检查');
+  assert.equal(repoDiagnosticCodeLabel('worker_unavailable'), '机器未完成检查');
+  assert.equal(repoDiagnosticCodeLabel('dns'), '域名解析失败');
+  assert.equal(repoDiagnosticCodeLabel('unknown'), '原因未分类');
+  assert.equal(repoDiagnosticDuration(0), '0 毫秒');
+  assert.equal(repoDiagnosticDuration(412), '412 毫秒');
+  assert.equal(repoDiagnosticDuration(1_500), '1.5 秒');
+  assert.equal(repoDiagnosticDuration(2_000), '2 秒');
+  assert.equal(repoDiagnosticDuration(12_400), '12 秒');
+});
+
+test('诊断 · 详情只放结构化字段和已展示过的机器 / 凭据，不含仓库地址与令牌', () => {
+  const rows = repoDiagnosticRows(diagnostic(), { workerLabel: 'omarchy', credentialSource: 'draft' });
+  assert.deepEqual(
+    rows.map((row) => [row.label, row.value]),
+    [
+      ['编号', 'repo-check-401-9f2c'],
+      ['阶段', 'Git 访问'],
+      ['原因', '服务器返回 401（未授权）'],
+      ['代码', 'http_401'],
+      ['传输', 'HTTPS'],
+      ['耗时', '412 毫秒'],
+      ['HTTP 状态', '401'],
+      ['机器', 'omarchy'],
+      ['凭据', '这次用的是填写的令牌']
+    ]
+  );
+  // 没有机器 / 凭据来源时不多出空行
+  assert.deepEqual(
+    repoDiagnosticRows(diagnostic({ httpStatus: undefined }), { workerLabel: '  ', credentialSource: null }).map((row) => row.label),
+    ['编号', '阶段', '原因', '代码', '传输', '耗时']
+  );
+  const text = repoDiagnosticText(diagnostic(), { workerLabel: 'omarchy', credentialSource: 'saved' });
+  assert.equal(text.split('\n')[0], '仓库检查诊断');
+  assert.match(text, /编号：repo-check-401-9f2c/);
+  assert.match(text, /原因：服务器返回 401（未授权）/);
+  // 稳定枚举跟人话并排，方便日志里搜
+  assert.match(text, /代码：http_401/);
+  assert.match(text, /凭据：这次用的是已保存的令牌/);
+  // 地址、分支、令牌都不在可复制的文本里
+  assert.doesNotMatch(text, /https?:|git@|acme\/api|e2e-check-secret/);
+});
+
+test('诊断 · 令牌读不出来或机器没跑完时，不声称令牌已经用过 / 送达', () => {
+  const credential = diagnostic({ stage: 'credential', code: 'credential_unavailable', httpStatus: undefined });
+  assert.deepEqual(
+    repoDiagnosticRows(credential, { workerLabel: 'omarchy', credentialSource: 'saved' }).map((row) => [row.label, row.value]),
+    [
+      ['编号', 'repo-check-401-9f2c'],
+      ['阶段', '凭据'],
+      ['原因', '无法读取已保存的令牌，未发起仓库检查'],
+      ['代码', 'credential_unavailable'],
+      ['传输', 'HTTPS'],
+      ['耗时', '412 毫秒']
+    ]
+  );
+  assert.equal(
+    repoProbeText(
+      checked({ ok: false, failureKind: 'credential_unavailable', credentialSource: 'saved', diagnostic: credential }),
+      'omarchy',
+      'saved'
+    ),
+    '无法读取已保存的令牌，未发起仓库检查；请重新输入令牌再检查'
+  );
+  // 旧后端没有 diagnostic、只剩分类时，也不追加「这次用的是已保存的令牌」
+  assert.equal(
+    repoProbeText(
+      checked({
+        ok: false,
+        failureKind: 'credential_unavailable',
+        message: '这个仓库配了令牌，但密钥箱里找不到了；请重新输入令牌再检查',
+        credentialSource: 'saved'
+      }),
+      'omarchy',
+      'saved'
+    ),
+    '在 omarchy 上，这个仓库配了令牌，但密钥箱里找不到了；请重新输入令牌再检查'
+  );
+
+  const worker = diagnostic({ stage: 'worker', code: 'worker_unavailable', httpStatus: undefined });
+  const workerRows = repoDiagnosticRows(worker, { workerLabel: 'omarchy', credentialSource: 'saved' });
+  assert.deepEqual(workerRows.slice(-2).map((row) => [row.label, row.value]), [
+    ['机器', 'omarchy'],
+    ['凭据', '已保存的令牌（未确认送达仓库）']
+  ]);
+  assert.equal(
+    repoProbeText(
+      checked({
+        ok: false,
+        failureKind: 'unreachable',
+        message: '这台机器暂时连不上，检查没有完成：请稍后重试或换一台机器',
+        credentialSource: 'saved',
+        diagnostic: worker
+      }),
+      'omarchy',
+      'saved'
+    ),
+    '在 omarchy 上，这台机器暂时连不上，检查没有完成：请稍后重试或换一台机器'
+  );
+  assert.equal(
+    repoProbeText(checked({ ok: false, failureKind: 'unreachable', message: null, diagnostic: worker }), 'omarchy', 'saved'),
+    '在 omarchy 上，机器未完成检查'
+  );
+  // 成功 / Git 阶段仍按原来的方式说明凭据来源
+  assert.equal(
+    repoProbeText(
+      checked({ ok: false, failureKind: 'authentication', message: '认证失败', credentialSource: 'saved', diagnostic: diagnostic() }),
+      'omarchy',
+      'saved'
+    ),
+    '在 omarchy 上，认证失败 · 这次用的是已保存的令牌'
+  );
+});
+
+test('诊断 · 机器标签收成一行并限长，避免复制文本被撑散', () => {
+  const single = repoDiagnosticRows(diagnostic(), { workerLabel: '  omarchy\n  box  ' });
+  assert.equal(single.at(-1)?.value, 'omarchy box');
+  const long = repoDiagnosticRows(diagnostic(), { workerLabel: 'm'.repeat(80) }).find((row) => row.label === '机器');
+  assert.equal(long?.value, `${'m'.repeat(47)}…`);
+  assert.equal(long?.value.length, 48);
 });
