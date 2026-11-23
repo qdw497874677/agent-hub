@@ -265,43 +265,55 @@ export function AttentionInbox({
         {headerAction ? <div className="shrink-0">{headerAction}</div> : null}
       </div>
       <ul>
-        {preview.map((item) => (
-          <li key={`${item.sessionId}|${item.phase}`} data-testid="attention-item" data-phase={item.phase}
-            className="flex items-center gap-1 border-b border-hair pl-3 pr-1 last:border-b-0">
-            <span className="shrink-0 rounded px-1.5 text-[11px] leading-[18px]">
-              <span className={item.possible ? 'text-secondary' : 'text-rust'}>{item.possible ? '可能在等你' : PHASE_LABEL[item.phase]}</span>
-            </span>
-            {/* 手机上行内目标和 ⋯ 都要 ≥44：这条通道最容易误触（点偏就进会话、点「稍后」就收起）。 */}
-            <button
-              className="flex min-w-0 flex-1 flex-col justify-center text-left max-md:min-h-[44px]"
-              title={`${attentionTitle(item)} · ${item.reason}`}
-              onClick={() => onOpen(item)}
+        {preview.map((item) => {
+          const phaseText = item.possible ? '可能在等你' : PHASE_LABEL[item.phase];
+          return (
+            <li
+              key={`${item.sessionId}|${item.phase}`}
+              data-testid="attention-item"
+              data-phase={item.phase}
+              className="flex items-center gap-1 border-b border-hair pl-3 pr-1 last:border-b-0"
             >
-              {/* 时间跟标题同一行靠右（和会话行一个读法），第二行整行留给原因：
-                  以前时间是原因后面的尾巴，390 上第一个被截掉，用户看不出这条等了多久。 */}
-              <span className="flex min-w-0 items-baseline gap-2">
-                <span className="min-w-0 flex-1 truncate text-body text-primary">{attentionTitle(item)}</span>
-                <span className="shrink-0 text-meta text-tertiary">{relativeTime(item.since)}</span>
-              </span>
-              <span className="block truncate text-meta text-tertiary">
-                {item.projectName} · {item.taskTitle} · {item.agentId} · {item.reason}
-              </span>
-            </button>
-            <button
-              data-testid="attention-menu"
-              aria-label={`「${attentionTitle(item)}」的更多操作`}
-              title="更多操作"
-              className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-sm text-meta text-tertiary hover:bg-card hover:text-secondary"
-              onClick={(event) => {
-                menuTrigger.current = event.currentTarget;
-                const rect = event.currentTarget.getBoundingClientRect();
-                setMenu({ item, x: Math.max(8, rect.right - 168), y: rect.bottom + 4 });
-              }}
-            >
-              ⋯
-            </button>
-          </li>
-        ))}
+              {/* 标签、标题、原因和等待时长是同一个进入目标：视线落在哪儿点下去都进同一条会话。
+                  「⋯」单独留在旁边，键盘和读屏仍是一次原生 button 的 Enter / Space。 */}
+              <button
+                data-testid="attention-open"
+                aria-label={`${phaseText}：${attentionTitle(item)}，${item.projectName} · ${item.taskTitle}。${item.reason}，${relativeTime(item.since)}`}
+                className="flex min-w-0 flex-1 items-center gap-1 rounded-sm text-left outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring max-md:min-h-[44px]"
+                title={`${attentionTitle(item)} · ${item.reason}`}
+                onClick={() => onOpen(item)}
+              >
+                <span data-testid="attention-phase" className="shrink-0 rounded px-1.5 text-[11px] leading-[18px]">
+                  <span className={item.possible ? 'text-secondary' : 'text-rust'}>{phaseText}</span>
+                </span>
+                {/* 时间跟标题同一行靠右（和会话行一个读法），第二行整行留给原因：
+                    以前时间是原因后面的尾巴，390 上第一个被截掉，用户看不出这条等了多久。 */}
+                <span className="flex min-w-0 flex-1 flex-col justify-center">
+                  <span className="flex min-w-0 items-baseline gap-2">
+                    <span className="min-w-0 flex-1 truncate text-body text-primary">{attentionTitle(item)}</span>
+                    <span className="shrink-0 text-meta text-tertiary">{relativeTime(item.since)}</span>
+                  </span>
+                  <span className="block truncate text-meta text-tertiary">
+                    {item.projectName} · {item.taskTitle} · {item.agentId} · {item.reason}
+                  </span>
+                </span>
+              </button>
+              <button
+                data-testid="attention-menu"
+                aria-label={`「${attentionTitle(item)}」的更多操作`}
+                title="更多操作"
+                className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-sm text-meta text-tertiary hover:bg-card hover:text-secondary"
+                onClick={(event) => {
+                  menuTrigger.current = event.currentTarget;
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setMenu({ item, x: Math.max(8, rect.right - 168), y: rect.bottom + 4 });
+                }}
+              >
+                ⋯
+              </button>
+            </li>
+          );
+        })}
       </ul>
       {hidden > 0 ? (
         <button

@@ -3,12 +3,12 @@ import { Icon } from '../../atoms/icons.tsx';
 export { shortPath, workspaceName };
 import { LinkWorkspaces } from './link-workspaces.tsx';
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type CanvasDto, type CreateWorkspaceRequest, type WorkerInfoDto, type WorkspaceDto, type WorkspaceViewDto } from '../../shell/api.ts';
 import { DirectoryPicker } from './directory-picker.tsx';
-import { WorkerChip, WorkerPicker, resolveWorker } from '../../shell/workers.tsx';
+import { WorkerChip, WorkerPicker, resolveWorker, useWorkers } from '../../shell/workers.tsx';
 import { RecheckButton, harnessHint, harnessReason } from '../../shell/harness.tsx';
-import { canSelectMachine } from '../../shell/harness-gate.ts';
+import { machineAvailability, machineSelectable, workerOffersAgent } from '../../shell/harness-gate.ts';
 import { useNarrow } from '../../shell/device.ts';
 
 /**
@@ -85,7 +85,8 @@ export function WorkspaceChooser({
   hubProtocols = [],
   groups = false,
   longLivedOnly = false,
-  chatOnly = false
+  chatOnly = false,
+  onSwitchAgent
 }: {
   canvas: CanvasDto;
   taskId: string;
@@ -113,8 +114,15 @@ export function WorkspaceChooser({
    * 只有派生新会话时给；「换个地方继续」还是原来那几种，免得悄悄换掉会话的目录类型。
    */
   chatOnly?: boolean;
+  /**
+   * 有在线机器、但没有一台能跑当前 agent 时的出口：展开并聚焦原来的 agent 选择器。
+   * 只有派生对话框有这个选择器；「换个地方继续」是固定 agent，不传。
+   */
+  onSwitchAgent?: () => void;
 }) {
   const views = useWorkspaceViews(canvas.project.id);
+  const workerQuery = useWorkers();
+  const queryClient = useQueryClient();
   // 「这台机器没有 git 基座」时那个动作按钮：加一就让下面的关联面板展开并滚进视野
   const [linkSignal, setLinkSignal] = useState(0);
   // 手机上把「组合工作目录 / 关联已有目录」收进一行摘要里：选过一次就敞开，别把已选项藏起来
@@ -124,21 +132,63 @@ export function WorkspaceChooser({
   const [whyOpen, setWhyOpen] = useState(false);
   const agentLabel = canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId;
   const local = resolveWorker(workers, null);
-  const offers = (worker: WorkerInfoDto) => (worker.agentIds ?? [agentId]).includes(agentId);
+  const offers = (worker: WorkerInfoDto) => workerOffersAgent(worker, agentId);
   const machines = workers.filter(offers);
   const online = machines.filter((worker) => worker.state === 'online');
-  // 装了不等于能用：没登录 / 没配模型的那台变灰、不能选（老 Worker 不报，当能用）
-  const selectable = (worker: WorkerInfoDto) => canSelectMachine(worker, agentId, hubProtocols);
+  // 装了不等于能用：没登录 / 没配模型的那台变灰、不能选（老 Worker 不报，当能用）。
+  // 和空态分类、派生对话框底部的说明共用 machineSelectable，避免三处条件慢慢漂开。
+  const selectable = (worker: WorkerInfoDto) => machineSelectable(worker, agentId, hubProtocols);
   const blocked = online.filter((worker) => !selectable(worker));
   const usable = online.filter(selectable);
+  const availability = machineAvailability(workers, agentId, hubProtocols, {
+    loading: workers.length === 0 && workerQuery.loading,
+    failed: workers.length === 0 && workerQuery.failed
+  });
+  const canSwitchAgent = onSwitchAgent !== undefined;
+  const availabilityText = (() => {
+    switch (availability.kind) {
+      case 'unknown':
+        return availability.loading ? '正在读取机器状态…' : '机器状态没读到。检查网络后重试。';
+      case 'no-agent':
+        return '还没有可用的 agent。先让一台装着 agent 的机器上线，再回来开始。';
+      case 'no-machines':
+        return '还没有接入机器。先在「机器」里接入一台，再回来开始。';
+      case 'all-offline':
+        return '现在没有在线的机器。打开一台已接入的机器，或接入一台新的，再回来开始。';
+      case 'agent-unavailable':
+        if (availability.missing > 0 && availability.blocked > 0) {
+          return canSwitchAgent
+            ? `在线的机器上有的没装 ${agentLabel}，有的暂时用不了。换一个 agent，或按下面的原因修好再回来。`
+            : `在线的机器上有的没装 ${agentLabel}，有的暂时用不了。换一台装着它的机器，或按下面的原因修好再回来。`;
+        }
+        if (availability.missing > 0) {
+          return canSwitchAgent
+            ? `在线的机器上都没有 ${agentLabel}。换一个 agent，或先在这台机器上安装它。`
+            : `在线的机器上都没有 ${agentLabel}。换一台装着它的机器，或先安装它。`;
+        }
+        return canSwitchAgent
+          ? `在线的机器上 ${agentLabel} 暂时都用不了。换一个 agent，或按下面的原因修好再回来。`
+          : `在线的机器上 ${agentLabel} 暂时都用不了。换一台机器，或按下面的原因修好再回来。`;
+      case 'available':
+        return null;
+    }
+  })();
+  const recheckMachines = () => {
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['workers'] }),
+      queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] })
+    ]);
+  };
 
   // 只有一台能用的机器：直接用它（不是「默认」，是没得选）
   useEffect(() => {
     if (machine === null && usable.length === 1) onMachine(usable[0]!.workerId);
     // 机器还在、只是这台上的 agent 暂时探测失败、或机器短暂离线：保留用户选的机器，
     // 连带选择器里正在浏览的目录。启动由各对话框的可用性检查挡住，不替人换机器。
-    // 只有这台机器彻底不提供当前 agent 了（比如换了 agent）才清掉。
-    if (machine !== null && !workers.some((worker) => worker.workerId === machine && offers(worker))) onMachine(null);
+    // 只有这台机器彻底不提供当前 agent 了（比如换了 agent）才清掉；列表短暂为空时保留，别误清。
+    if (machine !== null && workers.length > 0 && !workers.some((worker) => worker.workerId === machine && offers(worker))) {
+      onMachine(null);
+    }
   }, [machine, usable, workers, agentId, onMachine]);
 
   // 工作目录的 workerId null = hub 本机 → 本机那台 Worker
@@ -199,14 +249,45 @@ export function WorkspaceChooser({
 
   return (
     <section aria-label="工作目录" className="mb-3">
-      {machines.length < 2 || usable.length === 0 ? (
+      {machines.length > 0 && machines.length < 2 ? (
         <p className="mb-1 text-meta text-secondary" title="干活的那台电脑。agent 在它上面读写文件、执行命令。">机器</p>
       ) : null}
-      {online.length === 0 ? (
-        <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
-          现在没有在线的机器。打开一台已接入的机器，或者接入一台新的。
-        </p>
-      ) : machines.length < 2 && usable.length > 0 ? (
+      {availabilityText === null ? null : (
+        <div
+          data-testid="machine-availability"
+          data-kind={availability.kind}
+          aria-live="polite"
+          className="mb-3 border-l-2 border-rust pl-2 text-meta text-secondary"
+        >
+          <p>{availabilityText}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            {availability.kind === 'agent-unavailable' && onSwitchAgent !== undefined ? (
+              <button
+                type="button"
+                data-testid="derive-switch-agent"
+                className="min-h-[44px] rounded-sm border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary md:min-h-[28px]"
+                onClick={onSwitchAgent}
+              >
+                换 Agent
+              </button>
+            ) : null}
+            {availability.kind === 'no-agent' ||
+            availability.kind === 'no-machines' ||
+            availability.kind === 'all-offline' ||
+            (availability.kind === 'unknown' && !availability.loading) ||
+            (availability.kind === 'agent-unavailable' && availability.blocked === 0) ? (
+              <button
+                type="button"
+                className="min-h-[44px] rounded-sm border border-hair px-2 text-meta text-secondary hover:border-strong md:min-h-[28px]"
+                onClick={recheckMachines}
+              >
+                重新检查
+              </button>
+            ) : null}
+          </div>
+        </div>
+      )}
+      {machines.length === 1 && usable.length > 0 ? (
         <p className="mb-3">
           <WorkerChip worker={machines[0]} />
         </p>
@@ -216,7 +297,9 @@ export function WorkspaceChooser({
           workers={machines}
           value={machine}
           onChange={onMachine}
-          unavailable={(worker) => harnessReason(worker, agentId)}
+          unavailable={(worker) =>
+            machineSelectable(worker, agentId, hubProtocols) ? null : harnessReason(worker, agentId) ?? '暂不可用'
+          }
         />
       ) : null}
       {machine === null || chosenBlock === null ? null : (

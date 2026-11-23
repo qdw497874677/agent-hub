@@ -35,7 +35,7 @@ export function ViewSwitch({
             aria-pressed={on}
             onClick={() => onView(item.view)}
             className={`flex items-center justify-center gap-1.5 rounded-[4px] text-sub transition-colors duration-[var(--dur-fast)] ${
-              iconOnly ? 'size-9' : 'h-7 px-2.5'
+              iconOnly ? 'size-[44px]' : 'h-7 px-2.5'
             } ${on ? 'bg-selected text-primary' : 'text-tertiary hover:text-primary'}`}
           >
             <Icon name={item.icon} size={14} />

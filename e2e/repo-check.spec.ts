@@ -1,6 +1,8 @@
+import { mkdirSync } from 'node:fs';
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { currentRun } from './run-id.ts';
 import { loginByApi } from './login.ts';
+import { boxOf, expectNoHorizontalOverflow, expectNoOverlap, expectTouchTarget, type Box } from './hitbox.ts';
 
 /**
  * 仓库的「检查」按钮（新建项目草稿 + 项目设置已保存行）：
@@ -11,6 +13,7 @@ import { loginByApi } from './login.ts';
  * - 机器可显式选；选了谁，请求就带谁。
  */
 const RUN = currentRun();
+const SHOTS = process.env['E2E_SCREENSHOTS'];
 
 const REPO_URL = 'https://example.com/acme/api.git';
 
@@ -564,4 +567,148 @@ test('失败诊断 · 旧后端不带 diagnostic 时只显示原结论，不出�
   await expect(panel.getByTestId('new-project-repo-check-result')).toContainText('认证失败');
   await expect(panel.getByTestId('new-project-repo-check-result-diagnostic-toggle')).toHaveCount(0);
   await expect(panel.getByTestId('new-project-repo-check-result-diagnostic')).toHaveCount(0);
+});
+
+test('手机触控目标 · 项目页头与仓库检查/删除是分开的 44×44，桌面仍紧凑', async ({ page, baseURL }) => {
+  test.setTimeout(120_000);
+  if (SHOTS) mkdirSync(SHOTS, { recursive: true });
+  await loginByApi(page);
+  const headers = await csrfHeaders(page, baseURL ?? '');
+  const project = (await (
+    await page.request.post('/api/projects', {
+      data: {
+        name: `e2e 触控目标 ${RUN}`,
+        repos: [{ name: 'api', url: REPO_URL, defaultBranch: 'main' }]
+      },
+      headers
+    })
+  ).json()) as { id: string };
+
+  await page.route(`**/api/projects/${project.id}/repos/check`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(
+        reply({
+          workerId: null,
+          workerLabel: 'hub 本机',
+          credentialSource: 'saved',
+          results: [
+            {
+              name: 'api',
+              url: REPO_URL,
+              branch: null,
+              ok: true,
+              defaultBranch: 'main',
+              message: null,
+              failureKind: null,
+              credentialSource: 'saved'
+            }
+          ]
+        })
+      )
+    })
+  );
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/#/p/${project.id}`);
+  await page.reload();
+  const mobileHeader = page.locator('header').filter({ has: page.locator('button[aria-label="打开侧栏"]') });
+  await expect(mobileHeader).toBeVisible();
+  const viewSwitch = mobileHeader.getByTestId('view-switch');
+  const targets = [
+    ['打开侧栏', mobileHeader.getByRole('button', { name: '打开侧栏' })],
+    ['画布', viewSwitch.getByRole('button', { name: '画布', exact: true })],
+    ['列表', viewSwitch.getByRole('button', { name: '列表', exact: true })],
+    ['搜索', mobileHeader.getByRole('button', { name: '搜索' })],
+    ['新建任务', mobileHeader.getByRole('button', { name: '新建任务' })]
+  ] as const;
+  const boxes: Array<{ label: string; box: Box }> = [];
+  for (const [label, target] of targets) {
+    boxes.push({ label, box: await expectTouchTarget(target, label, 390) });
+  }
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i]!;
+      const b = boxes[j]!;
+      expectNoOverlap(a.box, b.box, `${a.label} 与 ${b.label}`);
+    }
+  }
+  await expectNoHorizontalOverflow(page);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/project-header-390.png` });
+
+  // 视图切换本身仍然工作，不是只会显示更大的图标。
+  await viewSwitch.getByRole('button', { name: '列表', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/p/${project.id}/list`));
+  await expect(viewSwitch.getByRole('button', { name: '列表', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await viewSwitch.getByRole('button', { name: '画布', exact: true }).click();
+
+  await page.setViewportSize({ width: 320, height: 700 });
+  const narrowBoxes: Array<{ label: string; box: Box }> = [];
+  for (const [label, target] of targets) {
+    narrowBoxes.push({ label, box: await expectTouchTarget(target, `${label}（320）`, 320) });
+  }
+  for (let i = 0; i < narrowBoxes.length; i++) {
+    for (let j = i + 1; j < narrowBoxes.length; j++) {
+      const a = narrowBoxes[i]!;
+      const b = narrowBoxes[j]!;
+      expectNoOverlap(a.box, b.box, `${a.label} 与 ${b.label}（320）`);
+    }
+  }
+  await expectNoHorizontalOverflow(page);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/project-header-320.png` });
+
+  // 从手机抽屉进项目设置；已保存仓库行上的检查和删除各自是 44×44。
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mobileHeader.getByRole('button', { name: '打开侧栏' }).click();
+  const sheet = page.getByTestId('nav-sheet');
+  await expect(sheet).toBeVisible();
+  await sheet.getByRole('button', { name: '项目设置' }).click();
+  await page.getByRole('tab', { name: '代码与工作目录' }).click();
+  const settings = page.getByTestId('project-repos');
+  await expect(settings.getByTestId('repo-row')).toHaveCount(1);
+
+  const check = settings.getByTestId('repo-check').first();
+  const remove = settings.getByTestId('repo-remove').first();
+  const checkBox = await expectTouchTarget(check, '仓库检查', 390);
+  const removeBox = await expectTouchTarget(remove, '仓库删除', 390);
+  expectNoOverlap(checkBox, removeBox, '仓库检查与删除');
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/repo-actions-390.png` });
+
+  // 实际点检查：请求真的发出，结论落在这一行。
+  await check.click();
+  await expect(settings.getByTestId('repo-check-result').first()).toContainText('可读取');
+  await expect(settings.getByTestId('repo-check-result').first()).toContainText('默认分支是 main');
+
+  // 独立临时行验证删除：只删草稿行，原有已保存行不动。
+  await settings.getByTestId('repo-add').click();
+  await expect(settings.getByTestId('repo-row')).toHaveCount(2);
+  await settings.getByTestId('repo-remove').nth(1).click();
+  await expect(settings.getByTestId('repo-row')).toHaveCount(1);
+  await expect(settings.getByTestId('repo-name').first()).toHaveValue('api');
+  await expect(settings.getByTestId('repo-url').first()).toHaveValue(REPO_URL);
+
+  await page.setViewportSize({ width: 320, height: 700 });
+  await settings.getByTestId('repo-row').first().scrollIntoViewIfNeeded();
+  const check320 = await expectTouchTarget(settings.getByTestId('repo-check').first(), '仓库检查（320）', 320);
+  const remove320 = await expectTouchTarget(settings.getByTestId('repo-remove').first(), '仓库删除（320）', 320);
+  expectNoOverlap(check320, remove320, '仓库检查与删除（320）');
+  await expectNoHorizontalOverflow(page);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/repo-actions-320.png` });
+
+  // 桌面回归：项目页头只出现投影条，仓库按钮回到紧凑行高。
+  await page.keyboard.press('Escape');
+  await expect(settings).toHaveCount(0);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.getByTestId('project-bar')).toBeVisible();
+  await expect(mobileHeader).toBeHidden();
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/project-header-1280.png` });
+  await page.getByTitle('项目设置').first().click();
+  await page.getByRole('tab', { name: '代码与工作目录' }).click();
+  const desktopSettings = page.getByTestId('project-repos');
+  const desktopCheck = await boxOf(desktopSettings.getByTestId('repo-check').first(), '桌面仓库检查');
+  const desktopRemove = await boxOf(desktopSettings.getByTestId('repo-remove').first(), '桌面仓库删除');
+  expect(desktopCheck.height).toBeLessThan(44);
+  expect(desktopRemove.height).toBeLessThan(44);
+  expect(desktopCheck.x + desktopCheck.width).toBeLessThan(desktopRemove.x);
 });

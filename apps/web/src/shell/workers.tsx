@@ -24,6 +24,9 @@ export function useWorkers() {
     online: list.filter((worker) => worker.state === 'online'),
     /** 多于一台（含离线的）才需要在界面上区分「在哪台」。 */
     multi: list.length > 1,
+    /** 第一次拉取还没回来 / 刷新失败：空列表不能当成「一台机器都没有」。 */
+    loading: query.isLoading,
+    failed: query.isError,
     byId: (id: string | null | undefined) => list.find((worker) => worker.workerId === id)
   };
 }

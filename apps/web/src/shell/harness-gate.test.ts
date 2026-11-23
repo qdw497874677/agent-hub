@@ -1,6 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentNote, canSelectMachine, carriedProtocol, emptyModelOption, hubCovers, startBlockReason, startHint, type GateWorker } from './harness-gate.ts';
+import {
+  agentNote,
+  canSelectMachine,
+  carriedProtocol,
+  emptyModelOption,
+  hubCovers,
+  machineAvailability,
+  machineAvailabilityHint,
+  machineSelectable,
+  startBlockReason,
+  startHint,
+  workerOffersAgent,
+  type GateWorker
+} from './harness-gate.ts';
 
 const bare = (reason: string, providers?: readonly string[]): GateWorker => ({
   agentModels: [{ agentId: 'pi', readiness: { state: 'unavailable', reason }, ...(providers ? { providers } : {}) }]
@@ -97,4 +110,123 @@ test('hub 模型能顶上「未配置模型」时，agent 括注和说明行都�
   assert.equal(startHint({ ...base, hubAvailable: true }), '先在「模型」里选一个 Hub 模型');
   assert.equal(startHint({ ...base, hubAvailable: false }), '这台机器上的 Pi 用不了：未配置模型');
   assert.equal(startHint({ ...base, hubAvailable: true, model: 'hub-cn-glm-flash/glm-5.3-flash', protocol: 'openai-chat' }), null);
+});
+
+const onlinePi = (patch: Partial<GateWorker> = {}): GateWorker => ({
+  state: 'online',
+  agentIds: ['pi'],
+  agentModels: [{ agentId: 'pi', readiness: { state: 'ready' } }],
+  ...patch
+});
+
+test('机器可选规则：在线、装着当前 agent、harness 可用（或 hub 模型能顶上）', () => {
+  assert.equal(workerOffersAgent(onlinePi(), 'pi'), true);
+  assert.equal(workerOffersAgent(onlinePi({ agentIds: ['opencode'] }), 'pi'), false);
+  // 老 Worker 不报 agentIds：沿用「不拦」的旧行为
+  assert.equal(workerOffersAgent({ state: 'online' }, 'pi'), true);
+  assert.equal(workerOffersAgent({ state: 'online' }, ''), false);
+  assert.equal(workerOffersAgent(undefined, 'pi'), false);
+
+  assert.equal(machineSelectable(onlinePi(), 'pi', []), true);
+  assert.equal(machineSelectable(onlinePi({ state: 'offline' }), 'pi', []), false);
+  assert.equal(machineSelectable(onlinePi({ agentIds: ['opencode'] }), 'pi', []), false);
+  const down = onlinePi({
+    agentModels: [{ agentId: 'pi', readiness: { state: 'unavailable', reason: '未安装' } }]
+  });
+  assert.equal(machineSelectable(down, 'pi', []), false);
+  const hubOnly = onlinePi({
+    agentModels: [{ agentId: 'pi', providers: ['openai-chat'], readiness: { state: 'unavailable', reason: '未配置模型' } }]
+  });
+  assert.equal(machineSelectable(hubOnly, 'pi', []), false);
+  assert.equal(machineSelectable(hubOnly, 'pi', ['openai-chat']), true);
+});
+
+test('机器空态分类：加载/失败、没接入、全离线、当前 agent 不可用分开说', () => {
+  assert.deepEqual(machineAvailability([], 'pi', [], { loading: true }), { kind: 'unknown', loading: true, failed: false });
+  assert.deepEqual(machineAvailability([], 'pi', [], { failed: true }), { kind: 'unknown', loading: false, failed: true });
+  assert.deepEqual(machineAvailability([], 'pi', []), { kind: 'no-machines' });
+  assert.deepEqual(machineAvailability([onlinePi()], '', []), { kind: 'no-agent' });
+  assert.deepEqual(machineAvailability([onlinePi({ state: 'offline' })], 'pi', []), { kind: 'all-offline', total: 1 });
+
+  const other = onlinePi({ agentIds: ['opencode'], agentModels: [{ agentId: 'opencode' }] });
+  assert.deepEqual(machineAvailability([other], 'pi', []), { kind: 'agent-unavailable', online: 1, blocked: 0, missing: 1 });
+  const down = onlinePi({
+    agentModels: [{ agentId: 'pi', readiness: { state: 'unavailable', reason: '未安装' } }]
+  });
+  assert.deepEqual(machineAvailability([down], 'pi', []), { kind: 'agent-unavailable', online: 1, blocked: 1, missing: 0 });
+  assert.deepEqual(machineAvailability([other, down], 'pi', []), { kind: 'agent-unavailable', online: 2, blocked: 1, missing: 1 });
+  assert.deepEqual(machineAvailability([onlinePi()], 'pi', []), { kind: 'available', usable: 1, blocked: 0 });
+
+  // 有同协议 hub 模型时，「未配置模型」的机器仍然能选
+  const hubOnly = onlinePi({
+    agentModels: [{ agentId: 'pi', providers: ['openai-chat'], readiness: { state: 'unavailable', reason: '未配置模型' } }]
+  });
+  assert.deepEqual(machineAvailability([hubOnly], 'pi', ['openai-chat']), { kind: 'available', usable: 1, blocked: 0 });
+  assert.deepEqual(machineAvailability([hubOnly], 'pi', []), { kind: 'agent-unavailable', online: 1, blocked: 1, missing: 0 });
+});
+
+test('没得选时底部说明不再一律说「先选一台机器」', () => {
+  const base = {
+    agentId: 'pi',
+    agentLabel: 'Pi',
+    machine: null,
+    worker: undefined,
+    model: '',
+    protocol: null,
+    workspaceReady: false
+  } as const;
+  assert.equal(startHint({ ...base, machines: { kind: 'unknown', loading: true, failed: false } }), '正在读取机器状态…');
+  assert.equal(startHint({ ...base, machines: { kind: 'unknown', loading: false, failed: true } }), '机器状态没读到，重新检查后再试');
+  assert.equal(startHint({ ...base, machines: { kind: 'no-agent' } }), '还没有可用的 agent');
+  assert.equal(startHint({ ...base, machines: { kind: 'no-machines' } }), '先在「机器」里接入一台机器');
+  assert.equal(startHint({ ...base, machines: { kind: 'all-offline', total: 2 } }), '先让一台机器上线');
+  assert.equal(
+    startHint({ ...base, machines: { kind: 'agent-unavailable', online: 1, blocked: 0, missing: 1 } }),
+    '在线的机器都没有 Pi，换一个 agent'
+  );
+  assert.equal(
+    startHint({ ...base, machines: { kind: 'agent-unavailable', online: 2, blocked: 1, missing: 1 } }),
+    '在线的机器上有的没装 Pi，有的用不了，换一个 agent'
+  );
+  assert.equal(
+    startHint({ ...base, machines: { kind: 'agent-unavailable', online: 1, blocked: 1, missing: 0 } }),
+    '在线的机器上 Pi 用不了，换一个 agent 或先修好它'
+  );
+  // 确实还有能选的机器：仍说「先选一台机器」
+  assert.equal(startHint({ ...base, machines: { kind: 'available', usable: 1, blocked: 0 } }), '先选一台机器');
+  assert.equal(machineAvailabilityHint(undefined, 'Pi'), null);
+});
+
+test('已选机器：保留选择，离线 / 不可用 / 换了 agent 后说对原因', () => {
+  const selected = {
+    agentId: 'pi',
+    agentLabel: 'Pi',
+    machine: 'w1',
+    worker: onlinePi(),
+    model: '',
+    protocol: null,
+    workspaceReady: false
+  } as const;
+  assert.equal(startHint({ ...selected, machines: { kind: 'available', usable: 1, blocked: 0 } }), '先选一个工作目录');
+  assert.equal(
+    startHint({ ...selected, worker: onlinePi({ state: 'offline' }), machines: { kind: 'all-offline', total: 1 } }),
+    '这台机器不在线'
+  );
+  const down = onlinePi({
+    agentModels: [{ agentId: 'pi', readiness: { state: 'unavailable', reason: '未安装' } }]
+  });
+  assert.equal(
+    startHint({ ...selected, worker: down, machines: { kind: 'agent-unavailable', online: 1, blocked: 1, missing: 0 } }),
+    '这台机器上的 Pi 用不了：未安装'
+  );
+  assert.equal(
+    startHint({
+      ...selected,
+      worker: onlinePi({ agentIds: ['opencode'], agentModels: [{ agentId: 'opencode' }] }),
+      machines: { kind: 'agent-unavailable', online: 1, blocked: 0, missing: 1 }
+    }),
+    '这台机器没有 Pi，换一台机器或换一个 agent'
+  );
+  // 机器列表刷新时短暂为空：保留机器，不下「没有机器」的结论
+  assert.equal(startHint({ ...selected, worker: undefined, machines: { kind: 'unknown', loading: true, failed: false } }), '正在读取机器状态…');
 });

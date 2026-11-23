@@ -93,7 +93,7 @@ test('批准卡：显示、手机尺寸、点允许发出回答；不存在的�
   const question = page.getByRole('log', { name: '会话记录' }).getByTestId('agent-question');
   await expect(question).toBeVisible();
   await expect(question).toContainText('Agent 提问');
-  await expect(question).toContainText('不代表仍在等待回答');
+  await expect(question.getByTestId('agent-question-note')).toHaveText('这是当时的提问');
   await expect(question).toContainText('用 A 还是 B？');
   await expect(question.getByText('A', { exact: true })).toBeVisible();
   await expect(question).not.toContainText('已回答');

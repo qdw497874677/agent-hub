@@ -308,7 +308,7 @@ export function ProjectSidebar({
 
   if (collapsed) {
     return (
-      <aside className="flex h-full w-14 shrink-0 flex-col items-center gap-1 border-r border-hair bg-panel py-2" aria-label="项目导航" data-testid="project-sidebar" data-collapsed="true">
+      <aside className="flex h-full min-h-0 w-14 shrink-0 flex-col items-center gap-1 border-r border-hair bg-panel py-2" aria-label="项目导航" data-testid="project-sidebar" data-collapsed="true">
         <button className={GHOST_ICON} aria-label="展开侧栏" title={`展开侧栏（${MOD}B）`} onClick={toggleCollapsed}>
           <Icon name="panel" />
         </button>
@@ -353,7 +353,7 @@ export function ProjectSidebar({
   }
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-hair bg-panel" aria-label="项目导航" data-testid="project-sidebar">
+    <aside className={`flex min-h-0 shrink-0 flex-col border-r border-hair bg-panel ${drawer ? 'h-[calc(75dvh_-_28px)] w-full' : 'h-full w-64'}`} aria-label="项目导航" data-testid="project-sidebar">
       {/* 项目切换：原生下拉保留（键盘 / 读屏 / 手机滚轮都现成），只是画成一行带首字母和箭头的按钮。 */}
       <div className="flex items-center gap-1 px-2 pb-1 pt-2">
         <label className="relative flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 hover:bg-hover">
@@ -390,12 +390,6 @@ export function ProjectSidebar({
           </button>
         )}
       </div>
-
-      {drawer ? (
-        <div className="border-b border-hair px-2 py-2" data-testid="drawer-global-nav">
-          <GlobalNav />
-        </div>
-      ) : null}
 
       <div className="space-y-0.5 px-2 pb-2">
         <button className={ROW} onClick={onNewTask}>
@@ -477,7 +471,12 @@ export function ProjectSidebar({
         </div>
       </nav>
 
-      {drawer ? null : (
+      {drawer ? (
+        // 移动抽屉：全局工具是项目内容的次要区，放在任务列表滚动区之外，但不抢首屏。
+        <div className="shrink-0 border-t border-hair px-2 py-2" data-testid="drawer-global-nav">
+          <GlobalNav columns={5} />
+        </div>
+      ) : (
         <div className="border-t border-hair px-2 py-2">
           <GlobalNav />
         </div>

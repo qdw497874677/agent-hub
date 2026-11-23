@@ -16,8 +16,8 @@ export function formatBytes(bytes: number): string {
   return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)}${units[unit]}`;
 }
 
-const tone: Record<Level, string> = { ok: 'text-tertiary', warn: 'text-amber-500', full: 'text-red-500' };
-const dotTone: Record<Level, string> = { ok: 'bg-emerald-500', warn: 'bg-amber-500', full: 'bg-red-500' };
+const tone: Record<Level, string> = { ok: 'text-tertiary', warn: 'text-warning', full: 'text-danger' };
+const dotTone: Record<Level, string> = { ok: 'bg-emerald-500', warn: 'bg-warning', full: 'bg-danger' };
 const levelText: Record<Level, string> = { ok: '资源正常', warn: '资源偏紧', full: '资源紧张' };
 
 function memPercent(r: Resources): number {
@@ -66,7 +66,9 @@ export function ResourceDetails({ worker, canConfigure = false }: { worker: Work
     <>
       <dt className="text-tertiary">概况</dt>
       <dd className="min-w-0 text-secondary" data-testid="worker-resource-details">
-        <span className={`block ${tone[r.pressure.level]}`}>{title(r)}</span>
+        <span className={`block ${tone[r.pressure.level]}`} data-testid="worker-resource-warning">
+          {title(r)}
+        </span>
         <span className="block">
           {m.cores} 核{m.load ? ` · 负载 ${m.load.map((value) => value.toFixed(2)).join(' ')}` : ''} · 内存可用 {formatBytes(m.memAvailable)} / {formatBytes(m.memTotal)}
           {m.swapUsed ? ` · swap ${formatBytes(m.swapUsed)}` : ''}
@@ -118,7 +120,7 @@ export function ResourceBadge({ resources }: { resources: Resources | undefined 
   return (
     <span className="inline-flex shrink-0 items-center gap-1 text-meta" data-testid="worker-frame-resources" data-level={level} title={title(resources)}>
       <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotTone[level]}`} />
-      <span className={`hidden sm:inline ${tone[level]}`}>
+      <span className={`hidden sm:inline ${tone[level]}`} data-testid="worker-frame-resources-text">
         {cpu === null ? '' : `CPU ${Math.round(cpu)}% · `}内存 {memPercent(resources)}%
       </span>
     </span>

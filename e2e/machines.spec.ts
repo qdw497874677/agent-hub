@@ -296,8 +296,8 @@ test('窄屏：列表滚到哪，进详情再退回来还在哪', async ({ page,
   await loginByApi(page);
   const csrf = await csrfOf(page.context());
   const tag = currentRun();
-  // 多接几台，列表才滚得起来
-  for (let index = 0; index < 12; index += 1) {
+  // 多接几台，列表才滚得起来（页头之外不再有底部添加块，列表本身要够长）
+  for (let index = 0; index < 16; index += 1) {
     await enrollMachine(page.request, baseURL!, { 'x-hub-csrf': csrf }, `e2e 长列表 ${tag}-${index}`);
   }
 
@@ -333,4 +333,37 @@ test('窄屏：列表滚到哪，进详情再退回来还在哪', async ({ page,
   const visible = await page.getByTestId('machine-row').nth(3).boundingBox();
   expect(visible && visible.y).toBeLessThan(520);
   expect(restored).toBeLessThan(400);
+});
+
+test('添加机器只有一个入口：页头；空态/无权限都说明下一步', async ({ page }, testInfo) => {
+  await loginByApi(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  // 有机器时：页头那一个，列表底部不再重复。
+  await page.goto('/#/machines');
+  await expect(page.getByTestId('machines-page')).toBeVisible();
+  await expect(page.getByTestId('machine-row').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /添加机器/ })).toHaveCount(1);
+  await expect(page.getByTestId('machines-add')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('machines-add-390.png') });
+
+  // 空态：仍然只有页头一个入口，卡片里给的是下一步说明，不是第二个按钮。
+  await page.route('**/api/workers', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.goto('/#/machines');
+  await expect(page.getByTestId('machines-summary')).toContainText('还没有机器');
+  await expect(page.getByTestId('machines-add')).toBeVisible();
+  await expect(page.getByRole('button', { name: /添加机器/ })).toHaveCount(1);
+  await expect(page.getByText('点右上角「添加机器」')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('machines-add-empty-390.png') });
+
+  // 没有权限：页头入口消失，空态明确说找主人；任何地方都不再冒出「添加机器」按钮。
+  await page.route('**/api/workers/enroll-info', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ allowed: false }) })
+  );
+  await page.goto('/#/machines');
+  await page.reload();
+  await expect(page.getByTestId('machines-add')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /添加机器/ })).toHaveCount(0);
+  await expect(page.getByText('要加机器请联系主人')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('machines-add-denied-390.png') });
 });

@@ -191,6 +191,123 @@ test.describe('390×844', () => {
   });
 });
 
+test.describe('390×844 · 唯一在线机器但当前 agent 不可用（网络夹具）', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test('换 Agent 展开并聚焦原选择器，随后机器、目录和开始都可用', async ({ page, baseURL }) => {
+    test.setTimeout(180_000);
+    const { projectId } = await preparePanel(page, baseURL!);
+    const base = await waitForOnlineWorker(page);
+    const canvas = (await (await page.request.get(`/api/projects/${projectId}/canvas`)).json()) as {
+      agents?: Array<{ id: string; defaultModel?: string }>;
+    };
+    const agentIds = (canvas.agents ?? []).map((agent) => agent.id);
+    // 至少要有两个 agent，才验证得了「换一个」；本机/假 ACP 环境都满足，不满足就明确说夹具缺料
+    expect(agentIds.length, '画布里至少要有两个 agent 才能测换 Agent').toBeGreaterThanOrEqual(2);
+    const downId = agentIds[0]!;
+    const readyId = agentIds[1]!;
+    const shape = Object.fromEntries(
+      Object.entries(base).filter(([key]) => !['runtimeJob', 'reason', 'drift', 'update'].includes(key))
+    );
+    const models = agentIds.map((agentId) =>
+      agentId === downId
+        ? { agentId, models: [] as string[], defaultModel: '', readiness: { state: 'unavailable', reason: '未安装', hint: FIXTURE_HINT } }
+        : { agentId, models: [FIXTURE_MODEL], defaultModel: FIXTURE_MODEL, readiness: { state: 'ready' } }
+    );
+    // 唯一一台在线机器：装着所有 agent，但当前默认 agent 是「未安装」，其余可用。
+    // 只替换 /api/workers；项目、任务、目录仍是真服务端，不启动真模型。
+    const worker = {
+      ...shape,
+      workerId: 'fixture-only-online',
+      label: '唯一在线机',
+      origin: 'remote',
+      state: 'online',
+      agentIds,
+      agentModels: models
+    };
+    await page.route('**/api/workers', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([worker]) })
+    );
+    await openCanvas(page, projectId);
+    const run = page.getByRole('dialog', { name: '开始会话' });
+    await settleSheet(page);
+
+    // 1）不是「没有在线的机器」，而是「在线，但这台机器上的当前 agent 用不了」
+    const message = page.getByTestId('machine-availability');
+    await expect(message).toHaveAttribute('data-kind', 'agent-unavailable');
+    await expect(message).toContainText('暂时都用不了');
+    await expect(message).not.toContainText('现在没有在线的机器');
+    const switchAgent = page.getByTestId('derive-switch-agent');
+    await expect(switchAgent).toBeVisible();
+    const switchBox = await switchAgent.boundingBox();
+    expect(switchBox!.height).toBeGreaterThanOrEqual(43.5);
+    const overflow = await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]');
+      const pageOverflow = document.documentElement.scrollWidth - document.documentElement.clientWidth;
+      return Math.max(pageOverflow, dialog === null ? 0 : dialog.scrollWidth - dialog.clientWidth);
+    });
+    expect(overflow).toBeLessThanOrEqual(1);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/390-agent-unavailable.png` });
+
+    // 2）先收起手机上的 agent 折叠区，确认「换 Agent」会自己展开并聚焦选择器
+    const section = page.getByTestId('derive-agent-section');
+    if ((await section.getAttribute('open')) !== null) await section.locator('summary').click();
+    await expect(section).not.toHaveAttribute('open', '');
+    await switchAgent.click();
+    await expect(section).toHaveAttribute('open', '');
+    const picker = page.locator('#derive-agent');
+    await expect(picker).toBeFocused();
+    await expect(picker).toBeVisible();
+
+    // 3）换成唯一可用的 agent：机器自动选中（仍只有一台可用），目录可选，开始可用
+    await picker.selectOption(readyId);
+    await expect(message).toHaveCount(0);
+    await expect(run).toContainText('唯一在线机');
+    await expect(page.getByTestId('derive-start-hint')).toContainText('工作目录');
+    await run.getByRole('radio', { name: /新建临时工作目录/ }).click();
+    const start = run.getByRole('button', { name: '开始', exact: true });
+    await expect(start).toBeEnabled();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/390-agent-switched.png` });
+  });
+
+  test('唯一机器离线：说全离线，不给「换 Agent」', async ({ page, baseURL }) => {
+    test.setTimeout(120_000);
+    const { projectId } = await preparePanel(page, baseURL!);
+    const base = await waitForOnlineWorker(page);
+    const canvas = (await (await page.request.get(`/api/projects/${projectId}/canvas`)).json()) as {
+      agents?: Array<{ id: string }>;
+    };
+    const agentIds = (canvas.agents ?? []).map((agent) => agent.id);
+    const shape = Object.fromEntries(
+      Object.entries(base).filter(([key]) => !['runtimeJob', 'reason', 'drift', 'update'].includes(key))
+    );
+    const worker = {
+      ...shape,
+      workerId: 'fixture-offline',
+      label: '离线机',
+      origin: 'remote',
+      state: 'offline',
+      agentIds,
+      agentModels: agentIds.map((agentId) => ({ agentId, models: [FIXTURE_MODEL], defaultModel: FIXTURE_MODEL, readiness: { state: 'ready' } }))
+    };
+    await page.route('**/api/workers', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([worker]) })
+    );
+    await openCanvas(page, projectId);
+    await settleSheet(page);
+
+    const message = page.getByTestId('machine-availability');
+    await expect(message).toHaveAttribute('data-kind', 'all-offline');
+    await expect(message).toContainText('现在没有在线的机器');
+    // 全离线是机器问题，不是当前 agent 的问题：不要摆一个换了也没用的「换 Agent」
+    await expect(page.getByTestId('derive-switch-agent')).toHaveCount(0);
+    await expect(page.getByTestId('derive-start-hint')).toContainText('先让一台机器上线');
+    const start = page.getByRole('dialog', { name: '开始会话' }).getByRole('button', { name: '开始', exact: true });
+    await expect(start).toBeDisabled();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/390-all-offline.png` });
+  });
+});
+
 test.describe('390×844 · 多台机器（网络夹具）', () => {
   test.use({ viewport: { width: 390, height: 844 } });
 

@@ -89,7 +89,7 @@ async function seed(page: Page, baseURL: string, tag: string) {
 test.describe('桌面 1280', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
-  test('项目默认列表；未开始的任务在最上面；返回回到列表而不是画布', async ({ page, baseURL }) => {
+  test('项目默认列表；未开始的任务在最上面；返回回到列表而不是画布', async ({ page, baseURL }, testInfo) => {
     const { project, withSession, unstarted, first } = await seed(page, baseURL!, '桌面');
 
     // 首页先认会话名：同一任务下的两条会话不再长得一模一样。
@@ -126,6 +126,20 @@ test.describe('桌面 1280', () => {
     await expect(page.getByRole('region', { name: `任务：有会话的任务-桌面` })).toContainText('2 条会话');
     // 已派生但还没发第一句话：列表和侧栏都该说「就绪」，不能一边「工作中」一边「就绪」。
     await expect(page.getByRole('region', { name: `任务：有会话的任务-桌面` }).getByText('就绪').first()).toBeVisible();
+    // 桌面不再在底部重复一遍任务 chip：组头本身就是任务入口，打开能看到日志和「开会话」。
+    await expect(page.getByText('任务 · 点一下从它再开一条会话')).toHaveCount(0);
+    const group = page.getByRole('region', { name: `任务：有会话的任务-桌面` });
+    const groupOpen = group.getByTestId('list-group-open');
+    await expect(groupOpen).toBeVisible();
+    expect((await groupOpen.boundingBox())!.height, '桌面组头保持紧凑').toBeLessThan(44);
+    await groupOpen.click();
+    const taskDetail = page.getByTestId('task-detail');
+    await expect(taskDetail).toBeVisible();
+    await expect(taskDetail).toContainText('开了 fakeacp 会话');
+    await expect(taskDetail.getByTestId('task-derive')).toBeVisible();
+    await taskDetail.getByRole('button', { name: '关闭' }).click();
+    await expect(taskDetail).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath('desktop-list-1280.png'), fullPage: true });
 
     // 从列表进会话，再点页头的返回：回到列表，不跳到画布。
     await page.getByTestId('list-session-row').first().click();
@@ -162,11 +176,11 @@ test.describe('桌面 1280', () => {
 test.describe('手机 390', () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test('新建任务有回执，任务出现在未开始组，点回执直接开始会话', async ({ page, baseURL }) => {
+  test('新建任务有回执，任务出现在未开始组，点回执直接开始会话', async ({ page, baseURL }, testInfo) => {
     const { project } = await seed(page, baseURL!, '手机');
     await page.goto(`/#/p/${project.id}/list`);
     await expect(page.getByTestId('list-view')).toBeVisible();
-    // 手机抽屉里的全站导航要在任务树之前就能看到，不用先滚过一长串会话。
+    // 手机抽屉把项目会话/任务放在前面；全局工具是列表之后的页脚，常驻可见，不用滚到底。
     await page.getByRole('button', { name: '打开侧栏' }).click();
     const drawerNav = page.getByTestId('drawer-global-nav');
     await expect(drawerNav).toBeVisible();
@@ -180,10 +194,24 @@ test.describe('手机 390', () => {
     const drawerNavBox = await drawerNav.boundingBox();
     expect(drawerNavBox!.y).toBeGreaterThanOrEqual(0);
     const taskNav = page.getByRole('navigation', { name: '任务与会话' });
-    expect(drawerNavBox!.y).toBeLessThan((await taskNav.boundingBox())!.y);
+    const taskNavBox = (await taskNav.boundingBox())!;
+    const drawerSheetBox = (await page.getByTestId('nav-sheet').boundingBox())!;
+    const drawerAsideBox = (await page.getByTestId('nav-sheet').getByTestId('project-sidebar').boundingBox())!;
+    expect(Math.abs(drawerSheetBox.width - drawerAsideBox.width), '抽屉内容填满 sheet 宽度').toBeLessThanOrEqual(1);
+    expect(drawerNavBox!.y, '全局工具在任务列表之后').toBeGreaterThanOrEqual(taskNavBox.y + taskNavBox.height - 1);
+    expect(drawerNavBox!.height, '全局工具页脚两行以内').toBeLessThan(120);
     await expect(drawerNav.getByTestId('nav-home')).toBeVisible();
-    await page.getByRole('button', { name: '关闭侧栏' }).click();
+    await page.screenshot({ path: testInfo.outputPath('drawer-short-390.png') });
+    // 全局入口真实可达；关闭时 Esc 把焦点还给汉堡按钮。
+    await drawerNav.getByTestId('nav-home').focus();
+    await page.keyboard.press('Escape');
     await expect(page.getByTestId('nav-sheet')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '打开侧栏' })).toBeFocused();
+    await page.getByRole('button', { name: '打开侧栏' }).click();
+    await drawerNav.getByTestId('nav-machines').click();
+    await expect(page).toHaveURL(/#\/machines$/);
+    await page.goto(`/#/p/${project.id}/list`);
+    await expect(page.getByTestId('list-view')).toBeVisible();
 
     // 先把列表滚到底：建完任务要自己滚回「未开始」，不能只让 toast 出现。
     await page.getByTestId('list-view').evaluate((element) => {

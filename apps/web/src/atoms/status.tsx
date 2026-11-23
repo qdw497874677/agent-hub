@@ -23,7 +23,36 @@ export function statusStyle(status: SessionDto['status'], lastSeq?: number) {
   return status === 'running' && lastSeq === 0 ? READY : STATUS[status];
 }
 
-export function StatusPill({ status, reason, lastSeq }: { status: SessionDto['status']; reason?: string | null; lastSeq?: number }) {
+export function StatusPill({
+  status,
+  reason,
+  lastSeq,
+  attention
+}: {
+  status: SessionDto['status'];
+  reason?: string | null;
+  lastSeq?: number;
+  /**
+   * 回合已经结束、当前仍挂着「等回答」时才传：把主状态说成「等你回答 / 可能在等你」，
+   * 标题里说明上一轮已结束。运行状态本身不变，也不表示 runtime 正在等协议回复。
+   */
+  attention?: { possible: boolean } | null;
+}) {
+  if (attention) {
+    const label = attention.possible ? '可能在等你' : '等你回答';
+    return (
+      <span
+        data-testid="session-attention-status"
+        data-possible={attention.possible ? 'true' : 'false'}
+        className={`flex shrink-0 items-center gap-1.5 text-meta ${attention.possible ? 'text-secondary' : 'text-rust'}`}
+        title={attention.possible ? '上一轮已结束；最后一句是问句，可能还需要你回复。' : '上一轮已结束；问题留给了你，回复会接着这条会话。'}
+        aria-label={`${label}；上一轮已结束，${attention.possible ? '最后一句是问句，可能还需要你回复' : '问题留给了你'}`}
+      >
+        <span className="block size-[7px] rounded-full border border-current" />
+        {label}
+      </span>
+    );
+  }
   const style = statusStyle(status, lastSeq);
   return (
     <span className="flex items-center gap-1.5 text-meta text-secondary" title={reason ?? (style === READY ? '就绪：等你发第一句话' : style.label)}>

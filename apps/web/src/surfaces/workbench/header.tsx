@@ -16,13 +16,13 @@ interface Props {
   onNewTask(): void;
 }
 
-const ICON_BUTTON = 'flex size-10 shrink-0 items-center justify-center rounded-control text-tertiary hover:bg-hover hover:text-primary';
+const ICON_BUTTON = 'flex size-[44px] shrink-0 items-center justify-center rounded-control text-tertiary hover:bg-hover hover:text-primary';
 
 /** 手机端页头：侧栏 · 项目 · 视图切换 · 搜索 · 新建。桌面导航在侧栏，视图切换在 ProjectBar。 */
 export function ProjectHeader(props: Props) {
   const { project, projects } = props;
   return (
-    <header className="flex h-12 shrink-0 items-center gap-1 border-b border-hair bg-panel px-1.5">
+    <header className="flex h-[48px] shrink-0 items-center gap-1 border-b border-hair bg-panel px-1.5">
       <button className={ICON_BUTTON} title="项目导航" aria-label="打开侧栏" onClick={props.onMenu}>
         <Icon name="panel" />
       </button>

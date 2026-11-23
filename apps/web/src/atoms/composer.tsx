@@ -47,6 +47,11 @@ interface Props {
    * 这里负责写回输入框、收起还开着的 `@` 菜单、光标落到末尾。nonce 变了才做一次。
    */
   readonly quote?: { readonly text: string; readonly nonce: number } | null;
+  /**
+   * 从会话里的「回复此问题」过来：nonce 变了才把焦点送进输入框，光标落到已有草稿末尾。
+   * 只聚焦，不改 value、不发送——写什么、发不发仍由人决定。
+   */
+  readonly focusRequest?: number;
 }
 
 /**
@@ -74,7 +79,8 @@ export function Composer({
   capability,
   commands,
   projectId,
-  quote
+  quote,
+  focusRequest
 }: Props) {
   // 模型清单要补上 hub 提供商的模型（`session.optionSpec` 里只有 agent 原生模型）。
   const sessionOptions = useSessionOptions(session.optionSpec, projectId, session.workerId, session.agentId);
@@ -154,6 +160,19 @@ export function Composer({
     fitArea();
     element.focus();
   }, [quoteNonce, quoted]);
+
+  // 「回复此问题」：只把焦点和光标送到已有草稿末尾。输入框仍是不受控的，
+  // 这里不碰 value，也不替人按发送。
+  const requestedFocus = focusRequest ?? 0;
+  const appliedFocus = useRef(requestedFocus);
+  useLayoutEffect(() => {
+    if (requestedFocus === 0 || appliedFocus.current === requestedFocus) return;
+    appliedFocus.current = requestedFocus;
+    const element = area.current;
+    if (!element) return;
+    element.focus();
+    element.selectionStart = element.selectionEnd = element.value.length;
+  }, [requestedFocus]);
 
   // `@` 选择器：每次查询变了就去问服务端；慢的旧回答不能盖掉新的。
   const mentionQuery = trigger?.kind === '@' ? trigger.query : null;

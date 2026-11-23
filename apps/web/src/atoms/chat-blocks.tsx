@@ -54,7 +54,7 @@ function AgentQuestion({ block }: { block: Extract<Block, { kind: 'tool' }> }) {
           ))}
         </ul>
       ) : null}
-      <p className="text-tertiary">这条卡只展示提问记录，不代表仍在等待回答；回答请在下面的输入框发送。</p>
+      <p data-testid="agent-question-note" className="text-tertiary">这是当时的提问</p>
     </div>
   );
 }

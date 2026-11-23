@@ -209,6 +209,8 @@ export function FocusView({
    * nonce 让 Composer 知道「这是新引用，去同步一次」。切回对话页，人接着写问题。
    */
   const [quote, setQuote] = useState<{ text: string; nonce: number } | null>(null);
+  // 「回复此问题」只递增这个信号：输入框收到后聚焦，草稿和发送都还是人的事。
+  const [replyFocus, setReplyFocus] = useState(0);
   const quoteSeq = useRef(0);
   const quoteToChat = (ref: string) => {
     const text = appendRef(draft, ref);
@@ -305,6 +307,9 @@ export function FocusView({
   });
   const status = live?.status ?? session.status;
   const reason = live?.reason ?? null;
+  // 首页待办里的「等回答」是回合结束后的线索，不等于 runtime 正在阻塞。
+  // 这里只读同一条 attention 缓存，用「当前这条会话是否还挂着 needs_answer」决定要不要提示回一句。
+  const attention = useQuery({ queryKey: ['attention'], queryFn: api.attention, refetchInterval: 10_000 });
   // 删除会话：跑着的时候服务端会拒（409），菜单里先把原因写出来，别点下去才知道。
   const deleteHint = deleteSessionBlockedHint({ status });
   // 收起（interaction-borrowing §1）：做完的会话移出活跃列表；跑着的先别沉，停下来再说。
@@ -461,6 +466,12 @@ export function FocusView({
     }
   }
   const turnRunning = waitingForReply(live, status);
+  // 只有这一轮已经结束、会话也不在跑时，才把待答项当成「现在可以回」；
+  // 正在跑的时候列表里可能还留着上一轮的线索，不能顺手说成当前阻塞。
+  const answerItem =
+    turnRunning || status === 'running'
+      ? null
+      : attention.data?.items.find((item) => item.sessionId === session.id && item.phase === 'needs_answer') ?? null;
   // 发了消息之后的那段空窗：说出「在启动 / 在等 / 在写 / 在用哪个工具」，秒数自己往前走。
   const progress = useTurnProgress(session.id, blocks, turnRunning, agentLabel);
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
@@ -631,6 +642,8 @@ export function FocusView({
     try {
       await delivery.deliver(text, attachments);
       onDraftChange('');
+      // 新回合已经交出去：让待办/角标尽快按新事件重算，别还挂着刚才那条「等回答」。
+      void queries.invalidateQueries({ queryKey: ['attention'] });
       onChanged();
       return true;
     } catch (failure) {
@@ -691,11 +704,11 @@ export function FocusView({
     <div ref={viewRef} data-focus-view className="flex min-h-0 flex-1 bg-canvas">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header
-        className={`flex h-12 shrink-0 items-center gap-2 border-b border-hair px-2 md:px-3 ${windowChrome ? 'window-drag cursor-move select-none' : ''}`}
-        data-testid={windowChrome ? 'window-titlebar' : undefined}
+        className={`flex h-[48px] shrink-0 items-center gap-2 border-b border-hair px-2 md:h-12 md:px-3 ${windowChrome ? 'window-drag cursor-move select-none' : ''}`}
+        data-testid={windowChrome ? 'window-titlebar' : 'focus-header'}
       >
         {onBack ? (
-          <button className="flex h-11 shrink-0 items-center px-1 text-meta text-tertiary hover:text-primary md:h-9" onClick={onBack} aria-label="返回">
+          <button className="flex h-[44px] min-w-[44px] shrink-0 items-center justify-center px-1 text-meta text-tertiary hover:text-primary md:h-9 md:min-w-0" onClick={onBack} aria-label="返回">
             ←<span className="hidden sm:inline">&nbsp;返回</span>
           </button>
         ) : null}
@@ -737,7 +750,12 @@ export function FocusView({
             {pinned ? <PinnedMark testId="session-pinned" className="size-3 text-secondary" /> : null}
           </p>
         </div>
-        <StatusPill status={status} reason={reason} lastSeq={live?.lastSeq ?? session.lastSeq} />
+        <StatusPill
+          status={status}
+          reason={reason}
+          lastSeq={live?.lastSeq ?? session.lastSeq}
+          attention={status === 'done' && answerItem ? { possible: answerItem.possible } : null}
+        />
         <span className="flex shrink-0 items-center">
           <button
             className="hidden h-11 shrink-0 items-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary sm:flex sm:px-2 md:h-9"
@@ -1297,6 +1315,29 @@ export function FocusView({
               <span className="min-w-0">{envNotice.text}</span>
             </p>
           ) : null}
+          {/* 当前这条会话还挂着「等回答」时才出现：上一轮确实把话留给了人，不是只把运行状态改成阻塞。
+              历史提问卡仍只说明「当时问了什么」，操作入口放在这里，人不用去旧卡上猜。 */}
+          {answerItem ? (
+            <div
+              data-testid="answer-prompt"
+              data-possible={answerItem.possible ? 'true' : 'false'}
+              title={answerItem.possible ? '上一轮已结束；最后一句是问句，可能还需要你回复。' : '上一轮已结束；问题留给了你，回复会接着这条会话。'}
+              className="mb-1.5 flex items-center gap-2 border-l-2 border-link bg-link/5 py-1.5 pl-3 pr-1.5 text-meta"
+            >
+              <p className="min-w-0 flex-1 text-secondary">
+                <span className="block">{answerItem.possible ? 'Agent 可能在等你回答' : 'Agent 在等你回答'}</span>
+                <span className="block text-[11px] leading-4 text-tertiary">上一轮已结束</span>
+              </p>
+              <button
+                type="button"
+                data-testid="answer-reply"
+                className="flex min-h-[44px] shrink-0 items-center rounded-sm px-2 text-link hover:bg-card focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring md:min-h-0 md:py-1"
+                onClick={() => setReplyFocus((nonce) => nonce + 1)}
+              >
+                回复此问题
+              </button>
+            </div>
+          ) : null}
           <Composer
             large
             session={{ ...session, status }}
@@ -1314,6 +1355,7 @@ export function FocusView({
             commands={sessionCommands(session, runtimeCommands, forkHint)}
             projectId={canvas.project.id}
             quote={quote}
+            focusRequest={replyFocus}
           />
         </div>
       </div>

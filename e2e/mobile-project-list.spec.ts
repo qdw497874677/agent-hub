@@ -51,6 +51,13 @@ async function openList(page: Page, projectId: string): Promise<void> {
   await expect(page.getByTestId('list-view')).toBeVisible();
 }
 
+/** 等抽屉滑上来的动画结束，再量真实位置；否则量到的是过渡中的 transform。 */
+async function settleSheet(page: Page): Promise<void> {
+  await expect
+    .poll(() => page.getByTestId('dialog-sheet').evaluate((element) => getComputedStyle(element).transform))
+    .toMatch(/^(none|matrix\(1, 0, 0, 1, 0, 0\))$/);
+}
+
 test.describe('手机上的项目列表', () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
@@ -91,8 +98,8 @@ test.describe('手机上的项目列表', () => {
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('derive-target')).toBeHidden();
 
-    // 底部那排重复的 chip 在手机上不出现（桌面还在）。
-    await expect(page.getByText('任务 · 点一下从它再开一条会话')).toBeHidden();
+    // 底部不再有重复的任务 chip（桌面也去掉了，任务入口只在任务行/组头）。
+    await expect(page.getByText('任务 · 点一下从它再开一条会话')).toHaveCount(0);
 
     // 刷新：请求真的发出去，转圈期间禁用；拿回新数据后就地更新。
     await page.route('**/api/projects/*/canvas', async (route) => {
@@ -153,5 +160,51 @@ test.describe('手机上的项目列表（窄屏 320）', () => {
     const sessionBox = (await page.getByTestId('list-session-row').first().boundingBox())!;
     expect(sessionBox.x + sessionBox.width).toBeLessThanOrEqual(320.5);
     await page.screenshot({ path: testInfo.outputPath('mobile-list-320.png') });
+  });
+});
+
+test.describe('手机抽屉：长任务列表（320/390）', () => {
+  test.use({ viewport: { width: 320, height: 700 } });
+
+  test('任务内容在前，全局工具页脚常驻可见、可点，不横溢', async ({ page, baseURL }, testInfo) => {
+    const { project } = await seed(page, baseURL, 20);
+    await openList(page, project.id);
+
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 700 });
+      await page.getByRole('button', { name: '打开侧栏' }).click();
+      const drawer = page.getByTestId('nav-sheet');
+      await expect(drawer).toBeVisible();
+      const taskNav = page.getByRole('navigation', { name: '任务与会话' });
+      await expect(taskNav).toBeVisible();
+      const globalNav = drawer.getByTestId('drawer-global-nav');
+      await expect(globalNav).toBeVisible();
+
+      // 长列表滚起来也仍能看到全局工具：它在滚动区之外，是抽屉页脚。
+      await taskNav.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      await expect(globalNav).toBeVisible();
+      await settleSheet(page);
+      const navBox = (await globalNav.boundingBox())!;
+      const listBox = (await taskNav.boundingBox())!;
+      const sheetBox = (await drawer.boundingBox())!;
+      const asideBox = (await drawer.getByTestId('project-sidebar').boundingBox())!;
+      expect(Math.abs(sheetBox.width - asideBox.width), '抽屉内容填满 sheet 宽度').toBeLessThanOrEqual(1);
+      expect(navBox.y).toBeGreaterThanOrEqual(listBox.y + listBox.height - 1);
+      expect(navBox.y + navBox.height).toBeLessThanOrEqual(width === 390 ? 844 : 700);
+      expect(navBox.height, '全局工具页脚两行以内').toBeLessThan(120);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
+
+      await expect(globalNav.getByTestId('nav-home')).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath(`drawer-long-${width}.png`) });
+      if (width === 390) {
+        await page.keyboard.press('Escape');
+        await expect(page.getByTestId('nav-sheet')).toHaveCount(0);
+      }
+    }
+
+    await page.getByTestId('nav-sheet').getByTestId('nav-machines').click();
+    await expect(page).toHaveURL(/#\/machines$/);
   });
 });

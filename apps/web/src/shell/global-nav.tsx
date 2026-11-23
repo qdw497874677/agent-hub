@@ -19,10 +19,10 @@ const ICONS: Readonly<Record<string, IconName>> = {
  * 全站导航：只放路由链接，运维组整组只对管理员出现。
  *
  * - `list`（默认）：桌面是一列「图标 + 名字」的紧凑行，组与组之间只留一点空隙，不写组标题；
- *   窄屏（抽屉 / 首页顶部）改成四列图标格，两行就能放下，不把任务列表挤到屏幕外。
+ *   窄屏（抽屉 / 首页顶部）默认四列图标格；抽屉页脚用五列，九项也能压在两行内，不把任务列表挤到屏幕外。
  * - `rail`：侧栏收起成图标栏时只剩图标，名字进 tooltip。
  */
-export function GlobalNav({ layout = 'list' }: { layout?: 'list' | 'rail' }) {
+export function GlobalNav({ layout = 'list', columns = 4 }: { layout?: 'list' | 'rail'; columns?: 4 | 5 }) {
   const account = useAccount();
   const [route] = useRoute();
   const active = activeGlobalNavId(route?.page ?? null);
@@ -56,7 +56,7 @@ export function GlobalNav({ layout = 'list' }: { layout?: 'list' | 'rail' }) {
   }
 
   return (
-    <nav aria-label="全站导航" data-testid="global-nav" className="grid grid-cols-4 gap-0.5 md:grid-cols-2 lg:flex lg:flex-col">
+    <nav aria-label="全站导航" data-testid="global-nav" className={`grid ${columns === 5 ? 'grid-cols-5' : 'grid-cols-4'} gap-0.5 md:grid-cols-2 lg:flex lg:flex-col`}>
       {items.map((item) => {
         const on = item.id === active;
         return (

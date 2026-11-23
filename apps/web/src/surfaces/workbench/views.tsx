@@ -395,22 +395,22 @@ export function ListView({
       data-kind={group.kind}
     >
       <h3 className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-hair bg-canvas/95 py-2 text-sub text-primary backdrop-blur">
-        {narrow && !group.taskless ? (
-          // 窄屏没有底部那排任务 chip 了：组头自己就是这条任务的入口（日志 / 归档 / 再开一条）。
+        {!group.taskless ? (
+          // 组头就是这条任务的入口（日志 / 归档 / 再开一条）：窄屏 44px，桌面保持紧凑但可聚焦。
           <button
             type="button"
             data-testid="list-group-open"
             aria-label={`打开任务：${group.title}`}
-            className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2 text-left"
+            className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-sm text-left hover:bg-card focus-visible:bg-card focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring md:min-h-7"
             onClick={() => onTaskDetail(group.taskId)}
           >
+            <span className="shrink-0 text-meta text-tertiary max-md:hidden">任务</span>
             <span className="min-w-0 flex-1 truncate">{group.title}</span>
             <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
             <Icon name="chevron-right" size={13} className="shrink-0 text-tertiary" />
           </button>
         ) : (
           <>
-            {group.taskless ? null : <span className="shrink-0 text-meta text-tertiary">任务</span>}
             <span className="min-w-0 truncate">{group.title}</span>
             <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
           </>
@@ -588,36 +588,11 @@ export function ListView({
         </section>
       ) : null}
 
-      {/* 窄屏上每一行任务已经自带「开会话」和日志入口，这排 chip 只是把同样的东西再列一遍，藏掉。 */}
-      <div className="mt-6 border-t border-hair pt-3">
-        {canvas.tasks.length === 0 ? <NoTasksHint onNewTask={onNewTask} /> : null}
-        {canvas.tasks.length > 0 ? (
-          <div className="max-md:hidden">
-            <p className="mb-2 text-meta text-secondary">任务 · 点一下从它再开一条会话</p>
-            <div className="flex flex-wrap gap-2">
-              {canvas.tasks.map((task) => (
-                <span key={task.id} className="inline-flex items-stretch">
-                  <button
-                    className="rounded-l-sm border border-hair px-2.5 py-1.5 text-sub text-secondary hover:border-strong hover:text-primary"
-                    onClick={() => onDerive(task.id)}
-                    title="从这个任务派生一条会话"
-                  >
-                    {task.title}
-                    {task.status === 'abandoned' ? '（已放弃）' : ''}
-                  </button>
-                  <button
-                    className="rounded-r-sm border border-l-0 border-hair px-2 text-meta text-tertiary hover:border-strong hover:text-primary"
-                    onClick={() => onTaskDetail(task.id)}
-                    aria-label={`${task.title} 的日志`}
-                  >
-                    日志
-                  </button>
-                </span>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
+      {canvas.tasks.length === 0 ? (
+        <div className="mt-6 border-t border-hair pt-3">
+          <NoTasksHint onNewTask={onNewTask} />
+        </div>
+      ) : null}
 
       {menu !== null && menuSession !== undefined ? (
         <RowMenu

@@ -244,7 +244,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
                     <span className="flex shrink-0 items-center gap-3">
                       <button
                         type="button"
-                        className="text-meta text-secondary hover:text-primary disabled:opacity-40"
+                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-sm px-2 text-meta text-secondary hover:text-primary disabled:opacity-40 md:min-h-0 md:min-w-0 md:px-0"
                         data-testid="repo-check"
                         aria-label={`检查仓库 ${index + 1}`}
                         title="在这台机器上试着读一下；不保存、不创建、不 clone"
@@ -255,7 +255,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
                       </button>
                       <button
                         type="button"
-                        className="text-meta text-tertiary hover:text-rust disabled:opacity-40"
+                        className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-sm px-2 text-meta text-tertiary hover:text-rust disabled:opacity-40 md:min-h-0 md:min-w-0 md:px-0"
                         data-testid="repo-remove"
                         title="从清单里删掉这个仓库"
                         onClick={() => {

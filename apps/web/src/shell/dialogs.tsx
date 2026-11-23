@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, assetsApi, assetSetsApi, providersApi, type CanvasDto, type HubModelsDto, type SessionDto, type TaskDto, type WorkerInfoDto } from './api.ts';
@@ -24,7 +24,7 @@ import { WorkspaceChooser, choiceReady, longLivedRequest, repoName, useWorkspace
 import { shortPath, workspaceName } from '../atoms/workspace-format.ts';
 import { harnessReason } from './harness.tsx';
 import { Icon } from '../atoms/icons.tsx';
-import { agentNote, canSelectMachine, emptyModelOption, hubCovers, startHint } from './harness-gate.ts';
+import { agentNote, canSelectMachine, emptyModelOption, hubCovers, machineAvailability, startHint } from './harness-gate.ts';
 import { ModelPicker } from '../atoms/model-picker.tsx';
 import { useNarrow } from './device.ts';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
@@ -142,6 +142,19 @@ export function DeriveDialog({
   const narrow = useNarrow();
   const [agentSectionOpen, setAgentSectionOpen] = useState(false);
   const [assetsSectionOpen, setAssetsSectionOpen] = useState(false);
+  // 「换 Agent」只做两件事：展开手机上的折叠区，把焦点放回原来的选择器。不动 agent / 机器 / 目录。
+  const agentPicker = useRef<HTMLSelectElement>(null);
+  const [agentFocusSignal, setAgentFocusSignal] = useState(0);
+  useEffect(() => {
+    if (agentFocusSignal === 0) return;
+    const timer = window.setTimeout(() => {
+      const select = agentPicker.current;
+      if (select === null) return;
+      select.focus();
+      select.scrollIntoView({ block: 'center' });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [agentFocusSignal]);
   const profiles = useQuery({ queryKey: ['agent-profiles'], queryFn: () => api.agentProfiles(), retry: false });
   const workers = useWorkers();
   // 底部复核行要念出「已有的哪个目录」：和 chooser 共用同一份查询（同一个 key，不多打一次请求）。
@@ -176,6 +189,10 @@ export function DeriveDialog({
   const hubList = hubModels.data?.providers ?? [];
   const hubHidden = hubModels.data?.hidden ?? [];
   const hubProtocols = [...new Set(hubList.map((provider) => provider.protocol))];
+  const availability = machineAvailability(workers.list, agentId, hubProtocols, {
+    loading: workers.list.length === 0 && workers.loading,
+    failed: workers.list.length === 0 && workers.failed
+  });
   const selectedHub = hubList.flatMap((provider) => provider.models.map((item) => ({ id: item.id, protocol: provider.protocol }))).find((item) => item.id === model) ?? null;
   const offered = withHubModels(
     modelsFor(workers.list, machine, agentId) ?? { models: agent?.models ?? [], defaultModel: agent?.defaultModel ?? '' },
@@ -197,7 +214,8 @@ export function DeriveDialog({
     protocol: selectedHub?.protocol ?? null,
     workspaceReady: choiceReady(choice),
     workspaceNeedsPath: choice?.type === 'new_long_lived' && !choice.path,
-    hubAvailable: hubCovers(workers.byId(machine), agentId, hubProtocols)
+    hubAvailable: hubCovers(workers.byId(machine), agentId, hubProtocols),
+    machines: availability
   });
   // 模型框的空值项：状态为空时显式画出来，别让浏览器把第一项画成「已选」（见 emptyModelOption）
   const emptyModel = emptyModelOption(offered.models, model, hubCovers(workers.byId(machine), agentId, hubProtocols));
@@ -395,6 +413,11 @@ export function DeriveDialog({
     if (agentId === '' && canvas.agents.length > 0) setAgentId(canvas.agents[0]?.id ?? '');
   }, [agentId, canvas.agents]);
 
+  const switchAgent = () => {
+    setAgentSectionOpen(true);
+    setAgentFocusSignal((value) => value + 1);
+  };
+
   return (
     <DialogShell
       title="开始会话"
@@ -442,17 +465,6 @@ export function DeriveDialog({
           <p className="mt-0.5 line-clamp-2 text-body text-primary">{taskTitle}</p>
           <p className="mt-0.5 truncate text-meta text-tertiary">{canvas.project.name}</p>
         </section>
-        {canvas.agents.length === 0 ? (
-          <p className="mb-3 max-md:order-3 border-l border-rust pl-2 text-meta text-secondary">
-            还没有在线的机器。
-            <button
-              className="ml-2 text-link underline-offset-2 hover:underline"
-              onClick={() => void queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] })}
-            >
-              重新检查
-            </button>
-          </p>
-        ) : null}
         <div data-testid="derive-workspace-region" className="max-md:order-5">
           <WorkspaceChooser
             canvas={canvas}
@@ -471,6 +483,7 @@ export function DeriveDialog({
             hubProtocols={hubProtocols}
             groups
             chatOnly
+            onSwitchAgent={switchAgent}
           />
         </div>
         <div className="mb-3 max-md:order-6">
@@ -536,6 +549,7 @@ export function DeriveDialog({
         <label className="mb-1 block text-meta text-secondary" htmlFor="derive-agent">agent</label>
         <select
           id="derive-agent"
+          ref={agentPicker}
           className={`mb-3 ${INPUT}`}
           value={agentId}
           onChange={(event) => {

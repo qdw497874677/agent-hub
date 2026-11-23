@@ -450,7 +450,7 @@ function Workspace() {
       {/* 手机/平板侧栏走同一个抽屉：Esc、焦点陷阱、外部点按关闭、关掉把焦点还给汉堡按钮。
           以前是个普通 div，键盘用户按 Esc 关不掉，Tab 还能跑到被遮住的页面里。 */}
       {sidebarOpen ? (
-        <Sheet title="项目与导航" testId="nav-sheet" onClose={() => setSidebarOpen(false)}>
+        <Sheet title="项目与导航" testId="nav-sheet" scroll={false} onClose={() => setSidebarOpen(false)}>
           {sidebar(() => setSidebarOpen(false))}
         </Sheet>
       ) : null}

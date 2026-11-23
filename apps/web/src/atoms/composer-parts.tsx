@@ -18,7 +18,7 @@ export function ActionDot({
   onInterrupt: () => void;
   size: 'sm' | 'md';
 }) {
-  const box = size === 'sm' ? 'size-9 md:size-6' : 'size-10 md:size-7';
+  const box = size === 'sm' ? 'size-[44px] md:size-6' : 'size-[44px] md:size-7';
   const icon = size === 'sm' ? 13 : 15;
   if (running) {
     return (

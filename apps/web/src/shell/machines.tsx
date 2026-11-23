@@ -178,12 +178,7 @@ export function MachinesPage({ workerId, tab }: { workerId: string | null; tab: 
                 <div className="rounded-lg border border-hair bg-panel px-4 py-6">
                   <p className="text-body text-secondary">还没有机器连上。它起来后会自己报到——刚启动的话等几秒。</p>
                   {openAdd ? (
-                    <button
-                      className="mt-3 flex min-h-9 w-full items-center justify-center gap-1.5 rounded-sm border border-dashed border-strong text-sub text-secondary hover:text-primary"
-                      onClick={openAdd}
-                    >
-                      <span aria-hidden>＋</span> 添加机器
-                    </button>
+                    <p className="mt-3 text-meta text-tertiary">点右上角「添加机器」生成一行命令，在要加入的机器上运行。</p>
                   ) : enroll.data && !enroll.data.allowed ? (
                     <p className="mt-3 text-meta text-tertiary">要加机器请联系主人</p>
                   ) : null}
@@ -201,18 +196,9 @@ export function MachinesPage({ workerId, tab }: { workerId: string | null; tab: 
                       />
                     ))}
                   </ul>
-                  <div className="px-1 pt-2">
-                    {openAdd ? (
-                      <button
-                        className="flex min-h-9 w-full items-center justify-center gap-1.5 rounded-sm border border-dashed border-strong text-sub text-secondary hover:text-primary"
-                        onClick={openAdd}
-                      >
-                        <span aria-hidden>＋</span> 添加机器
-                      </button>
-                    ) : enroll.data && !enroll.data.allowed ? (
-                      <p className="text-meta text-tertiary">要加机器请联系主人</p>
-                    ) : null}
-                  </div>
+                  {openAdd ? null : enroll.data && !enroll.data.allowed ? (
+                    <p className="px-1 pt-2 text-meta text-tertiary">要加机器请联系主人</p>
+                  ) : null}
                 </>
               )}
             </aside>

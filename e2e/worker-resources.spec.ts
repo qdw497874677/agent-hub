@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
 import { piModel } from './hub-model.ts';
 
@@ -15,6 +15,107 @@ import { piModel } from './hub-model.ts';
 const SHOTS = process.env['E2E_SCREENSHOTS'];
 const GiB = 1024 ** 3;
 const OLD = 'old-worker-e2e';
+
+type ContrastSample = { fg: string; bg: string; ratio: number; theme: string };
+
+/** 临时切主题只改 DOM；不写 localStorage，免得影响同页后续断言。 */
+async function setTheme(page: Page, theme: 'light' | 'dark'): Promise<void> {
+  await page.evaluate((next) => {
+    document.documentElement.dataset['theme'] = next;
+  }, theme);
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+}
+
+/**
+ * 取元素真实的前景/背景计算对比度。背景沿祖先往上找，alpha 层按顺序叠，
+ * 断言的是浏览器算出来的颜色，而不是测试里另抄一份令牌。
+ */
+async function contrastOf(locator: Locator): Promise<ContrastSample> {
+  return locator.evaluate((element) => {
+    const parse = (value: string): [number, number, number, number] => {
+      const parts = (value.match(/[-+]?\d*\.?\d+/g) ?? []).map(Number);
+      // Chromium 把 color-mix 算成 color(srgb …) 或 oklab(…)；都换回 0–255 的 sRGB。
+      if (value.startsWith('oklab(') || value.startsWith('oklch(')) {
+        const lightness = parts[0] ?? 0;
+        const isPolar = value.startsWith('oklch(');
+        const chroma = parts[1] ?? 0;
+        const hue = parts[2] ?? 0;
+        const a = isPolar ? chroma * Math.cos((hue * Math.PI) / 180) : chroma;
+        const b = isPolar ? chroma * Math.sin((hue * Math.PI) / 180) : hue;
+        const l1 = lightness + 0.3963377774 * a + 0.2158037573 * b;
+        const m1 = lightness - 0.1055613458 * a - 0.0638541728 * b;
+        const s1 = lightness - 0.0894841775 * a - 1.291485548 * b;
+        const l3 = l1 ** 3;
+        const m3 = m1 ** 3;
+        const s3 = s1 ** 3;
+        const linear = [
+          4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+          -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+          -0.0041960863 * l3 - 0.7034186147 * m3 + 1.707614701 * s3
+        ];
+        const toSrgb = (channel: number): number => {
+          const clamped = Math.min(1, Math.max(0, channel));
+          const encoded = clamped <= 0.0031308 ? 12.92 * clamped : 1.055 * clamped ** (1 / 2.4) - 0.055;
+          return encoded * 255;
+        };
+        return [toSrgb(linear[0]!), toSrgb(linear[1]!), toSrgb(linear[2]!), parts[3] ?? 1];
+      }
+      const scale = value.startsWith('color(srgb') ? 255 : 1;
+      return [(parts[0] ?? 0) * scale, (parts[1] ?? 0) * scale, (parts[2] ?? 0) * scale, parts[3] ?? 1];
+    };
+    const channel = (value: number): number => {
+      const c = value / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = ([r, g, b]: [number, number, number, number]): number =>
+      0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    const over = (
+      top: [number, number, number, number],
+      bottom: [number, number, number, number]
+    ): [number, number, number, number] => {
+      const alpha = top[3];
+      return [
+        top[0] * alpha + bottom[0] * (1 - alpha),
+        top[1] * alpha + bottom[1] * (1 - alpha),
+        top[2] * alpha + bottom[2] * (1 - alpha),
+        1
+      ];
+    };
+    const format = ([r, g, b]: [number, number, number, number]): string =>
+      `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+
+    const layers: [number, number, number, number][] = [];
+    let node: Element | null = element;
+    while (node) {
+      const color = parse(getComputedStyle(node).backgroundColor);
+      if (color[3] > 0) layers.push(color);
+      if (color[3] >= 0.999) break;
+      node = node.parentElement;
+    }
+    let background = layers[layers.length - 1] ?? ([255, 255, 255, 1] as [number, number, number, number]);
+    for (let index = layers.length - 2; index >= 0; index -= 1) background = over(layers[index]!, background);
+
+    const foreground = parse(getComputedStyle(element).color);
+    const a = luminance(foreground);
+    const b = luminance(background);
+    return {
+      fg: format(foreground),
+      bg: format(background),
+      ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05),
+      theme: document.documentElement.dataset['theme'] ?? ''
+    };
+  });
+}
+
+const WARNING_COLOR = { light: 'rgb(122, 92, 0)', dark: 'rgb(214, 180, 80)' } as const;
+
+async function expectWarningContrast(locator: Locator, theme: 'light' | 'dark', label: string): Promise<void> {
+  const sample = await contrastOf(locator);
+  console.log(`${label} ${theme}: ${sample.fg} on ${sample.bg} = ${sample.ratio.toFixed(2)}:1`);
+  expect(sample.theme, `${label}：主题`).toBe(theme);
+  expect(sample.fg, `${label}：${theme} 下用的是 --color-warning`).toBe(WARNING_COLOR[theme]);
+  expect(sample.ratio, `${label}：${theme} 下 ${sample.fg} on ${sample.bg} 对比度`).toBeGreaterThanOrEqual(4.5);
+}
 
 type WorkerJson = { workerId: string; state: string; agentIds: string[]; label: string; resources?: unknown; [key: string]: unknown };
 
@@ -152,7 +253,19 @@ test.describe('资源展示', () => {
       expect(badgeBox.x + badgeBox.width).toBeLessThanOrEqual(handle.x + handle.width + 1);
       await expect(page.locator(`.react-flow__node[data-id="${a}"]`).getByTestId('session-usage')).toHaveText('◔ 12% · 480M');
       await expect(page.locator(`.react-flow__node[data-id="${b}"]`).getByTestId('session-usage')).toHaveCount(0);
-      if (SHOTS) await page.screenshot({ path: join(SHOTS, `canvas-${width}.png`) });
+      await expect(badge).toHaveAttribute('title', /资源偏紧/);
+      for (const theme of ['light', 'dark'] as const) {
+        await setTheme(page, theme);
+        // 390 下徽标只剩一个点，文本按设计隐藏；真正渲染出字的宽度才量文字对比度。
+        if (width >= 640) {
+          await expectWarningContrast(
+            badge.getByTestId('worker-frame-resources-text'),
+            theme,
+            '画布资源徽标'
+          );
+        }
+        if (SHOTS) await page.screenshot({ path: join(SHOTS, `canvas-${width}-${theme}.png`) });
+      }
 
       // 机器列表：窄屏顶栏不放机器徽标，在首页侧栏底部
       if (width < 768) await page.goto('/#/');
@@ -164,17 +277,32 @@ test.describe('资源展示', () => {
       await expect(fresh).toContainText('内存 91%');
       await expect(fresh).toContainText('盘剩 64G');
       await expect(fresh).toContainText('GPU 20%');
+      await expect(fresh).toHaveAttribute('title', /资源偏紧/);
       await expect(page.locator('[data-testid="worker-resources"][data-level="none"]')).toHaveText('CPU — · 内存 — · 盘 —');
       // 摘要不横向溢出（窄屏）
       const box = (await fresh.boundingBox())!;
       expect(box.x + box.width).toBeLessThanOrEqual(width);
+      for (const theme of ['light', 'dark'] as const) {
+        await setTheme(page, theme);
+        await expectWarningContrast(fresh, theme, '机器列表资源摘要');
+        if (SHOTS) await page.screenshot({ path: join(SHOTS, `machines-${width}-${theme}.png`) });
+      }
       await fresh.click();
       const details = page.getByTestId('worker-resource-details');
+      await expect(details).toContainText('资源偏紧');
       await expect(details).toContainText('内存只剩 9%');
       await expect(details).toContainText('/home 剩 64G / 200G');
       await expect(details).toContainText('NVIDIA T4');
       await expect(page.getByTestId('refuse-when-full')).not.toBeChecked();
-      if (SHOTS) await page.screenshot({ path: join(SHOTS, `machines-${width}.png`) });
+      for (const theme of ['light', 'dark'] as const) {
+        await setTheme(page, theme);
+        await expectWarningContrast(
+          details.getByTestId('worker-resource-warning'),
+          theme,
+          '机器详情资源警告'
+        );
+        if (SHOTS) await page.screenshot({ path: join(SHOTS, `machines-detail-${width}-${theme}.png`) });
+      }
     });
   }
 });
