@@ -7,6 +7,7 @@ import { useWorkers } from '../../shell/workers.tsx';
 import { ModelPicker } from '../../atoms/model-picker.tsx';
 import { coordinatorKeys } from '../../shell/query-keys.ts';
 import { modelsFor, withHubModels } from '../../shell/dialogs.tsx';
+import { startBlockReason } from '../../shell/harness-gate.ts';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from './workspace-chooser.tsx';
 
 /**
@@ -71,11 +72,17 @@ export function CoordinatorDialog({
     }
   });
 
-  const ready = machine !== null && agentId !== '' && choiceReady(choice) && !start.isPending;
+  // 选中的机器在、但这台上的 agent 现在起不来（探测失败 / 离线）：按钮别装作能开。
+  const protocol =
+    (hubModels.data?.providers ?? []).find((provider) => provider.models.some((item) => item.id === model))?.protocol ?? null;
+  const block = machine === null ? null : startBlockReason(workers.byId(machine), agentId, model, protocol);
+  const ready = machine !== null && agentId !== '' && choiceReady(choice) && block === null && !start.isPending;
   const hint =
     start.error ? (start.error as Error).message
     : machine === null ? '先选一台在线机器'
     : !choiceReady(choice) ? '先选一个长期工作目录'
+    : block === '机器不在线' ? '这台机器现在不在线，等它回来再继续'
+    : block !== null ? `这台机器上的 ${agent?.label ?? agentId} 现在用不了：${block}`
     : model === '' ? '不指定模型就用这台机器上 agent 的默认模型'
     : null;
 

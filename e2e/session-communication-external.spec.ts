@@ -1,19 +1,21 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test, expect, request as apiRequest, type APIRequestContext } from '@playwright/test';
+import { test, expect, request as apiRequest } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { e2eHubModel, piModel } from './hub-model.ts';
-import { serverEnv } from './server-env.ts';
-import { e2eWorkerRoots } from './isolation.ts';
+import { e2eHubModel } from './hub-model.ts';
+import { ensureFakeWorker, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 会话通信 P1d（docs/design/session-communication.md §5.4 / §10.2 / E2 子集）：外部 agent 只用开放 API / MCP，
  * 在远程机器上开两条会话 → session_link → session_peers → session_message(ask) → message_get(waitSec) / message_inbox 取回复
- * → events / get_session 的 waitSec → 本机 Worker 上的会话拒绝 → 吊销令牌后 401。
+ * → events / get_session 的 waitSec → 令牌在本机 Worker 上开会话被拒 → 吊销令牌后 401。
  */
 type Accepted = { messageId: string; status: string };
+
+// 用 e2e/fake-worker.ts 里那个真跑 ACP 的假 Worker：它显式带 ACP_AGENTS，机器一上线就有确定的 agentId，
+// 不依赖宿主机装没装 Pi。enroll / 启动 worker 的这些步骤由该 fixture 覆盖，本文件不再手工重复一遍。
+const AGENT_ID = 'fakeacpext';
 
 test('外部 agent：连线、同伴、ask 回复进外部收件箱、长轮询、本机拒绝、吊销 401', async ({ page, baseURL }) => {
   test.setTimeout(420_000);
@@ -27,34 +29,23 @@ test('外部 agent：连线、同伴、ask 回复进外部收件箱、长轮询�
   const { token, info } = (await minted.json()) as { token: string; info: { id: string } };
   const bot = await apiRequest.newContext({ baseURL, extraHTTPHeaders: { authorization: `Bearer ${token}` } });
 
-  const pairing = (await (await page.request.post('/api/workers/pairing', { headers })).json()) as { code: string };
-  const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
-  const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], {
-    env: { PATH: process.env['PATH'] ?? '', HUB_URL: hubUrl, HUB_PAIR: pairing.code, WORKER_LABEL: 'e2e 会话通信外部' },
-    encoding: 'utf8'
-  });
-  expect(enrolled.status, enrolled.stderr).toBe(0);
-  const [workerId = '', credential = ''] = enrolled.stdout.trim().split('\n');
+  const workerId = await ensureFakeWorker(page, baseURL!, AGENT_ID);
   const state = mkdtempSync(join(tmpdir(), 'hub-e2e-sc-ext-'));
   const dir = join(state, 'repo');
   mkdirSync(dir);
-  let worker: ChildProcess | null = null;
   try {
-    worker = spawn(process.execPath, ['apps/worker/src/main.ts'], {
-      env: { ...serverEnv(), HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: 'e2e 会话通信外部', WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state },
-      stdio: 'ignore'
-    });
-    let agentId: string | undefined;
+    // 外部令牌看到的是同一份机器清单：这台机器在线，并且上报了我们显式配的那个 agent。
     await expect.poll(async () => {
       const list = (await (await bot.get('/openapi/v1/workers')).json()) as { workerId: string; agentIds?: string[]; state: string }[];
-      agentId = list.find((entry) => entry.workerId === workerId && entry.state === 'online')?.agentIds?.[0];
-      return Boolean(agentId);
-    }, { timeout: 30_000 }).toBe(true);
+      const entry = list.find((each) => each.workerId === workerId);
+      return entry?.state === 'online' && (entry.agentIds ?? []).includes(AGENT_ID);
+    }, { timeout: 30_000, message: `外部令牌应看到 ${workerId} 在线并上报 ${AGENT_ID}` }).toBe(true);
 
     const project = (await (await bot.post('/openapi/v1/projects', { data: { name: `${name} 远程`, rootPath: dir, workerId } })).json()) as { id: string };
     const taskId = ((await (await bot.post('/openapi/v1/tasks', { data: { projectId: project.id, title: '外部编排' } })).json()) as { id: string }).id;
     const start = async () => {
-      const started = await bot.post('/openapi/v1/sessions', { data: { taskId, agentId, model: piModel(), workerId } });
+      // 这是 fake ACP --models 实际上报的模型；不依赖项目默认 Agent 或宿主模型。
+      const started = await bot.post('/openapi/v1/sessions', { data: { taskId, agentId: AGENT_ID, model: 'fake/m1', workerId } });
       expect(started.status(), await started.text()).toBe(201);
       return ((await started.json()) as { id: string }).id;
     };
@@ -73,9 +64,10 @@ test('外部 agent：连线、同伴、ask 回复进外部收件箱、长轮询�
     });
     expect(asked.status(), await asked.text()).toBe(201);
     const { messageId } = (await asked.json()) as Accepted;
-    let reply: { replyStatus: string | null; body: string; failure: string | null } | null = null;
+    type Reply = { replyStatus: string | null; body: string; failure: string | null };
+    let reply: Reply | null = null;
     for (let i = 0; i < 6 && !reply; i++) {
-      const got = (await (await bot.get(`/openapi/v1/messages/${messageId}?waitSec=50`, { timeout: 70_000 })).json()) as { message: { status: string; from: string }; reply: typeof reply };
+      const got = (await (await bot.get(`/openapi/v1/messages/${messageId}?waitSec=50`, { timeout: 70_000 })).json()) as { message: { status: string; from: string }; reply: Reply | null };
       expect(got.message.from).toBe(`external:${info.id}`);
       reply = got.reply;
     }
@@ -123,25 +115,38 @@ test('外部 agent：连线、同伴、ask 回复进外部收件箱、长轮询�
 
     // session_unlink
     expect((await bot.post(`/openapi/v1/sessions/${dev}/unlink`, { data: { otherSessionId: verify } })).status()).toBe(200);
-    expect(((await (await bot.get(`/openapi/v1/sessions/${dev}/peers`)).json()) as { peers: unknown[] }).peers.length).toBe(0);
+    const afterUnlink = (await (await bot.get(`/openapi/v1/sessions/${dev}/peers`)).json()) as { peers: { address: string; relation?: string; connected?: boolean }[] };
+    const sameTaskPeer = afterUnlink.peers.find((peer) => peer.address === `session:${verify}`);
+    expect(sameTaskPeer?.relation).toBe('task_tree');
+    expect(sameTaskPeer?.connected).not.toBe(true);
   } finally {
-    worker?.kill();
+    stopFakeWorker();
     rmSync(state, { recursive: true, force: true });
     await page.request.delete(`/api/workers/${workerId}`, { headers }).catch(() => undefined);
   }
 
-  // 本机 Worker 上的会话：令牌发消息也被拒（会开新一轮，等同 session_reply）
-  const browserWorkers = (await (await page.request.get('/api/workers')).json()) as { workerId: string; origin: string; agentIds: string[]; state: string }[];
-  const local = browserWorkers.find((w) => w.origin === 'local' && w.state === 'online');
-  if (local) {
-    const localDir = mkdtempSync(join(tmpdir(), 'e2e-sc-ext-local-'));
+  // 本机 Worker：令牌连"开"都不许（openapi 永远不能用 hub 同机的机器）。
+  // 这条策略在 deriveSessionUseCase 里先于就绪检查拒绝（packages/domain/src/use-cases/sessions.ts:178-183），
+  // 所以不需要本机真装某个 agent、也不受「检测超时」影响——不依赖环境里的 pi。
+  const localWorker = async (): Promise<{ workerId: string; agentIds: string[] } | undefined> => {
+    const browserWorkers = (await (await page.request.get('/api/workers')).json()) as { workerId: string; origin: string; agentIds: string[]; state: string }[];
+    return browserWorkers.find((w) => w.origin === 'local' && w.state === 'online');
+  };
+  await expect.poll(localWorker, { message: 'E2E Hub 应启动本机 Worker' }).toBeDefined();
+  const local = (await localWorker())!;
+  const localDir = mkdtempSync(join(tmpdir(), 'e2e-sc-ext-local-'));
+  try {
     const p = (await (await page.request.post('/api/projects', { data: { name: `${name} local`, rootPath: localDir }, headers })).json()) as { id: string };
     const t = (await (await page.request.post('/api/tasks', { data: { projectId: p.id, title: '本机' }, headers })).json()) as { id: string };
-    const s = (await (await page.request.post('/api/sessions/derive', { data: { taskId: t.id, agentId: local.agentIds[0], model: piModel(), workerId: local.workerId }, headers })).json()) as { id: string };
-    const denied = await bot.post(`/openapi/v1/sessions/${s.id}/messages`, { data: { kind: 'send', body: 'hi' } });
+    const denied = await bot.post('/openapi/v1/sessions', {
+      // model 显式给一个原生名（不是 hub 模型 → checkModel 放行），跳过「没有默认模型」那条 400，
+      // 让拒绝来自真正的策略点（authorizeWorker：本机只给集群管理员）。
+      data: { taskId: t.id, agentId: local.agentIds[0] ?? 'pi', model: 'm1', workerId: local.workerId }
+    });
     expect(denied.status(), await denied.text()).toBe(403);
-  } else {
-    test.info().annotations.push({ type: 'local-worker', description: '没有在线的本机 Worker，跳过本机拒绝这一步' });
+    expect((await denied.json() as { error?: { message?: string } }).error?.message ?? '').toContain('本机');
+  } finally {
+    rmSync(localDir, { recursive: true, force: true });
   }
 
   // 吊销：收件箱随令牌关闭

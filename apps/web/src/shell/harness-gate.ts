@@ -1,5 +1,7 @@
 /** 派生对话框用的最小机器形状，避免把 React 组件引进纯函数。 */
 export interface GateWorker {
+  /** 在线状态；老调用方不传时按在线处理（只看 harness 原因）。 */
+  readonly state?: string;
   readonly agentModels?: readonly {
     readonly agentId: string;
     readonly providers?: readonly string[];
@@ -31,6 +33,8 @@ export function canSelectMachine(worker: GateWorker | undefined, agentId: string
 
 /** 选了同协议的 hub 模型之后，「未配置模型」不再挡住开始。空模型和其他原因仍挡住。 */
 export function startBlockReason(worker: GateWorker | undefined, agentId: string, model: string, protocol: string | null): string | null {
+  // 机器不在线：agent 的探测结果可能是上一次留下的，不能拿它当「能开」。
+  if (worker?.state === 'offline') return '机器不在线';
   const reason = harnessReasonOf(worker, agentId);
   if (reason !== '未配置模型') return reason;
   if (!protocol || !/^hub-[a-z0-9][a-z0-9-]{0,30}\/\S+$/.test(model)) return reason;
@@ -41,6 +45,19 @@ export function startBlockReason(worker: GateWorker | undefined, agentId: string
 /** 「未配置模型」但这台机器上有同协议的 hub 模型能顶上：不算坏，只是要先选一个 hub 模型。 */
 export function hubCovers(worker: GateWorker | undefined, agentId: string, hubProtocols: readonly string[]): boolean {
   return harnessReasonOf(worker, agentId) === '未配置模型' && canSelectMachine(worker, agentId, hubProtocols);
+}
+
+/**
+ * 会话里记下的模型如果是 Hub 模型，它在清单里属于哪个协议。
+ * 「换个地方继续」会原样带上这条会话的模型，所以判断目标机器能不能接着跑时要用这个协议，
+ * 而不是像派生对话框那样另选一个 Hub 模型。不是 Hub 模型（或清单还没到）→ null。
+ */
+export function carriedProtocol(
+  model: string,
+  providers: readonly { readonly protocol: string; readonly models: readonly { readonly id: string }[] }[]
+): string | null {
+  if (model.trim() === '') return null;
+  return providers.find((provider) => provider.models.some((item) => item.id === model))?.protocol ?? null;
 }
 
 /**
@@ -95,6 +112,7 @@ export function startHint(input: StartHintInput): string | null {
   // 只差一个模型：说「去选模型」，别说「用不了」——模型框里就有能选的 hub 模型
   if (reason === '未配置模型' && input.model === '' && input.hubAvailable === true) return '先在「模型」里选一个 Hub 模型';
   if (reason !== null) {
+    if (reason === '机器不在线') return '这台机器不在线';
     const label = input.agentLabel.trim() === '' ? input.agentId : input.agentLabel.trim();
     return reason.trim() === '' ? `这台机器上的 ${label} 用不了` : `这台机器上的 ${label} 用不了：${reason.trim()}`;
   }

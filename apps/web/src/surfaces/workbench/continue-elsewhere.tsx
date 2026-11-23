@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CanvasDto, SessionDto } from '../../shell/api.ts';
-import { api } from '../../shell/api.ts';
+import { api, providersApi } from '../../shell/api.ts';
 import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
+import { carriedProtocol, startBlockReason } from '../../shell/harness-gate.ts';
 import { WorkspaceChooser, choiceReady, longLivedRequest, useWorkspaceViews, type WorkspaceChoice } from './workspace-chooser.tsx';
 
 /**
@@ -40,6 +41,18 @@ export function ContinueDialog({
 
   const from = views.data?.find(({ workspace }) => workspace.id === session.workspaceId)?.workspace ?? null;
   const same = choice?.type === 'existing' && choice.workspaceId === session.workspaceId;
+  // 这条会话用的可能是 Hub 模型：服务端继续时把它原样带过去（use-cases/continue-elsewhere.ts）。
+  // 只看这条会话自己的模型，不在这里开放换模型；协议从项目能用的 Hub 模型清单里查。
+  const hubModels = useQuery({
+    queryKey: ['hub-models', canvas.project.id],
+    queryFn: () => providersApi.modelsExplained({ projectId: canvas.project.id }),
+    retry: false
+  });
+  const carried = carriedProtocol(session.model, hubModels.data?.providers ?? []);
+  // 目标机器在、但这台上的 agent 现在起不来（探测失败 / 离线）：按钮别装作能开。
+  const blocked =
+    machine === null ? null : startBlockReason(workers.byId(machine), session.agentId, session.model, carried);
+  const agentLabel = canvas.agents.find((candidate) => candidate.id === session.agentId)?.label ?? session.agentId;
 
   async function go() {
     if (!choice || machine === null) return;
@@ -90,6 +103,7 @@ export function ContinueDialog({
         onMachine={setMachine}
         choice={choice}
         onChoice={setChoice}
+        hubProtocols={carried === null ? [] : [carried]}
       />
       {from?.isGit ? (
         <label className="mb-3 flex items-start gap-2 text-meta text-secondary">
@@ -105,6 +119,15 @@ export function ContinueDialog({
         <p className="mb-3 text-meta text-tertiary">原来的工作目录不是 git 仓库：文件不会搬过去，改动留在原处。</p>
       )}
       {same ? <p className="mb-2 text-meta text-rust">会话已经在这个工作目录里了，换一个。</p> : null}
+      {blocked === null ? null : (
+        <p data-testid="continue-hint" className="mb-2 text-meta text-rust">
+          {blocked === '机器不在线' ? (
+            <>这台机器现在不在线。机器和目录都还在，等它回来再继续。</>
+          ) : (
+            <>这台机器上的 {agentLabel} 现在用不了{blocked ? `：${blocked}` : ''}。机器和目录都还在，等它恢复再继续。</>
+          )}
+        </p>
+      )}
       {error ? <p className="mb-2 text-meta text-rust">{error}</p> : null}
       <div className="sticky bottom-0 -mx-1 flex justify-end gap-2 bg-panel px-1 pb-[env(safe-area-inset-bottom)] pt-2">
         <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>
@@ -113,7 +136,7 @@ export function ContinueDialog({
         <button
           type="button"
           className={PRIMARY_BUTTON}
-          disabled={busy || !choiceReady(choice) || machine === null || same}
+          disabled={busy || !choiceReady(choice) || machine === null || same || blocked !== null}
           onClick={() => void go()}
         >
           {busy ? '交接中…' : '继续'}

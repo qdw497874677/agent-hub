@@ -31,6 +31,7 @@ import {
   wrapUntrusted,
   type AgentMessage,
   type FailureCode,
+  type HandoffOrigin,
   type MessageAuditAction,
   type MessageKind,
   type MessageLimits,
@@ -131,6 +132,35 @@ export interface ProjectHandoffCommand {
   readonly wake?: boolean;
 }
 
+export const DELEGATION_REPORT_OPERATION = 'message.delegation_report';
+export const DELEGATION_REPORT_SCHEMA = 'delegation-report/v1';
+
+/**
+ * 委派上报（内部入口，只给组合根在「已确认的持久委派记录」上调）。
+ *
+ * 信任边界：应用层必须先校验持久 prepared 记录，以及仍然存在的项目 / 发起人 / 来源会话 /
+ * 目标会话，之后才允许调用；**不能**注册成 MCP 工具或 REST 路由，调用方也不能自带 parts、
+ * wake 或可信来源标记。这里只做和交接相同的一套项目身份、权限交集、派生隔离、限额、幂等与审计。
+ *
+ * 和交接收到的区别：
+ * - 操作命名空间按 delegationId 隔离，同一请求键在不同委派下互不占键；
+ * - 永远是 wake=false 的收件箱投递，不 pump，也不冒充 handoffOrigin（不铸造可信来源）；
+ * - 附件只由 Hub 生成一个 `delegation-report/v1` 的 data part，sha 是自报值。
+ */
+export interface DelegationReportCommand {
+  readonly fromSessionId: SessionId;
+  readonly targetSessionId: SessionId;
+  /** 服务器已校验过的发起人；不是正文里的自称。 */
+  readonly actorId: string;
+  /** 已经持久化的委派 id；同时进入回放键命名空间。 */
+  readonly delegationId: string;
+  /** 持久请求键：按 actor + 来源会话 + 项目 + 操作（含委派 id）+ 请求键隔离。 */
+  readonly requestKey: string;
+  readonly body: string;
+  /** 可选的自报提交 SHA；只作为 `delegation-report/v1` 的 data 字段，不做校验背书。 */
+  readonly sha?: string;
+}
+
 export interface ReplyExtra {
   readonly status?: ReplyStatus;
   readonly parts?: unknown;
@@ -182,6 +212,11 @@ export interface MessageBus {
    * 只绕过「必须显式连线」；其他检查和普通发送一致（见 ProjectHandoffCommand）。
    */
   handoff(command: ProjectHandoffCommand): Promise<Result<Accepted, DomainError>>;
+  /**
+   * 委派上报：内部入口，组合根校验持久委派记录后调用；不进 MCP / REST。
+   * 复用交接的检查与回放，但永远 wake=false、不写 handoffOrigin（见 DelegationReportCommand）。
+   */
+  reportDelegation(command: DelegationReportCommand): Promise<Result<Accepted, DomainError>>;
   /** agent_reply：回答投给自己的 ask。messageId 不给 = 当前唯一在处理的那条 ask。 */
   reply(fromSessionId: SessionId, body: string, messageId?: string, extra?: ReplyExtra): Promise<Result<{ messageId: string; replyTo: string }, DomainError>>;
   /** 会话一轮结束（journal 里出现 ended）。 */
@@ -709,6 +744,215 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     for (const message of pending) await fail(message, 'archived', '对方会话已收起；要先重开才能收消息');
   };
 
+  /**
+   * 内部投递核心：项目交接与委派上报共用同一套项目身份、权限交集、派生隔离、限额、
+   * 幂等与审计。只有各自的 MessageBus 方法能进来；不挂任何工具 / REST。
+   *
+   * 交接和上报走同一套放行闸门（风暴 / 权限档位）。上报永远 wake=false，所以即使被
+   * 拦下，状态就是 held；放行时 decideHeld 把非唤醒消息标成 done 且不 pump，永远不会
+   * 因为批准而唤醒目标。速率 / 重复 / 队列满这些拒收检查也照常。
+   */
+  type InternalPartsCheck =
+    | { readonly ok: true; readonly parts: MessagePart[] }
+    | { readonly ok: false; readonly problem: string };
+
+  const deliverInternally = async (input: {
+    readonly fromSessionId: SessionId;
+    readonly targetSessionId: SessionId;
+    readonly actorId: string;
+    readonly requestKey: string;
+    readonly body: string;
+    readonly wake: boolean;
+    /** 回放键里的操作名；委派上报把 delegationId 也绑进来，天然和交接分命名空间。 */
+    readonly operation: string;
+    /** 审计 / 拒绝文案里的操作名（handoff / delegation-report）。 */
+    readonly label: string;
+    /** 权限拒绝时给人看的动作名（交接 / 上报）。 */
+    readonly noun: string;
+    readonly partsFrom: (project: Project) => InternalPartsCheck;
+    readonly handoffOrigin?: HandoffOrigin;
+    readonly auditExtra?: string;
+    /** 保留交接原有的 wake 参数校验顺序（在请求键之后、加载会话之前）。 */
+    readonly wakeProblem?: () => DomainError | null;
+  }): Promise<Result<Accepted, DomainError>> => {
+    const body = input.body;
+    if (typeof body !== 'string' || body.trim() === '') return err(invalid('消息不能为空'));
+    if (body.length > MAX_BODY_CHARS) return err(invalid(`消息太长（最多 ${MAX_BODY_CHARS} 字符）`));
+    const actorId = input.actorId.trim();
+    if (!actorId) return err(forbidden('当前账号不可用'));
+    const requestKey = input.requestKey.trim();
+    if (!requestKey || requestKey.length > 200) return err(invalid('请求键不合法'));
+    const wakeProblem = input.wakeProblem?.();
+    if (wakeProblem) return err(wakeProblem);
+
+    const from = await deps.sessions.byId(input.fromSessionId);
+    if (!from) return err(notFound('发送方会话不存在'));
+    const fromProject = await canonicalProjectOf(from);
+    if (!fromProject.ok) return fromProject;
+    const project = fromProject.value;
+
+    const target = await deps.sessions.byId(input.targetSessionId);
+    if (!target) return err(notFound('目标会话不存在'));
+    const targetProject = await canonicalProjectOf(target);
+    if (!targetProject.ok) return targetProject;
+
+    const incoming = await incomingContext(from.id);
+    const traceId = incoming?.traceId ?? newTraceId();
+    const depth = (incoming?.depth ?? 0) + 1;
+    const base = { traceId, projectId: project.id, onBehalfOf: actorId };
+    const deny = async (code: FailureCode, message: string): Promise<Result<never, DomainError>> => {
+      await audit(null, base, 'denied', from.id, `${code}: ${input.label} session:${target.id} — ${message}`);
+      return err(code === 'rate_limited' || code === 'depth_exceeded' ? conflict(`${code}: ${message}`) : forbidden(`${code}: ${message}`));
+    };
+
+    if (targetProject.value.id !== project.id) return deny('unresolvable', '同一个项目里没有这条会话');
+    if (target.id === from.id) return err(invalid('不能给自己发消息'));
+
+    const checkedParts = input.partsFrom(project);
+    if (!checkedParts.ok) return err(invalid(checkedParts.problem));
+    const parts = checkedParts.parts;
+
+    // 权限和普通发送同一套：发起人、发送方主人、被调方主人都要有 agent.message.send。
+    const permission: Permission = 'agent.message.send';
+    if (!(await allowed(actorId, permission, project))) return deny('denied', `发起人没有 ${permission}`);
+    const caller = ownerOf(from, project);
+    if (!caller) return deny('denied', `这条会话没有主人，不能发起${input.noun}`);
+    if (caller !== actorId && !(await allowed(caller, permission, project))) return deny('denied', `会话主人没有 ${permission}`);
+    const callee = ownerOf(target, project);
+    if (!(await allowed(callee, permission, project))) return deny('denied', `被调会话的主人没有 ${permission}`);
+
+    // 持久回执 = 消息行本身：键按 人 + 来源会话 + 项目 + 操作 隔离，重试不会串到别的来源。
+    const key = requestReplayKey({
+      actorId,
+      sourceSessionId: from.id,
+      projectId: project.id,
+      operation: input.operation
+    }, requestKey);
+    const wake = input.wake;
+
+    const sameParams = (existing: AgentMessage): boolean =>
+      existing.kind === 'send'
+      && existing.projectId === project.id
+      && existing.fromSessionId === from.id
+      && existing.targetSessionId === target.id
+      && existing.onBehalfOf === actorId
+      && existing.role === null
+      && existing.body === body
+      && existing.wake === wake
+      && JSON.stringify(existing.parts ?? []) === JSON.stringify(parts);
+    const replay = (existing: AgentMessage): Result<Accepted, DomainError> => {
+      if (!sameParams(existing)) return err(conflict('同一请求键对应不同参数'));
+      return ok({
+        messageId: existing.id,
+        traceId: existing.traceId,
+        status: existing.status,
+        targetSessionId: existing.targetSessionId,
+        ...(existing.holdReason ? { holdReason: existing.holdReason } : {})
+      });
+    };
+
+    const seen = await deps.messages.byIdempotencyKey(from.id, key);
+    if (seen) return replay(seen);
+
+    // 派生隔离和收起状态照常检查；唯一放宽的是旧规则「必须显式连线」。
+    const isolated = await isolationProblem(from, target);
+    if (isolated) return deny('denied', isolated);
+    if (target.settledAt) return deny('archived', '对方会话已收起；要先重开才能收消息');
+
+    const config = await loadConfig(project.id);
+    const limits = effectiveLimits(config.limits);
+    if (depth > limits.maxDepth) return deny('depth_exceeded', `协作链深度 ${depth} 超过上限 ${limits.maxDepth}`);
+    const trace = incoming ? await deps.messages.byTrace(traceId) : [];
+    if (trace.filter((m) => isActive(m) && m.kind !== 'reply').length >= limits.maxConcurrent) {
+      return deny('rate_limited', `这条协作链同时进行中的消息已到上限 ${limits.maxConcurrent}`);
+    }
+    if (trace.filter((m) => m.fromSessionId === from.id && m.kind !== 'reply').length >= limits.maxFanOut) {
+      return deny('rate_limited', `这一跳往外发的消息已到上限 ${limits.maxFanOut}`);
+    }
+
+    const commit = async (): Promise<Result<AgentMessage, DomainError>> => {
+      // 并发同键在锁内再查一次：同参回收先到的结果，异参拒绝，绝不覆盖。
+      const raced = await deps.messages.byIdempotencyKey(from.id, key);
+      if (raced) {
+        if (!sameParams(raced)) return err(conflict('同一请求键对应不同参数'));
+        return ok(raced);
+      }
+
+      let holdReason: AgentMessage['holdReason'] = null;
+      const storm = await stormCheck(from, target, body, parts, trace);
+      if (storm && storm !== 'hold') return deny(storm.code, storm.message);
+      if (storm === 'hold') holdReason = 'pingpong';
+      const tiers = { from: privilegeTierFor(from), to: privilegeTierFor(target) };
+      if (!holdReason && tiers.from === 'guarded' && tiers.to === 'auto' && config.trustPeers !== true) holdReason = 'privilege';
+
+      const now = deps.now();
+      const message: AgentMessage = {
+        id: newMessageId(),
+        traceId,
+        depth,
+        projectId: project.id,
+        kind: 'send',
+        fromSessionId: from.id,
+        onBehalfOf: actorId,
+        to: `session:${target.id}`,
+        targetSessionId: target.id,
+        role: null,
+        replyTo: null,
+        body,
+        status: holdReason ? 'held' : wake ? 'queued' : 'done',
+        failure: null,
+        failureDetail: null,
+        replyBody: null,
+        replySource: null,
+        idempotencyKey: key,
+        createdAt: now,
+        updatedAt: now,
+        deliveredAt: null,
+        deadlineAt: null,
+        parts,
+        wake,
+        replyStatus: null,
+        replyParts: [],
+        readAt: null,
+        holdReason,
+        ...(input.handoffOrigin ? { handoffOrigin: input.handoffOrigin } : {})
+      };
+      try {
+        await deps.messages.save(message);
+      } catch {
+        // SQLite 的唯一索引是跨进程的那把锁；落库失败时看看是不是别人先写进了同键。
+        const winner = await deps.messages.byIdempotencyKey(from.id, key);
+        if (winner) {
+          if (!sameParams(winner)) return err(conflict('同一请求键对应不同参数'));
+          return ok(winner);
+        }
+        return err(unavailable('交接消息未能保存，请稍后重试'));
+      }
+      await audit(message, message, 'accepted', from.id, `${input.label} ${message.to} depth=${depth} chars=${body.length} parts=${parts.length}${wake ? ' wake=true' : ' wake=false'}${input.auditExtra ? ` ${input.auditExtra}` : ''}`);
+      if (holdReason === 'privilege') {
+        await audit(message, message, 'held', 'hub', '权限档位升级：要审批的会话（guarded）发给自动批准的会话（auto），等发起人或项目管理员放行');
+      } else if (holdReason) {
+        await audit(message, message, 'held', 'hub', `同一条链里和对方来回已到 ${STORM_LIMITS.pingpongMax} 次，等人放行`);
+      }
+      return ok(message);
+    };
+
+    // 两层串行：请求键锁保证同键回执的原子比较（即使目标不同也能发现异参），
+    // 目标会话锁和普通 accept 一样，保证风暴计数与落库不会被并发的不同键交接绕过。
+    const committed = await serial(`internal:${key}`, () => serial(target.id, commit));
+    if (!committed.ok) return committed;
+    // 只有 wake 且没被拦下才投递；收件箱模式始终不 pump。
+    if (committed.value.status === 'queued') await pump(target.id);
+    const saved = (await deps.messages.byId(committed.value.id)) ?? committed.value;
+    return ok({
+      messageId: saved.id,
+      traceId: saved.traceId,
+      status: saved.status,
+      targetSessionId: saved.targetSessionId,
+      ...(saved.holdReason ? { holdReason: saved.holdReason } : {})
+    });
+  };
+
   const bus: MessageBus = {
     async accept(command) {
       const body = command.body;
@@ -880,181 +1124,47 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     },
 
     async handoff(command) {
-      const body = command.body;
-      if (typeof body !== 'string' || body.trim() === '') return err(invalid('消息不能为空'));
-      if (body.length > MAX_BODY_CHARS) return err(invalid(`消息太长（最多 ${MAX_BODY_CHARS} 字符）`));
-      const actorId = command.actorId.trim();
-      if (!actorId) return err(forbidden('当前账号不可用'));
-      const requestKey = command.requestKey.trim();
-      if (!requestKey || requestKey.length > 200) return err(invalid('请求键不合法'));
-      if (command.wake !== undefined && typeof command.wake !== 'boolean') return err(invalid('wake 必须是布尔值'));
+      return deliverInternally({
+        fromSessionId: command.fromSessionId,
+        targetSessionId: command.targetSessionId,
+        actorId: command.actorId,
+        requestKey: command.requestKey,
+        body: command.body,
+        wake: command.wake === true,
+        operation: PROJECT_HANDOFF_OPERATION,
+        label: 'handoff',
+        noun: '交接',
+        partsFrom: (project) => validateParts(command.parts, project.repos.map((r) => r.name)),
+        handoffOrigin: HANDOFF_BUS_ORIGIN,
+        wakeProblem: () => (command.wake !== undefined && typeof command.wake !== 'boolean' ? invalid('wake 必须是布尔值') : null)
+      });
+    },
 
-      const from = await deps.sessions.byId(command.fromSessionId);
-      if (!from) return err(notFound('发送方会话不存在'));
-      const fromProject = await canonicalProjectOf(from);
-      if (!fromProject.ok) return fromProject;
-      const project = fromProject.value;
+    async reportDelegation(command) {
+      const delegationId = typeof command.delegationId === 'string' ? command.delegationId.trim() : '';
+      if (!delegationId || delegationId.length > 200) return err(invalid('delegationId 不合法'));
+      // SHA 是给别人比对提交用的标识：只收已经算好的完整小写 40 位，不做裁剪 / 大小写归一 / 短写补全。
+      const sha = command.sha;
+      if (sha !== undefined && !/^[0-9a-f]{40}$/.test(sha)) return err(invalid('sha 要是 40 位小写十六进制'));
 
-      const target = await deps.sessions.byId(command.targetSessionId);
-      if (!target) return err(notFound('目标会话不存在'));
-      const targetProject = await canonicalProjectOf(target);
-      if (!targetProject.ok) return targetProject;
-
-      const incoming = await incomingContext(from.id);
-      const traceId = incoming?.traceId ?? newTraceId();
-      const depth = (incoming?.depth ?? 0) + 1;
-      const base = { traceId, projectId: project.id, onBehalfOf: actorId };
-      const deny = async (code: FailureCode, message: string): Promise<Result<never, DomainError>> => {
-        await audit(null, base, 'denied', from.id, `${code}: handoff session:${target.id} — ${message}`);
-        return err(code === 'rate_limited' || code === 'depth_exceeded' ? conflict(`${code}: ${message}`) : forbidden(`${code}: ${message}`));
+      // 附件只由 Hub 生成：一个 delegation-report/v1 的 data part，sha 明确标成自报。
+      const data = {
+        delegationId,
+        shaVerification: 'self-reported' as const,
+        ...(sha ? { sha } : {})
       };
-
-      if (targetProject.value.id !== project.id) return deny('unresolvable', '同一个项目里没有这条会话');
-      if (target.id === from.id) return err(invalid('不能给自己发消息'));
-
-      const checkedParts = validateParts(command.parts, project.repos.map((r) => r.name));
-      if (!checkedParts.ok) return err(invalid(checkedParts.problem));
-      const parts = checkedParts.parts;
-
-      // 权限和普通发送同一套：发起人、发送方主人、被调方主人都要有 agent.message.send。
-      const permission: Permission = 'agent.message.send';
-      if (!(await allowed(actorId, permission, project))) return deny('denied', `发起人没有 ${permission}`);
-      const caller = ownerOf(from, project);
-      if (!caller) return deny('denied', '这条会话没有主人，不能发起交接');
-      if (caller !== actorId && !(await allowed(caller, permission, project))) return deny('denied', `会话主人没有 ${permission}`);
-      const callee = ownerOf(target, project);
-      if (!(await allowed(callee, permission, project))) return deny('denied', `被调会话的主人没有 ${permission}`);
-
-      // 持久回执 = 消息行本身：键按 人 + 来源会话 + 项目 + 操作 隔离，重试不会串到别的来源。
-      const key = requestReplayKey({
-        actorId,
-        sourceSessionId: from.id,
-        projectId: project.id,
-        operation: PROJECT_HANDOFF_OPERATION
-      }, requestKey);
-      const wake = command.wake === true;
-
-      const sameParams = (existing: AgentMessage): boolean =>
-        existing.kind === 'send'
-        && existing.projectId === project.id
-        && existing.fromSessionId === from.id
-        && existing.targetSessionId === target.id
-        && existing.onBehalfOf === actorId
-        && existing.role === null
-        && existing.body === body
-        && existing.wake === wake
-        && JSON.stringify(existing.parts ?? []) === JSON.stringify(parts);
-      const replay = (existing: AgentMessage): Result<Accepted, DomainError> => {
-        if (!sameParams(existing)) return err(conflict('同一请求键对应不同参数'));
-        return ok({
-          messageId: existing.id,
-          traceId: existing.traceId,
-          status: existing.status,
-          targetSessionId: existing.targetSessionId,
-          ...(existing.holdReason ? { holdReason: existing.holdReason } : {})
-        });
-      };
-
-      const seen = await deps.messages.byIdempotencyKey(from.id, key);
-      if (seen) return replay(seen);
-
-      // 派生隔离和收起状态照常检查；唯一放宽的是旧规则「必须显式连线」。
-      const isolated = await isolationProblem(from, target);
-      if (isolated) return deny('denied', isolated);
-      if (target.settledAt) return deny('archived', '对方会话已收起；要先重开才能收消息');
-
-      const config = await loadConfig(project.id);
-      const limits = effectiveLimits(config.limits);
-      if (depth > limits.maxDepth) return deny('depth_exceeded', `协作链深度 ${depth} 超过上限 ${limits.maxDepth}`);
-      const trace = incoming ? await deps.messages.byTrace(traceId) : [];
-      if (trace.filter((m) => isActive(m) && m.kind !== 'reply').length >= limits.maxConcurrent) {
-        return deny('rate_limited', `这条协作链同时进行中的消息已到上限 ${limits.maxConcurrent}`);
-      }
-      if (trace.filter((m) => m.fromSessionId === from.id && m.kind !== 'reply').length >= limits.maxFanOut) {
-        return deny('rate_limited', `这一跳往外发的消息已到上限 ${limits.maxFanOut}`);
-      }
-
-      const commit = async (): Promise<Result<AgentMessage, DomainError>> => {
-        // 并发同键在锁内再查一次：同参回收先到的结果，异参拒绝，绝不覆盖。
-        const raced = await deps.messages.byIdempotencyKey(from.id, key);
-        if (raced) {
-          if (!sameParams(raced)) return err(conflict('同一请求键对应不同参数'));
-          return ok(raced);
-        }
-
-        let holdReason: AgentMessage['holdReason'] = null;
-        const storm = await stormCheck(from, target, body, parts, trace);
-        if (storm === 'hold') holdReason = 'pingpong';
-        else if (storm) return deny(storm.code, storm.message);
-
-        const tiers = { from: privilegeTierFor(from), to: privilegeTierFor(target) };
-        if (!holdReason && tiers.from === 'guarded' && tiers.to === 'auto' && config.trustPeers !== true) holdReason = 'privilege';
-
-        const now = deps.now();
-        const message: AgentMessage = {
-          id: newMessageId(),
-          traceId,
-          depth,
-          projectId: project.id,
-          kind: 'send',
-          fromSessionId: from.id,
-          onBehalfOf: actorId,
-          to: `session:${target.id}`,
-          targetSessionId: target.id,
-          role: null,
-          replyTo: null,
-          body,
-          status: holdReason ? 'held' : wake ? 'queued' : 'done',
-          failure: null,
-          failureDetail: null,
-          replyBody: null,
-          replySource: null,
-          idempotencyKey: key,
-          createdAt: now,
-          updatedAt: now,
-          deliveredAt: null,
-          deadlineAt: null,
-          parts,
-          wake,
-          replyStatus: null,
-          replyParts: [],
-          readAt: null,
-          holdReason,
-          handoffOrigin: HANDOFF_BUS_ORIGIN
-        };
-        try {
-          await deps.messages.save(message);
-        } catch {
-          // SQLite 的唯一索引是跨进程的那把锁；落库失败时看看是不是别人先写进了同键。
-          const winner = await deps.messages.byIdempotencyKey(from.id, key);
-          if (winner) {
-            if (!sameParams(winner)) return err(conflict('同一请求键对应不同参数'));
-            return ok(winner);
-          }
-          return err(unavailable('交接消息未能保存，请稍后重试'));
-        }
-        await audit(message, message, 'accepted', from.id, `handoff ${message.to} depth=${depth} chars=${body.length} parts=${parts.length}${wake ? ' wake=true' : ' wake=false'}`);
-        if (holdReason === 'privilege') {
-          await audit(message, message, 'held', 'hub', '权限档位升级：要审批的会话（guarded）发给自动批准的会话（auto），等发起人或项目管理员放行');
-        } else if (holdReason) {
-          await audit(message, message, 'held', 'hub', `同一条链里和对方来回已到 ${STORM_LIMITS.pingpongMax} 次，等人放行`);
-        }
-        return ok(message);
-      };
-
-      // 两层串行：请求键锁保证同键回执的原子比较（即使目标不同也能发现异参），
-      // 目标会话锁和普通 accept 一样，保证风暴计数与落库不会被并发的不同键交接绕过。
-      const committed = await serial(`handoff:${key}`, () => serial(target.id, commit));
-      if (!committed.ok) return committed;
-      // 只有 wake 且没被拦下才投递；收件箱模式始终不 pump。
-      if (committed.value.status === 'queued') await pump(target.id);
-      const saved = (await deps.messages.byId(committed.value.id)) ?? committed.value;
-      return ok({
-        messageId: saved.id,
-        traceId: saved.traceId,
-        status: saved.status,
-        targetSessionId: saved.targetSessionId,
-        ...(saved.holdReason ? { holdReason: saved.holdReason } : {})
+      return deliverInternally({
+        fromSessionId: command.fromSessionId,
+        targetSessionId: command.targetSessionId,
+        actorId: command.actorId,
+        requestKey: command.requestKey,
+        body: command.body,
+        wake: false,
+        operation: `${DELEGATION_REPORT_OPERATION}:${delegationId}`,
+        label: 'delegation-report',
+        noun: '上报',
+        partsFrom: () => ({ ok: true, parts: [{ type: 'data', schema: DELEGATION_REPORT_SCHEMA, data }] }),
+        auditExtra: `delegation=${delegationId}`
       });
     },
 

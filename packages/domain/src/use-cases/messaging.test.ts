@@ -1115,6 +1115,193 @@ test('会话交接 P2：审计不落正文，只记录长度、parts 数和 wake
   assert.match(entry.detail, /wake=false/);
 });
 
+// ---- 委派上报：内部入口，和交接共用核心但永远不唤醒 ----
+
+test('委派上报：只落收件箱，伪造的 wake / parts / handoffOrigin 都不生效', async () => {
+  const w = await world({ links: fakeSessionLinks() });
+  const a = await w.newSession('alice');
+  const b = await w.newSessionOn(await w.newTask(), 'alice');
+  const sha = 'a'.repeat(40);
+  await recordEvent(w.deps, { sessionId: b.id, event: { kind: 'prompt', text: '我正忙' } });
+
+  const forged = {
+    fromSessionId: a.id,
+    targetSessionId: b.id,
+    actorId: 'alice',
+    delegationId: 'dlg-1',
+    requestKey: 'report-1',
+    body: '改完了',
+    sha,
+    wake: true,
+    handoffOrigin: HANDOFF_BUS_ORIGIN,
+    parts: [{ type: 'data' as const, schema: 'task/v1', data: { n: 1 } }]
+  };
+  const sent = await w.bus.reportDelegation(forged);
+  assert.ok(sent.ok);
+  assert.equal(sent.value.status, 'done', '内部上报永远 wake=false');
+  assert.equal(sent.value.targetSessionId, b.id);
+
+  const stored = await w.messages.byId(sent.value.messageId);
+  assert.equal(stored?.kind, 'send');
+  assert.equal(stored?.wake, false);
+  assert.equal(stored?.status, 'done');
+  assert.equal(stored?.to, `session:${b.id}`);
+  assert.equal(stored?.handoffOrigin, undefined, '上报不能冒充交接来源');
+  assert.match(stored?.idempotencyKey ?? '', /message\.delegation_report:dlg-1/);
+
+  // 附件只由 Hub 生成：一个 delegation-report/v1 的 data part，sha 规范化并标成自报。
+  assert.equal(stored?.parts?.length, 1);
+  const part = stored?.parts?.[0];
+  assert.equal(part?.type, 'data');
+  if (part?.type === 'data') {
+    assert.equal(part.schema, 'delegation-report/v1');
+    assert.deepEqual(part.data, { delegationId: 'dlg-1', shaVerification: 'self-reported', sha });
+  }
+
+  // 不唤醒：对方结束这一轮也不会把它当排队消息投出去。
+  assert.equal(w.delivered.length, 0);
+  await w.finishTurn(b.id, '我看到了');
+  assert.equal(w.delivered.length, 0);
+  assert.equal((await w.messages.byId(sent.value.messageId))?.status, 'done');
+
+  // 没进 held，所以也不存在「放行后唤醒」这条路。
+  assert.equal((await w.bus.decideHeld(sent.value.messageId, w.principal('alice')!, true)).ok, false);
+
+  const entry = w.messages.audits.find((e) => e.traceId === sent.value.traceId && e.action === 'accepted');
+  assert.ok(entry);
+  assert.equal(entry.detail.includes('改完了'), false, '审计不落正文');
+  assert.match(entry.detail, /delegation-report/);
+  assert.match(entry.detail, /delegation=dlg-1/);
+  assert.match(entry.detail, /parts=1/);
+  assert.match(entry.detail, /wake=false/);
+});
+
+test('委派上报：同键同参回放同一行；正文 / SHA 变化冲突，换委派 ID 另起一行', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+  const base = {
+    fromSessionId: a.id,
+    targetSessionId: b.id,
+    actorId: 'alice',
+    delegationId: 'dlg-a',
+    requestKey: 'report-idem',
+    body: '委派结果',
+    sha: 'a'.repeat(40)
+  };
+  const rows = () => [...w.messages.all.values()].filter((m) => m.fromSessionId === a.id && m.body === '委派结果');
+
+  const first = await w.bus.reportDelegation(base);
+  assert.ok(first.ok);
+  const replay = await w.bus.reportDelegation(base);
+  assert.ok(replay.ok);
+  assert.equal(replay.value.messageId, first.value.messageId);
+  assert.equal(rows().length, 1);
+
+  // SHA 不裁剪、不归一、不补短：大写或短写直接拒绝，不会静默变成另一条回执。
+  for (const bad of ['A'.repeat(40), 'a'.repeat(39), 'a'.repeat(41), 'abc1234']) {
+    const rejected = await w.bus.reportDelegation({ ...base, sha: bad });
+    assert.equal(!rejected.ok && rejected.error.code, 'invalid', bad);
+    assert.match(!rejected.ok ? rejected.error.message : '', /40 位小写十六进制/);
+  }
+
+  const { sha: _sha, ...withoutSha } = base;
+  for (const changed of [
+    { ...base, body: '换正文' },
+    { ...base, sha: 'b'.repeat(40) },
+    withoutSha
+  ]) {
+    const conflict = await w.bus.reportDelegation(changed);
+    assert.equal(!conflict.ok && conflict.error.code, 'conflict', JSON.stringify(changed));
+    assert.match(!conflict.ok ? conflict.error.message : '', /同一请求键对应不同参数/);
+  }
+
+  // 操作名带 delegationId：同一个请求键上报另一条委派不共享回执。
+  const other = await w.bus.reportDelegation({ ...base, delegationId: 'dlg-b' });
+  assert.ok(other.ok);
+  assert.notEqual(other.value.messageId, first.value.messageId);
+  assert.equal(rows().length, 2);
+});
+
+test('委派上报：权限档位闸门照常——guarded → auto 先 held，批准后 done 且不 pump；自报 SHA 不算可信', async () => {
+  const w = await world();
+  const guarded = await w.newSession('alice');
+  const auto = await w.newSession('alice');
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(guarded.id))!, options: { approval: 'on-request', sandbox: 'workspace-write' } });
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(auto.id))!, options: { approval: 'never' } });
+  const sha = 'c'.repeat(40);
+
+  const held = await w.bus.reportDelegation({
+    fromSessionId: guarded.id,
+    targetSessionId: auto.id,
+    actorId: 'alice',
+    delegationId: 'dlg-held',
+    requestKey: 'report-held',
+    body: '委派结果',
+    sha
+  });
+  assert.ok(held.ok);
+  assert.equal(held.value.status, 'held');
+  const stored = await w.messages.byId(held.value.messageId);
+  assert.equal(stored?.holdReason, 'privilege');
+  assert.equal(stored?.wake, false);
+  assert.equal(stored?.handoffOrigin, undefined, '上报不是交接，不能带可信来源标记');
+  assert.equal(w.delivered.length, 0);
+
+  const part = stored?.parts?.[0];
+  assert.equal(part?.type, 'data');
+  if (part?.type === 'data') {
+    assert.equal(part.schema, 'delegation-report/v1');
+    const data = part.data as Record<string, unknown>;
+    assert.equal(data.shaVerification, 'self-reported');
+    assert.equal('trusted' in data || 'verified' in data, false, '自报就是自报，不升格成可信');
+  }
+
+  // 放行只会把非唤醒消息标成 done，不会因为它被批准就投递一轮。
+  const released = await w.bus.decideHeld(held.value.messageId, w.principal('alice')!, true);
+  assert.ok(released.ok);
+  assert.equal(released.value.status, 'done');
+  assert.equal(w.delivered.length, 0);
+  await w.finishTurn(auto.id, '看到了');
+  assert.equal(w.delivered.length, 0);
+  assert.equal((await w.messages.byId(held.value.messageId))?.status, 'done');
+});
+
+test('委派上报：沿用项目身份 / 权限交集 / 隔离，拒绝只进审计且不唤醒', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const other = createProject({ name: 'other', now: 1, teamId: 'T', createdBy: 'alice' });
+  assert.ok(other.ok);
+  await w.deps.projects.save(other.value);
+  const outsider = await containerSession(w, 'alice', other.value.id);
+  const v = await w.newSession('vicky');
+  const parent = await w.newSession('alice');
+  const child = await w.newSession('alice');
+  await w.messages.saveSpawn({ sessionId: child.id, spawnerSessionId: parent.id, projectId: w.project.id, role: '', traceId: 't-report', createdAt: 1 });
+
+  const base = { fromSessionId: a.id, actorId: 'alice', requestKey: 'report-deny', body: '委派结果' };
+  const crossProject = await w.bus.reportDelegation({ ...base, targetSessionId: outsider.id, delegationId: 'd-1' });
+  assert.equal(!crossProject.ok && crossProject.error.code, 'forbidden');
+  assert.match(!crossProject.ok ? crossProject.error.message : '', /同一个项目里没有这条会话/);
+
+  const viewer = await w.bus.reportDelegation({ ...base, targetSessionId: v.id, delegationId: 'd-2' });
+  assert.equal(!viewer.ok && viewer.error.code, 'forbidden');
+  assert.match(!viewer.ok ? viewer.error.message : '', /被调会话的主人没有/);
+
+  const isolated = await w.bus.reportDelegation({ ...base, targetSessionId: child.id, delegationId: 'd-3' });
+  assert.equal(!isolated.ok && isolated.error.code, 'forbidden');
+  assert.match(!isolated.ok ? isolated.error.message : '', /默认隔离/);
+
+  assert.equal(w.delivered.length, 0);
+  assert.equal([...w.messages.all.values()].filter((m) => m.body === '委派结果').length, 0);
+  const denied = w.messages.audits.filter((e) => e.action === 'denied');
+  assert.ok(denied.length >= 3);
+  for (const entry of denied) {
+    assert.equal(entry.detail.includes('委派结果'), false);
+    assert.match(entry.detail, /delegation-report/);
+  }
+});
+
 // ---- 会话通信：默认通信范围 = 同一棵顶层任务树 ----
 
 test('任务树：同根子/孙/兄弟默认可达，旧 workspace resolvePeer 仍不扩树', async () => {

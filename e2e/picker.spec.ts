@@ -3,6 +3,9 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { currentRun } from './run-id.ts';
 import { loginByApi } from './login.ts';
 import { chooseHubModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
+
+test.afterAll(() => stopFakeWorker());
 
 const RUN = currentRun();
 const NAME = `picker-${RUN}`;
@@ -14,52 +17,68 @@ const TASK = `选目录-${RUN}`;
 
 // 目录选择器的宿主：开始任务时的「新建持久工作目录」。项目 / 任务走 API 建一次，
 // 之后每段重新打开对话框（reload 是为了清掉上一段的对话框和选择器内部状态）。
-let projectId: string | null = null;
+const projects = new Map<string, { id: string; task: string }>();
 
-async function openPickerFor(page: Page, width = 1280, height = 900) {
+async function openPickerFor(page: Page, width = 1280, height = 900, name = NAME, task = TASK) {
   await page.setViewportSize({ width, height });
-  if (!projectId) {
+  let project = projects.get(name);
+  if (!project) {
     await page.goto('/');
     const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
     const headers = { origin: new URL(page.url()).origin, 'x-hub-csrf': csrf };
-    const made = await page.request.post('/api/projects', { data: { name: NAME }, headers });
+    const made = await page.request.post('/api/projects', { data: { name }, headers });
     expect(made.status(), await made.text()).toBe(201);
-    projectId = ((await made.json()) as { id: string }).id;
-    const task = await page.request.post('/api/tasks', { data: { projectId, title: TASK }, headers });
-    expect(task.ok(), await task.text()).toBe(true);
+    const id = ((await made.json()) as { id: string }).id;
+    const created = await page.request.post('/api/tasks', { data: { projectId: id, title: task }, headers });
+    expect(created.ok(), await created.text()).toBe(true);
+    project = { id, task };
+    projects.set(name, project);
   }
-  // 每次从首页重新进来（整页加载会把上一段的对话框和选择器状态都清掉），再走 hash 路由到画布
+  // 每次从首页重新进来（整页加载会把上一段的对话框和选择器状态都清掉）
   await page.goto('/');
-  await page.goto(`/#/p/${projectId}/canvas`);
-  await page.locator('.react-flow__node-task').filter({ hasText: TASK }).getByRole('button', { name: '＋ 会话' }).click();
+  // 先让假 ACP 的 Worker 上线、把 agent 发布给 hub：画布里没有这个 agent 时，
+  // 开始对话框的 agent 下拉里就没有 fakeacp，机器也选不出来。
+  // 必须在取画布之前做——画布是先取数据再渲染，事后再起 Worker 不会补进已经拿到的快照。
+  const fakeWorker = await ensureFakeWorker(page, new URL(page.url()).origin);
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(`/api/projects/${project.id}/canvas`);
+        if (!response.ok()) return false;
+        const canvas = (await response.json()) as { agents?: Array<{ id: string }> };
+        return (canvas.agents ?? []).some((agent) => agent.id === FAKE_AGENT_ID);
+      },
+      { message: '画布里还没有假的 ACP agent', timeout: 20_000 }
+    )
+    .toBe(true);
+  await page.goto(`/#/p/${project.id}/canvas`);
+  await page.locator('.react-flow__node-task').filter({ hasText: project.task }).getByRole('button', { name: '＋ 会话' }).click();
   const panel = page.getByRole('dialog', { name: '开始会话' });
+  await expect(panel).toBeVisible();
+  const agentSection = panel.getByTestId('derive-agent-section');
+  await expect(agentSection).toBeVisible();
+  if (!(await panel.locator('#derive-agent').isVisible())) await agentSection.locator('summary').click();
+  const agent = panel.getByRole('combobox', { name: 'agent' });
+  await expect(agent.locator(`option[value="${FAKE_AGENT_ID}"]`)).toHaveCount(1);
+  await agent.selectOption(FAKE_AGENT_ID);
   const workMode = panel.getByRole('radio', { name: /新建持久工作目录/ });
-  if ((await workMode.count()) === 0) {
-    // 默认 agent 在这台机器上探测超时会让机器整台不可选；换一个这台机器上能用的 agent 继续。
-    // 目录选择器与 agent 无关，这里只是让对话框进入「选工作目录」这一步。
-    await expect(panel).toBeVisible();
-    const agent = panel.getByRole('combobox', { name: 'agent' });
-    const values = await agent
-      .locator('option:not([disabled])')
-      .evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value));
-    for (const value of values) {
-      if (value === 'pi') continue;
-      await agent.selectOption(value);
-      const appeared = await workMode
-        .first()
-        .waitFor({ state: 'visible', timeout: 2000 })
-        .then(() => true)
-        .catch(() => false);
-      if (appeared) break;
-    }
+  await expect(workMode.first()).toBeVisible();
+  const fakeLabel =
+    ((await (await page.request.get('/api/workers')).json()) as Array<{ workerId: string; label: string }>).find(
+      (worker) => worker.workerId === fakeWorker
+    )?.label ?? '';
+  const machineGroup = panel.getByRole('radiogroup', { name: '机器' });
+  if ((await machineGroup.count()) > 0) {
+    await expect(machineGroup.getByRole('radio', { checked: true })).toContainText(fakeLabel);
   }
   await workMode.first().click();
   const picker = page.getByLabel('目录选择器');
   await expect(picker).toBeVisible();
-  return { panel, picker };
+  await expect(picker.getByTestId('picker-machine')).toContainText(fakeLabel);
+  return { panel, picker, label: fakeLabel };
 }
 
-const shownPath = (picker: Locator) => picker.getByTestId('picker-path-desktop');
+const shownPath = (picker: Locator) => picker.getByTestId('picker-path');
 /** 文件夹行按磁盘上的名字定位（git 标记会进可访问名，不用 role name 做精确匹配）。 */
 const pickRow = (picker: Locator, name: string) =>
   picker.locator(`[data-picker-row][data-picker-name="${name}"]`);
@@ -96,12 +115,15 @@ test('目录选择器：位置浏览、筛选、新建、显式路径、选定�
   const { panel, picker } = await openPickerFor(page);
 
   await test.step('桌面：机器上下文、显式路径输入、根边界与面包屑', async () => {
-    // 桌面是对话框里的静态面板（约 24rem），不是全屏；不写死像素：根字号 13px 时 24rem = 312px
+    // 桌面是一个独立的居中窗口，不再是塞在对话框里的 24rem 小面板
     const box = await picker.boundingBox();
     expect(box).not.toBeNull();
-    expect(box!.height).toBeGreaterThan(240);
-    expect(box!.height).toBeLessThan(480);
-    expect(Math.round(box!.width)).toBeLessThan(1280);
+    expect(box!.height).toBeGreaterThan(400);
+    expect(box!.height).toBeLessThan(900 - 40);
+    expect(box!.width).toBeGreaterThan(560);
+    expect(box!.width).toBeLessThan(1280);
+    expect(box!.x).toBeGreaterThan(0);
+    expect(box!.y).toBeGreaterThan(0);
 
     await expect(picker.getByTestId('picker-machine')).toHaveText(/这台机器上|在 .+ 上/);
     // 打开时不把焦点塞进输入框（桌面放列表，手机什么都不聚焦）
@@ -214,15 +236,16 @@ test('目录选择器：位置浏览、筛选、新建、显式路径、选定�
     await expect(picker.getByTestId('picker-managed')).toBeVisible();
     await expect(managedButton).toBeVisible();
     await managedButton.click();
-    await expect(shownPath(picker)).toHaveText(MANAGED);
+    // 机器上真的建目录再回列表，共享机器满载时这一趟会慢一些
+    await expect(shownPath(picker)).toHaveText(MANAGED, { timeout: 15_000 });
     expect(existsSync(MANAGED)).toBe(true);
-    await expect(picker.getByTestId('picker-managed')).toHaveCount(0);
+    await expect(picker.getByTestId('picker-managed')).toHaveCount(0, { timeout: 15_000 });
 
     mkdirSync(`${MANAGED}/sub`, { recursive: true });
     // 列表是上一次取数的快照：绕一圈让服务端确认 sub 已经在，同名校验才有依据
     await goTo(picker, '/tmp');
     await goTo(picker, MANAGED);
-    await expect(pickRow(picker, 'sub')).toBeVisible();
+    await expect(pickRow(picker, 'sub')).toBeVisible({ timeout: 15_000 });
     const newFolder = picker.getByRole('button', { name: '新建文件夹', exact: true });
     const nameBox = picker.getByLabel('新文件夹名');
 
@@ -283,6 +306,199 @@ test('目录选择器：位置浏览、筛选、新建、显式路径、选定�
     await expect(panel).toContainText('from-filter');
   });
 
+  await test.step('窄屏与桌面：目录窗口先给真实文件夹，选完回到表单不启动', async () => {
+    const flow = `picker-flow-${RUN}`;
+    const flowTask = `选目录2-${RUN}`;
+    mkdirSync('/tmp/agent-hub-workspaces', { recursive: true });
+    for (let index = 1; index <= 8; index++) {
+      mkdirSync(`/tmp/agent-hub-workspaces/flow-${RUN}-${String(index).padStart(2, '0')}`, { recursive: true });
+    }
+
+    // 手机：390×680 的对话框里，目录选择是独立的全屏窗口，不再挤在表单的滚动区里
+    const phone = await openPickerFor(page, 390, 680, flow, flowTask);
+    const box = (await phone.picker.boundingBox())!;
+    expect(Math.round(box.width)).toBe(390);
+    expect(Math.round(box.height)).toBe(680);
+    // 这个项目还没有托管文件夹，提示可以创建，但不挡在文件夹前面
+    await expect(phone.picker.getByTestId('picker-managed')).toBeVisible();
+    await expect(shownPath(phone.picker)).toHaveText('/tmp/agent-hub-workspaces');
+
+    const rows = phone.picker.locator('[data-picker-row]');
+    const list = phone.picker.locator('[aria-label="文件夹"]');
+    const listBox = (await list.boundingBox())!;
+    expect(listBox.height).toBeGreaterThan(300);
+
+    const rowsInList = await rows.evaluateAll((elements) => {
+      const container = elements[0]?.closest('[aria-label="文件夹"]');
+      if (!container) return 0;
+      const bounds = container.getBoundingClientRect();
+      return elements.filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1;
+      }).length;
+    });
+    expect(rowsInList).toBeGreaterThanOrEqual(4);
+
+    // 第一行完整露出（以前会被底栏切掉半行）
+    const firstBox = (await rows.first().boundingBox())!;
+    expect(firstBox.y).toBeGreaterThanOrEqual(listBox.y - 1);
+    expect(firstBox.y + firstBox.height).toBeLessThanOrEqual(listBox.y + listBox.height + 1);
+
+    // 最后一行滚得到
+    const last = rows.last();
+    await last.scrollIntoViewIfNeeded();
+    const lastBox = (await last.boundingBox())!;
+    expect(lastBox.y).toBeGreaterThanOrEqual(listBox.y - 1);
+    expect(lastBox.y + lastBox.height).toBeLessThanOrEqual(listBox.y + listBox.height + 1);
+
+    // 当前位置完整可读（可触达地看得到，不靠 hover）
+    const pathLine = shownPath(phone.picker);
+    await expect(pathLine).toBeInViewport();
+    await expect(pathLine).toHaveText('/tmp/agent-hub-workspaces');
+    await expect(pathLine).toHaveAttribute('title', '/tmp/agent-hub-workspaces');
+
+    await page.screenshot({ path: `${SHOTS}/picker-flow-390.png` });
+
+    await chooseHubModel(phone.panel);
+    const start = phone.panel.getByRole('button', { name: '开始', exact: true });
+    await expect(start).toBeDisabled();
+    await phone.picker.getByRole('button', { name: '选此文件夹' }).click();
+    await expect(phone.picker).toHaveCount(0);
+    await expect(start).toBeEnabled();
+    await expect(phone.panel).toBeVisible();
+    await expect(page).toHaveURL(/\/canvas$/);
+
+    // 桌面：同一个独立窗口，居中而不是铺满；真实文件夹立刻占满列表
+    const wide = await openPickerFor(page, 1280, 800, flow, flowTask);
+    const wideBox = (await wide.picker.boundingBox())!;
+    expect(wideBox.height).toBeGreaterThan(400);
+    expect(wideBox.height).toBeLessThan(800 - 24);
+    expect(wideBox.x).toBeGreaterThan(0);
+    expect(wideBox.y).toBeGreaterThan(0);
+
+    const wideRows = wide.picker.locator('[data-picker-row]');
+    const wideList = (await wide.picker.locator('[aria-label="文件夹"]').boundingBox())!;
+    expect(wideList.height).toBeGreaterThan(200);
+    const wideVisible = await wideRows.evaluateAll((elements) => {
+      const container = elements[0]?.closest('[aria-label="文件夹"]');
+      if (!container) return 0;
+      const bounds = container.getBoundingClientRect();
+      return elements.filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1;
+      }).length;
+    });
+    expect(wideVisible).toBeGreaterThanOrEqual(5);
+    await expect(shownPath(wide.picker)).toHaveText('/tmp/agent-hub-workspaces');
+    await page.screenshot({ path: `${SHOTS}/picker-flow-desktop.png` });
+
+    await wide.picker.getByRole('button', { name: '选此文件夹' }).click();
+    await expect(wide.picker).toHaveCount(0);
+    await expect(wide.panel.getByRole('button', { name: '开始' })).toBeVisible();
+  });
+
+  await test.step('机器上的 agent 探测失败/离线：机器和目录都留着，只是开始不了', async () => {
+    const probeName = `picker-probe-${RUN}`;
+    const probeTask = `选目录3-${RUN}`;
+    const probeDir = `/tmp/agent-hub-workspaces/probe-${RUN}`;
+    mkdirSync(probeDir, { recursive: true });
+
+    const { panel, picker, label: fakeLabel } = await openPickerFor(page, 1280, 900, probeName, probeTask);
+    await goTo(picker, probeDir);
+    await picker.getByRole('button', { name: '选此文件夹' }).click();
+    await expect(picker).toHaveCount(0);
+    const start = panel.getByRole('button', { name: '开始', exact: true });
+    const hint = panel.getByTestId('derive-start-hint');
+    const machineBlocked = panel.getByTestId('machine-blocked');
+    await expect(start).toBeEnabled({ timeout: 15_000 });
+    await expect(panel).toContainText(probeDir);
+
+    // 再把目录窗口打开，把「正在浏览的位置」也放在这条路径上，然后只改探测结果（目录仍从 Worker 取）
+    await panel.getByRole('button', { name: '换一个' }).click();
+    await expect(picker).toBeVisible();
+    await goTo(picker, probeDir);
+
+    await page.route('**/api/workers', async (route) => {
+      const response = await route.fetch();
+      const workers = (await response.json()) as Array<{
+        state?: string;
+        agentModels?: Array<{ agentId: string; readiness?: { state: string; reason?: string } }>;
+      }>;
+      for (const worker of workers) {
+        for (const model of worker.agentModels ?? []) {
+          if (model.agentId !== FAKE_AGENT_ID) continue;
+          model.readiness = { state: 'unavailable', reason: '检测超时' };
+        }
+      }
+      await route.fulfill({ response, json: workers });
+    });
+
+    // 5 秒一轮的机器状态：不可用时机器不清空、目录不丢，只是「开始」变灰并说原因
+    await expect(hint).toContainText('用不了', { timeout: 20_000 });
+    await expect(start).toBeDisabled();
+    await expect(machineBlocked).toContainText('选好的机器和目录都保留');
+    await expect(picker).toBeVisible();
+    await expect(picker.getByTestId('picker-machine')).toContainText(fakeLabel);
+    await expect(shownPath(picker)).toHaveText(probeDir);
+    const machineGroup = panel.getByRole('radiogroup', { name: '机器' });
+    if ((await machineGroup.count()) > 0) {
+      await expect(machineGroup.getByRole('radio', { checked: true })).toContainText(fakeLabel);
+    }
+
+    // 恢复：机器没换、窗口还在原地，开始重新可用
+    await page.unroute('**/api/workers');
+    await expect(hint).toHaveCount(0, { timeout: 20_000 });
+    await expect(start).toBeEnabled();
+    await expect(machineBlocked).toHaveCount(0);
+    await expect(shownPath(picker)).toHaveText(probeDir);
+
+    // 真离线：目录也打不开了——旧列表顶不上去，也不允许对着旧目录按选定
+    await page.route('**/api/workers', async (route) => {
+      const response = await route.fetch();
+      const workers = (await response.json()) as Array<{
+        state?: string;
+        agentModels?: Array<{ agentId: string; readiness?: { state: string; reason?: string } }>;
+      }>;
+      for (const worker of workers) {
+        worker.state = 'offline';
+        for (const model of worker.agentModels ?? []) {
+          if (model.agentId !== FAKE_AGENT_ID) continue;
+          model.readiness = { state: 'unavailable', reason: '检测超时' };
+        }
+      }
+      await route.fulfill({ response, json: workers });
+    });
+    await expect(hint).toHaveText('这台机器不在线', { timeout: 20_000 });
+    await expect(start).toBeDisabled();
+    await expect(machineBlocked).toContainText('这台机器现在不在线');
+    // 已经选好的目录留在表单里（不偷偷改成别的），只是不能开始
+    await expect(panel).toContainText(probeDir);
+
+    await picker.getByRole('button', { name: '关闭' }).click();
+    await expect(picker).toHaveCount(0);
+    await page.route('**/api/fs/directories*', (route) =>
+      route.fulfill({ status: 503, json: { error: { code: 'unavailable', message: '连接不到这台机器' } } })
+    );
+    await panel.getByRole('button', { name: '换一个' }).click();
+    await expect(picker.getByText('打不开这个文件夹', { exact: false })).toBeVisible();
+    await expect(picker.locator('[data-picker-row]')).toHaveCount(0);
+    await expect(shownPath(picker)).toHaveText('');
+    await expect(picker.getByRole('button', { name: '选此文件夹' })).toBeDisabled();
+    await expect(picker.getByRole('button', { name: '新建文件夹', exact: true })).toBeDisabled();
+
+    // 离线期间重试也不该把旧列表带回来
+    await picker.getByRole('button', { name: '重试' }).click();
+    await expect(picker.locator('[data-picker-row]')).toHaveCount(0);
+    await expect(shownPath(picker)).toHaveText('');
+
+    await page.unroute('**/api/workers');
+    await page.unroute('**/api/fs/directories*');
+    await expect(hint).toHaveCount(0, { timeout: 20_000 });
+    await expect(start).toBeEnabled();
+    await picker.getByRole('button', { name: '重试' }).click();
+    await expect(picker.locator('[data-picker-row]').first()).toBeVisible();
+  });
+
   await test.step('换路径时挂起请求：不沿用上一份列表，选定按钮保持禁用', async () => {
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => {
@@ -314,6 +530,8 @@ test('目录选择器：位置浏览、筛选、新建、显式路径、选定�
       await reopened.picker.getByRole('button', { name: '选此文件夹' }).focus();
       await page.keyboard.press('Escape');
       await expect(reopened.picker).toHaveCount(0);
+      // Esc 只关这一层：底下的开始表单还在
+      await expect(reopened.panel).toBeVisible();
     } finally {
       release();
       await page.unroute('**/api/fs/directories*');
@@ -381,7 +599,7 @@ test('目录选择器：位置浏览、筛选、新建、显式路径、选定�
   });
 
   await test.step('手机 390：全屏、不自动弹键盘、44px、单滚动区、底栏在安全区里', async () => {
-    const { picker: phone } = await openPickerFor(page, 390, 844);
+    const { picker: phone, panel: phonePanel } = await openPickerFor(page, 390, 844);
     const box = await phone.boundingBox();
     expect(box).not.toBeNull();
     expect(Math.round(box!.width)).toBe(390);
@@ -437,6 +655,7 @@ test('目录选择器：位置浏览、筛选、新建、显式路径、选定�
 
     await phone.getByRole('button', { name: '关闭' }).click();
     await expect(phone).toHaveCount(0);
+    await expect(phonePanel).toBeVisible();
   });
 
   await test.step('手机 320：底栏不溢出、按钮仍可点', async () => {
@@ -453,5 +672,26 @@ test('目录选择器：位置浏览、筛选、新建、显式路径、选定�
     await page.screenshot({ path: `${SHOTS}/picker-mobile-320.png` });
     await tiny.getByRole('button', { name: '关闭' }).click();
     await expect(tiny).toHaveCount(0);
+  });
+
+  await test.step('Tab 只在窗口里走；Esc 关掉后焦点回到原来的表单', async () => {
+    const { picker: modal, panel: launcher } = await openPickerFor(page, 1280, 900);
+    const inside = () => modal.evaluate((element) => element.contains(document.activeElement));
+
+    await modal.getByLabel('筛选当前文件夹').focus();
+    for (let i = 0; i < 24; i += 1) {
+      await page.keyboard.press('Tab');
+      expect(await inside(), `Tab #${i + 1} 跑到窗口外了`).toBe(true);
+    }
+    for (let i = 0; i < 24; i += 1) {
+      await page.keyboard.press('Shift+Tab');
+      expect(await inside(), `Shift+Tab #${i + 1} 跑到窗口外了`).toBe(true);
+    }
+
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+    await expect(launcher).toBeVisible();
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false);
+    expect(await launcher.evaluate((element) => element.contains(document.activeElement))).toBe(true);
   });
 });

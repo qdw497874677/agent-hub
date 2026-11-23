@@ -102,6 +102,7 @@ import { createGitHubApi } from './github-api.ts';
 import { createDelegationHeadResolver, createDelegationPublisher } from './workspace-delegation-publish.ts';
 import { createWorkspaceDelegationHandoffProjection } from './workspace-delegation-handoff.ts';
 import { createWorkspaceDelegateScopeResolverFromDelegation } from './workspace-delegation-tool.ts';
+import { createWorkspaceReportToolProvider } from './workspace-delegation-report.ts';
 import { createProjectSessionGrantService } from './project-session-grant.ts';
 import { createProjectSessionGrantRoutes } from './project-session-grant-routes.ts';
 import { createProjectSessionActions } from './project-session-actions.ts';
@@ -636,12 +637,22 @@ const workspaceDelegateScopes = createWorkspaceDelegateScopeResolverFromDelegati
   loadActor: (userId) => loadActor(store.users, store.access, userId, 'tool-workspace-delegate')
 });
 const projectToolActor = (accountId: string) => loadActor(store.users, store.access, accountId, 'tool-project-session');
+const workspaceReport = createWorkspaceReportToolProvider({
+  sessions: deps.sessions,
+  tasks: deps.tasks,
+  projects: deps.projects,
+  delegations: store.workspaceDelegations,
+  access: deps.access!,
+  loadActor: projectToolActor,
+  bus: messageBus
+});
 const projectSessionGrant = createProjectSessionGrantService({
   now: deps.now,
   projectSessionGrants: store.projectSessionGrants,
   sessions: deps.sessions,
   tasks: deps.tasks,
   workspaceDelegations: store.workspaceDelegations,
+  canReportDelegation: workspaceReport.canReport,
   loadActor: async (accountId) => (await projectToolActor(accountId)) ? { userId: accountId, via: 'web' } : null,
   sourceEligible: async ({ action, actor, session }) => {
     if (action === 'revoke' || action === 'list') return true; // 旧授权始终可由归属人清理。
@@ -701,6 +712,7 @@ const assetDeps: AssetReviewDeps = {
 toolGateway = wireTools({
   deps, store, readEnv, messageBus, groupChat, botOfSession, contextService, filesService, gitService, memoryService,
   providerWiring, githubClient, teamTokenOf, githubReposFor, subjectOf, enqueueDispatch,
+  workspaceReportTools: workspaceReport.provider,
   projectSessionTools: createProjectSessionToolProvider({
     ...createProjectSessionActions({
       grants: projectSessionGrant,

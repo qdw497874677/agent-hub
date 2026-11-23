@@ -4,6 +4,7 @@ import {
   DEFAULT_TOOL_SCOPES,
   PROJECT_TASK_WRITE_TOOL_SCOPE,
   PROJECT_WORKTREE_OPEN_TOOL_SCOPE,
+  WORKSPACE_REPORT_SCOPE,
   asProjectId,
   asSessionId,
   asTaskId,
@@ -78,6 +79,7 @@ interface WorldOptions {
   readonly sourceAllowed?: boolean;
   readonly actorVia?: GrantActor['via'];
   readonly invalidateThrows?: boolean;
+  readonly canReport?: (actor?: GrantActor) => boolean;
 }
 
 function world(options: WorldOptions = {}) {
@@ -103,6 +105,7 @@ function world(options: WorldOptions = {}) {
     sessions: { byId: async (id) => (id === session.id ? session : null) },
     tasks: { byId: async (id) => (taskId !== null && id === taskId ? task : null) },
     workspaceDelegations: { byExecutionSession: async (id) => (id === session.id ? delegation : null) },
+    canReportDelegation: async (_sessionId, actor) => options.canReport?.(actor) ?? false,
     loadActor: async (accountId) =>
       options.active === false ? null : { userId: accountId, via: options.actorVia ?? 'web' },
     sourceEligible: async (input) => {
@@ -296,6 +299,23 @@ test('服务层：受限子会话（executionSessionId 命中）不能获得项�
   assert.ok(cap);
   assert.equal(cap.includes(PROJECT_TASK_WRITE_TOOL_SCOPE), false);
   assert.equal(cap.includes('git'), false);
+});
+
+test('服务层：仅受限子会话可获得回报 scope，身份或当前授权失效时收回', async () => {
+  let active = true;
+  const canReport = (actor?: GrantActor) => active && actor?.userId === human.userId && actor.via === human.via;
+  const child = world({ child: true, canReport });
+  const ordinary = world({ canReport });
+  const scopes = await child.service.toolScopes({ session: child.session, actor: human });
+  assert.ok(scopes);
+  assert.ok(scopes.includes(WORKSPACE_REPORT_SCOPE));
+  assert.ok(!scopes.includes('agent:message'));
+  assert.ok(!scopes.includes(PROJECT_WORKTREE_OPEN_TOOL_SCOPE));
+  assert.ok((await child.service.toolScopeCap(child.session, human))?.includes(WORKSPACE_REPORT_SCOPE));
+  assert.ok(!(await child.service.toolScopeCap(child.session))?.includes(WORKSPACE_REPORT_SCOPE));
+  assert.ok(!(await ordinary.service.toolScopeCap(ordinary.session, human))?.includes(WORKSPACE_REPORT_SCOPE));
+  active = false;
+  assert.ok(!(await child.service.toolScopeCap(child.session, human))?.includes(WORKSPACE_REPORT_SCOPE));
 });
 
 test('服务层：普通会话 toolScopes 返回 null（保持既有默认），项目 scope 只来自当前有效授权', async () => {

@@ -13,6 +13,9 @@ const QUIET =
   'min-h-[44px] shrink-0 rounded-sm px-2.5 text-meta text-secondary hover:bg-card-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring md:min-h-[32px] md:py-1.5';
 /** 一层最多画这么多行；共享机器的 /tmp 能有上万个子目录。 */
 const ENTRY_LIMIT = 200;
+/** 模态里可用 Tab 到达的控件；`-1` 的窗口容器本身不算。 */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
  * 窄屏：对话框本身是底部抽屉（祖先带 transform），`fixed inset-0` 只会铺满抽屉。
@@ -121,9 +124,20 @@ function DirectoryPickerBody({
     listRef.current?.focus({ preventScroll: true });
   }, [current?.path, current]);
 
-  // 桌面打开时把焦点放进选择器（不碰输入框，不会弹键盘）；手机上什么都不聚焦
+  // 打开前焦点在哪，关掉就还回哪（还挂在页面上时），不把焦点丢到 body
   useEffect(() => {
-    if (window.matchMedia('(min-width: 768px)').matches) listRef.current?.focus({ preventScroll: true });
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => {
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, []);
+
+  // 打开时把焦点放进选择器本身（不碰输入框，不会弹键盘）：桌面对着列表用 ↑↓，
+  // 手机放在窗口上，读屏和 Esc 都从这一层开始
+  useEffect(() => {
+    const wide = window.matchMedia('(min-width: 768px)').matches;
+    if (wide) listRef.current?.focus({ preventScroll: true });
+    else sectionRef.current?.focus({ preventScroll: true });
   }, []);
 
   useEffect(() => {
@@ -232,6 +246,63 @@ function DirectoryPickerBody({
 
   const narrow = useNarrowScreen();
 
+  // Esc 只关最上面这一层：先收输入，再关窗口。捕获阶段就拦住，底下「开始会话」的 Esc 不会跟着把表单也关掉。
+  const escapeRef = useRef<() => void>(() => {});
+  escapeRef.current = () => {
+    if (editingPath) {
+      setEditingPath(false);
+      setPathError(null);
+      return;
+    }
+    if (naming !== null) {
+      closeNaming();
+      return;
+    }
+    if (filter !== '') {
+      setFilter('');
+      return;
+    }
+    onCancel?.();
+  };
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        escapeRef.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      // 模态：Tab 只在本窗口里走，到头了绕回另一头，不落到背后的表单
+      const section = sectionRef.current;
+      if (!section) return;
+      const focusables = [...section.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+        (element) => element.getClientRects().length > 0
+      );
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+        return;
+      }
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !section.contains(active) || active === section) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
+      if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, []);
+
   const onListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-picker-row]')];
@@ -244,21 +315,21 @@ function DirectoryPickerBody({
   };
 
   const panel = (
-    <section
+    <>
+      <div
+        aria-hidden
+        className="fixed inset-0 z-[65] bg-black/45 backdrop-blur-[1px]"
+        onClick={() => {
+          if (onCancel) onCancel();
+        }}
+      />
+      <section
       ref={sectionRef}
+      role="dialog"
+      aria-modal="true"
       aria-label="目录选择器"
-      className="fixed inset-0 z-[70] flex shrink-0 flex-col bg-panel pb-[env(safe-area-inset-bottom)] md:static md:z-auto md:h-[24rem] md:rounded-md md:border md:border-hair md:pb-0 md:shadow-sm"
-      onKeyDown={(event) => {
-        if (event.key !== 'Escape') return;
-        if (editingPath) {
-          event.preventDefault();
-          setEditingPath(false);
-          setPathError(null);
-        } else if (onCancel) {
-          event.preventDefault();
-          onCancel();
-        }
-      }}
+      tabIndex={-1}
+      className="fixed inset-0 z-[70] flex flex-col overflow-hidden bg-panel outline-none md:inset-auto md:left-1/2 md:top-1/2 md:h-[min(42rem,calc(100dvh-3rem))] md:w-[min(46rem,calc(100vw-3rem))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-md md:border md:border-strong md:shadow-overlay"
     >
       <header className="shrink-0 border-b border-hair">
         <div className="flex items-center gap-2 px-2.5 pt-2">
@@ -266,7 +337,7 @@ function DirectoryPickerBody({
             <button
               type="button"
               aria-label="关闭"
-              className="-ml-1 flex size-[44px] shrink-0 items-center justify-center rounded-sm text-secondary hover:bg-card-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring md:hidden"
+              className="-ml-1 flex size-[44px] shrink-0 items-center justify-center rounded-sm text-secondary hover:bg-card-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring md:size-9"
               onClick={onCancel}
             >
               <Icon name="x" size={16} />
@@ -490,29 +561,6 @@ function DirectoryPickerBody({
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5 outline-none"
         onKeyDown={onListKeyDown}
       >
-        {current && offerManaged ? (
-          <div data-testid="picker-managed" className="mx-1 mb-1.5 rounded-sm border border-hair bg-canvas/60 px-2.5 py-2">
-            <p className="text-meta text-secondary">这个项目还没有自己的托管文件夹。</p>
-            <button
-              type="button"
-              className="mt-1 flex min-h-[36px] items-center gap-1 rounded-sm text-meta text-link hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-40"
-              disabled={createManaged.isPending}
-              onClick={() => createManaged.mutate()}
-            >
-              <Icon name="plus" size={12} />
-              {createManaged.isPending ? '正在创建…' : `创建项目文件夹 agent-hub-workspaces/${managed?.slice((managedParent?.length ?? 0) + 1)}`}
-            </button>
-          </div>
-        ) : null}
-
-        {createManaged.error ? (
-          <div className="mx-1 mb-1.5">
-            <Notice tone="danger" variant="box">
-              创建托管文件夹失败：{(createManaged.error as Error).message}
-            </Notice>
-          </div>
-        ) : null}
-
         {listing.isError ? (
           <div className="p-1.5">
             <Notice tone="danger" variant="box">
@@ -553,20 +601,6 @@ function DirectoryPickerBody({
 
         {current ? (
           <>
-            {hiddenCount > 0 && filter === '' ? (
-              <div className="flex items-center justify-between gap-2 px-2 py-1 text-meta text-tertiary">
-                <span className="min-w-0 truncate">隐藏了 {hiddenCount} 个点开头的文件夹</span>
-                <button
-                  type="button"
-                  aria-pressed={showHidden}
-                  className="min-h-[36px] shrink-0 rounded-sm px-1.5 text-link hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
-                  onClick={() => setShowHidden((value) => !value)}
-                >
-                  {showHidden ? '收起' : '显示'}
-                </button>
-              </div>
-            ) : null}
-
             {shown.map((entry) => (
               <button
                 key={entry.path}
@@ -625,19 +659,60 @@ function DirectoryPickerBody({
                 <span className="min-w-0 flex-1 truncate">新建文件夹 “{filter.trim()}”</span>
               </button>
             ) : null}
+
+            {hiddenCount > 0 && filter === '' ? (
+              <div className="mt-1 flex items-center justify-between gap-2 border-t border-hair px-2 py-1 text-meta text-tertiary">
+                <span className="min-w-0 truncate">隐藏了 {hiddenCount} 个点开头的文件夹</span>
+                <button
+                  type="button"
+                  aria-pressed={showHidden}
+                  className="min-h-[36px] shrink-0 rounded-sm px-1.5 text-link hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+                  onClick={() => setShowHidden((value) => !value)}
+                >
+                  {showHidden ? '收起' : '显示'}
+                </button>
+              </div>
+            ) : null}
           </>
         ) : null}
       </div>
 
-      <footer className="shrink-0 border-t border-hair px-2.5 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:pb-2">
-        <div className="flex items-center gap-2">
-          <p
-            data-testid="picker-path-desktop"
-            className="hidden min-w-0 flex-1 truncate font-mono text-meta text-tertiary sm:block"
-            title={current?.path}
+      {current && offerManaged ? (
+        <div data-testid="picker-managed" className="shrink-0 border-t border-hair bg-canvas/40 px-2.5 py-1">
+          <button
+            type="button"
+            className="flex min-h-[36px] w-full items-center gap-1.5 rounded-sm text-meta text-link hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-40"
+            disabled={createManaged.isPending}
+            onClick={() => createManaged.mutate()}
           >
-            {current?.path ?? ''}
-          </p>
+            <Icon name="plus" size={12} className="shrink-0" />
+            <span className="min-w-0 truncate">
+              {createManaged.isPending
+                ? '正在创建项目文件夹…'
+                : `创建项目文件夹 agent-hub-workspaces/${managed?.slice((managedParent?.length ?? 0) + 1)}`}
+            </span>
+          </button>
+        </div>
+      ) : null}
+
+      {createManaged.error ? (
+        <div className="shrink-0 px-2.5 py-1">
+          <Notice tone="danger" variant="box">
+            创建托管文件夹失败：{(createManaged.error as Error).message}
+          </Notice>
+        </div>
+      ) : null}
+
+      <footer className="shrink-0 border-t border-hair bg-panel px-2.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1.5 md:pb-2">
+        <p
+          data-testid="picker-path"
+          title={current?.path}
+          className="mb-1 line-clamp-3 break-all font-mono text-[11px] leading-4 text-secondary md:line-clamp-2"
+        >
+          {current?.path ?? ''}
+        </p>
+        <p className="mb-1.5 text-[11px] leading-4 text-tertiary">点文件夹进入；选好后按「选此文件夹」</p>
+        <div className="flex items-center gap-2">
           <button
             type="button"
             className={`${QUIET} flex items-center gap-1 border border-hair disabled:opacity-40`}
@@ -649,22 +724,16 @@ function DirectoryPickerBody({
           </button>
           <button
             type="button"
-            className="min-h-[44px] flex-1 shrink-0 rounded-sm bg-action px-4 text-meta text-action-fg hover:bg-action/90 disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:flex-none md:min-h-[34px]"
+            className="min-h-[44px] flex-1 shrink-0 rounded-sm bg-action px-4 text-meta text-action-fg hover:bg-action/90 disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring md:min-h-[34px]"
             disabled={!current}
             onClick={choose}
           >
             选此文件夹
           </button>
         </div>
-        <p
-          data-testid="picker-path-mobile"
-          className="mt-1 truncate font-mono text-meta text-tertiary sm:hidden"
-          title={current?.path}
-        >
-          {current?.path ?? ''}
-        </p>
       </footer>
-    </section>
+      </section>
+    </>
   );
   return narrow ? createPortal(panel, document.body) : panel;
 }

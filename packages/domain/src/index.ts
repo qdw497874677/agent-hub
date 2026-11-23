@@ -114,6 +114,7 @@ export * from './use-cases/sessions.ts';
 export * from './use-cases/start-session.ts';
 export * from './use-cases/stall.ts';
 export * from './use-cases/canvas.ts';
+export * from './use-cases/session-links.ts';
 export * from './use-cases/agent-profiles.ts';
 export * from './use-cases/search.ts';
 export * from './use-cases/metadata-search.ts';

@@ -308,6 +308,39 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
         }
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }
+      // please-report：受限的 prepared 执行会话用 workspace.report 向派工协调会话回报。
+      // 只发契约字段（request_key / body / sha），把工具清单、isError 和响应原文打回事件流。
+      if (MCP_HTTP && all.includes('please-report')) {
+        const sessionId = msg.params.sessionId;
+        const server = mcpServers.find((entry) => entry && entry.type === 'http' && typeof entry.url === 'string');
+        const pick = (name) => new RegExp(`(?:^|\\s)${name}=(\\S+)`).exec(all)?.[1] ?? '';
+        let names = [];
+        let listError = null;
+        let callError = null;
+        try {
+          if (!server) throw new Error('session/new 没有下发 HTTP MCP server');
+          const list = await mcpCall(server, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+          names = (list?.result?.tools ?? []).map((tool) => tool.name);
+          listError = list?.error ?? null;
+          const args = {
+            request_key: pick('key') || `report-${turn}`,
+            body: pick('body') || 'report_body',
+            ...(pick('sha') ? { sha: pick('sha') } : {})
+          };
+          const called = await mcpCall(server, {
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'tools/call',
+            params: { name: 'workspace_report', arguments: args }
+          });
+          const text = (called?.result?.content ?? []).map((block) => block.text ?? '').join(' ').slice(0, 900);
+          callError = called?.error ?? null;
+          say(sessionId, `report-observation:${JSON.stringify({ action: 'report', names, listError, callError, isError: called?.result?.isError === true, text })}`);
+        } catch (error) {
+          say(sessionId, `report-observation:${JSON.stringify({ action: 'report', names, listError, callError, isError: true, text: String(error.message ?? error).slice(0, 900) })}`);
+        }
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
       // please-project-asset-*：项目资产工具 lane（阶段 3）。工具清单、isError 和响应原文一起
       // 打回事件流；replay=true 时用同一个参数连续调用两次，验证请求键幂等。
       if (MCP_HTTP && all.includes('please-project-asset-')) {

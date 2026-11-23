@@ -237,6 +237,55 @@ async function turnCount(ctx: Ctx, sid: string): Promise<number> {
   return body.turns?.length ?? 0;
 }
 
+interface ReportObservation {
+  action: 'report';
+  names: string[];
+  listError?: unknown;
+  callError?: unknown;
+  isError: boolean;
+  text: string;
+}
+
+/** fake-agent 把 `workspace.report` 调用结果写成一行 `report-observation:<json>`。 */
+async function reportObservations(ctx: Ctx, sid: string): Promise<ReportObservation[]> {
+  const entries = await json<{ event: { kind?: string; delta?: string } }[]>(
+    await request(ctx, `/api/sessions/${sid}/events?after=0`),
+    '会话事件（回报）'
+  );
+  const found: ReportObservation[] = [];
+  for (const entry of entries) {
+    const text = entry.event.kind === 'text' ? (entry.event.delta ?? '') : '';
+    const marker = text.indexOf('report-observation:');
+    if (marker < 0) continue;
+    try {
+      const parsed = JSON.parse(text.slice(marker + 'report-observation:'.length)) as ReportObservation;
+      if (parsed.action === 'report' && typeof parsed.text === 'string') found.push(parsed);
+    } catch {
+      // 不完整 JSON 的块忽略；等下一轮重读
+    }
+  }
+  return found;
+}
+
+async function waitReport(ctx: Ctx, sid: string, count: number): Promise<ReportObservation> {
+  let seen: ReportObservation[] = [];
+  await waitFor(`${sid} 的第 ${count} 次回报观测`, async () => {
+    seen = await reportObservations(ctx, sid);
+    return seen.length >= count;
+  }, 180, 500);
+  return seen[count - 1]!;
+}
+
+interface ReportPart {
+  type?: string;
+  schema?: string;
+  data?: Record<string, unknown>;
+}
+
+function partsOf(message: MessageView): ReportPart[] {
+  return Array.isArray(message.parts) ? message.parts as ReportPart[] : [];
+}
+
 let booted: Promise<World> | null = null;
 function world(): Promise<World> {
   booted ??= bootstrap();
@@ -1258,6 +1307,216 @@ test('项目会话 MCP 阶段 2：同项目交接只进收件箱 → 候选通�
   assert.deepEqual(await snapshot(receiverPath), receiverBefore, '负例不应改变接收仓库');
   assert.deepEqual(await snapshot(w.source), sourceBefore, '阶段 2 也不应改变源仓库');
   assert.deepEqual(await branchesOf(w.bare), bareBranchesBefore, '阶段 2 不应推送 bare 分支');
+});
+
+interface ReportResponse {
+  status: 'done' | 'held';
+  messageId: string;
+  delegationId: string;
+  requestKey: string;
+  sha: string | null;
+  shaVerification?: 'self-reported';
+  holdReason?: string;
+}
+
+test('项目会话 MCP 阶段 2：prepared 执行会话回报 → 只进原无任务协调会话收件箱（不唤醒）→ 幂等/冲突 → SHA 仅自报，不导入不交接', { timeout: 240_000 }, async () => {
+  const w = await world();
+  const { ctx } = w;
+  const sourceBefore = await snapshot(w.source);
+  const bareBranchesBefore = await branchesOf(w.bare);
+  const tag = Date.now().toString(36);
+
+  const reportTask = await json<{ id: string }>(
+    await request(ctx, '/api/tasks', { method: 'POST', json: { projectId: w.projectId, title: `回报任务 ${tag}` } }),
+    '建回报任务'
+  );
+  const created = await request(ctx, `/api/coordinators/${w.coordinatorSessionId}/delegations`, {
+    method: 'POST',
+    json: {
+      requestKey: `phase2-report-${tag}`,
+      taskId: reportTask.id,
+      repoId: w.repoId,
+      baseBranch: 'main',
+      instructions: 'phase2 report lane',
+      agentId: 'fakeacp',
+      model: ''
+    }
+  });
+  const delegated = await json<{ created: boolean; delegation: DelegationView }>(created, '发起回报派工');
+  const child = delegated.delegation;
+  const childSessionId = child.executionSessionId;
+  assert.equal(child.state, 'prepared');
+  assert.ok(childSessionId && child.worktreePath && child.branch, 'prepared 派工应有执行会话 / worktree / 分支');
+  assert.equal(child.taskId, reportTask.id);
+  assert.equal((await git(child.worktreePath!, 'rev-parse', '--abbrev-ref', 'HEAD')).trim(), child.branch);
+  // 派工时非空 instructions 会先走一次 durable 送达；先等这一轮落地，作为执行会话的 turn 基线。
+  await waitTurns(ctx, childSessionId!, 1);
+  const childTurnsBefore = await turnCount(ctx, childSessionId!);
+
+  // 自报的 SHA：语法合法的小写 40 位，但刻意不是任何真实提交——hub 只标注「自报」，不做校验。
+  const reportedSha = 'a'.repeat(40);
+  const reportKey = `phase2-report-key-${tag}`;
+  const reportBody = `report_body_v1_${tag}`;
+  const coordinatorTurnsBefore = await turnCount(ctx, w.coordinatorSessionId);
+  const inboxBefore = await json<{ messages: MessageView[] }>(
+    await request(ctx, `/api/sessions/${w.coordinatorSessionId}/messages`),
+    '协调会话回报前收件箱'
+  );
+  const knownMessageIds = new Set(inboxBefore.messages.map((entry) => entry.messageId));
+
+  // ── 真 prepared 执行会话：工具清单里有 workspace_report（workspace.report 的 MCP 名），并真的调用 ──
+  await must(
+    await request(ctx, `/api/sessions/${childSessionId}/prompt`, {
+      method: 'POST',
+      json: { text: `please-report key=${reportKey} body=${reportBody} sha=${reportedSha}` }
+    }),
+    '执行会话回报 prompt'
+  );
+  await waitTurns(ctx, childSessionId!, childTurnsBefore + 1);
+  const firstObservation = await waitReport(ctx, childSessionId!, 1);
+  assert.ok(
+    firstObservation.names.includes('workspace_report'),
+    `prepared 执行会话的工具清单应含 workspace_report；实际：${firstObservation.names.join(',')}`
+  );
+  const first = observationValue<ReportResponse>(firstObservation);
+  assert.equal(first.status, 'done', 'wake=false 的回报应直接完成，不排队');
+  assert.equal(first.holdReason, undefined);
+  assert.equal(first.delegationId, child.id);
+  assert.equal(first.requestKey, reportKey);
+  assert.equal(first.sha, reportedSha);
+  assert.equal(first.shaVerification, 'self-reported', '回执也必须标明 SHA 是自报');
+  assert.ok(first.messageId);
+
+  // ── 接收者只能是派工记录里的原协调会话（这里是无任务的协调者）；一条、done、不唤醒 ──
+  const inbox = await json<{ messages: MessageView[] }>(
+    await request(ctx, `/api/sessions/${w.coordinatorSessionId}/messages`),
+    '协调会话收件箱'
+  );
+  const received = inbox.messages.filter((entry) => entry.body === reportBody);
+  assert.equal(received.length, 1, `原协调会话应恰好收到一条回报；实际：${JSON.stringify(inbox.messages.map((m) => m.body))}`);
+  const message = received[0]!;
+  assert.equal(message.messageId, first.messageId);
+  assert.equal(knownMessageIds.has(message.messageId), false, '回报必须是新消息行');
+  assert.equal(message.from, `session:${childSessionId}`);
+  assert.equal(message.targetSessionId, w.coordinatorSessionId, '回报目标只能来自派工记录');
+  assert.equal(message.status, 'done', '回报应直接落在收件箱，不排队唤醒');
+  assert.equal(message.wake, false, '回报必须记录 wake=false');
+  assert.equal(inbox.messages.length, inboxBefore.messages.length + 1, '回报只应新增一条消息');
+
+  const parts = partsOf(message);
+  assert.equal(parts.length, 1, `回报应只带一个 data part；实际：${JSON.stringify(message.parts)}`);
+  assert.equal(parts[0]!.type, 'data');
+  assert.equal(parts[0]!.schema, 'delegation-report/v1');
+  assert.deepEqual(Object.keys(parts[0]!.data ?? {}).sort(), ['delegationId', 'sha', 'shaVerification']);
+  assert.equal(parts[0]!.data?.delegationId, child.id);
+  assert.equal(parts[0]!.data?.sha, reportedSha, 'SHA 必须原样入库');
+  assert.equal(parts[0]!.data?.shaVerification, 'self-reported', 'SHA 只能是自报，不能标成校验过');
+
+  // ── 同 key 同 payload 重放：同一 messageId，不新增行、不新增 turn ──
+  await must(
+    await request(ctx, `/api/sessions/${childSessionId}/prompt`, {
+      method: 'POST',
+      json: { text: `please-report key=${reportKey} body=${reportBody} sha=${reportedSha}` }
+    }),
+    '执行会话回报重放 prompt'
+  );
+  await waitTurns(ctx, childSessionId!, childTurnsBefore + 2);
+  const replayObservation = await waitReport(ctx, childSessionId!, 2);
+  const replayed = observationValue<ReportResponse>(replayObservation);
+  assert.deepEqual(replayed, first, '同 key 同参数应返回同一条回报回执');
+  const inboxReplay = await json<{ messages: MessageView[] }>(
+    await request(ctx, `/api/sessions/${w.coordinatorSessionId}/messages`),
+    '协调会话重放后收件箱'
+  );
+  assert.equal(inboxReplay.messages.filter((entry) => entry.body === reportBody).length, 1, '重放不应新增消息行');
+  assert.equal(inboxReplay.messages.length, inbox.messages.length, '重放不应改变收件箱条数');
+
+  // ── 同 key 改 body：冲突，且没有任何新消息行 ──
+  const changedBody = `${reportBody}_changed`;
+  await must(
+    await request(ctx, `/api/sessions/${childSessionId}/prompt`, {
+      method: 'POST',
+      json: { text: `please-report key=${reportKey} body=${changedBody} sha=${reportedSha}` }
+    }),
+    '执行会话改正文冲突 prompt'
+  );
+  await waitTurns(ctx, childSessionId!, childTurnsBefore + 3);
+  const conflictObservation = await waitReport(ctx, childSessionId!, 3);
+  assert.equal(conflictObservation.isError, true, `同 key 改正文应失败；实际：${conflictObservation.text}`);
+  assert.match(conflictObservation.text, /同一请求键对应不同参数/, `错误应指出同 key 参数不一致；实际：${conflictObservation.text}`);
+  const inboxAfterConflict = await json<{ messages: MessageView[] }>(
+    await request(ctx, `/api/sessions/${w.coordinatorSessionId}/messages`),
+    '协调会话冲突后收件箱'
+  );
+  assert.equal(inboxAfterConflict.messages.length, inbox.messages.length, '冲突不应新增消息行');
+  assert.equal(inboxAfterConflict.messages.filter((entry) => entry.body === reportBody).length, 1);
+  assert.equal(inboxAfterConflict.messages.some((entry) => entry.body === changedBody), false, '冲突正文不应入库');
+
+  // ── 普通任务会话（非 prepared 执行会话）看不到这个工具，也调不动 ──
+  const ordinaryTask = await json<{ id: string }>(
+    await request(ctx, '/api/tasks', { method: 'POST', json: { projectId: w.projectId, title: `普通回报任务 ${tag}` } }),
+    '建普通任务'
+  );
+  const ordinary = await json<{ id: string }>(
+    await request(ctx, '/api/sessions/derive', {
+      method: 'POST',
+      json: { taskId: ordinaryTask.id, agentId: 'fakeacp', workspaceId: w.workspaceId, workerId: w.workerId }
+    }),
+    '派生普通任务会话'
+  );
+  await must(
+    await request(ctx, `/api/sessions/${ordinary.id}/prompt`, {
+      method: 'POST',
+      json: { text: `please-report key=phase2-report-ordinary-${tag} body=ordinary_body_${tag} sha=${reportedSha}` }
+    }),
+    '普通会话回报 prompt'
+  );
+  await waitTurns(ctx, ordinary.id, 1);
+  const ordinaryObservation = await waitReport(ctx, ordinary.id, 1);
+  assert.equal(
+    ordinaryObservation.names.includes('workspace_report'),
+    false,
+    `普通会话的 MCP 工具清单不应出现 workspace_report；实际：${ordinaryObservation.names.join(',')}`
+  );
+  assert.equal(ordinaryObservation.isError, true, `普通会话调用应失败；实际：${ordinaryObservation.text}`);
+  const inboxAfterOrdinary = await json<{ messages: MessageView[] }>(
+    await request(ctx, `/api/sessions/${w.coordinatorSessionId}/messages`),
+    '普通会话之后协调会话收件箱'
+  );
+  assert.equal(inboxAfterOrdinary.messages.length, inbox.messages.length, '普通会话不应产生回报消息');
+
+  // ── 回执不改变派工状态，也不伪造交接 / 候选导入的信任 ──
+  const listed = await json<{ delegations: DelegationView[] }>(
+    await request(ctx, `/api/coordinators/${w.coordinatorSessionId}/delegations`),
+    '回报后列派工'
+  );
+  assert.equal(listed.delegations.find((entry) => entry.id === child.id)?.state, 'prepared', '回报不应推进派工状态');
+  const manifest = await json<{ state: string; handoffs: unknown[] }>(
+    await request(ctx, `/api/workspace-delegations/${child.id}/handoff`),
+    '回报后交接清单'
+  );
+  assert.equal(manifest.state, 'none', '回报不是交接，不产生 handoff 记录');
+  assert.deepEqual(manifest.handoffs, []);
+  assert.equal(
+    await git(child.worktreePath!, 'for-each-ref', '--format=%(refname)', 'refs/agent-hub/imports'),
+    '',
+    '回报不应写候选导入 ref'
+  );
+  assert.deepEqual(await branchesOf(w.bare), bareBranchesBefore, '回报不应推远端分支');
+  assert.deepEqual(await snapshot(w.source), sourceBefore, '回报链路不应碰源仓库');
+
+  // ── prepared 执行会话仍是同一条持久会话（worktree / 分支未被回收）──
+  const childState = await json<{ branch: string }>(
+    await request(ctx, `/api/sessions/${childSessionId}/git/state`),
+    '回报后执行会话 git state'
+  );
+  assert.equal(childState.branch, child.branch);
+  assert.equal(existsSync(child.worktreePath!), true, '回报后 worktree 应仍然存在');
+
+  // ── 原协调会话的 Runtime 一次都没被唤醒：没有额外 turn ──
+  await new Promise((done) => setTimeout(done, 2_000));
+  assert.equal(await turnCount(ctx, w.coordinatorSessionId), coordinatorTurnsBefore, '回报 / 重放 / 冲突都不应唤醒原协调会话');
+  assert.equal(await turnCount(ctx, childSessionId!), childTurnsBefore + 3, '执行会话只多出我们自己发起的 3 轮');
 });
 
 interface AssetListEntry {

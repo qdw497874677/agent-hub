@@ -18,6 +18,7 @@ import {
   DEFAULT_TOOL_SCOPES,
   PROJECT_SESSION_GRANT_SCOPES,
   WORKSPACE_DELEGATE_SCOPE,
+  WORKSPACE_REPORT_SCOPE,
   forbidden,
   grantProjectSession,
   invalid,
@@ -72,6 +73,8 @@ export interface ProjectSessionGrantServiceDeps {
    * 无法证明不是子会话；宁可收紧也不放行项目写工具。
    */
   readonly workspaceDelegations: Pick<WorkspaceDelegationStore, 'byExecutionSession'>;
+  /** 仅在已经核实为受限派工执行会话后判断可否回报。 */
+  readonly canReportDelegation?: (sessionId: SessionId, actor?: GrantActor) => Promise<boolean>;
   /** 账号当前状态；返回 null 即拒绝。生产环境必须注入，不能默认成 web。 */
   readonly loadActor: (accountId: string) => Promise<GrantActor | null>;
   /** 来源资格（共享 / bot / 群 / connector / dispatch）；生产环境必须注入。 */
@@ -126,7 +129,7 @@ export interface ProjectSessionGrantService {
   /** `withToolAccess` 的 extraScopes 追加点：把当前有效项目授权映射成工具 scope；子会话恒为空。 */
   projectExtraScopes(input: { readonly session: ProjectToolSession; readonly actor?: GrantActor }): Promise<readonly ToolScope[]>;
   /** `createToolGateway` 的 scopeCap：撤销项目授权或识别出受限子会话后，旧令牌立即被收窄。 */
-  toolScopeCap(session: ProjectToolSession): Promise<readonly ToolScope[] | null>;
+  toolScopeCap(session: ProjectToolSession, actor?: GrantActor): Promise<readonly ToolScope[] | null>;
 }
 
 interface CanonicalBinding {
@@ -162,6 +165,11 @@ export function createProjectSessionGrantService(deps: ProjectSessionGrantServic
 
   const isRestrictedChild = async (sessionId: SessionId): Promise<boolean> =>
     (await deps.workspaceDelegations.byExecutionSession(sessionId)) !== null;
+
+  const childScopes = async (sessionId: SessionId, actor?: GrantActor): Promise<readonly ToolScope[]> => {
+    const allowed = await deps.canReportDelegation?.(sessionId, actor);
+    return allowed ? restrictedChildScopes([WORKSPACE_REPORT_SCOPE]) : restrictedChildScopes();
+  };
 
   /**
    * 当前服务端绑定（唯一真源）。任务会话看任务项目，无任务会话看不可变来源；
@@ -368,7 +376,7 @@ export function createProjectSessionGrantService(deps: ProjectSessionGrantServic
 
     async toolScopes(input) {
       try {
-        return (await isRestrictedChild(input.session.id)) ? restrictedChildScopes() : null;
+        return (await isRestrictedChild(input.session.id)) ? await childScopes(input.session.id, input.actor) : null;
       } catch {
         return restrictedChildScopes();
       }
@@ -397,9 +405,9 @@ export function createProjectSessionGrantService(deps: ProjectSessionGrantServic
       }
     },
 
-    async toolScopeCap(session) {
+    async toolScopeCap(session, actor) {
       try {
-        if (await isRestrictedChild(session.id)) return restrictedChildScopes();
+        if (await isRestrictedChild(session.id)) return await childScopes(session.id, actor);
         const binding = await canonicalBinding(session.id);
         // 普通会话保持默认行为：workspace:delegate 仍由令牌自身是否包含决定（交集不会凭空授予）。
         const base = [...DEFAULT_TOOL_SCOPES, WORKSPACE_DELEGATE_SCOPE];

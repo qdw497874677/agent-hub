@@ -71,6 +71,7 @@ export interface ToolWiringInput {
   readonly enqueueDispatch: (request: AgentTaskRequest) => Promise<void>;
   readonly projectSessionTools?: ToolProvider;
   readonly projectAssetTools?: ToolProvider;
+  readonly workspaceReportTools?: ToolProvider;
   readonly projectSessionScopeCap?: NonNullable<Parameters<typeof createToolGateway>[0]['scopeCap']>;
 }
 
@@ -96,6 +97,7 @@ export function wireTools(input: ToolWiringInput): ToolGateway {
     providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService),
       ...(input.projectSessionTools ? [input.projectSessionTools] : []),
       ...(input.projectAssetTools ? [input.projectAssetTools] : []),
+      ...(input.workspaceReportTools ? [input.workspaceReportTools] : []),
       createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
       // issue #216：agent 不 shell git/gh 也能 commit / push / 开 PR；权限与审计走工作流。
       createGitToolProvider({ workflow: gitService, subjectOf, writeSubjectOf: gitWriteSubjectOf, resolvePeer: (from, address) => messageBus.resolvePeer(from, address) }),

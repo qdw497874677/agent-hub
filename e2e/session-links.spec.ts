@@ -73,9 +73,14 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   const firstRun = page.getByRole('dialog', { name: '开始会话' });
   await firstRun.locator('#derive-agent').selectOption(AGENT_ID);
   await firstRun.getByRole('radio', { name: /新建持久工作目录/ }).click();
-  await firstRun.getByRole('radio', { name: '选已有目录' }).click();
+  // 选择器现在是模态的：点「新建持久工作目录」会立刻弹出并盖住下面「怎么新建」那排单选。
+  // 先关掉这一层，再切「选已有目录」（它自己也会把选择器打开），否则那次点击永远打在遮罩上。
   const picker = page.getByLabel('目录选择器');
-  if ((await picker.count()) === 0) await firstRun.getByRole('button', { name: '浏览…' }).click();
+  await expect(picker).toBeVisible();
+  await picker.getByRole('button', { name: '关闭' }).click();
+  await expect(picker).toHaveCount(0);
+  await firstRun.getByRole('radio', { name: '选已有目录' }).click();
+  await expect(picker).toBeVisible();
   await picker.getByRole('button', { name: '输入路径' }).click();
   const pathInput = picker.getByRole('textbox', { name: '路径' });
   await pathInput.fill(PROJECT_DIR);
@@ -113,6 +118,8 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   await page.getByRole('button', { name: '连接 0', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '连接会话' });
   await expect(dialog).toBeVisible();
+  // 连线只是多一个能发消息的理由：同任务树 / 消息派生的会话断开后照样可达，不能写成「只有连过的会话能互相发消息」。
+  await expect(dialog).toContainText(/同一任务树[\s\S]*断开/);
   const checkbox = dialog.locator('input[type="checkbox"]').first();
   await expect(checkbox).not.toBeChecked();
   // 同名会话也能靠任务 / 机器 / 工作目录 / 短号区分。

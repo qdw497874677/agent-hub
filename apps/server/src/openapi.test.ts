@@ -6,6 +6,7 @@ import { addTeamMember, fakeAssetSets, fakeSessionLinks, inMemoryAccounts, inMem
 import {
   asAgentId,
   asSessionId,
+  asTaskId,
   BUILTIN_CHROMIUM,
   createAccessPolicy,
   createMessageBus,
@@ -562,6 +563,26 @@ test('worker.use_local 永远授不出去：hub 管理员的令牌也不能在�
   // 机器列表里也没有本机
   const workers = (await call('/workers')).body as { workerId: string; origin?: string }[];
   assert.ok(workers.every((w) => w.origin !== 'local'));
+});
+
+test('开放 API 不能给本机已有会话投消息，也不触发派发', async () => {
+  const { david, mint, api, world } = await setup(undefined, undefined, true);
+  const call = api((await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token);
+  const project = await call('/projects', post({ name: 'local-messages' }));
+  assert.equal(project.status, 201);
+  const made = await call('/tasks', post({ projectId: project.body.id, title: 't' }));
+  assert.equal(made.status, 201);
+  const task = await world.deps.tasks.byId(asTaskId(made.body.id));
+  assert.ok(task);
+  const { user } = (await call('/me')).body;
+  const session = deriveSession({ task, agentId: asAgentId('fake'), model: 'm1', now: 1, workerId: 'local', createdBy: user.id });
+  assert.ok(session.ok);
+  await world.deps.sessions.save(session.value);
+  const before = world.dispatched.length;
+  const denied = await call(`/sessions/${session.value.id}/messages`, post({ kind: 'send', body: 'hi' }));
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  assert.match(denied.body.error.message, /本机/);
+  assert.equal(world.dispatched.length, before);
 });
 
 test('工作区改动与活动：都按项目/会话权限判定，不是拿到 id 就能读', async () => {

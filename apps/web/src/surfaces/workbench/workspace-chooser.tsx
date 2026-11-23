@@ -127,8 +127,11 @@ export function WorkspaceChooser({
   // 只有一台能用的机器：直接用它（不是「默认」，是没得选）
   useEffect(() => {
     if (machine === null && usable.length === 1) onMachine(usable[0]!.workerId);
-    if (machine !== null && !usable.some((worker) => worker.workerId === machine)) onMachine(null);
-  }, [machine, usable, onMachine]);
+    // 机器还在、只是这台上的 agent 暂时探测失败、或机器短暂离线：保留用户选的机器，
+    // 连带选择器里正在浏览的目录。启动由各对话框的可用性检查挡住，不替人换机器。
+    // 只有这台机器彻底不提供当前 agent 了（比如换了 agent）才清掉。
+    if (machine !== null && !workers.some((worker) => worker.workerId === machine && offers(worker))) onMachine(null);
+  }, [machine, usable, workers, agentId, onMachine]);
 
   // 工作目录的 workerId null = hub 本机 → 本机那台 Worker
   const hostOf = (workspace: WorkspaceDto) => workspace.workerId ?? local?.workerId ?? null;
@@ -163,6 +166,14 @@ export function WorkspaceChooser({
   ).length;
 
   const machineName = machines.find((worker) => worker.workerId === machine)?.label ?? '这台机器';
+  // 选中的机器还在列表里，但此刻开不了（agent 探测失败 / 机器离线）：保留选择，只把原因说清。
+  const chosenWorker = machine === null ? undefined : workers.find((worker) => worker.workerId === machine);
+  const chosenBlock =
+    chosenWorker === undefined
+      ? null
+      : chosenWorker.state !== 'online'
+        ? 'offline'
+        : harnessReason(chosenWorker, agentId)?.trim() || null;
   const groupSelected = choice?.type === 'new_group';
   const groupNode =
     groups && !longLivedOnly && Boolean(canvas.project.primaryRepoId) && canvas.project.repos.length > 1 ? (
@@ -200,6 +211,15 @@ export function WorkspaceChooser({
           unavailable={(worker) => harnessReason(worker, agentId)}
         />
       ) : null}
+      {machine === null || chosenBlock === null ? null : (
+        <p data-testid="machine-blocked" className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
+          {chosenBlock === 'offline' ? (
+            <>这台机器现在不在线。选好的机器和目录都保留；等它回来再开始。</>
+          ) : (
+            <>这台机器上的 {agentLabel} 暂时用不了：{chosenBlock}。选好的机器和目录都保留；等它恢复再开始。</>
+          )}
+        </p>
+      )}
       {blocked.length > 0 ? (
         // 别的机器为什么不能选：一行汇总就够（已选机器的工作目录才是主线）。
         // 原因和处理办法收进 details，需要时再展开，别在手机上占掉半屏。

@@ -86,7 +86,7 @@ export function SessionLinksDialog({
       <div className="mb-3 flex items-start justify-between gap-3">
         <div>
           <h2 className="text-head text-primary">连接会话</h2>
-          <p className="mt-1 text-meta text-tertiary">只有连过的会话能互相发消息，也可以从画布拖线。</p>
+          <p className="mt-1 text-meta text-tertiary">也可以在画布上拖线。同一任务树或消息派生的直接父子会话，断开连线后仍可按权限通信。</p>
           {!currentOnline ? (
             <p className="mt-1 text-meta text-rust">当前会话所在的机器不在线，暂时不能新建连接。</p>
           ) : null}

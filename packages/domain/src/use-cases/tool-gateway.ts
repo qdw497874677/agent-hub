@@ -19,7 +19,8 @@ import { asTaskId } from '../ids.ts';
  * 认证与调用时也会被重新收窄；求值失败按拒绝处理（fail closed）。
  */
 export type ToolScopeCap = (
-  session: Pick<Session, 'id' | 'taskId' | 'workerId'>
+  session: Pick<Session, 'id' | 'taskId' | 'workerId'>,
+  actor?: GrantActor
 ) => Promise<readonly ToolScope[] | null> | readonly ToolScope[] | null;
 
 /** 用会话级上限收窄授权；上限求值失败 → 空 scope（等于没有工具），绝不回落成完整权限。 */
@@ -27,7 +28,7 @@ async function capGrantScopes(grant: ToolGrant, cap?: ToolScopeCap): Promise<Too
   if (!cap) return grant;
   let limit: readonly ToolScope[] | null;
   try {
-    limit = await cap({ id: grant.sessionId, taskId: grant.taskId, workerId: grant.workerId });
+    limit = await cap({ id: grant.sessionId, taskId: grant.taskId, workerId: grant.workerId }, grant.actor);
   } catch {
     limit = [];
   }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentNote, canSelectMachine, emptyModelOption, hubCovers, startBlockReason, startHint, type GateWorker } from './harness-gate.ts';
+import { agentNote, canSelectMachine, carriedProtocol, emptyModelOption, hubCovers, startBlockReason, startHint, type GateWorker } from './harness-gate.ts';
 
 const bare = (reason: string, providers?: readonly string[]): GateWorker => ({
   agentModels: [{ agentId: 'pi', readiness: { state: 'unavailable', reason }, ...(providers ? { providers } : {}) }]
@@ -56,6 +56,23 @@ test('模型框的空值项：状态为空就显式画出来，看到的和状�
   assert.equal(emptyModelOption([], '', false), '用 agent 自己的默认');
   // 选中了清单里的值：不需要空值项
   assert.equal(emptyModelOption(['hub-cn-glm-flash/glm-5.3-flash'], 'hub-cn-glm-flash/glm-5.3-flash', true), null);
+});
+
+test('「换个地方继续」带上会话自己的 Hub 模型：不因目标机器「未配置模型」误挡', () => {
+  const hub = { protocol: 'openai-chat', models: [{ id: 'hub-cn-glm-flash/glm-5.3-flash' }] };
+  // 会话用的就是这个 Hub 模型：协议能对上，目标机器只是没配原生模型，照样能接着跑
+  assert.equal(carriedProtocol('hub-cn-glm-flash/glm-5.3-flash', [hub]), 'openai-chat');
+  const worker = bare('未配置模型', ['openai-chat']);
+  assert.equal(startBlockReason(worker, 'pi', 'hub-cn-glm-flash/glm-5.3-flash', 'openai-chat'), null);
+  // 不是清单里的模型 / 空模型：没有协议可用，照旧挡住
+  assert.equal(carriedProtocol('native/own-model', [hub]), null);
+  assert.equal(carriedProtocol('', [hub]), null);
+  assert.equal(startBlockReason(worker, 'pi', 'native/own-model', null), '未配置模型');
+  // 机器不报这个协议：带上模型也不能放行
+  const strict = bare('未配置模型', ['anthropic']);
+  assert.equal(startBlockReason(strict, 'pi', 'hub-cn-glm-flash/glm-5.3-flash', 'openai-chat'), '未配置模型');
+  // 真的离线仍然先挡住，和模型无关
+  assert.equal(startBlockReason({ ...worker, state: 'offline' }, 'pi', 'hub-cn-glm-flash/glm-5.3-flash', 'openai-chat'), '机器不在线');
 });
 
 test('hub 模型能顶上「未配置模型」时，agent 括注和说明行都不再说「用不了」', () => {
