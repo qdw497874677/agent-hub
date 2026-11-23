@@ -105,8 +105,8 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
   });
 
   app.get('/api/sessions/:id/peers', async (c) => {
-    // 可见性由 installAccess（session.read）把关
-    const peers = await bus.peers(asSessionId(c.req.param('id')));
+    // installAccess 查路径上的会话；新增同任务树同伴还要按实际查看者过滤。
+    const peers = await bus.peers(asSessionId(c.req.param('id')), { viewer: subjectOf(c) });
     if (!peers.ok) return fail(c, peers.error);
     // 顺带回这条会话自己的有效短名（检查器里「我的短名」用）。
     const self = await deps.sessions.byId(asSessionId(c.req.param('id')));

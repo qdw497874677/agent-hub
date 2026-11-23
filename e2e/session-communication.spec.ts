@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
 import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 会话通信 P1a（docs/design/session-communication.md §16 E1/E3/E4/E5 的单机子集）：
@@ -15,25 +16,34 @@ type Msg = {
   messageId: string; kind: string; status: string; to: string; from: string; reply: string | null; failure: string | null; replyTo: string | null;
   parts: { type: string }[]; wake: boolean; replyStatus: string | null; readAt: number | null; holdReason: string | null;
 };
-type Peer = { address: string; handle: string; status: string; workerId: string | null; repo: string | null; branch: string | null };
+type Peer = { address: string; handle: string; status: string; workerId: string | null; repo: string | null; branch: string | null; connected?: boolean; relation?: 'explicit' | 'task_tree' | 'spawn' };
 const REAL = process.env['E2E_REAL'] === '1';
+test.afterAll(stopFakeWorker);
 
-async function world(page: Page, baseURL: string) {
+async function world(page: Page, baseURL: string, real = false) {
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
+  const workerId = real ? undefined : await ensureFakeWorker(page, baseURL);
+  let agentId: string | undefined = real ? undefined : FAKE_AGENT_ID;
+  if (real) {
+    for (let i = 0; i < 40 && !agentId; i++) {
+      const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
+      agentId = workers.find((worker) => worker.state === 'online' && worker.agentIds.includes('pi'))?.agentIds.find((id) => id === 'pi');
+      if (!agentId) await page.waitForTimeout(500);
+    }
+    test.skip(!agentId, '这台机器上没有可用的 Pi agent');
   }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
   const dir = mkdtempSync(join(tmpdir(), 'e2e-sc-'));
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 会话通信 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 会话通信 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '会话通信' }, headers })).json()) as { id: string };
-  const session = async (): Promise<string> => {
-    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
+  const newTask = async (title: string): Promise<string> => {
+    const created = await page.request.post('/api/tasks', { data: { projectId: project.id, title }, headers });
+    expect(created.status(), await created.text()).toBe(201);
+    return ((await created.json()) as { id: string }).id;
+  };
+  const session = async (taskId = task.id): Promise<string> => {
+    const derived = await page.request.post('/api/sessions/derive', { data: { taskId, agentId, model: real ? piModel() : '' }, headers });
     expect(derived.status(), await derived.text()).toBe(201);
     return ((await derived.json()) as { id: string }).id;
   };
@@ -42,22 +52,26 @@ async function world(page: Page, baseURL: string) {
   const messages = async (id: string, unread = false): Promise<Msg[]> => ((await (await page.request.get(`/api/sessions/${id}/messages${unread ? '?unread=1' : ''}`)).json()) as { messages: Msg[] }).messages;
   const peers = async (id: string): Promise<Peer[]> => ((await (await page.request.get(`/api/sessions/${id}/peers`)).json()) as { peers: Peer[] }).peers;
   const setHandle = (id: string, handle: string) => page.request.put(`/api/sessions/${id}/handle`, { data: { handle }, headers });
-  return { dir, agentId: agentId!, project: project.id, headers, session, send, link, messages, peers, setHandle };
+  return { dir, agentId: agentId!, project: project.id, headers, newTask, session, send, link, messages, peers, setHandle };
 }
 
-test('同伴与短名：peers 列出短名 / 机器 / 状态；peer:<短名> 能投；重名 409；没连线的找不到并列出可用短名', async ({ page, baseURL }) => {
+test('同伴与短名：同任务无需连线；跨任务树未连线不可达；同任务短名不能重复', async ({ page, baseURL }) => {
   const w = await world(page, baseURL!);
   const [a, b, c] = [await w.session(), await w.session(), await w.session()];
   expect((await w.link(a, b)).status()).toBe(201);
   const peers = await w.peers(a);
-  expect(peers.map((p) => p.address)).toEqual([`session:${b}`]);
-  expect(peers[0]!.handle).toMatch(/^[a-z][a-z0-9-]+-[a-z0-9]{4}$/);
-  expect(peers[0]!.workerId).toBeTruthy();
+  expect(peers.map((p) => p.address).sort()).toEqual([`session:${b}`, `session:${c}`].sort());
+  const explicit = peers.find((p) => p.address === `session:${b}`);
+  expect(explicit).toMatchObject({ connected: true, relation: 'explicit', handle: expect.stringMatching(/^[a-z][a-z0-9-]+-[a-z0-9]{4}$/) });
+  expect(explicit?.workerId).toBeTruthy();
+  const sameTree = peers.find((p) => p.address === `session:${c}`);
+  expect(sameTree?.relation).toBe('task_tree');
+  expect(sameTree?.connected).not.toBe(true);
 
   expect((await w.setHandle(b, 'verify')).status()).toBe(200);
   expect((await w.setHandle(c, 'verify')).status(), '同任务内重名').toBe(409);
   expect((await w.setHandle(c, 'Bad Name')).status()).toBe(400);
-  expect((await w.peers(a))[0]!.handle).toBe('verify');
+  expect((await w.peers(a)).find((p) => p.address === `session:${b}`)?.handle).toBe('verify');
 
   const sent = await w.send(a, { kind: 'send', to: 'peer:verify', body: 'FYI：只是通知，不用回复', wake: false });
   expect(sent.status(), await sent.text()).toBe(201);
@@ -66,7 +80,10 @@ test('同伴与短名：peers 列出短名 / 机器 / 状态；peer:<短名> 能
   const missing = await w.send(a, { kind: 'send', to: 'peer:nobody', body: 'hi' });
   expect(missing.status()).toBe(403);
   expect(await missing.text()).toContain('peer:verify');
-  const notLinked = await w.send(c, { kind: 'send', to: `session:${b}`, body: 'hi' });
+  const noLinkNeeded = await w.send(c, { kind: 'send', to: `session:${b}`, body: '同任务也可直接通知', wake: false });
+  expect(noLinkNeeded.status(), await noLinkNeeded.text()).toBe(201);
+  const anotherTree = await w.session(await w.newTask('另一棵任务树'));
+  const notLinked = await w.send(anotherTree, { kind: 'send', to: `session:${b}`, body: 'hi', wake: false });
   expect(notLinked.status()).toBe(403);
 });
 
@@ -126,7 +143,7 @@ test('已收起的会话：消息直接返回 archived；peers 里标 archived',
 test('真模型：A 用 agent.ask 问 peer:verify，B 答复带 replyStatus；回到 A 的同一条 messageId', async ({ page, baseURL }) => {
   test.skip(!REAL, '只在 E2E_REAL=1 时跑');
   test.setTimeout(420_000);
-  const w = await world(page, baseURL!);
+  const w = await world(page, baseURL!, true);
   const [a, b] = [await w.session(), await w.session()];
   expect((await w.link(a, b)).status()).toBe(201);
   expect((await w.setHandle(b, 'verify')).status()).toBe(200);
@@ -156,7 +173,7 @@ test('真模型：A 用 agent.ask 问 peer:verify，B 答复带 replyStatus；�
 test('真模型（P1c）：A 用 workspace.read + session:peer:verify 只读看同伴的文件；没连线的 C 被拒', async ({ page, baseURL }) => {
   test.skip(!REAL, '只在 E2E_REAL=1 时跑');
   test.setTimeout(420_000);
-  const w = await world(page, baseURL!);
+  const w = await world(page, baseURL!, true);
   const [a, b, c] = [await w.session(), await w.session(), await w.session()];
   expect((await w.link(a, b)).status()).toBe(201);
   expect((await w.setHandle(b, 'verify')).status()).toBe(200);
@@ -179,7 +196,7 @@ test('真模型（P1c）：A 用 workspace.read + session:peer:verify 只读看�
   expect(/只有明确连接|unresolvable|找不到这个同伴/.test(denied), '没连线的会话拿到的是拒绝').toBe(true);
 });
 
-test('P1f：trustPeers 项目开关往返；运行时没报档位（pi）时不拦，审计里记 tier', async ({ page, baseURL }) => {
+test('P1f：trustPeers 项目开关往返；运行时没报档位时不拦，审计里记 tier', async ({ page, baseURL }) => {
   const w = await world(page, baseURL!);
   const [a, b] = [await w.session(), await w.session()];
   expect((await w.link(a, b)).status()).toBe(201);
@@ -214,7 +231,7 @@ test('P1e 界面：检查器看同伴、改短名；消息行带附件与「不�
   const loud = await w.send(a, { kind: 'send', to: 'peer:verify', body: '卡片测试：这是一条通知，不需要回复。' });
   expect(loud.status(), await loud.text()).toBe(201);
 
-  // 被拦下的消息：真触发要「要审批 → 免审批」的运行时档位，pi 不报档位；这里只在界面层注入一条，验证放行卡和它调的接口。
+  // 真触发需要「要审批 → 免审批」的档位；这里只在界面层注入一条，验证放行卡和接口。
   let decided: unknown = null;
   await page.route(`**/api/sessions/${a}/messages`, async (route) => {
     if (route.request().method() !== 'GET') return route.continue();

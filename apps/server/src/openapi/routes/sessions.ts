@@ -148,10 +148,10 @@ export const sessions = {
   sessionPeers: route('sessions:read', {
     method: 'get', path: `${V1}/sessions/{sessionId}/peers`, tags: ['sessions'], summary: '会话的同伴',
     description:
-      '这条会话能直接说话的同伴（显式连线 + 派生父会话）：短名 handle（用 peer:<handle> 寻址）、session id、机器 workerId、仓库、分支、标题、状态（idle / busy / archived）。\n' +
+      '这条会话可达的通信同伴（显式连线、消息派生关系或同项目同任务树）：短名 handle、会话地址 session:<id>、机器 workerId、仓库、分支、标题、状态和可达原因 relation。connected 只表示显式连线；实际发送仍受通信权限约束。\n' +
       '参数：sessionId。\n' +
       '返回：{ peers: [...] }。\n' +
-      '下一步：session_link 增加同伴；session_message 给某条会话发消息。',
+      '下一步：session_link 可显式连接同项目的其他会话；session_message 从外部直接发给指定会话。',
     request: { params: sessionId },
     responses: { 200: json(z.object({ peers: z.array(peerSchema) })) }
   }, { module: 'sessions', need: 'session.read', expose: 'session_peers' }),

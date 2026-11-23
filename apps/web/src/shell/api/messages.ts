@@ -40,13 +40,19 @@ export type AgentMessagePartDto =
   | { readonly type: 'file'; readonly session: string; readonly member?: string; readonly path: string }
   | { readonly type: 'link'; readonly url: string; readonly label?: string };
 
-/** 会话通信 P1a：同伴（连了线或派生关系的会话）。 */
+/** 会话通信 P1a：同伴（连了线、派生关系，或同一棵任务树里的会话）。 */
 export interface SessionPeerDto {
   readonly address: string;
   readonly handle?: string;
   readonly label: string;
   readonly status: string;
+  /** 只表示真的有显式连线（画布 / 连线选择器连的）；派生和同任务树不算。 */
   readonly connected?: boolean;
+  /**
+   * 为什么能互相发消息：显式连线 > 派生父子 > 同一棵顶层任务树。
+   * 只解释已经存在的可达性；老服务端可能不给（这时别替它猜）。
+   */
+  readonly relation?: 'explicit' | 'task_tree' | 'spawn';
   readonly workerId?: string | null;
   readonly repo?: string | null;
   readonly branch?: string | null;

@@ -77,7 +77,7 @@ export function installSessionComms(app: OpenAPIHono<Env>, rt: V1Runtime): void 
     const project = await projectOfSessionOrigin(rt.deps, target);
     const allowed = await authorizeProject(rt.deps.access, actor, project, 'session.read');
     if (!allowed.ok) return fail(c, allowed.error);
-    const peers = await rt.messaging.bus.peers(target.id);
+    const peers = await rt.messaging.bus.peers(target.id, { viewer: actor });
     return peers.ok ? c.json({ peers: peers.value }) : fail(c, peers.error);
   });
   on(routes.sessionMessage, async (c) => {

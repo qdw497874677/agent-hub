@@ -9,7 +9,7 @@
 
 1. **不新建第二套消息系统。** ADR 0018 的 P1 已经在代码里（`MessageBus`、`agent_messages`、`agent.send / ask / reply / status / inbox / peers / directory`、连线 `SessionLink`、深度 / 并发 / 扇出上限、不可信包裹、按人取交集）。本设计是它的**第二步**：把它用到「一仓一会话 + 跨机器 + 外部 agent 编排」这个场景上。
 2. **可寻址的单位只有会话。** 机器（worker）只是会话的落点，不是地址；要「另一台机器来验证」，就在那台机器上开一条验证会话，然后给它发消息。
-3. **谁能找谁 = 显式连线 + 派生父子**（保持现规则）。外部 agent 和 `session_start` 可以在建会话时一并连线；任务内起短名（`peer:verify`），agent 不用记长 id。
+3. **普通点对点消息可达 = 显式连线 + 消息派生父子 + 同项目同任务树**。可达与授予工具、读取文件是不同的判断。外部 agent 和 `session_start` 可以在建会话时一并连线；任务内起短名（`peer:verify`），agent 不用记长 id。
 4. **补五块能力**：
    - ① 同伴感知变丰富：同伴的仓库、分支、有没有未提交改动、机器、状态、未读数。
    - ② 只读看同伴的工作空间（跨机器走现有 hub↔worker RPC）。
@@ -54,7 +54,7 @@
 | 幂等 | `clientRequestId` 推导出稳定的命令 / 消息 id，重试回放同一个回执 | 外部写工具已有 `clientRequestId`，消息复用它 |
 | 来历 | 每条消息带 `createdBy`（agent / user）和 `creationSource`（mcp / provider），**actor 与入口分开** | `from.kind` + `via` |
 | 引用 | agent 用 `t3-thread://v2/<env>/<thread>` 链接指代线程，不手写 id 或标题（标题会过期） | 任务内短名 `peer:<handle>` + 结果里带链接 |
-| 跨环境 | 项目和线程属于一个环境；**只有通过 peer link 才能碰另一个环境的线程** | 连线是唯一的可达关系 |
+| 跨环境 | 项目和线程属于一个环境；跨环境须显式授权 | 不把同任务树关系扩展到项目外 |
 | 失败 | 有类型的失败码（`thread_not_sendable`、`runtime_mode_escalation_denied`……） | 沿用 ADR 0018 的失败码并补 4 个 |
 
 ### 2.2 业界（简）
@@ -82,7 +82,7 @@
 | `MessageBus.accept / reply / turnEnded / pump`：同项目、连线或父子才可达；派生的任务会话默认隔离；深度 4、并发 8、扇出 10；ask 默认超时 30 分钟；正文 ≤32KB；空闲就投、忙就排队，每轮只投一条 ask；轮末文本兜底作为回复 | `packages/domain/src/use-cases/messaging.ts`、`messaging.ts` | 扩展，不重写 |
 | 工具 `agent.directory / peers / send / ask / reply / status / inbox`、`agent.activity`、`agent.spawn`（同任务、同 worker、同工作空间） | `tools/message-tools.ts`、`tools/agent-orchestration-tools.ts` | 加参数；spawn 增加选仓 / 选机器（依赖一仓一会话） |
 | `peerBriefingFor`：每次发话都列出最多 20 个连线同伴（id、agent、标题、首句、状态） | `use-cases/conversation.ts` | 加仓库 / 分支 / 机器 / 未读（P1a），脏（P1c）；只在变化时注入 |
-| `SessionLink`（无向，画布拖线或会话页选择） | `session-link.ts` | 唯一的可达关系；加 `createdBy / via` |
+| `SessionLink`（无向，画布拖线或会话页选择） | `session-link.ts` | 显式指定会话关系的记录；带 `createdBy / via` |
 | `workspace.list / read`：只能看**自己**；人用的 `/api/sessions/:id/files` 已能看任意可见会话，跨 worker 走 RPC | `tools/files-tools.ts`、`use-cases/workspace-files.ts` | 加 `session` 参数 |
 | 会话收件箱 / 占用判断（ADR 0036 `SessionInbox`） | `deps.occupied` | 投递仍走它，不另判 |
 | 对外 MCP：路由元数据生成 35 个工具；写工具要 `clientRequestId`；`session_reply` 202 后用 `events` 轮询；本机 Worker 对令牌 403 | `apps/server/src/openapi/routes.ts`、`skills/agent-hub-workbench` | 新增 6 个工具 + `waitSec` |
@@ -95,13 +95,13 @@
 | 地址 | 含义 | 本期 |
 |---|---|---|
 | `session:<id>` | 具体会话 | 已有 |
-| `peer:<handle>` | 当前任务里、调用方能到达的同伴的短名 | **新增** |
+| `peer:<handle>` | 调用方能到达的同伴短名（短名在任务内唯一） | **新增** |
 | `bot:<name>`（旧 `role:`） | 项目里的常驻 bot / 角色 | 已有 |
 | `external:<inboxId>` | 外部 agent 的收件箱，只作为回复目标（§5.4） | **新增**，内部只能 reply |
 | `group:<id>` | 群 | 已有（群聊） |
 
 - **handle**：`session_start`、`agent.spawn` 和会话页可以设置。规则 `^[a-z][a-z0-9-]{1,31}$`，在任务内唯一；不设时用 `<agentId>-<id 后 4 位>`（P1a 实现：短名存在 `agent_session_handles` 表，不改 Session 模型）。改名不影响已发的消息（消息存 `targetSessionId`）。
-- **解析**：`peer:` 只在调用方能到达的会话里找，找不到时报 `unresolvable`，并在错误里列出可用的 handle。
+- **解析**：`peer:` 只在调用方可达且可见的通信同伴中解析；同一短名不能唯一确定接收方时，用发现结果中的 `session:<id>` 定向发送。文件工具的寻址范围不随之扩大。
 - **不做 worker 地址和 project 广播**：机器是落点；项目广播风暴风险高，用途也不清楚。
 
 ## 4. 发现：谁能看见谁
@@ -110,10 +110,11 @@
 |---|---|---|---|
 | 显式连线（画布 / 会话页 / `session_link` / `session_start.linkWith`） | 是 | 是 | 是（还要有文件读权限，§7） |
 | 派生父 ↔ 子 | 是 | 是 | 是 |
-| 同项目、没连线 | `agent.activity` 只列状态 / 标题 | 否 | 否 |
+| 同项目、同一顶层任务树、没连线 | 是 | 是（须有通信权限） | 否，仅有任务树关系不够 |
+| 同项目、不同任务树、没连线 | `agent.activity` 只列状态 / 标题 | 否 | 否 |
 | 别的项目、别的团队 | 否 | 否 | 否 |
 
-- 维持「**只有连线才能通信**」这一条规则（§13 Q1）。外部 agent 建会话时带 `linkWith` 就是一步。
+- 同任务、父子任务与兄弟子任务共享同一个顶层任务，默认不需要连线。任务树关系不落为连接记录，不会在画布上新增线；`connected` 只表示显式连线，`relation` 说明同伴为何出现。
 - `agent.spawn` 派生出的会话（包括 P1 新增的选仓派生）**自动和父会话可达**（父子关系，不额外建线）。
 - 同伴信息（`agent.peers`、briefing）：
 
@@ -121,7 +122,7 @@
 同伴（2）：
 - peer:verify  session:9f3a… · 机器 B · 仓库 one（组合：agentar, dtaiagtmng）· 分支 hub/9f3a · 空闲 · 未读 0
 - peer:dev-dtai session:77c1… · 机器 A · 仓库 dtaiagtmng · 分支 hub/77c1 · 有未提交改动 · 工作中
-用 agent.ask / agent.send 联系；workspace.read 加 session=peer:<名> 只读看对方文件。
+用 agent.ask / agent.send 联系；workspace.read 仍需已有文件寻址关系和读取权限。
 ```
 
 - briefing **只在同伴集合或状态变了时注入**（记录上次注入的指纹），不再每一轮都加，省 token。
@@ -329,7 +330,7 @@ type Part =
 
 ## 13. 已确认（2026-11-18，按推荐默认）
 
-1. **同一任务里的会话要不要默认互通（不用连线）？** 推荐：**不默认**，保持「连线才通」一条规则。`session_start.linkWith` 和派生父子已经够用，也不会意外把几十条会话连成一团。
+1. **同一任务里的会话要不要默认互通（不用连线）？** 2026-11-23 决定：**同项目同一顶层任务树默认可达**。跨树仍需显式连线或已有的消息派生父子关系；原有隔离与授予规则不变。
 2. **已收起的会话收到消息时要不要自动唤醒（顺带恢复 worktree）？** 推荐：**不唤醒**，返回 `archived`，由人或外部 agent 显式重开。否则消息可能把清理过的 worktree 反复拉回来。
 3. **权限档位升级（guarded → auto）要不要默认拦下等人放行？** 推荐：**默认拦**，项目可以关（`trustPeers`）。
 
@@ -351,7 +352,7 @@ type Part =
 ## 15. 测试计划
 
 - **领域单测**（表驱动，`packages/domain`）：
-  - 可达矩阵（连线 / 父子 / 同项目未连 / 跨项目 / 跨团队），× 发消息和读文件；
+  - 可达矩阵（连线 / 消息派生 / 同任务 / 父子与兄弟任务 / 同项目跨树未连 / 跨项目 / 跨团队），分别验证发现、发消息和读文件；
   - 权限交集（主人 / onBehalfOf / 被调方），外部 actor；
   - 拦下 / 放行 / 拒绝；
   - 按对限速、重复内容、打转暂停、收件队列、每链唤醒上限；
@@ -377,7 +378,7 @@ type Part =
 | E2 | **外部 agent 全程**：`task_create` → 两条开发会话（`repoId` 各一，机器 A，`linkWith`）+ 一条验证会话（机器 B，组合）→ `session_reply` 派活 → 开发推送、开 PR → 开发问验证 → 外部用 `message_inbox` / `events(waitSec)` 跟进展 → 标记合并 → `session_settle` / `workspace_sweep` | 不经过界面；两台机器的 worktree 目录和 `git worktree list` 都干净；审计按 trace 能串起全链 |
 | E3 | 忙时排队、空闲唤醒、FIFO：连发 3 条给一条正在忙的会话 | 按序投递，每轮最多一条 ask |
 | E4 | 防风暴：诱导两条会话互相 ask | 第 9 次往返时暂停，「需要你」出现；重复内容被拒；按对限速提示「合并」 |
-| E5 | 拒绝路径：没连线、别的项目令牌、本机 Worker、读同伴敏感文件、`..` 路径、发给 settled 会话、guarded → auto | 各自返回正确的失败码，审计里有 `denied` / `held` |
+| E5 | 拒绝路径：跨任务树且无既有关系、别的项目令牌、本机 Worker、读同伴敏感文件、`..` 路径、发给 settled 会话、guarded → auto | 各自返回正确的失败码，审计里有 `denied` / `held` |
 | E6 | 令牌：外部 ask 在途时轮换（收件箱沿用）、吊销（401，收件箱关闭） | 不打印令牌；审计保留 |
 | E7 | 界面：消息卡、同伴抽屉、拦下卡 | 桌面 1280 和手机 390 的截图 |
 

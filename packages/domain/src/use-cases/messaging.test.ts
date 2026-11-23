@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inMemoryDeps, fakeSessionLinks } from '../testing/in-memory.ts';
 import { createProject, type Project } from '../project.ts';
-import { createTask } from '../task.ts';
+import { createTask, type Task } from '../task.ts';
 import { deriveSession, type Session } from '../session.ts';
-import { asAgentId, type SessionId } from '../ids.ts';
+import { asAgentId, asTaskId, type SessionId } from '../ids.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
 import type { MessageStore } from '../ports/message-store.ts';
 import type { AgentMessage, MessageAuditEntry, MessagingConfig, SpawnRecord } from '../messaging.ts';
@@ -14,6 +14,7 @@ import { recordEvent } from './sessions.ts';
 import { createMessageBus } from './messaging.ts';
 import { canonicalLink } from '../session-link.ts';
 import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
+import { MAX_LINEAGE_DEPTH, taskTreeIndex } from './message-reachability.ts';
 
 function memoryMessages(): MessageStore & { all: Map<string, AgentMessage>; audits: MessageAuditEntry[] } {
   const all = new Map<string, AgentMessage>();
@@ -114,12 +115,25 @@ async function world(options: { askTimeoutMs?: number; links?: SessionLinkReposi
   const task = createTask({ projectId: project.value.id, title: 't', goal: '', now: 1 });
   assert.ok(task.ok);
   await deps.tasks.save(task.value);
-  const newSession = async (owner: string): Promise<Session> => {
-    const s = deriveSession({ task: task.value, agentId: asAgentId('pi'), model: '', now: 1, createdBy: owner });
+  const newTask = async (parent?: Task): Promise<Task> => {
+    const t = createTask({
+      projectId: project.value.id,
+      title: `t-${clock}`,
+      goal: '',
+      now: clock,
+      ...(parent ? { parentTaskId: parent.id, parent } : {})
+    });
+    assert.ok(t.ok);
+    await deps.tasks.save(t.value);
+    return t.value;
+  };
+  const newSessionOn = async (on: Task, owner: string): Promise<Session> => {
+    const s = deriveSession({ task: on, agentId: asAgentId('pi'), model: '', now: 1, createdBy: owner });
     assert.ok(s.ok);
     await deps.sessions.save(s.value);
     return s.value;
   };
+  const newSession = (owner: string): Promise<Session> => newSessionOn(task.value, owner);
   const delivered: { sessionId: SessionId; text: string }[] = [];
   let deliverFails = false;
   const bus = createMessageBus({
@@ -158,7 +172,7 @@ async function world(options: { askTimeoutMs?: number; links?: SessionLinkReposi
     await bus.turnEnded(sessionId, outcome);
   };
   return {
-    deps, bus, messages, project: project.value as Project, newSession, delivered, finishTurn, principal,
+    deps, bus, messages, project: project.value as Project, newSession, newTask, newSessionOn, delivered, finishTurn, principal,
     tick: (ms: number) => void (clock += ms),
     failDeliveries: (v: boolean) => void (deliverFails = v)
   };
@@ -418,15 +432,15 @@ test('不可信包装：正文里的标签被转义，伪造不了外层', () =>
   assert.ok(!text.includes('<system>'));
 });
 
-test('严格模式：只有连线的会话能互发；连上后 directory/peers 都标 connected', async () => {
+test('严格模式：不同任务树且没连线的会话不能互发；连上后 directory/peers 都标 connected', async () => {
   const links = fakeSessionLinks();
   const w = await world({ links });
   const a = await w.newSession('alice');
-  const b = await w.newSession('alice');
+  const b = await w.newSessionOn(await w.newTask(), 'alice');
 
   const blocked = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'hi' });
   assert.equal(blocked.ok, false);
-  if (!blocked.ok) assert.match(blocked.error.message, /只有明确连接的会话/);
+  if (!blocked.ok) assert.match(blocked.error.message, /只有明确连接/);
 
   const empty = await w.bus.directory(a.id);
   assert.ok(empty.ok);
@@ -824,10 +838,10 @@ async function containerSession(w: Awaited<ReturnType<typeof world>>, owner: str
   return session.value;
 }
 
-test('会话交接 P2：同项目交接默认只进收件箱，绕过显式连线也不唤醒；普通 send 仍受连线限制', async () => {
+test('会话交接 P2：同项目交接默认只进收件箱，绕过显式连线也不唤醒；普通 send 对不同任务树仍受连线限制', async () => {
   const w = await world({ links: fakeSessionLinks() });
   const a = await w.newSession('alice');
-  const b = await w.newSession('alice');
+  const b = await w.newSessionOn(await w.newTask(), 'alice');
   await recordEvent(w.deps, { sessionId: b.id, event: { kind: 'prompt', text: '我正忙' } });
 
   const sent = await w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: b.id, body: '交接一下', requestKey: 'h-1' });
@@ -1023,7 +1037,7 @@ test('会话交接 P2：并发同键指向不同目标也只写一条，不会�
 test('会话交接 P2：公共 accept 不接受调用方自报的放行标记', async () => {
   const w = await world({ links: fakeSessionLinks() });
   const a = await w.newSession('alice');
-  const b = await w.newSession('alice');
+  const b = await w.newSessionOn(await w.newTask(), 'alice');
 
   const legacyLink = {
     fromSessionId: a.id,
@@ -1035,7 +1049,7 @@ test('会话交接 P2：公共 accept 不接受调用方自报的放行标记', 
   };
   const blocked = await w.bus.accept(legacyLink);
   assert.equal(!blocked.ok && blocked.error.code, 'forbidden');
-  assert.match(!blocked.ok ? blocked.error.message : '', /只有明确连接的会话/);
+  assert.match(!blocked.ok ? blocked.error.message : '', /只有明确连接/);
 
   const parent = await w.newSession('alice');
   const child = await w.newSession('alice');
@@ -1099,4 +1113,274 @@ test('会话交接 P2：审计不落正文，只记录长度、parts 数和 wake
   assert.match(entry.detail, new RegExp(`chars=${body.length}`));
   assert.match(entry.detail, /parts=0/);
   assert.match(entry.detail, /wake=false/);
+});
+
+// ---- 会话通信：默认通信范围 = 同一棵顶层任务树 ----
+
+test('任务树：同根子/孙/兄弟默认可达，旧 workspace resolvePeer 仍不扩树', async () => {
+  const w = await world({ links: fakeSessionLinks() });
+  const root = await w.newTask();
+  const child = await w.newTask(root);
+  const grand = await w.newTask(child);
+  const sibling = await w.newTask(root);
+  const a = await w.newSessionOn(root, 'alice');
+  const b = await w.newSessionOn(child, 'alice');
+  const g = await w.newSessionOn(grand, 'alice');
+  const sib = await w.newSessionOn(sibling, 'alice');
+
+  // 直接 session:<id>：子 → 孙、孙 → 兄弟、孙 → 根，都不需要显式连线。
+  const down = await w.bus.accept({ fromSessionId: b.id, kind: 'send', to: `session:${g.id}`, body: '给孙子' });
+  assert.ok(down.ok);
+  assert.equal(w.delivered.at(-1)?.sessionId, g.id);
+  assert.ok((await w.bus.accept({ fromSessionId: g.id, kind: 'send', to: `session:${sib.id}`, body: '给叔伯' })).ok);
+  assert.ok((await w.bus.accept({ fromSessionId: g.id, kind: 'send', to: `session:${a.id}`, body: '给根' })).ok);
+
+  const peers = await w.bus.peers(b.id);
+  assert.ok(peers.ok);
+  const rootEntry = peers.value.find((entry) => entry.address === `session:${a.id}`);
+  assert.equal(rootEntry?.relation, 'task_tree');
+  assert.equal(rootEntry?.connected, undefined, 'connected 仍只表示显式连线');
+
+  const directory = await w.bus.directory(b.id);
+  assert.ok(directory.ok);
+  const grandEntry = directory.value.find((entry) => entry.address === `session:${g.id}`);
+  assert.equal(grandEntry?.relation, 'task_tree');
+  assert.equal(grandEntry?.connected, undefined);
+
+  // 工作空间的 resolvePeer 走旧规则：同树但没连线仍然拒绝，错误文案不变。
+  const old = await w.bus.resolvePeer(b.id, `session:${g.id}`);
+  assert.equal(old.ok, false);
+  if (!old.ok) assert.match(old.error.message, /只有明确连接的会话/);
+});
+
+test('任务树：不同根、没有任务的会话都不扩默认通信范围', async () => {
+  const w = await world({ links: fakeSessionLinks() });
+  const a = await w.newSession('alice');
+  const otherRoot = await w.newSessionOn(await w.newTask(), 'alice');
+
+  const blocked = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${otherRoot.id}`, body: 'hi' });
+  assert.equal(blocked.ok, false);
+  if (!blocked.ok) assert.match(blocked.error.message, /只有明确连接/);
+
+  const peers = await w.bus.peers(a.id);
+  assert.ok(peers.ok);
+  assert.equal(peers.value.some((entry) => entry.address === `session:${otherRoot.id}`), false);
+
+  const stray = await containerSession(w, 'alice', w.project.id);
+  const toStray = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${stray.id}`, body: 'hi' });
+  assert.equal(toStray.ok, false);
+  const fromStray = await w.bus.accept({ fromSessionId: stray.id, kind: 'send', to: `session:${a.id}`, body: 'hi' });
+  assert.equal(fromStray.ok, false);
+  const strayPeers = await w.bus.peers(stray.id);
+  assert.ok(strayPeers.ok);
+  assert.equal(strayPeers.value.some((entry) => entry.address === `session:${a.id}`), false);
+});
+
+test('任务树：缺父任务、跨项目父任务、环状血缘都 fail safe', async () => {
+  const w = await world({ links: fakeSessionLinks() });
+  const a = await w.newSession('alice');
+
+  const dangling = { ...(await w.newTask()), id: asTaskId('dangling'), parentTaskId: asTaskId('missing-parent') };
+  await w.deps.tasks.save(dangling);
+  const danglingSession = await w.newSessionOn(dangling, 'alice');
+
+  const otherProject = createProject({ name: 'other', now: 1, teamId: 'T', createdBy: 'alice' });
+  assert.ok(otherProject.ok);
+  await w.deps.projects.save(otherProject.value);
+  const otherTask = createTask({ projectId: otherProject.value.id, title: 'other-task', goal: '', now: 1 });
+  assert.ok(otherTask.ok);
+  await w.deps.tasks.save(otherTask.value);
+  const crossed = { ...(await w.newTask()), id: asTaskId('crossed'), parentTaskId: otherTask.value.id };
+  await w.deps.tasks.save(crossed);
+  const crossedSession = await w.newSessionOn(crossed, 'alice');
+
+  const cyc1 = { ...(await w.newTask()), id: asTaskId('cyc-1'), parentTaskId: asTaskId('cyc-2') };
+  const cyc2 = { ...(await w.newTask()), id: asTaskId('cyc-2'), parentTaskId: asTaskId('cyc-1') };
+  await w.deps.tasks.save(cyc1);
+  await w.deps.tasks.save(cyc2);
+  const cycSession = await w.newSessionOn(cyc1, 'alice');
+
+  for (const target of [danglingSession, crossedSession, cycSession]) {
+    const blocked = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${target.id}`, body: 'hi' });
+    assert.equal(blocked.ok, false, `${target.id} 不能因为血缘异常被放行`);
+  }
+  const peers = await w.bus.peers(a.id);
+  assert.ok(peers.ok);
+  assert.equal(peers.value.some((entry) => entry.address === `session:${danglingSession.id}`), false);
+  assert.equal(peers.value.some((entry) => entry.address === `session:${crossedSession.id}`), false);
+  assert.equal(peers.value.some((entry) => entry.address === `session:${cycSession.id}`), false);
+});
+
+test('任务树：同树短名歧义只列有资格且可见的同伴，不可见同名不抢解析', async () => {
+  const w = await world({ links: fakeSessionLinks() });
+  const root = await w.newTask();
+  const a = await w.newSessionOn(root, 'alice');
+  const c1 = await w.newTask(root);
+  const s1 = await w.newSessionOn(c1, 'alice');
+  const c2 = await w.newTask(root);
+  // olga 是团队 owner：被调方有消息权限，但 alice 作为 own-only 读者看不到她的会话。
+  const s2 = await w.newSessionOn(c2, 'olga');
+  assert.ok((await w.bus.setHandle(s1.id, 'reviewer', 'user:alice')).ok);
+  assert.ok((await w.bus.setHandle(s2.id, 'reviewer', 'user:olga')).ok);
+
+  // 唯一可见的同名同伴可以直接解析，不可见的同名不制造歧义。
+  const first = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: 'peer:reviewer', body: '只找看得见的' });
+  assert.ok(first.ok);
+  assert.equal(w.delivered.at(-1)?.sessionId, s1.id);
+  assert.equal(w.delivered.at(-1)?.sessionId === s2.id, false);
+
+  // 直接 ID 也要过 session.read：不能拿同树关系绕开不可见。
+  const hidden = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${s2.id}`, body: '直接找' });
+  assert.equal(hidden.ok, false);
+  if (!hidden.ok) assert.match(hidden.error.message, /unresolvable: 同一个项目里没有这条会话/);
+
+  const peers = await w.bus.peers(a.id);
+  assert.ok(peers.ok);
+  assert.equal(peers.value.some((entry) => entry.address === `session:${s2.id}`), false);
+  const missing = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: 'peer:nobody', body: 'hi' });
+  assert.equal(missing.ok, false);
+  if (!missing.ok) assert.equal(missing.error.message.includes(s2.id), false, '错误里的可用同伴不能泄露看不见的会话');
+
+  // 再加一个可见的同名同伴：歧义提示只列两个有资格且可见的 session id。
+  const c3 = await w.newTask(root);
+  const s3 = await w.newSessionOn(c3, 'alice');
+  assert.ok((await w.bus.setHandle(s3.id, 'reviewer', 'user:alice')).ok);
+  const ambiguous = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: 'peer:reviewer', body: 'hi' });
+  assert.equal(ambiguous.ok, false);
+  if (!ambiguous.ok) {
+    assert.match(ambiguous.error.message, /有多个同伴叫 reviewer/);
+    assert.match(ambiguous.error.message, new RegExp(s1.id));
+    assert.match(ambiguous.error.message, new RegExp(s3.id));
+    assert.equal(ambiguous.error.message.includes(s2.id), false, '不可见同名不应出现在候选里');
+  }
+
+  // HTTP 可以显式传当前登录主体，放行后按它的 session.read 看到 olga 的会话。
+  const olga = w.principal('olga');
+  assert.ok(olga);
+  const widened = await w.bus.peers(a.id, { viewer: olga });
+  assert.ok(widened.ok);
+  assert.equal(widened.value.some((entry) => entry.address === `session:${s2.id}`), true);
+});
+
+test('任务树：被消息唤醒时，发现与发送都沿用同一轮代理人的可见范围', async () => {
+  const links = fakeSessionLinks();
+  const w = await world({ links });
+  const root = await w.newTask();
+  const relay = await w.newSessionOn(root, 'olga');
+  const peer = await w.newSessionOn(await w.newTask(root), 'olga');
+  const initiator = await w.newSessionOn(await w.newTask(), 'alice');
+  await links.save(canonicalLink(w.project.id, initiator.id, relay.id, 'alice', 1));
+  const showsPeer = async () => {
+    const result = await w.bus.peers(relay.id);
+    assert.ok(result.ok);
+    return result.value.some((entry) => entry.address === `session:${peer.id}`);
+  };
+  assert.equal(await showsPeer(), true);
+  const wake = await w.bus.accept({ fromSessionId: initiator.id, kind: 'ask', to: `session:${relay.id}`, body: '帮忙确认' });
+  assert.ok(wake.ok);
+  assert.equal(wake.value.status, 'delivered');
+  assert.equal(await showsPeer(), false);
+  const forwarded = await w.bus.accept({ fromSessionId: relay.id, kind: 'send', to: `session:${peer.id}`, body: '请帮忙确认' });
+  assert.equal(forwarded.ok, false);
+});
+
+test('任务树：显式连线不传递；派生隔离比同树和显式连线都更强', async () => {
+  const links = fakeSessionLinks();
+  const w = await world({ links });
+  const root = await w.newTask();
+  const a = await w.newSessionOn(root, 'alice');
+  const b = await w.newSessionOn(await w.newTask(), 'alice');
+  const c = await w.newSessionOn(await w.newTask(), 'alice');
+  await links.save(canonicalLink(w.project.id, a.id, b.id, 'alice', 1000));
+  await links.save(canonicalLink(w.project.id, b.id, c.id, 'alice', 1000));
+  const indirect = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${c.id}`, body: '绕过去' });
+  assert.equal(indirect.ok, false, 'A-B、B-C 两条连线不能让 A 直达 C');
+
+  const childTask = await w.newTask(root);
+  const spawned = await w.newSessionOn(childTask, 'alice');
+  const outsider = await w.newSessionOn(root, 'alice');
+  await w.messages.saveSpawn({
+    sessionId: spawned.id,
+    spawnerSessionId: outsider.id,
+    projectId: w.project.id,
+    role: null,
+    traceId: 't-spawn-isolation',
+    createdAt: 1
+  } as never);
+  await links.save(canonicalLink(w.project.id, a.id, spawned.id, 'alice', 1000));
+  const isolated = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${spawned.id}`, body: '同树也找' });
+  assert.equal(isolated.ok, false);
+  if (!isolated.ok) assert.match(isolated.error.message, /默认隔离/);
+});
+
+test('任务树：角色权限不因同树扩展而放松，已收起仍拒绝', async () => {
+  const w = await world({ links: fakeSessionLinks() });
+  const root = await w.newTask();
+  const a = await w.newSessionOn(root, 'alice');
+  const v = await w.newSessionOn(await w.newTask(root), 'vicky');
+
+  const toViewer = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${v.id}`, body: 'hi' });
+  assert.equal(toViewer.ok, false);
+  const fromViewer = await w.bus.accept({ fromSessionId: v.id, kind: 'send', to: `session:${a.id}`, body: 'hi' });
+  assert.equal(fromViewer.ok, false);
+  const peers = await w.bus.peers(a.id);
+  assert.ok(peers.ok);
+  assert.equal(peers.value.some((entry) => entry.address === `session:${v.id}`), false);
+
+  const archived = await w.newSessionOn(await w.newTask(root), 'alice');
+  await w.deps.sessions.save({ ...archived, settledAt: 1000 });
+  const settled = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${archived.id}`, body: 'hi' });
+  assert.equal(settled.ok, false);
+  if (!settled.ok) assert.match(settled.error.message, /已收起/);
+});
+
+test('任务树：超长链的索引结果与查询顺序无关；发送和发现范围一致；同任务坏血缘也不放行', async () => {
+  const w = await world({ links: fakeSessionLinks() });
+  const chain: Task[] = [];
+  let parent: Task | undefined;
+  for (let i = 0; i <= MAX_LINEAGE_DEPTH; i += 1) {
+    const next = await w.newTask(parent);
+    chain.push(next);
+    parent = next;
+  }
+  const root = chain[0]!;
+  const lastValid = chain[MAX_LINEAGE_DEPTH - 1]!;
+  const tooDeep = chain[MAX_LINEAGE_DEPTH]!;
+
+  // 先问深的再问浅的：深的失败不能把浅的祖先污染成 null。
+  const deepFirst = taskTreeIndex(chain, w.project.id);
+  assert.equal(deepFirst.rootOf(tooDeep.id), null);
+  assert.equal(deepFirst.rootOf(lastValid.id), root.id);
+  assert.equal(deepFirst.rootOf(root.id), root.id);
+
+  // 反过来先问浅的再问深的：缓存命中也不能绕过总深度上限。
+  const shallowFirst = taskTreeIndex(chain, w.project.id);
+  assert.equal(shallowFirst.rootOf(root.id), root.id);
+  assert.equal(shallowFirst.rootOf(tooDeep.id), null);
+  assert.equal(shallowFirst.rootOf(lastValid.id), root.id);
+
+  const rootSession = await w.newSessionOn(root, 'alice');
+  const deepSession = await w.newSessionOn(tooDeep, 'alice');
+  const rootPeers = await w.bus.peers(rootSession.id);
+  assert.ok(rootPeers.ok);
+  assert.equal(rootPeers.value.some((entry) => entry.address === `session:${deepSession.id}`), false);
+  const deepPeers = await w.bus.peers(deepSession.id);
+  assert.ok(deepPeers.ok);
+  assert.equal(deepPeers.value.some((entry) => entry.address === `session:${rootSession.id}`), false);
+
+  const down = await w.bus.accept({ fromSessionId: rootSession.id, kind: 'send', to: `session:${deepSession.id}`, body: '太深' });
+  assert.equal(down.ok, false);
+  const up = await w.bus.accept({ fromSessionId: deepSession.id, kind: 'send', to: `session:${rootSession.id}`, body: '太深' });
+  assert.equal(up.ok, false);
+
+  // 两个会话挂在同一个坏血缘任务上：taskId 相同也不能当作同树。
+  const badTask: Task = { ...root, id: asTaskId('bad-lineage'), parentTaskId: asTaskId('missing-parent') };
+  await w.deps.tasks.save(badTask);
+  const bad1 = await w.newSessionOn(badTask, 'alice');
+  const bad2 = await w.newSessionOn(badTask, 'alice');
+  const sameBadTask = await w.bus.accept({ fromSessionId: bad1.id, kind: 'send', to: `session:${bad2.id}`, body: '同任务' });
+  assert.equal(sameBadTask.ok, false);
+  const badPeers = await w.bus.peers(bad1.id);
+  assert.ok(badPeers.ok);
+  assert.equal(badPeers.value.some((entry) => entry.address === `session:${bad2.id}`), false);
 });

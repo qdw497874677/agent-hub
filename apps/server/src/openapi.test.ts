@@ -1048,7 +1048,10 @@ test('session_start / get_session 的 handle 与 session_peers 同源（REST 与
   // peer 列表里 dev 的 handle 与 start/get 完全一致。
   const peers = await call(`/sessions/${peer.body.id}/peers`);
   assert.equal(peers.status, 200, JSON.stringify(peers.body));
-  assert.equal(peers.body.peers.find((item: { address: string }) => item.address === `session:${started.body.id}`)?.handle, 'dev');
+  const explicitPeer = peers.body.peers.find((item: { address: string }) => item.address === `session:${started.body.id}`);
+  assert.equal(explicitPeer?.handle, 'dev');
+  assert.equal(explicitPeer?.relation, 'explicit');
+  assert.equal(explicitPeer?.connected, true);
 
   // MCP 的 session_start / get_session 走同一份响应。
   const rpc = async (name: string, args: Record<string, unknown>, id = 1) => {
@@ -1070,6 +1073,11 @@ test('session_start / get_session 的 handle 与 session_peers 同源（REST 与
   const mcpGet = await rpc('get_session', { sessionId: mcpSession.id }, 2);
   assert.equal(mcpGet.result.isError, false, JSON.stringify(mcpGet.result));
   assert.equal(JSON.parse(mcpGet.result.content[0].text).handle, 'mcp-dev');
+  const mcpPeers = await rpc('session_peers', { sessionId: mcpSession.id }, 3);
+  assert.equal(mcpPeers.result.isError, false, JSON.stringify(mcpPeers.result));
+  const taskPeer = JSON.parse(mcpPeers.result.content[0].text).peers.find((item: { address: string }) => item.address === `session:${started.body.id}`);
+  assert.equal(taskPeer?.relation, 'task_tree');
+  assert.notEqual(taskPeer?.connected, true);
 });
 
 const b64 = (text: string) => Buffer.from(text).toString('base64');

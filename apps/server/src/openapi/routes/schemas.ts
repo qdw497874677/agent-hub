@@ -28,7 +28,7 @@ export const agentMessageSchema = z
   .passthrough()
   .openapi('AgentMessage');
 export const peerSchema = z
-  .object({ address: z.string(), handle: z.string().optional(), label: z.string(), status: z.string(), workerId: z.string().nullable().optional(), repo: z.string().nullable().optional(), branch: z.string().nullable().optional(), title: z.string().nullable().optional(), connected: z.boolean().optional() })
+  .object({ address: z.string(), handle: z.string().optional(), label: z.string(), status: z.string(), workerId: z.string().nullable().optional(), repo: z.string().nullable().optional(), branch: z.string().nullable().optional(), title: z.string().nullable().optional(), connected: z.boolean().optional(), relation: z.enum(['explicit', 'task_tree', 'spawn']).optional() })
   .passthrough()
   .openapi('SessionPeer');
 export const sessionLinkSchema = z.object({ projectId: z.string(), aSessionId: z.string(), bSessionId: z.string() }).passthrough().openapi('SessionLink');

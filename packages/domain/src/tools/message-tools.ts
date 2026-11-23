@@ -21,7 +21,7 @@ export const MESSAGE_TOOLS: readonly ToolDescriptor[] = [
     version: 1,
     scope: 'agent:message',
     description:
-      'List the sessions you can talk to (explicit links plus your spawn parent): handle (use to:"peer:<handle>"), session id, machine (workerId), repo, branch, title and status (idle / busy / archived). Only these sessions can exchange messages with you.',
+      'List your reachable session peers (same project task tree, explicit links, or message-spawn relations), with address, handle, relation, machine, repo, branch, title and status. Use to:"peer:<handle>" for an unambiguous handle, or to:"session:<id>" for an exact target. Sending still requires permission; reachability does not grant file access.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {

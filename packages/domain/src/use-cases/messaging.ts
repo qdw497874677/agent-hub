@@ -3,7 +3,7 @@ import { validateAgentRef } from '../agent-ref.ts';
 import { botIdFrom, type PersistentAgent, type PersistentAgentDefinition } from '../bot.ts';
 import type { Principal } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, unavailable, type DomainError } from '../errors.ts';
-import { newId, type ProjectId, type SessionId } from '../ids.ts';
+import { newId, type ProjectId, type SessionId, type TaskId } from '../ids.ts';
 import { requestReplayKey } from '../request-replay.ts';
 import { createSessionLane, type SessionLane } from '../session-lane.ts';
 import {
@@ -34,7 +34,8 @@ import {
   type MessageAuditAction,
   type MessageKind,
   type MessageLimits,
-  type MessagingConfig
+  type MessagingConfig,
+  type SpawnRecord
 } from '../messaging.ts';
 import type { MessageStore } from '../ports/message-store.ts';
 import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
@@ -42,9 +43,18 @@ import type { Project } from '../project.ts';
 import { err, ok, type Result } from '../result.ts';
 import { isBusy, type Session } from '../session.ts';
 import { otherEnd } from '../session-link.ts';
-import { projectAsResource, projectOfSessionOrigin, type AccessPolicy } from './authorization.ts';
+import { projectAsResource, projectOfSessionOrigin, authorizeSession, type AccessPolicy } from './authorization.ts';
+import type { Subject } from '../access.ts';
 import type { Deps } from './deps.ts';
 import { loadBotConfig } from './bots.ts';
+import {
+  inSameTaskTree,
+  lineageTaskId,
+  sameTaskTreeRoot,
+  taskTreeIndex,
+  taskTreeRoot,
+  type TaskTreeIndex
+} from './message-reachability.ts';
 
 /**
  * 消息总线（ADR 0018 · P2P 内核）：
@@ -141,6 +151,11 @@ export interface AgentDirectoryEntry {
   readonly description?: string;
   /** 是否通过画布/对话页显式连接（派生关系不算）。 */
   readonly connected?: boolean;
+  /**
+   * 这条目录项为什么能联系：显式连线 > 派生父子 > 同一棵顶层任务树。
+   * 只解释已有可达性，不参与判定；没有可解释关系的旧目录项不带这个字段。
+   */
+  readonly relation?: 'explicit' | 'task_tree' | 'spawn';
   /** 会话通信 P1a：同伴的短名、落点和仓库。 */
   readonly handle?: string;
   readonly workerId?: string | null;
@@ -149,6 +164,15 @@ export interface AgentDirectoryEntry {
   readonly title?: string | null;
   /** 发给我、还没读的通知（wake=false）。 */
   readonly unread?: number;
+}
+
+/**
+ * 发现同任务树新增同伴时的查看者。
+   * 不给 = 用当前消息代理人（没有入站消息时用会话主人）；HTTP 则传当前登录主体；
+ * 显式 `null` = 不推断新同伴，只保留旧的显式 / 派生关系。
+ */
+export interface PeerDiscoveryOptions {
+  readonly viewer?: Subject | null;
 }
 
 export interface MessageBus {
@@ -164,9 +188,9 @@ export interface MessageBus {
   turnEnded(sessionId: SessionId, outcome: 'done' | 'stopped' | 'interrupted' | 'failed'): Promise<void>;
   /** 人批 / 拒一条派生请求。 */
   decideSpawn(messageId: string, actor: Principal, approve: boolean): Promise<Result<AgentMessage, DomainError>>;
-  directory(fromSessionId: SessionId): Promise<Result<AgentDirectoryEntry[], DomainError>>;
-  /** 只列显式连接的会话（不包含角色，也不含仅派生关系）。 */
-  peers(fromSessionId: SessionId): Promise<Result<AgentDirectoryEntry[], DomainError>>;
+  directory(fromSessionId: SessionId, options?: PeerDiscoveryOptions): Promise<Result<AgentDirectoryEntry[], DomainError>>;
+  /** 只列能直接联系的会话：显式连线、派生父子、同一棵顶层任务树（不含角色）。 */
+  peers(fromSessionId: SessionId, options?: PeerDiscoveryOptions): Promise<Result<AgentDirectoryEntry[], DomainError>>;
   status(fromSessionId: SessionId, messageId: string): Promise<Result<AgentMessage, DomainError>>;
   inbox(sessionId: SessionId, limit: number, options?: { unreadOnly?: boolean; markRead?: boolean }): Promise<AgentMessage[]>;
   /** 人放行 / 拒绝一条被拦下（held）的消息。 */
@@ -234,6 +258,233 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     if (!deps.policy) return true;
     const ctx = await deps.policy.context();
     return decide(principal, permission, projectAsResource(project, ctx), ctx).allow;
+  };
+
+  /**
+   * 一次发现 / 一次发送内复用的关系缓存。
+   * 同一次操作里目录可能有很多会话：派生记录、连线、任务树、主人权限都只查一次，
+   * 避免每个候选都重新走父链或重复打策略。
+   */
+  type ReachContext = {
+    readonly project: Project;
+    readonly spawns: Map<SessionId, Promise<SpawnRecord | null>>;
+    readonly linked: Map<SessionId, Promise<boolean>>;
+    readonly owners: Map<string, Promise<boolean>>;
+    /** 本次操作里同一个查看者对候选会话的 session.read 判定。 */
+    readonly visible: Map<SessionId, Promise<boolean>>;
+    tree?: TaskTreeIndex;
+  };
+
+  const reachContext = (project: Project): ReachContext => ({
+    project,
+    spawns: new Map(),
+    linked: new Map(),
+    owners: new Map(),
+    visible: new Map()
+  });
+
+  const spawnOfCached = (ctx: ReachContext, sessionId: SessionId): Promise<SpawnRecord | null> => {
+    const cached = ctx.spawns.get(sessionId);
+    if (cached) return cached;
+    const pending = deps.messages.spawnOf(sessionId);
+    ctx.spawns.set(sessionId, pending);
+    return pending;
+  };
+
+  const linkedCached = (ctx: ReachContext, from: Session, target: Session): Promise<boolean> => {
+    if (!deps.links) return Promise.resolve(false);
+    const cached = ctx.linked.get(target.id);
+    if (cached) return cached;
+    const pending = deps.links.areLinked(from.id, target.id);
+    ctx.linked.set(target.id, pending);
+    return pending;
+  };
+
+  /** 目录 / 同伴列表用：本项目任务列表只建一次索引。发送两端则走下面的单链推导，不扫项目。 */
+  const treeIndexFor = async (ctx: ReachContext): Promise<TaskTreeIndex> => {
+    if (ctx.tree) return ctx.tree;
+    const tasks = await deps.tasks.listByProject(ctx.project.id);
+    const built = taskTreeIndex(tasks, ctx.project.id);
+    ctx.tree = built;
+    return built;
+  };
+
+  const sameTreeOf = async (from: Session, target: Session, ctx: ReachContext): Promise<boolean> => {
+    if (!deps.links) return false;
+    const fromTask = lineageTaskId(from, ctx.project.id);
+    const targetTask = lineageTaskId(target, ctx.project.id);
+    if (!fromTask || !targetTask) return false;
+    // 同一个 taskId 不代表血缘可用：缺父、跨项目父、环都仍要失败关闭。
+    if (ctx.tree) return inSameTaskTree(ctx.tree, fromTask, targetTask);
+    // 发送只有两端：各自沿父链走到根，最多 MAX_LINEAGE_DEPTH 步，不扫整个项目。
+    const load = (id: TaskId) => deps.tasks.byId(id);
+    if (fromTask === targetTask) return (await taskTreeRoot(fromTask, ctx.project.id, load)) !== null;
+    const [fromRoot, targetRoot] = await Promise.all([
+      taskTreeRoot(fromTask, ctx.project.id, load),
+      taskTreeRoot(targetTask, ctx.project.id, load)
+    ]);
+    return sameTaskTreeRoot(fromRoot, targetRoot);
+  };
+
+  /** 旧规则：显式连线或同一条派生链（父 ↔ 子）；没配 links 时保持旧行为。 */
+  const legacyReach = async (from: Session, target: Session, ctx?: ReachContext): Promise<boolean> => {
+    if (!deps.links) return true;
+    const [fromSpawn, targetSpawn] = ctx
+      ? await Promise.all([spawnOfCached(ctx, from.id), spawnOfCached(ctx, target.id)])
+      : await Promise.all([deps.messages.spawnOf(from.id), deps.messages.spawnOf(target.id)]);
+    if (fromSpawn?.spawnerSessionId === target.id || targetSpawn?.spawnerSessionId === from.id) return true;
+    return ctx ? linkedCached(ctx, from, target) : deps.links.areLinked(from.id, target.id);
+  };
+
+  /** 默认通信范围 = 旧规则（显式连线 / 派生父子）∪ 同一棵顶层任务树。 */
+  const canReach = async (from: Session, target: Session, ctx: ReachContext): Promise<boolean> => {
+    if (await legacyReach(from, target, ctx)) return true;
+    return sameTreeOf(from, target, ctx);
+  };
+
+  /** 隔离：消息派生出来的任务会话只能和派生它的会话来往。 */
+  const isolationProblem = async (from: Session, target: Session, ctx?: ReachContext): Promise<string | null> => {
+    const [fromSpawn, targetSpawn] = ctx
+      ? await Promise.all([spawnOfCached(ctx, from.id), spawnOfCached(ctx, target.id)])
+      : await Promise.all([deps.messages.spawnOf(from.id), deps.messages.spawnOf(target.id)]);
+    if (fromSpawn && fromSpawn.spawnerSessionId !== target.id) return '派生出来的任务会话默认隔离：只能回给派生它的会话';
+    if (targetSpawn && targetSpawn.spawnerSessionId !== from.id) return '那是别的会话派生的任务会话（默认隔离），不能直接找它';
+    return null;
+  };
+
+  const linkProblem = async (from: Session, target: Session, ctx: ReachContext): Promise<string | null> =>
+    (await canReach(from, target, ctx)) ? null : '只有明确连接或同一任务树的会话才能互相发消息';
+
+  const handleOf = async (session: Session): Promise<string> => (await deps.messages.handleOf(session.id)) ?? defaultHandle(session);
+
+  const ownerCanReceive = (ctx: ReachContext, session: Session): Promise<boolean> => {
+    const owner = ownerOf(session, ctx.project);
+    const key = owner ?? '';
+    const cached = ctx.owners.get(key);
+    if (cached) return cached;
+    const pending = !owner
+      ? Promise.resolve(false)
+      // 能看到 / 能联系 = 至少有一种消息权限；具体 kind 的权限仍由 accept 按旧规则交集检查。
+      : (async () => (await allowed(owner, 'agent.message.send', ctx.project)) || (await allowed(owner, 'agent.ask', ctx.project)))();
+    ctx.owners.set(key, pending);
+    return pending;
+  };
+
+  /** 同树新增同伴和发送共用同一轮的代理人；HTTP 可显式传当前登录主体。 */
+  const defaultViewer = async (from: Session, project: Project): Promise<Subject | null> => {
+    if (!deps.policy) return null;
+    const userId = (await incomingContext(from.id))?.onBehalfOf ?? ownerOf(from, project);
+    return userId ? deps.principalOf(userId) : null;
+  };
+
+  /** 新推断的同树同伴必须真的能被查看者 session.read；旧显式 / 派生关系不经过这里。 */
+  const canView = (ctx: ReachContext, viewer: Subject | null, target: Session): Promise<boolean> => {
+    if (!deps.policy) return Promise.resolve(true);
+    if (!viewer) return Promise.resolve(false);
+    const cached = ctx.visible.get(target.id);
+    if (cached) return cached;
+    const pending = authorizeSession(deps.policy, viewer, ctx.project, target, 'session.read').then((result) => result.ok);
+    ctx.visible.set(target.id, pending);
+    return pending;
+  };
+
+  /** 任务树新增的同伴：隔离不放松，不把主人没有任何消息权限的会话暴露出来，也不越过查看者的 session.read。 */
+  const sameTreePeer = async (from: Session, target: Session, ctx: ReachContext, viewer: Subject | null): Promise<boolean> => {
+    if (!(await sameTreeOf(from, target, ctx))) return false;
+    if ((await isolationProblem(from, target, ctx)) !== null) return false;
+    if (!(await ownerCanReceive(ctx, target))) return false;
+    return canView(ctx, viewer, target);
+  };
+
+  /** 旧同伴集合：显式连线 + 派生父会话。 */
+  const legacyPeerSessions = async (from: Session, ctx?: ReachContext): Promise<Session[]> => {
+    const ids = new Set<SessionId>();
+    if (deps.links) for (const link of await deps.links.forSession(from.id)) {
+      const other = otherEnd(link, from.id);
+      if (other) ids.add(other);
+    }
+    const spawn = ctx ? await spawnOfCached(ctx, from.id) : await deps.messages.spawnOf(from.id);
+    if (spawn) ids.add(spawn.spawnerSessionId);
+    const out: Session[] = [];
+    for (const id of ids) {
+      const session = await deps.sessions.byId(id);
+      if (session && session.status !== 'failed') out.push(session);
+    }
+    return out;
+  };
+
+  /**
+   * 能直接说话的同伴：显式连线 + 派生父会话 + 同一棵顶层任务树（后者仅在严格模式）。
+   * 同树扩展只加可见、未隔离的会话；旧有连线/派生条目保持原样（包括已收起的状态展示）。
+   */
+  const peerSessions = async (
+    from: Session,
+    project: Project,
+    ctx: ReachContext = reachContext(project),
+    viewer?: Subject | null
+  ): Promise<Session[]> => {
+    const out = await legacyPeerSessions(from, ctx);
+    if (!deps.links || !lineageTaskId(from, project.id)) return out;
+    await treeIndexFor(ctx);
+    const actualViewer = viewer === undefined ? await defaultViewer(from, project) : viewer;
+    const seen = new Set(out.map((session) => session.id));
+    for (const session of await deps.sessions.listByProject(project.id)) {
+      if (session.id === from.id || session.status === 'failed' || seen.has(session.id)) continue;
+      if (!(await sameTreePeer(from, session, ctx, actualViewer))) continue;
+      seen.add(session.id);
+      out.push(session);
+    }
+    return out;
+  };
+
+  type HandleLookup =
+    | { readonly kind: 'found'; readonly session: Session }
+    | { readonly kind: 'none' }
+    | { readonly kind: 'ambiguous'; readonly sessions: readonly Session[] };
+
+  /**
+   * peer:<handle> → 会话（普通发送用）。
+   * 优先级：同任务显式短名 > 其他显式短名 > 默认短名；同一优先级有多个就是歧义，
+   * 只回可联系同伴的 session id，不替调用方猜。
+   */
+  const resolveHandleForSend = async (
+    from: Session,
+    project: Project,
+    handle: string,
+    ctx: ReachContext,
+    viewer: Subject | null
+  ): Promise<HandleLookup> => {
+    const explicitSameTask: Session[] = [];
+    const explicitOtherTree: Session[] = [];
+    const defaults: Session[] = [];
+    for (const peer of await peerSessions(from, project, ctx, viewer)) {
+      const stored = await deps.messages.handleOf(peer.id);
+      if (stored !== null) {
+        if (stored !== handle) continue;
+        if (from.taskId && peer.taskId === from.taskId) explicitSameTask.push(peer);
+        else explicitOtherTree.push(peer);
+      } else if (defaultHandle(peer) === handle) {
+        defaults.push(peer);
+      }
+    }
+    for (const tier of [explicitSameTask, explicitOtherTree, defaults]) {
+      if (tier.length === 1) return { kind: 'found', session: tier[0]! };
+      if (tier.length > 1) return { kind: 'ambiguous', sessions: [...tier].sort((a, b) => a.id.localeCompare(b.id)) };
+    }
+    return { kind: 'none' };
+  };
+
+  /** 旧解析（工作空间 resolvePeer 专用）：任务内设过的短名直查 + 旧同伴集合，不扩任务树。 */
+  const resolveHandleLegacy = async (from: Session, handle: string): Promise<Session | null> => {
+    if (from.taskId) {
+      const id = await deps.messages.sessionByHandle(from.taskId, handle);
+      if (id) {
+        const found = await deps.sessions.byId(id);
+        if (found) return found;
+      }
+    }
+    for (const peer of await legacyPeerSessions(from)) if ((await handleOf(peer)) === handle) return peer;
+    return null;
   };
 
   const sessionAndProject = async (sessionId: SessionId): Promise<{ session: Session; project: Project } | null> => {
@@ -402,57 +653,6 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       .trim();
   };
 
-  /** 隔离：消息派生出来的任务会话只能和派生它的会话来往。 */
-  const isolationProblem = async (from: Session, target: Session): Promise<string | null> => {
-    const [fromSpawn, targetSpawn] = await Promise.all([deps.messages.spawnOf(from.id), deps.messages.spawnOf(target.id)]);
-    if (fromSpawn && fromSpawn.spawnerSessionId !== target.id) return '派生出来的任务会话默认隔离：只能回给派生它的会话';
-    if (targetSpawn && targetSpawn.spawnerSessionId !== from.id) return '那是别的会话派生的任务会话（默认隔离），不能直接找它';
-    return null;
-  };
-
-  /** 显式连线或同一条派生链（父 ↔ 子）都允许；没配 links 时保持旧行为。 */
-  const canReach = async (from: Session, target: Session): Promise<boolean> => {
-    if (!deps.links) return true;
-    const [fromSpawn, targetSpawn] = await Promise.all([deps.messages.spawnOf(from.id), deps.messages.spawnOf(target.id)]);
-    if (fromSpawn?.spawnerSessionId === target.id || targetSpawn?.spawnerSessionId === from.id) return true;
-    return deps.links.areLinked(from.id, target.id);
-  };
-
-  const linkProblem = async (from: Session, target: Session): Promise<string | null> =>
-    (await canReach(from, target)) ? null : '只有明确连接的会话才能互相发消息';
-
-  const handleOf = async (session: Session): Promise<string> => (await deps.messages.handleOf(session.id)) ?? defaultHandle(session);
-
-  /** 能直接说话的同伴：显式连线 + 派生父会话（派生子会话通过 spawn 记录反查不到全部，靠连线或子会话自己联系）。 */
-  const peerSessions = async (from: Session): Promise<Session[]> => {
-    const ids = new Set<string>();
-    if (deps.links) for (const link of await deps.links.forSession(from.id)) {
-      const other = otherEnd(link, from.id);
-      if (other) ids.add(other);
-    }
-    const spawn = await deps.messages.spawnOf(from.id);
-    if (spawn) ids.add(spawn.spawnerSessionId);
-    const out: Session[] = [];
-    for (const id of ids) {
-      const session = await deps.sessions.byId(id as SessionId);
-      if (session && session.status !== 'failed') out.push(session);
-    }
-    return out;
-  };
-
-  /** peer:<handle> → 会话：先找任务内设过的短名，再在同伴里按（设过的或默认）短名匹配。 */
-  const resolveHandle = async (from: Session, handle: string): Promise<Session | null> => {
-    if (from.taskId) {
-      const id = await deps.messages.sessionByHandle(from.taskId, handle);
-      if (id) {
-        const found = await deps.sessions.byId(id);
-        if (found) return found;
-      }
-    }
-    for (const peer of await peerSessions(from)) if ((await handleOf(peer)) === handle) return peer;
-    return null;
-  };
-
   const peerFacts = async (session: Session, project: Project) => {
     const workspace = session.workspaceId ? await deps.workspaces.byId(session.workspaceId) : null;
     const repoUrl = workspace?.repoUrl ?? null;
@@ -523,6 +723,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       const here = await sessionAndProject(command.fromSessionId);
       if (!here) return err(notFound('发送方会话不存在'));
       const { session: from, project } = here;
+      const reach = reachContext(project);
       const checkedParts = validateParts(command.parts, project.repos.map((r) => r.name));
       if (!checkedParts.ok) return err(invalid(checkedParts.problem));
       const parts = checkedParts.parts;
@@ -538,6 +739,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       const caller = ownerOf(from, project);
       const onBehalfOf = incoming?.onBehalfOf ?? command.onBehalfOf ?? caller;
       if (!onBehalfOf) return err(forbidden('这条会话没有主人，不能代人发消息'));
+      // 任务树推断出来的新同伴按实际调用 / 代理人的 session.read 判断可见性；旧关系不经过这个检查。
+      const viewer = deps.policy && onBehalfOf ? await deps.principalOf(onBehalfOf) : null;
       const base = { traceId, projectId: project.id, onBehalfOf };
       const deny = async (code: FailureCode, message: string): Promise<Result<never, DomainError>> => {
         await audit(null, base, 'denied', from.id, `${code}: ${command.kind} ${command.to} — ${message}`);
@@ -564,12 +767,16 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       let bot: PersistentAgent | null = null;
       if (address.kind === 'session' || address.kind === 'peer') {
         if (address.kind === 'peer') {
-          const found = await resolveHandle(from, address.handle);
-          if (!found) {
-            const known = await Promise.all((await peerSessions(from)).map(async (peer) => `peer:${await handleOf(peer)}`));
-            return deny('unresolvable', `没有叫 ${address.handle} 的同伴${known.length > 0 ? `；可用：${known.join('、')}` : '；还没有连线的同伴'}`);
+          const found = await resolveHandleForSend(from, project, address.handle, reach, viewer);
+          if (found.kind === 'ambiguous') {
+            const ids = found.sessions.map((peer) => `session:${peer.id}`).join('、');
+            return deny('unresolvable', `有多个同伴叫 ${address.handle}（${ids}）；请直接用 session:<id> 指定`);
           }
-          target = found;
+          if (found.kind === 'none') {
+            const known = await Promise.all((await peerSessions(from, project, reach, viewer)).map(async (peer) => `peer:${await handleOf(peer)}`));
+            return deny('unresolvable', `没有叫 ${address.handle} 的同伴${known.length > 0 ? `；可用：${known.join('、')}` : '；还没有能联系的同任务树会话'}`);
+          }
+          target = found.session;
         } else {
           target = (await sessionAndProject(address.sessionId))?.session ?? null;
         }
@@ -584,7 +791,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
           const spawns = (await deps.messages.spawnsForRole(project.id, bot.name)).filter((s) => bot!.reuse === 'sticky' || s.traceId === traceId);
           for (const spawn of spawns.sort((a, b) => b.createdAt - a.createdAt)) {
             const candidate = await deps.sessions.byId(spawn.sessionId);
-            if (candidate && candidate.status !== 'failed' && !candidate.settledAt && (await isolationProblem(from, candidate)) === null && (await canReach(from, candidate))) {
+            if (candidate && candidate.status !== 'failed' && !candidate.settledAt && (await isolationProblem(from, candidate, reach)) === null && (await legacyReach(from, candidate, reach))) {
               target = candidate;
               break;
             }
@@ -592,11 +799,14 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         }
       }
       if (target) {
+        const inferred = !(await legacyReach(from, target, reach));
+        // 不给不可见的直接地址返回接收方权限、状态或隔离详情。旧关系不改变。
+        if (inferred && !(await canView(reach, viewer, target))) return deny('unresolvable', '同一个项目里没有这条会话');
         const callee = ownerOf(target, project);
         if (!(await allowed(callee, permission, project))) return deny('denied', `被调会话的主人没有 ${permission}`);
-        const isolated = await isolationProblem(from, target);
+        const isolated = await isolationProblem(from, target, reach);
         if (isolated) return deny('denied', isolated);
-        const unlinked = await linkProblem(from, target);
+        const unlinked = await linkProblem(from, target, reach);
         if (unlinked) return deny('denied', unlinked);
         if (target.settledAt) return deny('archived', '对方会话已收起；要先重开才能收消息');
       } else if (!(await allowed(onBehalfOf, 'agent.spawn', project)) || !(await allowed(caller, 'agent.spawn', project))) {
@@ -923,28 +1133,36 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       return ok((await deps.messages.byId(message.id)) ?? queued);
     },
 
-    async directory(fromSessionId) {
+    async directory(fromSessionId, options) {
       const here = await sessionAndProject(fromSessionId);
       if (!here) return err(notFound('会话不存在'));
       const { session: from, project } = here;
       const sessions = await deps.sessions.listByProject(project.id);
       const entries: AgentDirectoryEntry[] = [];
-      const fromSpawn = await deps.messages.spawnOf(from.id);
+      const reach = reachContext(project);
+      if (deps.links && lineageTaskId(from, project.id)) await treeIndexFor(reach);
+      const viewer = options?.viewer === undefined ? await defaultViewer(from, project) : options.viewer;
+      const fromSpawn = await spawnOfCached(reach, from.id);
       for (const session of sessions) {
         if (session.id === from.id || session.status === 'failed') continue;
-        if ((await isolationProblem(from, session)) !== null) continue;
-        const spawn = await deps.messages.spawnOf(session.id);
-        const explicit = deps.links ? await deps.links.areLinked(from.id, session.id) : false;
+        if ((await isolationProblem(from, session, reach)) !== null) continue;
+        const spawn = await spawnOfCached(reach, session.id);
+        const explicit = await linkedCached(reach, from, session);
         const implicit = fromSpawn?.spawnerSessionId === session.id || spawn?.spawnerSessionId === from.id;
-        if (deps.links && !explicit && !implicit) continue;
+        let relation: AgentDirectoryEntry['relation'] = explicit ? 'explicit' : implicit ? 'spawn' : undefined;
+        if (deps.links && !explicit && !implicit) {
+          if (!(await sameTreePeer(from, session, reach, viewer))) continue;
+          relation = 'task_tree';
+        }
         entries.push({
           address: `session:${session.id}`,
           label: labelOf(session, spawn?.role ?? null),
           status: isBusy(session) ? 'busy' : session.status === 'running' ? 'idle' : session.status,
-          ...(explicit ? { connected: true } : {})
+          ...(explicit ? { connected: true } : {}),
+          ...(relation ? { relation } : {})
         });
       }
-      if (!(await deps.messages.spawnOf(from.id))) {
+      if (!(await spawnOfCached(reach, from.id))) {
         for (const bot of (await loadConfig(project.id)).roles) {
           entries.push({ address: botAddress(bot.name), label: `${bot.name}（${bot.ref.runtime}）`, status: bot.reuse, description: bot.description });
         }
@@ -952,21 +1170,26 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       return ok(entries);
     },
 
-    async peers(fromSessionId) {
+    async peers(fromSessionId, options) {
       const here = await sessionAndProject(fromSessionId);
       if (!here) return err(notFound('会话不存在'));
       const { session: from, project } = here;
       const peers: AgentDirectoryEntry[] = [];
-      for (const session of await peerSessions(from)) {
-        const spawn = await deps.messages.spawnOf(session.id);
+      const reach = reachContext(project);
+      const fromSpawn = await spawnOfCached(reach, from.id);
+      for (const session of await peerSessions(from, project, reach, options?.viewer)) {
+        const spawn = await spawnOfCached(reach, session.id);
         const facts = await peerFacts(session, project);
-        const explicit = deps.links ? await deps.links.areLinked(from.id, session.id) : false;
+        const explicit = await linkedCached(reach, from, session);
+        const directSpawn = fromSpawn?.spawnerSessionId === session.id || spawn?.spawnerSessionId === from.id;
+        const relation: AgentDirectoryEntry['relation'] = explicit ? 'explicit' : directSpawn ? 'spawn' : 'task_tree';
         peers.push({
           address: `session:${session.id}`,
           handle: await handleOf(session),
           label: labelOf(session, spawn?.role ?? null),
           status: statusLabel(session),
           ...(explicit ? { connected: true } : {}),
+          relation,
           title: session.title ?? null,
           ...facts
         });
@@ -978,7 +1201,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       const here = await sessionAndProject(sessionId);
       if (!here) return null;
       const { session, project } = here;
-      const peers = (await peerSessions(session)).slice(0, 20);
+      const peers = (await peerSessions(session, project, reachContext(project))).slice(0, 20);
       const unread = (await unreadFor(session.id)).length;
       if (peers.length === 0 && unread === 0) {
         briefingMemo.delete(session.id);
@@ -1120,15 +1343,15 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       const address = parseAddress(typeof raw === 'string' ? raw.trim() : '');
       if (!address || (address.kind !== 'session' && address.kind !== 'peer')) return err(invalid('session 要写成 session:<id> 或 peer:<短名>'));
       if (address.kind === 'session' && address.sessionId === here.session.id) return ok(here.session.id);
-      const target = address.kind === 'peer' ? await resolveHandle(here.session, address.handle) : (await sessionAndProject(address.sessionId))?.session ?? null;
+      const target = address.kind === 'peer' ? await resolveHandleLegacy(here.session, address.handle) : (await sessionAndProject(address.sessionId))?.session ?? null;
       if (!target) {
-        const known = await Promise.all((await peerSessions(here.session)).map(async (peer) => `peer:${await handleOf(peer)}`));
+        const known = await Promise.all((await legacyPeerSessions(here.session)).map(async (peer) => `peer:${await handleOf(peer)}`));
         return err(notFound(`unresolvable: 找不到这个同伴${known.length > 0 ? `；可用：${known.join('、')}` : ''}`));
       }
       if (target.id === here.session.id) return ok(target.id);
       const there = await sessionAndProject(target.id);
       if (there?.project.id !== here.project.id) return err(notFound('unresolvable: 同一个项目里没有这条会话'));
-      if (!(await canReach(here.session, target))) return err(forbidden('denied: 只有明确连接的会话（或派生父子）才能看对方的工作空间'));
+      if (!(await legacyReach(here.session, target))) return err(forbidden('denied: 只有明确连接的会话（或派生父子）才能看对方的工作空间'));
       if (target.settledAt) return err(conflict('archived: 对方会话已收起，工作空间可能已清理'));
       return ok(target.id);
     },
