@@ -3,7 +3,7 @@ import { createServer as createHttpServer, type IncomingMessage, type ServerResp
 import { createServer as createHttpsServer } from 'node:https';
 import { createServer as createNetServer, type Server as NetServer, type Socket } from 'node:net';
 import { mkdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 /**
@@ -60,73 +60,8 @@ export async function startGitOrigin(projectRoot: string, options: { workDir: st
     void serve(request, response);
   });
 
-  // git http-backend 只读仓库配置；这里再显式清掉用户级 / 系统级 Git 配置，避免环境里的
-  // 任何信任或改写混进来（与 worker 的 publishEnv 同样的隔离方向）。
-  const backendEnv = {
-    ...process.env,
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: '/dev/null',
-    GIT_CONFIG_SYSTEM: '/dev/null',
-    GIT_TERMINAL_PROMPT: '0',
-    GIT_PROJECT_ROOT: projectRoot,
-    GIT_HTTP_EXPORT_ALL: '1',
-    REMOTE_USER: 'x-access-token',
-    REMOTE_ADDR: '127.0.0.1',
-    SERVER_PROTOCOL: 'HTTP/1.1',
-    GATEWAY_INTERFACE: 'CGI/1.1'
-  };
-  delete (backendEnv as Record<string, string | undefined>)['GIT_SSL_NO_VERIFY'];
-  delete (backendEnv as Record<string, string | undefined>)['GIT_SSL_CAINFO'];
-
   async function serve(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const url = new URL(request.url ?? '/', 'https://github.com');
-    const query = url.searchParams.toString();
-    requests.push(`${request.method ?? 'GET'} ${url.pathname}${query ? `?${query}` : ''}`);
-    const child = spawn('git', ['http-backend'], {
-      env: {
-        ...backendEnv,
-        PATH_INFO: url.pathname,
-        REQUEST_METHOD: request.method ?? 'GET',
-        QUERY_STRING: query,
-        CONTENT_TYPE: String(request.headers['content-type'] ?? ''),
-        CONTENT_LENGTH: String(request.headers['content-length'] ?? ''),
-        HTTP_GIT_PROTOCOL: String(request.headers['git-protocol'] ?? '')
-      },
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    const chunks: Buffer[] = [];
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => (stderr += String(chunk)));
-    child.on('error', (error) => {
-      if (!response.headersSent) response.writeHead(500, { 'content-type': 'text/plain' });
-      response.end(`git http-backend 起不来：${error.message}`);
-    });
-    child.on('close', (code) => {
-      if (response.writableEnded) return;
-      const output = Buffer.concat(chunks);
-      const split = output.indexOf('\r\n\r\n');
-      if (code !== 0 || split < 0) {
-        response.writeHead(500, { 'content-type': 'text/plain' });
-        response.end(`git http-backend 失败（${code}）：${stderr.slice(0, 500)}`);
-        return;
-      }
-      const head = output.subarray(0, split).toString('utf8');
-      const body = output.subarray(split + 4);
-      let status = 200;
-      const headers: Record<string, string> = {};
-      for (const line of head.split('\r\n')) {
-        const index = line.indexOf(':');
-        if (index < 0) continue;
-        const name = line.slice(0, index).trim();
-        const value = line.slice(index + 1).trim();
-        if (name.toLowerCase() === 'status') status = Number.parseInt(value, 10) || 200;
-        else headers[name] = value;
-      }
-      response.writeHead(status, headers);
-      response.end(body);
-    });
-    request.pipe(child.stdin);
+    await serveSmartHttp(request, response, { projectRoot, requests });
   }
 
   // 只接受 github.com:443 的 CONNECT：git 的 http.proxy 走这里，TLS 由上面的 https 服务终止。
@@ -161,6 +96,142 @@ export async function startGitOrigin(projectRoot: string, options: { workDir: st
       ]);
     }
   };
+}
+
+export interface DirectGitOrigin {
+  /** 直连地址（`https://127.0.0.1:<port>/<repo>.git`）：没有代理、没有外部 DNS。 */
+  readonly url: string;
+  /** 本次运行生成的 CA 证书路径；测试把它写进隔离 HOME 的 scoped `sslCAInfo`。 */
+  readonly caFile: string;
+  /** 实际收到的 smart-HTTP 请求，例如 `GET /demo.git/info/refs?service=git-upload-pack`。 */
+  readonly requests: string[];
+  /** 每个请求收到的 `Authorization` 头（没有就是空串），用来断言令牌只到了预期 origin。 */
+  readonly authorization: string[];
+  close(): Promise<void>;
+}
+
+/**
+ * 只给单文件回归用的直连 HTTPS origin：真实的 `git http-backend`，监听 127.0.0.1，
+ * 证书按 IP SAN 现场生成，TLS 校验保持开启。出站只到本进程内；不碰系统信任库。
+ */
+export async function startDirectGitOrigin(options: { bare: string; workDir: string; redirect?: boolean }): Promise<DirectGitOrigin> {
+  const requests: string[] = [];
+  const authorization: string[] = [];
+  await mkdir(options.workDir, { recursive: true });
+  const caFile = join(options.workDir, 'origin-ca.pem');
+  const keyFile = join(options.workDir, 'origin-key.pem');
+  try {
+    await execFileAsync('openssl', [
+      'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', keyFile, '-out', caFile, '-days', '1',
+      '-subj', '/CN=127.0.0.1',
+      '-addext', 'subjectAltName=IP:127.0.0.1',
+      '-addext', 'basicConstraints=critical,CA:TRUE'
+    ]);
+  } catch (error) {
+    throw new Error(`生成测试证书失败（需要本机 openssl）：${error instanceof Error ? error.message : String(error)}`);
+  }
+  const [cert, key] = await Promise.all([readFile(caFile, 'utf8'), readFile(keyFile, 'utf8')]);
+  const projectRoot = dirname(resolve(options.bare));
+  const repoPath = `/${basename(options.bare)}`;
+  const httpsServer = createHttpsServer({ key, cert }, (request, response) => {
+    if (options.redirect === true && request.url?.startsWith(`${repoPath}/info/refs?`)) {
+      requests.push(`${request.method} ${request.url}`);
+      authorization.push(request.headers.authorization ?? '');
+      response.writeHead(302, { location: `/redirected${request.url}` }).end();
+      return;
+    }
+    void serveSmartHttp(request, response, { projectRoot, requests, authorization });
+  });
+  await new Promise<void>((resolve, reject) => {
+    httpsServer.once('error', reject);
+    httpsServer.listen(0, '127.0.0.1', () => resolve());
+  });
+  const port = (httpsServer.address() as { port: number }).port;
+  return {
+    url: `https://127.0.0.1:${port}${repoPath}`,
+    caFile,
+    requests,
+    authorization,
+    close: () => new Promise<void>((resolve) => httpsServer.close(() => resolve()))
+  };
+}
+
+interface SmartHttpSink {
+  readonly projectRoot: string;
+  readonly requests: string[];
+  readonly authorization?: string[];
+}
+
+/** git smart-HTTP（upload-pack / receive-pack）的本机后端；服务端配置与用户环境隔离。 */
+async function serveSmartHttp(request: IncomingMessage, response: ServerResponse, sink: SmartHttpSink): Promise<void> {
+  // git http-backend 只读仓库配置；这里再显式清掉用户级 / 系统级 Git 配置，避免环境里的
+  // 任何信任或改写混进来（与 worker 的 publishEnv 同样的隔离方向）。
+  const backendEnv: Record<string, string | undefined> = {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_PROJECT_ROOT: sink.projectRoot,
+    GIT_HTTP_EXPORT_ALL: '1',
+    REMOTE_USER: 'x-access-token',
+    REMOTE_ADDR: '127.0.0.1',
+    SERVER_PROTOCOL: 'HTTP/1.1',
+    GATEWAY_INTERFACE: 'CGI/1.1'
+  };
+  delete backendEnv['GIT_SSL_NO_VERIFY'];
+  delete backendEnv['GIT_SSL_CAINFO'];
+
+  const url = new URL(request.url ?? '/', 'https://127.0.0.1');
+  const query = url.searchParams.toString();
+  sink.requests.push(`${request.method ?? 'GET'} ${url.pathname}${query ? `?${query}` : ''}`);
+  sink.authorization?.push(String(request.headers.authorization ?? ''));
+  const child = spawn('git', ['http-backend'], {
+    env: {
+      ...backendEnv,
+      PATH_INFO: url.pathname,
+      REQUEST_METHOD: request.method ?? 'GET',
+      QUERY_STRING: query,
+      CONTENT_TYPE: String(request.headers['content-type'] ?? ''),
+      CONTENT_LENGTH: String(request.headers['content-length'] ?? ''),
+      HTTP_GIT_PROTOCOL: String(request.headers['git-protocol'] ?? '')
+    },
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  const chunks: Buffer[] = [];
+  let stderr = '';
+  child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+  child.stderr.on('data', (chunk: Buffer) => (stderr += String(chunk)));
+  child.on('error', (error) => {
+    if (!response.headersSent) response.writeHead(500, { 'content-type': 'text/plain' });
+    response.end(`git http-backend 起不来：${error.message}`);
+  });
+  child.on('close', (code) => {
+    if (response.writableEnded) return;
+    const output = Buffer.concat(chunks);
+    const split = output.indexOf('\r\n\r\n');
+    if (code !== 0 || split < 0) {
+      response.writeHead(500, { 'content-type': 'text/plain' });
+      response.end(`git http-backend 失败（${code}）：${stderr.slice(0, 500)}`);
+      return;
+    }
+    const head = output.subarray(0, split).toString('utf8');
+    const body = output.subarray(split + 4);
+    let status = 200;
+    const headers: Record<string, string> = {};
+    for (const line of head.split('\r\n')) {
+      const index = line.indexOf(':');
+      if (index < 0) continue;
+      const name = line.slice(0, index).trim();
+      const value = line.slice(index + 1).trim();
+      if (name.toLowerCase() === 'status') status = Number.parseInt(value, 10) || 200;
+      else headers[name] = value;
+    }
+    response.writeHead(status, headers);
+    response.end(body);
+  });
+  request.pipe(child.stdin);
 }
 
 export interface PullCreate {

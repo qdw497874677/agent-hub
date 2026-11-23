@@ -929,7 +929,14 @@ export function networkEnv(auth?: GitAuth, source: NodeJS.ProcessEnv = process.e
 function networkGit(baseDir: string, timeoutMs?: number, auth?: GitAuth, destination?: string | null): SimpleGit {
   const env = networkEnv(auth, process.env, destination);
   const timeout = timeoutMs === undefined ? {} : { timeout: { block: timeoutMs } };
-  return simpleGit({ baseDir, allowEnvironment: [...CREDENTIAL_ENV, ...AUTH_ENV], ...timeout }).env(env);
+  // simple-git 要额外允许 GIT_CONFIG_COUNT；只对 networkEnv 生成了绑定配置的这次调用开启。
+  const usesBoundAuth = env.GIT_CONFIG_COUNT !== undefined;
+  return simpleGit({
+    baseDir,
+    allowEnvironment: usesBoundAuth ? [...CREDENTIAL_ENV, ...AUTH_ENV] : [...CREDENTIAL_ENV],
+    ...(usesBoundAuth ? { unsafe: { allowUnsafeConfigEnvCount: true } } : {}),
+    ...timeout
+  }).env(env);
 }
 
 /**
