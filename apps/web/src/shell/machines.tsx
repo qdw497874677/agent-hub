@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Icon } from '../atoms/icons.tsx';
+import { RefreshButton, useRefresh } from '../atoms/refresh-button.tsx';
 import { adminApi, type AdminWorkerDto, type WorkerInfoDto } from './api.ts';
 import { AddMachineDialog } from './add-machine.tsx';
 import { HarnessBadges, RecheckButton } from './harness.tsx';
@@ -61,6 +62,8 @@ export function MachinesPage({ workerId, tab }: { workerId: string | null; tab: 
   const [adding, setAdding] = useState(false);
   const scroll = useRef<HTMLElement>(null);
   const owner = account?.clusterAdmin === true;
+  // ['workers'] 就是首页 MachinesBadge 与侧栏共用的那一条：刷这里，别处的在线数一起新。
+  const refresh = useRefresh(owner ? [['workers'], ['admin', 'workers']] : [['workers']]);
 
   // 版本、过期、日志只在管理员接口里；不是管理员就不发这个请求。
   const admin = useQuery({
@@ -107,15 +110,24 @@ export function MachinesPage({ workerId, tab }: { workerId: string | null; tab: 
         title="机器"
         parent={{ label: '首页', href: formatRoute({ page: 'home' }) }}
         actions={
-          openAdd ? (
-            <button
-              className="flex h-8 items-center gap-1 rounded-sm border border-hair px-2.5 text-sub text-secondary hover:border-strong hover:text-primary"
-              onClick={openAdd}
-              data-testid="machines-add"
-            >
-              <span aria-hidden>＋</span> 添加机器
-            </button>
-          ) : null
+          <>
+            <RefreshButton
+              testId="machines-refresh"
+              label="刷新机器列表"
+              busy={refresh.busy}
+              error={refresh.error}
+              onRefresh={refresh.refresh}
+            />
+            {openAdd ? (
+              <button
+                className="flex h-8 items-center gap-1 rounded-sm border border-hair px-2.5 text-sub text-secondary hover:border-strong hover:text-primary"
+                onClick={openAdd}
+                data-testid="machines-add"
+              >
+                <span aria-hidden>＋</span> 添加机器
+              </button>
+            ) : null}
+          </>
         }
       />
       <main ref={scroll} className="min-h-0 flex-1 overflow-y-auto px-3 py-4 lg:px-5 lg:py-5">
@@ -153,6 +165,12 @@ export function MachinesPage({ workerId, tab }: { workerId: string | null; tab: 
               </span>
             ) : null}
           </div>
+
+          {refresh.error ? (
+            <p role="alert" data-testid="machines-refresh-error" className="mb-3 text-meta text-rust">
+              刷新没成功：{refresh.error}
+            </p>
+          ) : null}
 
           <div className="lg:grid lg:grid-cols-[300px_minmax(0,1fr)] lg:items-start lg:gap-5">
             <aside aria-label="机器列表" className={workerId ? 'hidden lg:block' : ''}>

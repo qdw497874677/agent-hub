@@ -1,4 +1,4 @@
-import { test, expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { test, expect, type Browser, type BrowserContext, type Page, type Request } from '@playwright/test';
 import { loginByApi, mailedLink } from './login.ts';
 import { currentRun } from './run-id.ts';
 
@@ -52,6 +52,17 @@ test('成员提交团队技能 → 自己批不了 → 主人逐行评论、要�
     await page.goto('/#/assets/pending');
     await expect(page.getByTestId('pending-count')).toBeVisible();
     const item = page.getByTestId('review-item').filter({ hasText: name });
+    await expect(item).toContainText('有高风险项');
+    // 刷新：待审这两路都不是定时轮询，点一下才真去拉；拉完这条还在
+    const seen: string[] = [];
+    const watch = (req: Request) => seen.push(new URL(req.url()).pathname);
+    page.on('request', watch);
+    await page.getByTestId('market-pending-refresh').click();
+    await expect
+      .poll(() => ['/api/assets/reviews', '/api/assets/install-requests'].filter((path) => !seen.includes(path)), { timeout: 5_000 })
+      .toEqual([]);
+    page.off('request', watch);
+    await expect(page.getByTestId('market-pending-refresh')).not.toHaveAttribute('aria-busy', 'true');
     await expect(item).toContainText('有高风险项');
     await item.click();
     await expect(page.getByTestId('findings')).toContainText('高风险');

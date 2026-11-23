@@ -7,7 +7,7 @@ import { capabilityMatrix, available } from '../capability.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
 import { ok } from '../result.ts';
 import { isCheckpointPrefix, isCheckpointRef, type CheckpointStore, type TurnCheckpoint, type WorkspaceBrowser } from '../ports/workspace-browser.ts';
-import { isBrowsablePath, isSensitivePath, looksBinary, isCommitId, withoutSensitiveDiff } from '../workspace-files.ts';
+import { isBrowsablePath, isSensitivePath, looksBinary, isCommitId, patchOnlyTouches, withoutSensitiveDiff } from '../workspace-files.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
@@ -22,7 +22,7 @@ const agent: AgentDescriptor = {
   options: []
 };
 
-function fakeBrowser(tag: string, calls: string[]): WorkspaceBrowser {
+function fakeBrowser(tag: string, calls: string[], overrides: Partial<WorkspaceBrowser> = {}): WorkspaceBrowser {
   return {
     list: async (root, path) => (calls.push(`${tag}:list:${root}:${path}`), ok({ path, entries: [], truncated: false, isGit: true })),
     read: async (_root, path) => (calls.push(`${tag}:read:${path}`), ok({ path, size: 1, modifiedAt: 0, binary: false, truncated: false, bytes: new Uint8Array([65]) })),
@@ -34,7 +34,8 @@ function fakeBrowser(tag: string, calls: string[]): WorkspaceBrowser {
     restore: async (_root, commit) => (calls.push(`${tag}:restore:${commit}`), ok({ safety: 'safe', restored: 1, removed: 0 })),
     head: async () => ok('abc1234'),
     branchBase: async () => (calls.push(`${tag}:branchBase`), ok({ branch: 'main', commit: 'abc1234' })),
-    watch: async (_root, paths) => (calls.push(`${tag}:watch:${paths.join(',')}`), ok(() => calls.push(`${tag}:unwatch`)))
+    watch: async (_root, paths) => (calls.push(`${tag}:watch:${paths.join(',')}`), ok(() => calls.push(`${tag}:unwatch`))),
+    ...overrides
   };
 }
 
@@ -52,7 +53,7 @@ function memoryCheckpoints(): CheckpointStore {
   };
 }
 
-async function world() {
+async function world(overrides: Partial<WorkspaceBrowser> = {}) {
   const w = inMemoryDeps({ now: () => 1000 });
   w.agents.push(agent);
   const project = await createProjectUseCase(w.deps, { name: 'demo', rootPath: '/tmp/demo/' });
@@ -68,8 +69,8 @@ async function world() {
   const svc = createWorkspaceFilesService({
     ...w.deps,
     audit: { append: async (e) => void audits.push(e) },
-    local: fakeBrowser('local', calls),
-    remote: (id) => fakeBrowser(id, calls),
+    local: fakeBrowser('local', calls, overrides),
+    remote: (id) => fakeBrowser(id, calls, overrides),
     bases: { get: async (id) => bases.get(id) ?? null, setIfAbsent: async (id, h) => void (bases.has(id) || bases.set(id, h)) },
     checkpoints: memoryCheckpoints(),
     now: () => clock
@@ -181,6 +182,33 @@ test('withoutSensitiveDiff：整段剔除敏感文件与改名/复制源，正�
   assert.equal(withoutSensitiveDiff(big), big);
 });
 
+test('单文件 diff 的输出身份：section 头只认 a/<path> b/<path>，别的形态一律不认', () => {
+  assert.equal(patchOnlyTouches('', 'a.ts'), true);
+  assert.equal(patchOnlyTouches('diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-x\n+y', 'a.ts'), true);
+  // 真实 git 头：空格 / 非 ASCII 裸写，只有控制字符 / 引号 / 反斜杠才加 C 风格引号。
+  assert.equal(patchOnlyTouches('diff --git a/has space.txt b/has space.txt\n--- a/has space.txt\t\n+++ b/has space.txt\t\n', 'has space.txt'), true);
+  assert.equal(patchOnlyTouches('diff --git "a/tab\\tname.txt" "b/tab\\tname.txt"\n', 'tab\tname.txt'), true);
+  assert.equal(patchOnlyTouches('diff --git "a/docs/\\303\\274ber.txt" "b/docs/\\303\\274ber.txt"\n', 'docs/über.txt'), true);
+  // 引号没闭合 / 引号后面还有东西：不是 git 的写法，不认。
+  assert.equal(patchOnlyTouches('diff --git "a/has space.txt b/has space.txt\n', 'has space.txt'), false);
+  assert.equal(patchOnlyTouches('diff --git "a/a.ts"x "b/a.ts"x\n', 'a.ts'), false);
+  // 未知前缀组合不认（不靠「去掉第一段」蒙）。
+  assert.equal(patchOnlyTouches('diff --git q/a.ts r/a.ts\n', 'a.ts'), false);
+  // 目录展开：头里是子树里的别的文件。
+  assert.equal(patchOnlyTouches('diff --git a/docs/a.ts b/docs/a.ts\n', 'a.ts'), false);
+  // 前缀是 git 加的一层（默认 a/b，mnemonic 是 c/w，--no-index 是 1/2），去掉后必须逐字相等。
+  assert.equal(patchOnlyTouches('diff --git c/src/a.ts w/src/a.ts\n', 'src/a.ts'), true);
+  assert.equal(patchOnlyTouches('diff --git a/docs/src/a.ts b/docs/src/a.ts\n', 'src/a.ts'), false);
+  // 多节 = 不止一个文件。
+  assert.equal(patchOnlyTouches('diff --git a/a.ts b/a.ts\ndiff --git a/b.ts b/b.ts\n', 'a.ts'), false);
+  // 改名 / 复制 / 合并 diff 不是单文件路径的形态，拼不出来就不认。
+  assert.equal(patchOnlyTouches('diff --git a/old.txt b/new.txt\nrename from old.txt\nrename to new.txt\n', 'new.txt'), false);
+  assert.equal(patchOnlyTouches('diff --cc a.ts\n', 'a.ts'), false);
+  // 旧 Worker 的「新文件：名字」只接受名字对得上的一行。
+  assert.equal(patchOnlyTouches('新文件：a.ts\n', 'a.ts'), true);
+  assert.equal(patchOnlyTouches('新文件：b.ts\n', 'a.ts'), false);
+});
+
 test('本机工作空间直接读；远端问那台 Worker；路径不合法先拦', async () => {
   const w = await world();
   assert.ok((await w.svc.list(null, w.session.id, 'src')).ok);
@@ -228,6 +256,48 @@ test('branch 基准：用默认分支的 merge-base 比工作区，响应带上�
   const d = await w.svc.diff(null, w.session.id, 'a.ts', 'branch');
   assert.ok(d.ok);
   assert.ok(w.calls.includes('local:diff:a.ts:abc1234'));
+});
+
+test('单文件 diff：路径原样交给适配器；适配器返回别的文件或敏感改名元数据时 fail closed', async () => {
+  // 文件名里的 glob 字符是文件名字面量，不在这里被当成模式改写 / 拒绝。
+  const w = await world();
+  const literal = await w.svc.diff(null, w.session.id, 'report[1]*.md', 'head');
+  assert.ok(literal.ok);
+  assert.ok(w.calls.includes('local:diff:report[1]*.md:null'));
+
+  // 适配器带回的不是请求的那个文件（目录展开 / 模式匹配）：不能把别的文件当这一份返回。
+  const wrong = await world({ diff: async () => ok({ path: 'other.txt', patch: 'diff --git a/other.txt b/other.txt\n', truncated: false, binary: false }) });
+  const mismatched = await wrong.svc.diff(null, wrong.session.id, 'a.ts', 'head');
+  assert.equal(mismatched.ok, false);
+  if (!mismatched.ok) assert.match(mismatched.error.message, /单个文件/);
+
+  // 改名元数据里出现敏感文件名：整段省略，不把被拦下的路径当普通 diff 返回。
+  const leaky = await world({
+    diff: async (_root, path) => ok({
+      path,
+      patch: ['diff --git a/.env b/notes.txt', 'rename from .env', 'rename to notes.txt', '@@ -1 +1 @@', '-SECRET=1', '+x'].join('\n'),
+      truncated: false,
+      binary: false
+    })
+  });
+  const suppressed = await leaky.svc.diff(null, leaky.session.id, 'notes.txt', 'head');
+  assert.equal(suppressed.ok, false);
+  if (!suppressed.ok) assert.equal(suppressed.error.message, '敏感文件不显示 diff');
+
+  // 回执 path 对得上、但 patch 自己的头指向别的文件（目录展开 / 竞态的产物）：同样不返回内容。
+  const smuggled = await world({
+    diff: async (_root, path) => ok({ path, patch: 'diff --git a/docs/a.txt b/docs/a.txt\n', truncated: false, binary: false })
+  });
+  const smuggledOut = await smuggled.svc.diff(null, smuggled.session.id, 'a.txt', 'head');
+  assert.equal(smuggledOut.ok, false);
+  if (!smuggledOut.ok) assert.match(smuggledOut.error.message, /单个文件/);
+
+  // 带空格的路径：真实 git 头是裸写的，照样只认这一个文件。
+  const spaced = await world({
+    diff: async (_root, path) => ok({ path, patch: 'diff --git a/has space.txt b/has space.txt\n--- a/has space.txt\t\n+++ b/has space.txt\t\n@@ -1 +1 @@\n-x\n+y', truncated: false, binary: false })
+  });
+  const spacedOut = await spaced.svc.diff(null, spaced.session.id, 'has space.txt', 'head');
+  assert.ok(spacedOut.ok, JSON.stringify(spacedOut));
 });
 
 test('限流：开头可连续 40 次，第 41 次拒绝；每秒补 20；watch 最多 200 个点', async () => {

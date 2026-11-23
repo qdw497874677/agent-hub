@@ -20,7 +20,8 @@ import {
   type AssetSetChoice
 } from '../atoms/asset-sets.ts';
 import { useWorkers } from './workers.tsx';
-import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from '../surfaces/workbench/workspace-chooser.tsx';
+import { WorkspaceChooser, choiceReady, longLivedRequest, repoName, useWorkspaceViews, type WorkspaceChoice } from '../surfaces/workbench/workspace-chooser.tsx';
+import { shortPath, workspaceName } from '../atoms/workspace-format.ts';
 import { harnessReason } from './harness.tsx';
 import { Icon } from '../atoms/icons.tsx';
 import { agentNote, canSelectMachine, emptyModelOption, hubCovers, startHint } from './harness-gate.ts';
@@ -143,6 +144,8 @@ export function DeriveDialog({
   const [assetsSectionOpen, setAssetsSectionOpen] = useState(false);
   const profiles = useQuery({ queryKey: ['agent-profiles'], queryFn: () => api.agentProfiles(), retry: false });
   const workers = useWorkers();
+  // 底部复核行要念出「已有的哪个目录」：和 chooser 共用同一份查询（同一个 key，不多打一次请求）。
+  const workspaceViews = useWorkspaceViews(canvas.project.id);
   // 运行面板（workspaces.md §9.3）：先选机器，再选工作目录；不预选，没选之前「开始」是灰的
   const [machine, setMachine] = useState<string | null>(null);
   // 资产（asset-hub.md）：选中机器后看这一趟会带哪些技能 / 指令 / MCP；默认全选，取消即排除。
@@ -211,6 +214,8 @@ export function DeriveDialog({
     if (projectIsolated) setChoice({ type: 'new_worktree' });
   }, [projectIsolated, multiRepo, modeTouched, choice]);
   const [phase, setPhase] = useState<'idle' | 'preparing' | 'starting'>('idle');
+  // 正在等什么、在哪台机器上等：从点「开始」那一刻的选项取，之后改选项也不会把它说错。
+  const [busy, setBusy] = useState<{ readonly title: string; readonly scope: string } | null>(null);
   /** 组合工作目录准备失败时，主按钮不重复建组：让下面的「重试准备」处理这一组。 */
   const groupFailed = choice?.type === 'new_group' && group !== null && group.state === 'failed';
   const selectedProfile = (profiles.data ?? []).find((profile) => profile.id === profileId) ?? null;
@@ -227,6 +232,23 @@ export function DeriveDialog({
   const taskTitle = canvas.tasks.find((task) => task.id === taskId)?.title ?? '这条任务';
   const agentLabel = agent?.label ?? (agentId === '' ? '还没选 agent' : agentId);
   const machineLabel = machine === null ? '还没选机器' : (workers.byId(machine)?.label ?? '这台机器');
+  // 底部复核行：这次会开在哪（机器 / 目录），用什么（agent / 模型）。和上面的选择重复一点，
+  // 但它是常驻在按钮边上的那一行——滚下去改完目录不用再翻回去确认。
+  const chosenWorkspace =
+    choice?.type === 'existing'
+      ? (workspaceViews.data ?? []).find(({ workspace }) => workspace.id === choice.workspaceId)?.workspace ?? null
+      : null;
+  const workspaceSummary = (() => {
+    if (choice === null) return '还没选工作目录';
+    if (choice.type === 'existing') return chosenWorkspace === null ? '已有的工作目录' : workspaceName(chosenWorkspace);
+    if (choice.type === 'new_temporary') return '新建临时工作目录';
+    if (choice.type === 'new_worktree') return '新建隔离目录（新分支）';
+    if (choice.type === 'new_group') return `新建组合工作目录（${choice.repoIds.length} 个仓库）`;
+    const how = choice.mode === 'link' ? '选已有目录' : canvas.project.repo ? '下载仓库' : '新建空目录';
+    return choice.path === null
+      ? `新建持久目录 · ${how} · 还没选目录`
+      : `新建持久目录 · ${how} · ${shortPath(choice.path)}`;
+  })();
   // agent / 模型这块什么时候自己打开：模型没选或配置对不上时，别让人猜「开始」为什么是灰的
   const modelNeedsAttention = model === '' || profileModelUnavailable || unsupportedProfileOptions.length > 0;
   const queryClient = useQueryClient();
@@ -247,15 +269,31 @@ export function DeriveDialog({
     mutationFn: async () => {
       if (machine === null) throw new Error('先选机器');
       if (!choice) throw new Error('先选机器和工作目录');
+      const place = workers.byId(machine)?.label ?? '这台机器';
       // 选了「新建隔离 worktree」：不在这里建空间，交给 server 按项目配置现建并跑准备命令
       // （workspaceId 为空、workspaceMode=isolated 才会走档位）。
       const isolateNew = choice.type === 'new_worktree';
       const groupNew = choice.type === 'new_group';
       let workspaceId: string | null = null;
-      if (isolateNew) workspaceId = null;
-      else if (choice.type === 'existing') workspaceId = choice.workspaceId;
+      if (isolateNew) {
+        workspaceId = null;
+        setBusy({ title: '正在准备隔离目录…', scope: place });
+      } else if (choice.type === 'existing') workspaceId = choice.workspaceId;
       else if (!groupNew) {
         setPhase('preparing');
+        // 进度只说这一趟真正在做的事（下载仓库 / 建目录 / 登记），别拿「下载」概括所有准备。
+        setBusy(
+          choice.type === 'new_temporary'
+            ? { title: '正在新建临时工作目录…', scope: place }
+            : choice.mode === 'link'
+              ? { title: '正在登记持久工作目录…', scope: `${place} · ${shortPath(choice.path ?? '')}` }
+              : canvas.project.repo
+                ? {
+                    title: '正在下载仓库…',
+                    scope: `${place} · ${repoName(canvas.project.repo.url)} → ${shortPath(choice.path ?? '')}`
+                  }
+                : { title: '正在新建持久工作目录…', scope: `${place} · ${shortPath(choice.path ?? '')}` }
+        );
         const made = await api.createWorkspace(
           projectId,
           choice.type === 'new_temporary'
@@ -275,6 +313,7 @@ export function DeriveDialog({
           groupId = group.id;
         } else {
           setPhase('preparing');
+          setBusy({ title: '正在准备组合工作目录…', scope: `${place} · ${choice.type === 'new_group' ? choice.repoIds.length : 0} 个仓库` });
           const since = Date.now();
           let made: WorkspaceGroupView;
           try {
@@ -319,7 +358,10 @@ export function DeriveDialog({
         ...(profileId ? { profileId } : {})
       });
     },
-    onSettled: () => setPhase('idle'),
+    onSettled: () => {
+      setBusy(null);
+      setPhase('idle');
+    },
     onSuccess: async (session) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['canvas', projectId] }),
@@ -359,37 +401,46 @@ export function DeriveDialog({
       onClose={onDone}
       footer={
         <div className="flex flex-col gap-1.5">
-          {/* 不可用就说清缺什么；能用时这一行不渲染，footer 只剩按钮 */}
-          {hint === null ? null : (
+          {/* 一行说清一件事：正在等什么 → 还缺什么 → 这次会开在哪。
+              进度行按点击那一刻的选项写，不跟着下拉框改口；没用 hover 也能看懂。 */}
+          {derive.isPending && busy !== null ? (
+            <p data-testid="derive-busy" aria-live="polite" className="text-meta text-secondary">
+              {busy.title}
+              <span className="text-tertiary"> · {busy.scope}</span>
+            </p>
+          ) : hint !== null ? (
             <p data-testid="derive-start-hint" className="text-meta text-secondary">
               {hint}
             </p>
+          ) : (
+            <div data-testid="derive-review" className="flex flex-col gap-0.5 md:hidden">
+              <p className="truncate text-meta text-secondary" title={`${machineLabel} · ${workspaceSummary}`}>
+                {machineLabel} · {workspaceSummary}
+              </p>
+              <p className="truncate text-meta text-tertiary" title={`${agentLabel} · ${model === '' ? '还没选模型' : model}`}>
+                {agentLabel} · {model === '' ? '还没选模型' : model}
+              </p>
+            </div>
           )}
           <div className="flex justify-end gap-2">
             <button type="button" className={SECONDARY_BUTTON} onClick={onDone}>
               取消
             </button>
             <button type="button" className={PRIMARY_BUTTON} disabled={hint !== null || derive.isPending || groupFailed} onClick={() => derive.mutate()}>
-              {phase === 'preparing'
-                ? choice?.type === 'new_group'
-                  ? '正在准备组合工作目录…'
-                  : choice?.type === 'new_long_lived' && choice.mode === 'create' && canvas.project.repo
-                    ? '正在下载仓库…'
-                    : '正在准备工作目录…' : derive.isPending ? '启动中…' : derive.error ? '重试' : '开始'}
+              {derive.isPending ? (phase === 'starting' ? '启动中…' : '准备中…') : derive.error ? '重试' : '开始'}
             </button>
           </div>
         </div>
       }
     >
-        <div className="flex flex-col">
+        {/* 手机上抽屉顶端有个拖动条：留 4px，第一行不至于贴着它的边。 */}
+        <div className="flex flex-col pt-1 md:pt-0">
         <p className="mb-3 text-head text-primary max-md:hidden">开始会话</p>
-        {/* 手机上先给一句「给哪条任务开、在哪台机器上开」：标题不长，但省得翻上去对任务 */}
+        {/* 手机上先给一句「给哪条任务开」：机器、agent、模型在下面的选择区和底部复核行里，不在这里重复 */}
         <section data-testid="derive-target" className="mb-3 max-md:order-2 md:hidden">
           <p className="text-meta text-tertiary">为这条任务开一条新会话</p>
-          <p className="mt-0.5 text-body text-primary">{taskTitle}</p>
-          <p className="mt-0.5 text-meta text-secondary">
-            {canvas.project.name} · {machineLabel} · {agentLabel}
-          </p>
+          <p className="mt-0.5 line-clamp-2 text-body text-primary">{taskTitle}</p>
+          <p className="mt-0.5 truncate text-meta text-tertiary">{canvas.project.name}</p>
         </section>
         {canvas.agents.length === 0 ? (
           <p className="mb-3 max-md:order-3 border-l border-rust pl-2 text-meta text-secondary">

@@ -1,45 +1,43 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+
+test.afterAll(() => stopFakeWorker());
 
 /**
  * 结果未知（Hermes outcome_unknown）的一轮：对话里只给一张说明卡。
- * 不提供一键重发，也不在浏览器里假装「已处理」；真 worker 上做不出 outcome_unknown，
- * 先跑出一轮真的失败（目录删了），再把历史接口里那条 ended 改写成结果未知。
+ * 不提供一键重发，也不在浏览器里假装「已处理」。先在测试 Worker 上完成一轮，
+ * 再用历史接口的测试替身把 ended 改为适配器可上报的结果未知。
  */
 test('结果未知的一轮：只说明，不重发、不本地消解', async ({ page, baseURL }) => {
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const workerId = await ensureFakeWorker(page, baseURL!);
   const dir = mkdtempSync(join(tmpdir(), 'e2e-unknown-'));
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 结果未知 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 结果未知 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '结果未知' }, headers })).json()) as { id: string };
-  rmSync(dir, { recursive: true, force: true });
-  const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' }, headers });
+  expect(derived.status(), await derived.text()).toBe(201);
+  const { id } = (await derived.json()) as { id: string };
   const ended = async () => {
     const events = (await (await page.request.get(`/api/sessions/${id}/events`)).json()) as Array<{ event?: { kind?: string } }>;
     return events.filter((entry) => entry.event?.kind === 'ended').length;
   };
-  await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: '改一下 README', attachments: [] }, headers });
+  const sent = await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: '改一下 README', attachments: [] }, headers });
+  expect(sent.ok(), await sent.text()).toBe(true);
   await expect.poll(ended, { timeout: 15_000 }).toBeGreaterThan(0);
 
+  const entries = (await (await page.request.get(`/api/sessions/${id}/events`)).json()) as Array<{ seq: number; event?: Record<string, unknown> }>;
+  const rewritten = entries.map((entry) =>
+    entry.event?.['kind'] === 'ended' ? { ...entry, event: { kind: 'ended', outcome: 'interrupted', reason: 'Hermes 这一轮的结果未知（outcome_unknown）' } } : entry
+  );
   await page.route(`**/api/sessions/${id}/events**`, async (route) => {
-    const response = await route.fetch();
-    const entries = (await response.json()) as Array<{ event?: Record<string, unknown> }>;
-    const rewritten = entries.map((entry) =>
-      entry.event?.['kind'] === 'ended' ? { ...entry, event: { kind: 'ended', outcome: 'interrupted', reason: 'Hermes 这一轮的结果未知（outcome_unknown）' } } : entry
-    );
-    await route.fulfill({ response, json: rewritten });
+    const after = Number(new URL(route.request().url()).searchParams.get('after') ?? 0);
+    await route.fulfill({ json: rewritten.filter((entry) => entry.seq > after) });
   });
   await page.goto(`/#/p/${project.id}/canvas`);
   await page.locator('.react-flow__node-session').getByRole('button', { name: '打开' }).click();

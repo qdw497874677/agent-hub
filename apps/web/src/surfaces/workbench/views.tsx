@@ -12,7 +12,7 @@ import { NoTasksHint } from './empty-tasks.tsx';
 import { resolveWorker, useWorkers, WorkerChip } from '../../shell/workers.tsx';
 import { workspaceName } from '../../atoms/workspace-format.ts';
 import { Icon } from '../../atoms/icons.tsx';
-import { modKeyLabel } from '../../shell/device.ts';
+import { modKeyLabel, useNarrow } from '../../shell/device.ts';
 import { filterActions, type PaletteAction } from './palette.ts';
 import { RowMenu } from '../../atoms/row-menu.tsx';
 import { DeleteSessionDialog } from '../../atoms/delete-session-dialog.tsx';
@@ -26,6 +26,20 @@ export type { PaletteAction } from './palette.ts';
 
 function statusOf(session: SessionDto, live: LiveMap): SessionDto['status'] {
   return live[session.id]?.status ?? session.status;
+}
+
+/** 调度器起的会话没有自己的名字，第一句话是固定模板；列表里别把这句模板当会话名念给用户。 */
+const DISPATCH_PROMPT_PREFIX = '你是被调度器派来推进这个任务的任务智能体';
+
+/** 这一组里有会话正在跑（或等你说话）：移动端把它排到前面。 */
+function groupIsActive(
+  group: { readonly sessions: readonly { readonly session: SessionDto }[] },
+  live: LiveMap
+): boolean {
+  return group.sessions.some(({ session }) => {
+    const status = statusOf(session, live);
+    return status === 'running' || waitingForReply(live[session.id], status);
+  });
 }
 
 /**
@@ -44,7 +58,8 @@ export function ListView({
   onTaskDetail,
   onNewTask,
   onChanged,
-  focusTaskId
+  focusTaskId,
+  onRefresh
 }: {
   canvas: CanvasDto;
   /** 已归档任务：日常分组里不出现，只在底部折叠区里等着恢复。 */
@@ -58,7 +73,10 @@ export function ListView({
   onChanged: () => void;
   /** 刚建好的任务：列表滚到这一行，别让「创建成功」只停在 toast 里。 */
   focusTaskId?: string | null;
+  /** 主动刷新：重拉画布 + 项目清单（外层传进来，和自动刷新用同一份查询）。 */
+  onRefresh?: () => Promise<void>;
 }) {
+  const narrow = useNarrow();
   // 主会话的姓名来自登记表：没有它，无任务会话只能说「没有任务的会话」。
   const { ids: coordinatorIds } = useCoordinators(canvas.project.id);
   const groups = useMemo(() => groupSessions(canvas, coordinatorIds), [canvas, coordinatorIds]);
@@ -68,6 +86,20 @@ export function ListView({
       (task) => !started.has(task.id) && task.status !== 'done' && task.status !== 'abandoned'
     );
   }, [canvas.sessions, canvas.tasks]);
+  const [refreshing, setRefreshing] = useState(false);
+  // 窄屏先给会话（在跑的、最近的在前），再给还没有会话的任务：手机上一屏只够几行，
+  // 「上次聊到哪」比「还没开始的任务」更常被找。宽屏保持原来「任务先、会话后」的顺序。
+  const orderedGroups = useMemo(() => {
+    if (!narrow) return groups;
+    const latest = (group: (typeof groups)[number]) =>
+      group.sessions.reduce((max, { session }) => Math.max(max, session.createdAt), 0);
+    return [...groups].sort((a, b) => {
+      const activeA = groupIsActive(a, live) ? 0 : 1;
+      const activeB = groupIsActive(b, live) ? 0 : 1;
+      if (activeA !== activeB) return activeA - activeB;
+      return latest(b) - latest(a);
+    });
+  }, [groups, live, narrow]);
   const workers = useWorkers();
   const workspaces = useMemo(
     () => new Map(canvas.workspaces.map((workspace) => [workspace.id, workspace])),
@@ -144,6 +176,25 @@ export function ListView({
             .filter((item) => item.id === 'interrupt' || item.id === 'settle' || item.id === 'delete')
             .map((item) => (busyId === menuSession.id ? { ...item, disabled: true } : item))
         ];
+
+  /** 手动刷新：只重拉当前项目的画布（外层顺带项目清单），不整页重载——列表滚动位置和路由都不动。 */
+  async function refreshList(): Promise<void> {
+    if (!onRefresh || refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+      setNotice((current) => (current?.message === '没刷新成功' ? null : current));
+    } catch (failure) {
+      setNotice({
+        message: '没刷新成功',
+        error: failure instanceof Error ? failure.message : String(failure),
+        actionLabel: '重试',
+        action: () => void refreshList()
+      });
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   async function stopSession(session: SessionDto, label: string): Promise<void> {
     setBusyId(session.id);
@@ -222,36 +273,76 @@ export function ListView({
     }
   }
 
-  return (
-    <div
-      ref={listRoot}
-      tabIndex={-1}
-      className="h-full overflow-y-auto px-3 py-4 outline-none md:px-6"
-      data-testid="list-view"
-      onScroll={rememberScroll}
-    >
-      {/* 列表是扫读用的，不是文章：行可以比首页宽，但别宽到 1440 上从 228 一路拉到 1370。 */}
-      <div className="mx-auto w-full max-w-[1080px]">
-      <div className="mb-3 border-b border-hair pb-2" data-testid="list-context">
-        <div className="flex items-baseline gap-2">
-          <span className="shrink-0 text-meta text-tertiary">项目</span>
-          <span className="min-w-0 truncate text-sub text-primary" title={canvas.project.name}>{canvas.project.name}</span>
-        </div>
-        <div className="mt-0.5 text-meta text-tertiary">
-          {canvas.tasks.length} 个任务 · {canvas.sessions.length} 条会话
-        </div>
-      </div>
-      {canvas.sessions.length === 0 ? (
-        <p className="py-6 text-meta text-tertiary">还没有会话。从任务行点「开始会话」，或点下面的任务派生一条。</p>
-      ) : null}
-      {unstartedTasks.length > 0 ? (
-        <section className="mb-4" aria-label="未开始的任务" data-testid="list-unstarted">
-          <h3 className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-hair bg-canvas/95 py-2 text-sub text-primary backdrop-blur">
-            <span className="min-w-0 truncate">未开始</span>
-            <span className="shrink-0 text-meta text-tertiary">{unstartedTasks.length} 个任务</span>
-          </h3>
-          <ul>
-            {unstartedTasks.map((task) => (
+  const refreshButton =
+    onRefresh === undefined ? null : (
+      <button
+        type="button"
+        data-testid="list-refresh"
+        aria-label="刷新"
+        aria-busy={refreshing}
+        title="刷新这一页"
+        disabled={refreshing}
+        onClick={() => void refreshList()}
+        className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-control text-tertiary hover:bg-hover hover:text-primary disabled:opacity-60 md:min-h-[28px] md:min-w-[28px]"
+      >
+        <Icon
+          name="refresh"
+          size={15}
+          className={refreshing ? 'animate-spin motion-reduce:animate-none' : undefined}
+        />
+        {refreshing ? (
+          <span role="status" className="sr-only">刷新中</span>
+        ) : null}
+      </button>
+    );
+
+  // 窄屏一行内解决：标题截断，状态不换行也不竖排；整行标题是「看日志」的入口，
+  // 「开会话」单独一个 44px 按钮，仍然进显式配置弹窗（不猜默认值）。
+  const taskSection =
+    unstartedTasks.length > 0 ? (
+      <section
+        className="mb-4"
+        aria-label={narrow ? '暂无会话的任务' : '未开始的任务'}
+        data-testid="list-unstarted"
+      >
+        <h3 className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-hair bg-canvas/95 py-2 text-sub text-primary backdrop-blur">
+          <span className="min-w-0 truncate">{narrow ? '暂无会话的任务' : '未开始'}</span>
+          <span className="shrink-0 text-meta text-tertiary">{unstartedTasks.length} 个任务</span>
+        </h3>
+        <ul>
+          {unstartedTasks.map((task) =>
+            narrow ? (
+              <li
+                key={task.id}
+                data-testid="list-task-row"
+                data-task-id={task.id}
+                className="flex items-stretch border-b border-hair/60"
+              >
+                <button
+                  type="button"
+                  data-testid="list-task-open"
+                  aria-label={`打开任务：${task.title}`}
+                  className="flex min-h-[48px] min-w-0 flex-1 items-center gap-2 py-1 pl-3 pr-1 text-left hover:bg-card focus-visible:bg-card"
+                  onClick={() => onTaskDetail(task.id)}
+                >
+                  <span className="min-w-0 flex-1 truncate text-body text-primary" title={task.title}>
+                    {task.title}
+                  </span>
+                  <span className="shrink-0 whitespace-nowrap">
+                    <TaskBadge status={task.status} />
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="list-task-start"
+                  aria-label={`开始会话：${task.title}`}
+                  className="flex min-h-[48px] shrink-0 items-center px-3 text-sub text-secondary hover:bg-card hover:text-primary"
+                  onClick={() => onDerive(task.id)}
+                >
+                  开会话
+                </button>
+              </li>
+            ) : (
               <li
                 key={task.id}
                 data-testid="list-task-row"
@@ -261,7 +352,7 @@ export function ListView({
                 <span className="min-w-0 flex-1">
                   <span className="flex min-w-0 items-center gap-2">
                     <span className="min-w-0 truncate text-body text-primary" title={task.title}>{task.title}</span>
-                    <TaskBadge status={task.status} />
+                    <span className="shrink-0 whitespace-nowrap"><TaskBadge status={task.status} /></span>
                   </span>
                   {task.goal?.trim() ? (
                     <span className="mt-0.5 block truncate text-meta text-tertiary" title={task.goal}>{task.goal}</span>
@@ -288,94 +379,161 @@ export function ListView({
                   </button>
                 </span>
               </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-      {groups.map((group) => (
-        <section
-          key={group.taskId}
-          className="mb-4"
-          // 无任务组没有任务标题：读屏也只念组名，不假装它是一条任务
-          aria-label={group.taskless ? group.title : `任务：${group.title}`}
-          data-testid="list-task-group"
-          data-kind={group.kind}
-        >
-          <h3 className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-hair bg-canvas/95 py-2 text-sub text-primary backdrop-blur">
+            )
+          )}
+        </ul>
+      </section>
+    ) : null;
+
+  const sessionSections = orderedGroups.map((group) => (
+    <section
+      key={group.taskId}
+      className="mb-4"
+      // 无任务组没有任务标题：读屏也只念组名，不假装它是一条任务
+      aria-label={group.taskless ? group.title : `任务：${group.title}`}
+      data-testid="list-task-group"
+      data-kind={group.kind}
+    >
+      <h3 className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-hair bg-canvas/95 py-2 text-sub text-primary backdrop-blur">
+        {narrow && !group.taskless ? (
+          // 窄屏没有底部那排任务 chip 了：组头自己就是这条任务的入口（日志 / 归档 / 再开一条）。
+          <button
+            type="button"
+            data-testid="list-group-open"
+            aria-label={`打开任务：${group.title}`}
+            className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2 text-left"
+            onClick={() => onTaskDetail(group.taskId)}
+          >
+            <span className="min-w-0 flex-1 truncate">{group.title}</span>
+            <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
+            <Icon name="chevron-right" size={13} className="shrink-0 text-tertiary" />
+          </button>
+        ) : (
+          <>
             {group.taskless ? null : <span className="shrink-0 text-meta text-tertiary">任务</span>}
             <span className="min-w-0 truncate">{group.title}</span>
             <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
-          </h3>
-          <ul>
-            {group.sessions.map(({ session, label }) => {
-              const status = statusOf(session, live);
-              const seq = live[session.id]?.lastSeq ?? session.lastSeq;
-              const origin = session.origin.kind === 'fork'
-                ? `分叉自 #${session.origin.atSeq}`
-                : session.taskId === null ? '没有任务' : '派生';
-              const worker = resolveWorker(workers.list, session.workerId);
-              const workspace = session.workspaceId ? workspaces.get(session.workspaceId) : undefined;
-              return (
-                <li
-                  key={session.id}
-                  data-session-id={session.id}
-                  className="flex items-stretch border-b border-hair/60"
-                >
-                  <button
-                    type="button"
-                    data-testid="list-session-row"
-                    className="flex min-h-[44px] min-w-0 flex-1 items-center gap-3 py-2 pl-3 pr-1 text-left hover:bg-card focus-visible:bg-card"
-                    onClick={() => {
-                      rememberScroll();
-                      onOpen(session.id);
-                    }}
-                  >
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-body text-primary" data-testid="list-session-label">{label}</span>
-                      <span className="block truncate text-meta text-tertiary" data-testid="list-session-meta">
-                        {localTime(session.createdAt)} · {origin} · {agentLabel(session.agentId)}
+          </>
+        )}
+      </h3>
+      <ul>
+        {group.sessions.map(({ session, label }) => {
+          const status = statusOf(session, live);
+          const seq = live[session.id]?.lastSeq ?? session.lastSeq;
+          const origin = session.origin.kind === 'fork'
+            ? `分叉自 #${session.origin.atSeq}`
+            : session.taskId === null ? '没有任务' : '派生';
+          const worker = resolveWorker(workers.list, session.workerId);
+          const workspace = session.workspaceId ? workspaces.get(session.workspaceId) : undefined;
+          // 调度器起跑的会话没有名字，第一句是固定模板：窄屏别把模板当会话名（宽屏保持原样）。
+          const rowLabel =
+            narrow && !session.title && label.startsWith(DISPATCH_PROMPT_PREFIX) ? '调度器派发' : label;
+          return (
+            <li
+              key={session.id}
+              data-session-id={session.id}
+              className="flex items-stretch border-b border-hair/60"
+            >
+              <button
+                type="button"
+                data-testid="list-session-row"
+                className="flex min-h-[44px] min-w-0 flex-1 items-center gap-3 py-2 pl-3 pr-1 text-left hover:bg-card focus-visible:bg-card"
+                onClick={() => {
+                  rememberScroll();
+                  onOpen(session.id);
+                }}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-body text-primary" data-testid="list-session-label">{rowLabel}</span>
+                  <span className="block truncate text-meta text-tertiary" data-testid="list-session-meta">
+                    {localTime(session.createdAt)} · {origin} · {agentLabel(session.agentId)}
+                  </span>
+                  <span className="mt-1 flex min-w-0 items-center gap-1.5" data-testid="list-session-place">
+                    <WorkerChip
+                      worker={worker}
+                      fallback={session.workerId ? session.workerId.slice(0, 8) : '本机'}
+                    />
+                    {workspace ? (
+                      <span className="min-w-0 truncate text-meta text-tertiary" title={workspace.path}>
+                        {workspaceName(workspace)}
                       </span>
-                      <span className="mt-1 flex min-w-0 items-center gap-1.5" data-testid="list-session-place">
-                        <WorkerChip
-                          worker={worker}
-                          fallback={session.workerId ? session.workerId.slice(0, 8) : '本机'}
-                        />
-                        {workspace ? (
-                          <span className="min-w-0 truncate text-meta text-tertiary" title={workspace.path}>
-                            {workspaceName(workspace)}
-                          </span>
-                        ) : null}
-                        <span className="hidden shrink-0 text-meta text-tertiary md:inline">
-                          {modelLabel(session.model)} · #{seq}
-                        </span>
-                      </span>
+                    ) : null}
+                    <span className="hidden shrink-0 text-meta text-tertiary md:inline">
+                      {modelLabel(session.model)} · #{seq}
                     </span>
-                    <span className="shrink-0">
-                      <StatusPill status={status} reason={live[session.id]?.reason} lastSeq={seq} />
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="list-session-more"
-                    aria-label={`会话「${label}」的操作`}
-                    aria-haspopup="menu"
-                    aria-expanded={menu?.sessionId === session.id}
-                    title="会话操作"
-                    className="flex size-[44px] shrink-0 items-center justify-center self-center rounded-sm text-body text-tertiary hover:bg-card hover:text-primary focus-visible:bg-card md:size-8"
-                    onClick={(event) => {
-                      trigger.current = event.currentTarget;
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      setMenu({ sessionId: session.id, label, x: rect.right - 168, y: rect.bottom + 2 });
-                    }}
-                  >
-                    <Icon name="more" size={14} />
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      ))}
+                  </span>
+                </span>
+                <span className="shrink-0">
+                  <StatusPill status={status} reason={live[session.id]?.reason} lastSeq={seq} />
+                </span>
+              </button>
+              <button
+                type="button"
+                data-testid="list-session-more"
+                aria-label={`会话「${rowLabel}」的操作`}
+                aria-haspopup="menu"
+                aria-expanded={menu?.sessionId === session.id}
+                title="会话操作"
+                className="flex size-[44px] shrink-0 items-center justify-center self-center rounded-sm text-body text-tertiary hover:bg-card hover:text-primary focus-visible:bg-card md:size-8"
+                onClick={(event) => {
+                  trigger.current = event.currentTarget;
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setMenu({ sessionId: session.id, label: rowLabel, x: rect.right - 168, y: rect.bottom + 2 });
+                }}
+              >
+                <Icon name="more" size={14} />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  ));
+
+  return (
+    <div
+      ref={listRoot}
+      tabIndex={-1}
+      className="h-full overflow-y-auto px-3 py-4 outline-none md:px-6"
+      data-testid="list-view"
+      onScroll={rememberScroll}
+    >
+      {/* 列表是扫读用的，不是文章：行可以比首页宽，但别宽到 1440 上从 228 一路拉到 1370。 */}
+      <div className="mx-auto w-full max-w-[1080px]">
+      {/* 窄屏顶栏已经有项目名了，这里不再重复：一行计数 + 刷新就够，省下的高度给内容。 */}
+      <div
+        className="mb-2 flex items-center justify-between gap-2 border-b border-hair pb-1 md:mb-3 md:pb-2"
+        data-testid="list-context"
+      >
+        <div className="min-w-0">
+          <div className="hidden items-baseline gap-2 md:flex">
+            <span className="shrink-0 text-meta text-tertiary">项目</span>
+            <span className="min-w-0 truncate text-sub text-primary" title={canvas.project.name}>{canvas.project.name}</span>
+          </div>
+          <div className="truncate text-meta text-tertiary md:mt-0.5">
+            {canvas.tasks.length} 个任务 · {canvas.sessions.length} 条会话
+          </div>
+        </div>
+        {refreshButton}
+      </div>
+      {canvas.sessions.length === 0 ? (
+        <p className="py-6 text-meta text-tertiary">
+          {narrow
+            ? '还没有会话。点任务行的「开会话」，或打开任务从详情里开一条。'
+            : '还没有会话。从任务行点「开始会话」，或点下面的任务派生一条。'}
+        </p>
+      ) : null}
+      {narrow ? (
+        <>
+          {sessionSections}
+          {taskSection}
+        </>
+      ) : (
+        <>
+          {taskSection}
+          {sessionSections}
+        </>
+      )}
 
       {archivedTasks.length > 0 ? (
         <section className="mb-2 border-t border-hair pt-2" data-testid="list-archived" aria-label="已归档的任务">
@@ -430,32 +588,35 @@ export function ListView({
         </section>
       ) : null}
 
+      {/* 窄屏上每一行任务已经自带「开会话」和日志入口，这排 chip 只是把同样的东西再列一遍，藏掉。 */}
       <div className="mt-6 border-t border-hair pt-3">
-        <p className="mb-2 text-meta text-secondary">任务 · 点一下从它再开一条会话</p>
-        {canvas.tasks.length === 0 ? (
-          <NoTasksHint onNewTask={onNewTask} />
+        {canvas.tasks.length === 0 ? <NoTasksHint onNewTask={onNewTask} /> : null}
+        {canvas.tasks.length > 0 ? (
+          <div className="max-md:hidden">
+            <p className="mb-2 text-meta text-secondary">任务 · 点一下从它再开一条会话</p>
+            <div className="flex flex-wrap gap-2">
+              {canvas.tasks.map((task) => (
+                <span key={task.id} className="inline-flex items-stretch">
+                  <button
+                    className="rounded-l-sm border border-hair px-2.5 py-1.5 text-sub text-secondary hover:border-strong hover:text-primary"
+                    onClick={() => onDerive(task.id)}
+                    title="从这个任务派生一条会话"
+                  >
+                    {task.title}
+                    {task.status === 'abandoned' ? '（已放弃）' : ''}
+                  </button>
+                  <button
+                    className="rounded-r-sm border border-l-0 border-hair px-2 text-meta text-tertiary hover:border-strong hover:text-primary"
+                    onClick={() => onTaskDetail(task.id)}
+                    aria-label={`${task.title} 的日志`}
+                  >
+                    日志
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
         ) : null}
-        <div className="flex flex-wrap gap-2">
-          {canvas.tasks.map((task) => (
-            <span key={task.id} className="inline-flex items-stretch">
-              <button
-                className="rounded-l-sm border border-hair px-2.5 py-1.5 text-sub text-secondary hover:border-strong hover:text-primary"
-                onClick={() => onDerive(task.id)}
-                title="从这个任务派生一条会话"
-              >
-                {task.title}
-                {task.status === 'abandoned' ? '（已放弃）' : ''}
-              </button>
-              <button
-                className="rounded-r-sm border border-l-0 border-hair px-2 text-meta text-tertiary hover:border-strong hover:text-primary"
-                onClick={() => onTaskDetail(task.id)}
-                aria-label={`${task.title} 的日志`}
-              >
-                日志
-              </button>
-            </span>
-          ))}
-        </div>
       </div>
 
       {menu !== null && menuSession !== undefined ? (

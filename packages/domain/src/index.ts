@@ -235,7 +235,7 @@ export * from './runtime-bundle.ts';
 export * from './component-catalog.ts';
 export type { BranchBase, BrowserEntry, ChangedFile, DirectoryPage, FileChangeNotice, FileContent, FileDiff, FileGitStatus, SessionBaseStore, WorkspaceBrowser, TurnCheckpoint, CheckpointStore, TurnRefStore } from './ports/workspace-browser.ts';
 export { CHECKPOINT_REF_PREFIX, CHECKPOINT_RETENTION_MS, checkpointRef, isCheckpointRef, isCheckpointPrefix } from './ports/workspace-browser.ts';
-export { FILES_LIMITS, isBrowsablePath, isCommitId, isSensitivePath, looksBinary, withoutSensitiveDiff } from './workspace-files.ts';
+export { FILES_LIMITS, isBrowsablePath, isCommitId, isSensitivePath, looksBinary, patchOnlyTouches, withoutSensitiveDiff } from './workspace-files.ts';
 export * from './use-cases/workspace-files.ts';
 export { DEFAULT_CLEANUP_POLICY, IDLE_DAYS_MAX } from './ports/workspace-sweeps.ts';
 export type { CleanupPolicy, SweepAction, SweepItem, SweepRun, WorkspaceSweepStore } from './ports/workspace-sweeps.ts';
@@ -265,6 +265,7 @@ export { createDispatcher, type Dispatcher, type DispatcherDeps, type DispatchVi
 
 export * from './task-progress.ts';
 export * from './workspace-delegation.ts';
+export * from './delegation-acceptance.ts';
 export * from './use-cases/workspace-delegation.ts';
 export * from './use-cases/workspace-delegation-publish.ts';
 export * from './workspace-coordinator.ts';

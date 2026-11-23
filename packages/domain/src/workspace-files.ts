@@ -155,6 +155,88 @@ export function withoutSensitiveDiff(patch: string): string {
   return kept.join('\n');
 }
 
+/** `diff --git` 头允许的前缀组合：默认 a/ b/、mnemonic c/ w/、--no-index 1/ 2/，以及关掉前缀。 */
+const HEADER_PREFIX_PAIRS = [
+  ['a/', 'b/'],
+  ['c/', 'w/'],
+  ['1/', '2/'],
+  ['', '']
+] as const;
+
+/** 只认 git 实际会写出的 C 风格引号：闭合引号必须在末尾，转义中间不能有裸引号。 */
+function decodeHeaderQuoted(body: string): string | null {
+  let i = 1;
+  while (i < body.length) {
+    const ch = body[i]!;
+    if (ch === '\\') {
+      const escaped = body[i + 1];
+      if (escaped === undefined) return null;
+      i += /[0-7]/.test(escaped) ? 4 : 2;
+      continue;
+    }
+    if (ch === '"') return i === body.length - 1 ? decodeGitQuoted(body) : null;
+    i += ch.codePointAt(0)! > 0xffff ? 2 : 1;
+  }
+  return null;
+}
+
+/** 头一侧的正文：裸写原样返回；C 风格引号解开后返回（注意前缀在引号里面）。拼不出来返回 null。 */
+function decodeHeaderBody(body: string): string | null {
+  if (body === '') return null;
+  if (!body.startsWith('"')) return body;
+  return decodeHeaderQuoted(body);
+}
+
+/** 头里的路径正文是否就是这个文件。git 仅在路径含控制字符 / `"` / `\` 时加引号；空格和非 ASCII 都是裸的。 */
+function headerBodyIsPath(body: string, path: string): boolean {
+  return decodeHeaderBody(body) === path;
+}
+
+/**
+ * `diff --git <左边> <右边>` 头是否只提到请求的这个字面量路径。先解开引号（引号把前缀也包在
+ * 里面），两侧前缀还必须是已知组合，各去掉一层之后两段都必须逐字等于路径 —— 目录展开是更深
+ * 的路径、glob 命中 / 改名是别的路径，都对不上。路径里可能有空格，不能按空白切，只能逐段
+ * 试分隔点并解出正文。
+ */
+function headerIsPath(rest: string, path: string): boolean {
+  for (let i = 1; i < rest.length; i++) {
+    if (rest[i] !== ' ') continue;
+    const left = decodeHeaderBody(rest.slice(0, i));
+    const right = decodeHeaderBody(rest.slice(i + 1));
+    if (left === null || right === null) continue;
+    for (const [from, to] of HEADER_PREFIX_PAIRS) {
+      if (!left.startsWith(from) || !right.startsWith(to)) continue;
+      // 已知前缀各去掉一层之后，两段都必须逐字等于请求的路径；不做任何任意的切分猜测。
+      if (left.slice(from.length) === path && right.slice(to.length) === path) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 单文件 diff 的输出身份：每个 section 头只能提到请求的这个字面量路径。
+ * 适配器用字面量路径 + `--no-renames --src-prefix=a/ --dst-prefix=b/` 产出时，头必然是
+ * `diff --git a/<path> b/<path>`（路径带空格时也是裸的，不加引号）；目录展开、glob 命中、
+ * 改名 / 复制都会让它对不上。拼不出来（合并 diff、改名元数据、前缀不是已知组合）一律
+ * false：宁可不显示，不猜。
+ */
+export function patchOnlyTouches(patch: string, path: string): boolean {
+  if (patch === '') return true;
+  const lines = patch.split('\n');
+  let sections = 0;
+  for (const line of lines) {
+    // 单文件路径的 diff 不该出现合并 / 改名 / 复制元数据；出现了就说明拼不出准确路径。
+    if (line.startsWith('diff --cc ') || line.startsWith('diff --combined ')) return false;
+    if (/^(rename|copy) (from|to) /.test(line)) return false;
+    if (!line.startsWith('diff --git ')) continue;
+    sections += 1;
+    if (!headerIsPath(line.slice('diff --git '.length), path)) return false;
+  }
+  if (sections > 0) return true;
+  // 没有 section 头：旧 Worker 只回一行「新文件：名字」；其余形态不认。
+  return lines.every((line) => line === '' || (line.startsWith('新文件：') && headerBodyIsPath(line.slice('新文件：'.length), path)));
+}
+
 /** 前 8 KB 里有 NUL 就当二进制。 */
 export function looksBinary(bytes: Uint8Array): boolean {
   const end = Math.min(bytes.length, 8192);

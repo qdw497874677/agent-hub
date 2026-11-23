@@ -299,3 +299,154 @@ test('restore：回到检查点（改的写回、删的恢复、新增的删掉�
     await rm(remote, { recursive: true, force: true });
   }
 });
+
+test('diff：目录不展开；文件名里的 glob / 字符类按字面量处理，不夹带别的文件', async () => {
+  const root = await repo();
+  try {
+    await mkdir(join(root, 'docs'));
+    await writeFile(join(root, 'docs/a.txt'), 'doc a v1\n');
+    await writeFile(join(root, 'docs/b.txt'), 'doc b v1\n');
+    await writeFile(join(root, 'report[1].md'), 'report v1\n');
+    await writeFile(join(root, 'report1.md'), 'report plain v1\n');
+    await writeFile(join(root, 'star*.txt'), 'star v1\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-qm', 'fixtures');
+    await writeFile(join(root, 'docs/a.txt'), 'doc a v2\n');
+    await writeFile(join(root, 'docs/b.txt'), 'doc b v2\n');
+    await writeFile(join(root, 'report[1].md'), 'report v2\n');
+    await writeFile(join(root, 'report1.md'), 'report plain v2\n');
+    await writeFile(join(root, 'star*.txt'), 'star v2\n');
+    const b = createWorkspaceBrowser();
+
+    const bracket = await b.diff(root, 'report[1].md', null, 64 * 1024);
+    assert.ok(bracket.ok, JSON.stringify(bracket));
+    assert.equal(bracket.value.path, 'report[1].md');
+    assert.ok(bracket.value.patch.includes('+report v2'));
+    assert.ok(!bracket.value.patch.includes('report1.md'), '字符类不能被当模式去匹配 report1.md');
+    assert.ok(!bracket.value.patch.includes('docs/'), '不能顺带别的文件');
+
+    const star = await b.diff(root, 'star*.txt', null, 64 * 1024);
+    assert.ok(star.ok, JSON.stringify(star));
+    assert.ok(star.value.patch.includes('+star v2'));
+    assert.ok(!star.value.patch.includes('docs/'), '星号只匹配这一个文件');
+
+    const dir = await b.diff(root, 'docs', null, 64 * 1024);
+    assert.equal(dir.ok, false, '目录不能当单文件 diff');
+    if (!dir.ok) assert.equal(dir.error.code, 'invalid');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('diff：带空格 / 制表符的真实文件名照常返回，头是裸写也对得上', async () => {
+  const root = await repo();
+  try {
+    await mkdir(join(root, 'my docs'));
+    await writeFile(join(root, 'my docs/has space.txt'), 'space v1\n');
+    await writeFile(join(root, 'my docs/other.txt'), 'other v1\n');
+    await writeFile(join(root, 'tab\tname.txt'), 'tab v1\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-qm', 'fixtures');
+    await writeFile(join(root, 'my docs/has space.txt'), 'space v2\n');
+    await writeFile(join(root, 'my docs/other.txt'), 'other v2\n');
+    await writeFile(join(root, 'tab\tname.txt'), 'tab v2\n');
+    const b = createWorkspaceBrowser();
+
+    const spaced = await b.diff(root, 'my docs/has space.txt', null, 64 * 1024);
+    assert.ok(spaced.ok, JSON.stringify(spaced));
+    assert.equal(spaced.value.path, 'my docs/has space.txt');
+    assert.ok(spaced.value.patch.startsWith('diff --git a/my docs/has space.txt b/my docs/has space.txt\n'), spaced.value.patch);
+    assert.ok(spaced.value.patch.includes('+space v2'));
+    assert.ok(!spaced.value.patch.includes('other.txt'), '同目录的别的文件不能被夹带');
+
+    const tabbed = await b.diff(root, 'tab\tname.txt', null, 64 * 1024);
+    assert.ok(tabbed.ok, JSON.stringify(tabbed));
+    assert.ok(tabbed.value.patch.includes('+tab v2'));
+    assert.ok(!tabbed.value.patch.includes('space v2'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('diff：删除 / 未跟踪的文件照常返回；检查点之间也只给请求的那一个文件', async () => {
+  const root = await repo();
+  try {
+    const b = createWorkspaceBrowser();
+    await writeFile(join(root, 'src/a.ts'), 'export const a = 2;\n');
+    git(root, 'commit', '-qam', 'edit');
+    const first = await b.checkpoint(root, 'refs/agent-hub/checkpoints/s3/1');
+    assert.ok(first.ok && first.value);
+    await rm(join(root, 'README.md')); // 删掉已跟踪文件
+    await writeFile(join(root, 'draft[1].txt'), 'draft\n'); // 未跟踪，名字带字符类
+    const second = await b.checkpoint(root, 'refs/agent-hub/checkpoints/s3/2');
+    assert.ok(second.ok && second.value);
+
+    const gone = await b.diff(root, 'README.md', null, 64 * 1024);
+    assert.ok(gone.ok, JSON.stringify(gone));
+    assert.ok(gone.value.patch.includes('+++ /dev/null'));
+    assert.ok(gone.value.patch.includes('-# hi'));
+
+    const untracked = await b.diff(root, 'draft[1].txt', null, 64 * 1024);
+    assert.ok(untracked.ok, JSON.stringify(untracked));
+    assert.ok(untracked.value.patch.includes('+draft'));
+
+    const range = await b.diff(root, 'README.md', first.value, 64 * 1024, second.value);
+    assert.ok(range.ok, JSON.stringify(range));
+    assert.ok(range.value.patch.includes('-# hi'));
+    assert.ok(!range.value.patch.includes('src/a.ts'));
+
+    // 检查点会把未跟踪文件一起拍进去：两个提交之间它是「新增」，但只给这一个文件。
+    const inRange = await b.diff(root, 'draft[1].txt', first.value, 64 * 1024, second.value);
+    assert.ok(inRange.ok, JSON.stringify(inRange));
+    assert.ok(inRange.value.patch.includes('+draft'));
+    assert.ok(!inRange.value.patch.includes('src/a.ts'));
+
+    const absent = await b.diff(root, 'never-there.txt', first.value, 64 * 1024, second.value);
+    assert.ok(absent.ok, JSON.stringify(absent));
+    assert.equal(absent.value.patch, '');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('diff：不执行仓库配置的外部 diff / textconv，patch 头锁死在这个文件上', async () => {
+  const root = await repo();
+  try {
+    await writeFile(join(root, '.gitattributes'), '*.ts diff=agenthub\n');
+    git(root, 'add', '.gitattributes');
+    git(root, 'commit', '-qm', 'attrs');
+    // 仓库本地配置：外部 diff 会直接替换 patch 文本，textconv 会让 git 拿转换结果当文件内容。
+    git(root, 'config', 'diff.agenthub.textconv', 'printf "converted\\n"');
+    git(root, 'config', 'diff.external', 'printf "not a patch\\n"');
+    await writeFile(join(root, 'src/a.ts'), 'export const a = 2;\n');
+    const b = createWorkspaceBrowser();
+    const d = await b.diff(root, 'src/a.ts', null, 64 * 1024);
+    assert.ok(d.ok, JSON.stringify(d));
+    assert.ok(d.value.patch.startsWith('diff --git a/src/a.ts b/src/a.ts\n'), d.value.patch);
+    assert.ok(d.value.patch.includes('+export const a = 2;'), '要的是 git 自己的 patch，不是外部命令 / 转换后的内容');
+    assert.ok(!d.value.patch.includes('not a patch'));
+    assert.ok(!d.value.patch.includes('converted'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('diff：只存在于检查点里的目录不能展开成多文件 diff（fail closed）', async () => {
+  const root = await repo();
+  try {
+    const b = createWorkspaceBrowser();
+    await mkdir(join(root, 'bundle'));
+    await writeFile(join(root, 'bundle/one.txt'), 'one\n');
+    await writeFile(join(root, 'bundle/two.txt'), 'two\n');
+    const before = await b.checkpoint(root, 'refs/agent-hub/checkpoints/s4/1');
+    assert.ok(before.ok && before.value);
+    await rm(join(root, 'bundle'), { recursive: true, force: true });
+    const after = await b.checkpoint(root, 'refs/agent-hub/checkpoints/s4/2');
+    assert.ok(after.ok && after.value);
+    const dir = await b.diff(root, 'bundle', before.value, 64 * 1024, after.value);
+    assert.equal(dir.ok, false);
+    if (!dir.ok) assert.equal(dir.error.code, 'invalid');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

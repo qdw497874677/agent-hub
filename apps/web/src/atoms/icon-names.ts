@@ -41,4 +41,5 @@ export type IconName =
   | 'layers'
   | 'stethoscope'
   | 'queue'
-  | 'more';
+  | 'more'
+  | 'refresh';

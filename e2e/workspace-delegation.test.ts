@@ -558,6 +558,18 @@ test('人走 HTTP：派工 → 真提交 → 批准 exact SHA → 真 push + 草
   assert.equal(preview.state, 'prepared');
   assert.equal(preview.headSha, committed.sha, '预览 HEAD 应等于刚提交的 SHA');
 
+  const acceptancePath = `/api/workspace-delegations/${view.id}/acceptance`;
+  const initialAcceptance = await json<{ headSha: string; status: string }>(await request(ctx, acceptancePath), '读取待验收提交');
+  assert.equal(initialAcceptance.headSha, committed.sha);
+  assert.equal(initialAcceptance.status, 'none');
+  const acceptanceBody = { requestKey: 'human-accept-1', expectedHeadSha: committed.sha, note: '人工确认交付内容' };
+  const accepted = await json<{ acceptance: { sha: string } }>(
+    await request(ctx, acceptancePath, { method: 'POST', json: acceptanceBody }), '记录人工验收'
+  );
+  assert.equal(accepted.acceptance.sha, committed.sha);
+  assert.equal(w.github.created.length, 0, '人工验收不能创建 PR');
+  assert.equal((await branchesOf(w.bare)).includes(String(view.branch)), false, '人工验收不能推送分支');
+
   // 错误的 SHA 先被拒（还没有任何 attempt）
   const wrong = await request(ctx, `/api/workspace-delegations/${view.id}/publish`, {
     method: 'POST',
@@ -611,6 +623,20 @@ test('人走 HTTP：派工 → 真提交 → 批准 exact SHA → 真 push + 草
   });
   assert.equal(secondKey.status, 409);
   assert.match(await secondKey.text(), /已经发布过 PR/);
+
+  await git(view.worktreePath!, 'commit', '--allow-empty', '-qm', 'chore: new revision after acceptance');
+  const newerHead = (await git(view.worktreePath!, 'rev-parse', 'HEAD')).trim();
+  assert.notEqual(newerHead, committed.sha);
+  const movedAcceptance = await json<{ headSha: string; status: string; history: { sha: string }[] }>(
+    await request(ctx, acceptancePath), '读取 HEAD 变化后的验收'
+  );
+  assert.equal(movedAcceptance.headSha, newerHead);
+  assert.equal(movedAcceptance.status, 'changed');
+  assert.deepEqual(movedAcceptance.history.map((entry) => entry.sha), [committed.sha]);
+  const staleAcceptance = await request(ctx, acceptancePath, {
+    method: 'POST', json: { ...acceptanceBody, requestKey: 'human-accept-stale' }
+  });
+  assert.equal(staleAcceptance.status, 409, '旧 SHA 不得新增验收');
 
   // 源仓库完全没被派工碰过
   assert.deepEqual(await snapshot(w.source), sourceBefore, '源仓库的 HEAD / 分支 / 工作区应保持不变');
@@ -1114,6 +1140,17 @@ test('项目会话 MCP 阶段 2：同项目交接只进收件箱 → 候选通�
   assert.equal(notice.data?.repoId, w.repoId);
   assert.equal(notice.data?.projectId, w.projectId);
   assert.equal(typeof notice.data?.notice, 'string');
+  const handoffManifest = await json<{
+    state: string;
+    handoffs: { messageId: string; transport: string; body: string; candidate: { repoId: string; sha: string } }[];
+  }>(await request(ctx, `/api/workspace-delegations/${source.id}/handoff`), '读取派工交接清单');
+  assert.equal(handoffManifest.state, 'recorded');
+  assert.deepEqual(handoffManifest.handoffs.map(({ messageId, transport, body, candidate }) => ({ messageId, transport, body, candidate })), [{
+    messageId: handoff.messageId,
+    transport: 'inbox',
+    body: 'handoff_body_v1',
+    candidate: { repoId: w.repoId, sha: candidateSha }
+  }]);
   assert.equal(await turnCount(ctx, receiver.id), receiverTurnsBeforeHandoff, 'wake=false 的交接不应唤醒接收会话');
   assert.equal(await git(receiverPath, 'for-each-ref', '--format=%(refname)', 'refs/agent-hub/imports'), '', '候选通知本身绝不能触发导入');
   assert.deepEqual(await snapshot(receiverPath), receiverBefore, '候选通知本身不应改变接收仓库');

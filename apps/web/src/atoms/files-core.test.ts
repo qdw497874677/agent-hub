@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clampListWidth, crumbs, decodeText, filesErrorText, filesRefetch, humanSize, languageOf, parentOf, readListWidth, shortPath, touches, watchPaths } from './files-core.ts';
+import { clampListWidth, compareScope, crumbs, decodeText, filesErrorText, filesRefetch, humanSize, languageOf, parentOf, readListWidth, shortPath, touches, watchPaths } from './files-core.ts';
 
 test('只有写明不在线的 503 才收成机器离线', () => {
   assert.equal(filesErrorText(503, 'Worker「e2e」不在线'), '机器离线');
@@ -59,6 +59,44 @@ test('缓存只在没出错时给出（离线不冒充当前）', async () => {
   assert.equal(shown({ data: undefined, error: null }), undefined);
   assert.equal(FILES_QUERY.staleTime, 0);
   assert.ok(FILES_QUERY.gcTime > 0);
+});
+
+test('改动范围的说明说清在比什么，不冒充任意 Git 版本', () => {
+  // 前三者是「工作树 vs 某个提交」：提交里没有的未提交/未跟踪改动也在内。
+  assert.deepEqual(compareScope('head'), { detail: '工作树 vs 当前 HEAD', note: '含未提交改动', unknown: false });
+  assert.deepEqual(compareScope('session', { commit: '0123456789abcdef' }), {
+    detail: '工作树 vs 会话起点 01234567',
+    note: '含未提交改动',
+    unknown: false
+  });
+  // 会话起点没记录：后端会退回 HEAD，正文不能继续说是会话起点。
+  const base = compareScope('session', { commit: null, sessionBase: null });
+  assert.equal(base.unknown, true);
+  assert.match(base.detail, /会话起点未记录/);
+  // 分支范围是默认分支的 merge-base，叫「分支起点」而不是分支最新。
+  assert.deepEqual(compareScope('branch', { branch: 'main', commit: 'abcdef0123' }), {
+    detail: '工作树 vs 分支起点 abcdef01（main）',
+    note: '含未提交改动',
+    unknown: false
+  });
+  const noBranch = compareScope('branch', { branch: null });
+  assert.equal(noBranch.unknown, true);
+  assert.match(noBranch.detail, /没有可对比的默认分支/);
+  // 回合是两个快照，不是工作树；这一轮没收尾时坦白是工作树。
+  assert.deepEqual(compareScope('turn:3', { turn: 3, commit: '11111111', target: '22222222' }), {
+    detail: '第 3 轮的两个快照（11111111 → 22222222）',
+    note: '之后的改动不在内',
+    unknown: false
+  });
+  assert.deepEqual(compareScope('turn', { turn: 2, commit: '11111111', target: null }), {
+    detail: '第 2 轮开始前 vs 当前工作树',
+    note: '这一轮还没结束',
+    unknown: false
+  });
+  assert.equal(compareScope('turn', { turnNumber: 4, commit: '11111111', target: '22222222' }).detail.startsWith('第 4 轮'), true);
+  assert.equal(compareScope('turn', { turn: null }).unknown, true);
+  // 读改动之前就要能显示范围：不知道 sha 时不编造。
+  assert.equal(compareScope('branch', { branch: 'main' }).detail, '工作树 vs 分支起点（main）');
 });
 
 test('文件列表宽度：夹在 220–720，脏值回落默认 320', () => {

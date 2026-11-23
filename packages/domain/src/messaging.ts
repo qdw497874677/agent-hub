@@ -18,6 +18,13 @@ export type HoldReason = 'pingpong' | 'privilege';
 /** reply 的结果：ok 正常回答；failed 做了但没成；refused 不做。 */
 export type ReplyStatus = 'ok' | 'failed' | 'refused';
 
+/**
+ * 可信交接来源标记（VibeX 二期）。只有 Hub 的项目交接用例（bus.handoff）会写这个值；
+ * 普通发送也能自选 `data.schema` 和幂等键，所以两者都不能替代它。老数据没有 = 未知，不推断。
+ */
+export const HANDOFF_BUS_ORIGIN = 'handoff_bus' as const;
+export type HandoffOrigin = typeof HANDOFF_BUS_ORIGIN;
+
 export const FAILURE_CODES = [
   'target_offline',
   'timeout',
@@ -84,6 +91,11 @@ export interface AgentMessage {
   readonly holdReason?: HoldReason | null;
   /** 外部发送方（P1d）的署名，例如「外部 · ci-bot」；会话发的为空，按会话现算。 */
   readonly fromLabel?: string | null;
+  /**
+   * 可信交接来源：仅由 Hub 的项目交接用例写入，客户端 / API 无法设置。
+   * 没有这个字段 = 来源未知（普通发送或老数据），不能反推为 handoff。
+   */
+  readonly handoffOrigin?: HandoffOrigin;
 }
 
 /**

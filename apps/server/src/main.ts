@@ -100,6 +100,7 @@ import { createSessionEnvironment } from './session-environment.ts';
 import { createGitTextWriter } from './git-text-writer.ts';
 import { createGitHubApi } from './github-api.ts';
 import { createDelegationHeadResolver, createDelegationPublisher } from './workspace-delegation-publish.ts';
+import { createWorkspaceDelegationHandoffProjection } from './workspace-delegation-handoff.ts';
 import { createWorkspaceDelegateScopeResolverFromDelegation } from './workspace-delegation-tool.ts';
 import { createProjectSessionGrantService } from './project-session-grant.ts';
 import { createProjectSessionGrantRoutes } from './project-session-grant-routes.ts';
@@ -1204,6 +1205,26 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
     projects: deps.projects,
     access: deps.access
   },
+  delegationAcceptance: {
+    delegations: store.workspaceDelegations,
+    acceptances: store.delegationAcceptances,
+    projects: deps.projects,
+    tasks: deps.tasks,
+    sessions: deps.sessions,
+    access: deps.access,
+    taskGate: deps.taskGate,
+    now: deps.now,
+    resolveHead: createDelegationHeadResolver(deps)
+  },
+  delegationHandoff: createWorkspaceDelegationHandoffProjection({
+    delegations: store.workspaceDelegations,
+    projects: deps.projects,
+    tasks: deps.tasks,
+    sessions: deps.sessions,
+    messages: store.messages,
+    access: deps.access,
+    loadActor: (accountId) => loadActor(store.users, store.access, accountId, 'delegation-handoff-read')
+  }),
   memory: { memory: memoryService },
   openApi: {
     tokens: apiTokenDeps,

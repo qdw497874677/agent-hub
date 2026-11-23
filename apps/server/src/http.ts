@@ -6,6 +6,8 @@ import { coordinatorSessionsUseCase, installCoordinatorRoutes, type CoordinatorR
 import { installDelegationRoutes, type DelegationRouteDeps } from './workspace-delegation.ts';
 import { installProjectSessionGrantRoutes, type ProjectSessionGrantRoutes } from './project-session-grant-routes.ts';
 import { installDelegationPublishRoutes, type DelegationPublishRouteOptions } from './workspace-delegation-publish.ts';
+import { installDelegationAcceptanceRoutes, type DelegationAcceptanceRouteOptions } from './workspace-delegation-acceptance.ts';
+import type { WorkspaceDelegationHandoffProjectionService } from './workspace-delegation-handoff.ts';
 import { installProjectReposRoutes } from './project-repos-routes.ts';
 import { projectDto } from './project-dto.ts';
 import { installPreviewRoutes, type PreviewApiOptions } from './preview-routes.ts';
@@ -259,6 +261,8 @@ export interface AppOptions {
   readonly workspaceDelegation?: Omit<DelegationRouteDeps, 'deps'>;
   readonly projectSessionGrants?: ProjectSessionGrantRoutes;
   readonly delegationPublish?: DelegationPublishRouteOptions;
+  readonly delegationAcceptance?: DelegationAcceptanceRouteOptions;
+  readonly delegationHandoff?: WorkspaceDelegationHandoffProjectionService;
   /** 开放 API（/openapi/v1 + MCP，ADR 0015）与设置页的令牌管理；要有账号体系。 */
   readonly openApi?: OpenApiOptions & { readonly manage: ApiTokenDeps };
   /**
@@ -376,6 +380,19 @@ export function createApp(options: AppOptions): Hono {
     if (options.workspaceDelegation) installDelegationRoutes(app, { deps, ...options.workspaceDelegation }, subjectOf);
     if (options.projectSessionGrants) installProjectSessionGrantRoutes(app, options.projectSessionGrants, principalOf);
     if (options.delegationPublish) installDelegationPublishRoutes(app, options.delegationPublish, subjectOf);
+    if (options.delegationAcceptance) installDelegationAcceptanceRoutes(app, options.delegationAcceptance, subjectOf);
+    const delegationHandoff = options.delegationHandoff;
+    if (delegationHandoff) app.get('/api/workspace-delegations/:delegationId/handoff', async (c) => {
+      c.header('cache-control', 'no-store');
+      const actor = principalOfSubject(subjectOf(c));
+      if (actor === null || actor.via !== undefined) return fail(c, notFound('派工记录不存在'));
+      try {
+        const result = await delegationHandoff.read({ actorId: actor.user.id, delegationId: c.req.param('delegationId') });
+        return result.ok ? c.json(result.value) : fail(c, result.error);
+      } catch {
+        return fail(c, unavailable('交接记录暂时不可用，请稍后重试'));
+      }
+    });
     if (options.bots) installBotRoutes(app, options.bots, subjectOf, options.groups?.agentTokens, options.connectors?.hub);
     if (options.context) installContextRoutes(app, options.context, subjectOf);
     if (options.files) installFilesRoutes(app, options.files, subjectOf);

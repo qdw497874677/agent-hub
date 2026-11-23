@@ -15,7 +15,7 @@ import { asSessionId, newId } from '../ids.ts';
 import { invalid, notFound, unavailable, type DomainError } from '../errors.ts';
 import { groupLayout } from '../workspace-group.ts';
 import { err, ok, type Result } from '../result.ts';
-import { FILES_LIMITS, isBrowsablePath, isSensitivePath, OPEN_WORKSPACE_LIMITS, withoutSensitiveDiff } from '../workspace-files.ts';
+import { FILES_LIMITS, isBrowsablePath, isSensitivePath, OPEN_WORKSPACE_LIMITS, patchOnlyTouches, withoutSensitiveDiff } from '../workspace-files.ts';
 import { authorizeProject, authorizeSession, type AccessPolicy } from './authorization.ts';
 import { gitFor, routeOf } from './machine-dirs.ts';
 import { locationsOf, projectOfSession, type SessionLocation, type SessionLocationMember } from './workspaces.ts';
@@ -361,7 +361,15 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
       if (!range.ok) return range;
       // 没有可对比的默认分支：这个文件不属于任何分支改动，空 diff（和 changes 的空列表对上）。
       if (base === 'branch' && range.value.base === null) return ok({ path, patch: '', truncated: false, binary: false });
-      return found.value.browser.diff(found.value.root, path, range.value.base, FILES_LIMITS.diffBytes, range.value.target);
+      const got = await found.value.browser.diff(found.value.root, path, range.value.base, FILES_LIMITS.diffBytes, range.value.target);
+      if (!got.ok) return got;
+      // 改名 / 复制只要源或目标命中敏感文件名就整段省略（和整树 diff 同一规则），
+      // 不能借单文件 diff 把被拦下的敏感路径元数据当普通内容返回。
+      if (withoutSensitiveDiff(got.value.patch) !== got.value.patch) return err(invalid('敏感文件不显示 diff'));
+      // 适配器必须按字面量返回这一个文件；路径被当成模式 / 目录时会带出别的文件，此时不返回内容。
+      // 除了回执路径，patch 自己的 section 头也要只提到这个路径（老 Worker / 竞态都按 fail closed 处理）。
+      if (got.value.path !== path || !patchOnlyTouches(got.value.patch, path)) return err(unavailable('无法确认这是单个文件的 diff，本次未返回内容'));
+      return got;
     },
     /** 这条会话的回合列表（新的在后）。 */
     async turns(subject: Subject | null, sessionId: string): Promise<Result<readonly TurnCheckpoint[], DomainError>> {

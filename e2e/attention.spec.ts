@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { test, expect } from '@playwright/test';
+import { test, expect, type Request } from '@playwright/test';
 import { loginByApi } from './login.ts';
 import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
@@ -81,8 +81,40 @@ test('等我处理：四种要人的状态上榜，角标和标题带数，稍�
     const n = att.items.length;
     await expect(page.getByTestId('attention-badge')).toContainText(String(n));
     await expect.poll(() => page.title()).toMatch(new RegExp(`^\\(${n}\\) `));
+
+    // 刷新：点一下立刻去拉这一屏的四个接口（首页 / 待办 / 派发 / 连接器提示），
+    // 不是等 8–15 秒的下一轮。5 秒窗口内四个都到齐，才说明是这次点击拉起来的。
+    const search = page.getByRole('combobox', { name: '搜项目、任务或会话' });
+    await search.fill('待办');
+    const seen: string[] = [];
+    const watch = (req: Request) => seen.push(new URL(req.url()).pathname);
+    page.on('request', watch);
+    await page.getByTestId('home-refresh').click();
+    await expect
+      .poll(
+        () => ['/api/home', '/api/attention', '/api/dispatch', '/api/connectors/notices'].filter((path) => !seen.includes(path)),
+        { timeout: 5_000 }
+      )
+      .toEqual([]);
+    page.off('request', watch);
+    // 刷新不碰搜索框里的字
+    await expect(search).toHaveValue('待办');
+    await search.fill('');
+
+    // 失败要看得见，而且同一个按钮还能再点（恢复网络后重试一次就清掉错误）
+    await page.route('**/api/home', (route) => route.abort());
+    await page.getByTestId('home-refresh').click();
+    await expect(page.getByTestId('home-refresh-error')).toBeVisible();
+    await page.unroute('**/api/home');
+    await page.getByTestId('home-refresh').click();
+    await expect(page.getByTestId('home-refresh-error')).toHaveCount(0);
+
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/attention-1280.png` });
     await page.setViewportSize({ width: 390, height: 844 });
+    // 手机上刷新是 44px 的实心触区，不用去顶栏挤第 6 个动作
+    const mobileRefresh = await page.getByTestId('home-refresh').boundingBox();
+    expect(mobileRefresh?.width ?? 0).toBeGreaterThanOrEqual(44);
+    expect(mobileRefresh?.height ?? 0).toBeGreaterThanOrEqual(44);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/attention-390.png` });
 
     // 稍后：收起这一条

@@ -108,12 +108,15 @@ export function TaskDetail({
   canvas,
   taskId,
   onClose,
-  onOpenSession
+  onOpenSession,
+  onDerive
 }: {
   canvas: CanvasDto;
   taskId: string;
   onClose: () => void;
   onOpenSession: (sessionId: string) => void;
+  /** 有值时详情里多一个「开会话」入口；仍然是显式配置弹窗，不猜 agent/model。 */
+  onDerive?: (taskId: string) => void;
 }) {
   const client = useQueryClient();
   const account = useAccount();
@@ -210,6 +213,17 @@ export function TaskDetail({
             >
               {task.archivedAt == null ? '归档' : '恢复'}
             </button>
+            {onDerive !== undefined && task.archivedAt == null ? (
+              <button
+                type="button"
+                data-testid="task-derive"
+                aria-label={`开会话：${task.title}`}
+                className="min-h-[44px] rounded-sm border border-strong px-2 text-meta text-primary hover:bg-hover md:min-h-7"
+                onClick={() => onDerive(task.id)}
+              >
+                开会话
+              </button>
+            ) : null}
             {task.archivedAt != null ? (
               <span data-testid="task-archived" className="text-meta text-tertiary">已归档</span>
             ) : null}

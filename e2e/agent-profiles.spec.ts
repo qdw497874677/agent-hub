@@ -65,6 +65,8 @@ test('Agent 配置：保存当前会话，派生时套用', async ({ page }) => 
   await page.getByTestId('no-tasks').getByRole('button', { name: '新建任务' }).click();
   await page.getByRole('dialog', { name: '新建任务' }).getByLabel('标题').fill(TASK_TITLE);
   await page.getByRole('button', { name: '创建任务' }).click();
+  // 项目默认进列表；这条用例后续从画布发起派生。
+  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
   await expect(taskNode(page, TASK_TITLE)).toContainText('0 个会话');
 
   // 第一条会话：保存成 profile。

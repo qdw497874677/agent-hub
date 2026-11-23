@@ -1,5 +1,4 @@
 import { shortPath, workspaceName } from '../../atoms/workspace-format.ts';
-import { Notice } from '../../atoms/notice.tsx';
 import { Icon } from '../../atoms/icons.tsx';
 export { shortPath, workspaceName };
 import { LinkWorkspaces } from './link-workspaces.tsx';
@@ -54,7 +53,8 @@ export const KIND_HINT = {
 } as const;
 export const CONCURRENT_HINT = '另一个任务也在这里干活，改动可能互相影响';
 
-const ROW = 'flex min-h-[56px] w-full items-start gap-2 rounded-sm border px-3 py-2 text-left';
+// 一行标题也撑得住 44px 的触摸高度：选项本身按内容长，别给空行留白（手机上四种方式一屏能比完）。
+const ROW = 'flex min-h-[44px] w-full items-start gap-2 rounded-sm border px-3 py-1.5 text-left';
 const rowClass = (selected: boolean) => `${ROW} ${selected ? 'border-fg/40 bg-selected' : 'border-hair hover:border-strong'}`;
 
 /** 单选圆点：选中的除了描边还给一个实心点 + 一圈很淡的外环，深色屏上一眼能看出选了哪个。 */
@@ -112,6 +112,8 @@ export function WorkspaceChooser({
   // 手机上把「组合工作目录 / 关联已有目录」收进一行摘要里：选过一次就敞开，别把已选项藏起来
   const narrow = useNarrow();
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // 别的机器上的 agent 不可用：默认只留一行汇总，展开才看原因 / 处理提示 / 重新检测。
+  const [whyOpen, setWhyOpen] = useState(false);
   const agentLabel = canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId;
   const local = resolveWorker(workers, null);
   const offers = (worker: WorkerInfoDto) => (worker.agentIds ?? [agentId]).includes(agentId);
@@ -199,27 +201,57 @@ export function WorkspaceChooser({
         />
       ) : null}
       {blocked.length > 0 ? (
-        <div data-testid="harness-unavailable" className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
-          {blocked.map((worker) => (
-            <p key={worker.workerId} className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="min-w-0">
-                「{worker.label}」上的 {agentLabel} 暂不可用：<span className="text-rust">{harnessReason(worker, agentId)}</span>
-                {harnessHint(worker, agentId) ? <span className="block text-tertiary">{harnessHint(worker, agentId)}</span> : null}
-              </span>
-              <RecheckButton workerId={worker.workerId} />
-            </p>
-          ))}
-        </div>
+        // 别的机器为什么不能选：一行汇总就够（已选机器的工作目录才是主线）。
+        // 原因和处理办法收进 details，需要时再展开，别在手机上占掉半屏。
+        <details
+          data-testid="harness-unavailable"
+          open={usable.length === 0 ? true : whyOpen}
+          onToggle={(event) => {
+            if (usable.length > 0) setWhyOpen(event.currentTarget.open);
+          }}
+          className="group mb-3 rounded-sm border border-hair"
+        >
+          <summary className="flex min-h-[36px] cursor-pointer list-none items-center justify-between gap-2 px-2 py-1 text-meta text-secondary [&::-webkit-details-marker]:hidden">
+            {/* 机器那一行已经写着哪台、为什么（灰掉的格子带原因），这里只留一个「看处理办法」的入口，
+                不把同一句话再念一遍。 */}
+            <span className="min-w-0 truncate">
+              {blocked.length === 1
+                ? `「${blocked[0]!.label}」上的 ${agentLabel} 为什么用不了`
+                : `${blocked.length} 台机器上的 ${agentLabel} 为什么用不了`}
+            </span>
+            <Icon name="chevron-down" size={14} className="shrink-0 text-tertiary transition-transform group-open:rotate-180" />
+          </summary>
+          <ul className="space-y-1 border-t border-hair px-2 py-1.5">
+            {blocked.map((worker) => (
+              <li key={worker.workerId} data-testid="harness-unavailable-item" className="text-meta">
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="min-w-0 text-secondary">
+                    {blocked.length === 1 ? '原因：' : `${worker.label}：`}
+                    <span className="text-rust">{harnessReason(worker, agentId) ?? '暂不可用'}</span>
+                  </span>
+                  <RecheckButton workerId={worker.workerId} />
+                </span>
+                {harnessHint(worker, agentId) === null ? null : (
+                  <span className="block text-tertiary">{harnessHint(worker, agentId)}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </details>
       ) : null}
 
       {machine === null ? null : (
         <>
-          <p className="mb-1 text-meta text-secondary" title="机器上的一个文件夹，agent 只在这里面干活。">工作目录</p>
-          <div role="radiogroup" aria-label="选择工作目录" className="flex flex-col gap-1.5">
-            {views.isLoading ? <p className="text-meta text-tertiary">正在读取工作目录…</p> : null}
-            {!views.isLoading && here.length === 0 ? (
-              <p data-testid="ws-none-linked" className="text-meta text-tertiary">还没有工作目录。</p>
+          {/* 标题行顺带说「这台机器上还没有」：不再单独占一行灰字，把纵向空间留给可选方式。 */}
+          <div className="mb-1 flex items-baseline justify-between gap-2">
+            <p className="min-w-0 truncate text-meta text-secondary" title="机器上的一个文件夹，agent 只在这里面干活。">工作目录</p>
+            {views.isLoading ? (
+              <span className="shrink-0 text-meta text-tertiary">正在读取…</span>
+            ) : here.length === 0 ? (
+              <span data-testid="ws-none-linked" className="shrink-0 text-meta text-tertiary">这台机器上还没有</span>
             ) : null}
+          </div>
+          <div role="radiogroup" aria-label="选择工作目录" className="flex flex-col gap-1.5">
             {here.map(({ workspace, runningTaskIds, otherProjectSessions }) => {
               const selected = choice?.type === 'existing' && choice.workspaceId === workspace.id;
               const others = runningTaskIds.some((id) => id !== taskId);
@@ -357,7 +389,10 @@ function NewLongLived({
       >
         <Radio on={selected} />
         <span className="min-w-0 flex-1">
-          <span className="block text-body text-primary">新建持久工作目录</span>
+          <span className="block truncate text-body text-primary">
+            新建持久工作目录
+            {selected ? null : <span className="text-meta text-tertiary"> · 一直保留</span>}
+          </span>
         </span>
       </button>
       {selected ? (
@@ -464,7 +499,10 @@ function NewTemporary({
     <button type="button" role="radio" aria-checked={selected} className={rowClass(selected)} onClick={onSelect}>
       <Radio on={selected} />
       <span className="min-w-0 flex-1">
-        <span className="block text-body text-primary">新建临时工作目录</span>
+        <span className="block truncate text-body text-primary">
+          新建临时工作目录
+          {selected ? null : <span className="text-meta text-tertiary"> · 用完清理</span>}
+        </span>
         {existing > 0 ? (
           <span className="mt-0.5 block text-meta text-rust">这个任务已经有 {existing} 个临时工作目录</span>
         ) : null}
@@ -525,11 +563,14 @@ function NewWorktree({
           if (!gitHere) return;
           onSelect();
         }}
-        title={gitHere ? undefined : '这台机器上还没有可用的 git 目录：先在下面关联一个，或给项目绑定仓库'}
+        title={gitHere ? undefined : '这台机器上还没有可用的 git 目录：先关联一个，或给项目绑定仓库'}
       >
         <Radio on={selected} />
         <span className={`min-w-0 flex-1 ${gitHere ? '' : 'opacity-60'}`}>
-          <span className="block text-body text-primary">新建隔离目录（新分支）</span>
+          <span className="block truncate text-body text-primary">
+            新建隔离目录（新分支）
+            {gitHere && !selected ? <span className="text-meta text-tertiary"> · 不影响当前目录</span> : null}
+          </span>
           {gitHere && selected ? (
             <span className="mt-1 block text-meta text-secondary">
               在 {machineName} 上新开分支 <span className="font-mono">{branchPreview(title)}</span>
@@ -538,22 +579,21 @@ function NewWorktree({
           ) : null}
         </span>
       </button>
-      {/* 不可用不只是一行灰字：留着这一行（用户会来这儿找），说清缺什么，再给一个能点的动作。 */}
+      {/* 不可用不只是一行灰字：留着这一行（用户会来这儿找），说清缺什么，再给一个能点的动作。
+          只占一行，不抢选中项的版面。 */}
       {gitHere ? null : (
-        <div data-testid="ws-new-worktree-blocked" className="mt-1.5 w-full text-meta">
-          <Notice tone="warning">这台机器上还没有可用的 git 目录</Notice>
-          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-            <button
-              type="button"
-              data-testid="ws-new-worktree-fix"
-              className="min-h-[32px] shrink-0 rounded-sm border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary"
-              onClick={onFixGit}
-            >
-              关联 git 目录
-            </button>
-            <span className="text-tertiary">或在项目设置里绑定仓库</span>
-          </p>
-        </div>
+        <p data-testid="ws-new-worktree-blocked" className="mt-0.5 flex w-full flex-wrap items-center gap-x-2 pl-[22px] text-meta text-tertiary">
+          <span>这台机器还没有 git 目录</span>
+          <button
+            type="button"
+            data-testid="ws-new-worktree-fix"
+            className="min-h-[32px] shrink-0 rounded-sm px-1.5 text-link underline-offset-2 hover:underline"
+            title="也可以在项目设置里绑定仓库"
+            onClick={onFixGit}
+          >
+            关联 git 目录
+          </button>
+        </p>
       )}
     </div>
   );

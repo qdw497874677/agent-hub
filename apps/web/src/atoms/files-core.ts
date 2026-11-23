@@ -122,3 +122,64 @@ export function touches(dir: string, changed: readonly string[]): boolean {
 }
 
 export const GIT_LABEL: Record<string, string> = { modified: 'M', added: 'A', deleted: 'D', renamed: 'R', untracked: 'U', conflicted: '!', ignored: '' };
+
+/**
+ * 改动范围的说明（VibeX V3）：页面上的几种范围都不是「任意 Git 版本」，正文必须说清在比什么。
+ *
+ * - session / head / branch 比的是**当前工作树**：提交里没有的东西（未提交、未跟踪）也算在内。
+ * - turn 比的是**两个已记录的回合快照**：这一轮之后的改动不算。
+ *
+ * 拿不到基准时如实说（会话起点没记录、没有默认分支、还没有检查点），不拿别的提交顶上。
+ */
+export type CompareInfo = {
+  readonly commit?: string | null;
+  readonly target?: string | null;
+  readonly branch?: string | null;
+  readonly turn?: number | null;
+  /** 改动还没读回来时，先用列表里已知的回合号。 */
+  readonly turnNumber?: number | null;
+  /** 会话起点（context.sessionBase）：null = 没记录，undefined = 还没读到。 */
+  readonly sessionBase?: string | null;
+};
+
+export type CompareScope = {
+  /** 一句话说清比的是什么（列表标题和正文顶栏都用它）。 */
+  readonly detail: string;
+  /** 这个范围的边界（工作树含未提交改动 / 回合快照不含之后的改动）。 */
+  readonly note: string;
+  /** 基准确实拿不到：照实提示，不显示成「已确认」。 */
+  readonly unknown: boolean;
+};
+
+const SHA = /^[0-9a-f]{7,40}$/i;
+const sha = (value: string | null | undefined): string | null =>
+  typeof value === 'string' && SHA.test(value) ? value.slice(0, 8) : null;
+
+export function compareScope(base: string, info: CompareInfo = {}): CompareScope {
+  if (base === 'head') return { detail: '工作树 vs 当前 HEAD', note: '含未提交改动', unknown: false };
+  if (base === 'branch') {
+    // 默认分支的 merge-base，不是默认分支的最新提交——说「分支起点」才不夸大。
+    if (!info.branch) return { detail: '没有可对比的默认分支', note: '这条会话没有分支起点可对比', unknown: true };
+    const at = sha(info.commit);
+    return { detail: `工作树 vs 分支起点${at ? ` ${at}` : ''}（${info.branch}）`, note: '含未提交改动', unknown: false };
+  }
+  if (base === 'session') {
+    if (info.sessionBase === null) return { detail: '工作树 vs 当前 HEAD（会话起点未记录）', note: '含未提交改动', unknown: true };
+    const at = sha(info.commit) ?? sha(info.sessionBase);
+    return { detail: `工作树 vs 会话起点${at ? ` ${at}` : ''}`, note: '含未提交改动', unknown: false };
+  }
+  if (base === 'turn' || base.startsWith('turn:')) {
+    const n = info.turn ?? info.turnNumber ?? null;
+    if (n === null) return { detail: '还没有回合检查点', note: '记下检查点之后才能按轮对比', unknown: true };
+    // target 为 null = 这一轮还没收尾，后端拿工作树当「结束后」。
+    if (info.target === null) return { detail: `第 ${n} 轮开始前 vs 当前工作树`, note: '这一轮还没结束', unknown: false };
+    const before = sha(info.commit);
+    const after = sha(info.target);
+    return {
+      detail: `第 ${n} 轮的两个快照${before && after ? `（${before} → ${after}）` : ''}`,
+      note: '之后的改动不在内',
+      unknown: false
+    };
+  }
+  return { detail: '未知范围', note: '', unknown: true };
+}

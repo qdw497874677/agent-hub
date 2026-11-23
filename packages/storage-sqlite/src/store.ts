@@ -45,6 +45,7 @@ import { createSqliteOperationReceipts } from './operation-receipts.ts';
 import { createSqliteProjectSessionGrants } from './project-session-grant.ts';
 import { createSqliteWorkspaceDelegations } from './workspace-delegation.ts';
 import { createSqliteDelegationPublishAttempts } from './workspace-delegation-publish.ts';
+import { createSqliteDelegationAcceptances } from './delegation-acceptance.ts';
 import { createSqliteWorkspaceCoordinators } from './workspace-coordinator.ts';
 import { createSqliteAttention } from './attention.ts';
 import { createSqliteMemoryIndex, createSqliteMemorySettings, createSqliteMemoryStore } from './memory.ts';
@@ -101,6 +102,7 @@ export interface SqliteStore extends RepositorySet {
   readonly projectSessionGrants: import('@agent-hub/domain').ProjectSessionGrantRepository;
   readonly workspaceDelegations: import('@agent-hub/domain').WorkspaceDelegationStore;
   readonly delegationPublishAttempts: import('@agent-hub/domain').DelegationPublishStore;
+  readonly delegationAcceptances: import('@agent-hub/domain').DelegationAcceptanceStore;
   /** 项目主会话登记（A2）：项目 + 长期工作空间 → 无任务主会话。 */
   readonly workspaceCoordinators: import('@agent-hub/domain').WorkspaceCoordinatorRegistry;
   readonly attention: AttentionStore;
@@ -774,6 +776,7 @@ export function openSqliteStore(file: string): SqliteStore {
     projectSessionGrants: createSqliteProjectSessionGrants(db),
     workspaceDelegations: createSqliteWorkspaceDelegations(db),
     delegationPublishAttempts: createSqliteDelegationPublishAttempts(db),
+    delegationAcceptances: createSqliteDelegationAcceptances(db),
     workspaceCoordinators: createSqliteWorkspaceCoordinators(db),
     attention: createSqliteAttention(db),
     memory: { store: createSqliteMemoryStore(db), index: createSqliteMemoryIndex(db), settings: createSqliteMemorySettings(db) },

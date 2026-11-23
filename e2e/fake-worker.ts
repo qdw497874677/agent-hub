@@ -37,7 +37,7 @@ const isOnline = async (page: Page, workerId: string): Promise<boolean> => {
  * 拿到本文件里可用的假 ACP Worker id。第一次调用会登记 + 起进程，之后复用；
  * Worker 掉线就重新起一个（不重试「等它准备好」—— 它不依赖任何外部探测）。
  */
-export async function ensureFakeWorker(page: Page, baseURL: string): Promise<string> {
+export async function ensureFakeWorker(page: Page, baseURL: string, agentId: string = FAKE_AGENT_ID): Promise<string> {
   if (running !== null) {
     if (running.process.exitCode === null && (await isOnline(page, running.workerId))) return running.workerId;
     stopFakeWorker();
@@ -75,7 +75,7 @@ export async function ensureFakeWorker(page: Page, baseURL: string): Promise<str
       WORKER_RUNTIMES_DIR: join(state, 'runtimes'),
       WORKER_MODEL_CHECK: '0',
       ACP_AGENTS: JSON.stringify([
-        { id: FAKE_AGENT_ID, label: '假 ACP', command: process.execPath, args: [FAKE], listModelsArgs: [FAKE, '--models'] }
+        { id: agentId, label: '假 ACP', command: process.execPath, args: [FAKE], listModelsArgs: [FAKE, '--models'] }
       ])
     },
     stdio: 'ignore'

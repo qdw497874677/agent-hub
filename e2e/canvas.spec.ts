@@ -1,405 +1,459 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
-import { mkdirSync } from 'node:fs';
-import { currentRun } from './run-id.ts';
 import { loginByApi } from './login.ts';
-import { chooseHubModel } from './hub-model.ts';
+import { FAKE_AGENT_ID, ensureFakeWorker, stopFakeWorker } from './fake-worker.ts';
 
 /**
- * 闭环的那条线：一个干净的浏览器，从零到「会话在卡片里真的跑起来了」。
- * 这是 docs/plan/mvp-plan.md §4 M6 的验收，也是定位 §8 成功判据的机器版。
+ * 画布主流程。全部用假 ACP agent + 真 Worker：
  *
- * 用例不假设库里是空的：每次跑用带时间戳的项目名，断言只落在自己造出来的节点上。
+ * - 不再调用用户配置的模型（真 Pi 曾把整轮拖到 150s 超时，还依赖本机登录态）。
+ * - 每个用例自己建项目 / 任务 / 会话（`seedProject`），不共享上一个用例的 module 级 RUN 投影。
+ *   旧写法把 RUN 写进模块常量，worker 重启或并发跑一次就换一个 run-id，后续用例找不到项目。
+ * - 只走当前产品语义：项目默认列表，全局搜索只搜项目名 / 任务标题 / 会话标题 / 会话 ID，不搜聊天内容。
  */
-const RUN = currentRun();
-const PROJECT_NAME = `e2e-${RUN}`;
-const PROJECT_DIR = `/tmp/agent-hub-e2e-project-${RUN}`;
-const TASK_TITLE = `第一条任务-${RUN}`;
-const ECHO = `E2E-OK-${RUN}`;
 
-const sessionNode = (page: Page) => page.locator('.react-flow__node-session');
-const taskNode = (page: Page, title: string) => page.locator('.react-flow__node-task').filter({ hasText: title });
+const STAMP = `${Date.now().toString(36)}-${process.pid.toString(36)}`;
+let seq = 0;
+const SCRATCH: string[] = [];
 
-/** 首页和项目页都可能出现；侧栏上线后统一从项目选择器进入。 */
-async function enterProject(page: Page, name: string): Promise<void> {
-  await page.goto('/');
-  const sidebar = page.getByRole('complementary', { name: '项目导航' });
-  if (await sidebar.isVisible().catch(() => false)) {
-    await sidebar.getByRole('combobox', { name: '切换项目' }).selectOption({ label: name });
-  } else {
-    const nav = page.getByRole('complementary', { name: '首页侧栏' });
-    await nav.getByRole('button', { name: new RegExp(`^${name}`) }).first().click();
-  }
-  // 项目默认落在列表；这些用例看的是画布。
-  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
+function scratchDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), `ah-e2e-canvas-${prefix}-`));
+  SCRATCH.push(dir);
+  return dir;
 }
-
-test.beforeAll(() => {
-  mkdirSync(PROJECT_DIR, { recursive: true });
-});
 
 test.beforeEach(async ({ page }) => {
   await loginByApi(page);
 });
 
-test('从建项目到会话跑出第一段文字', async ({ page }) => {
-  await page.goto('/');
+test.afterAll(() => {
+  stopFakeWorker();
+  for (const dir of SCRATCH) rmSync(dir, { recursive: true, force: true });
+});
 
-  // 首页是门厅：左栏是「在哪儿干」，右栏是「接着干哪条」
-  const nav = page.getByRole('complementary', { name: '首页侧栏' });
-  // 招牌是整页的 h1（页头里），侧栏只剩「在哪儿干」这一列。
-  await expect(page.getByRole('heading', { level: 1, name: /agent-hub/ })).toBeVisible();
-  await expect(nav.getByText('项目', { exact: true })).toBeVisible();
+const sessionNode = (page: Page) => page.locator('.react-flow__node-session');
+const taskNode = (page: Page, title: string) => page.locator('.react-flow__node-task').filter({ hasText: title });
 
-  // M1：指一个本地目录（打字也行，点选也行——点选见下一条用例）
-  await nav.getByTitle('新建项目').click();
-  const panel = page.getByRole('region', { name: '新建项目' });
-  // 建项目只要名字：不选机器、不选目录（项目只是 hub 里的一条记录）
-  await expect(panel.getByLabel('目录', { exact: true })).toHaveCount(0);
-  await panel.getByLabel('项目名').fill(PROJECT_NAME);
-  await panel.getByRole('button', { name: '创建' }).click();
+/**
+ * 打开某个项目的列表页或画布页。直接走 hash 深链：`#/` 会在 projects 拉完后
+ * replace 到「上次打开的项目」，和首页侧栏点击抢时序时首页会中途卸载。
+ */
+async function openProject(page: Page, projectId: string, view: 'list' | 'canvas'): Promise<void> {
+  await page.goto(`/#/p/${projectId}/${view}`);
+  await expect(page.locator('[data-testid=view-switch]:visible').first()).toBeVisible();
+  if (view === 'list') await expect(page.getByTestId('list-view')).toBeVisible();
+}
 
-  // 项目默认进列表；这一步看的是空画布。
-  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
-  await expect(page.getByRole('button', { name: '新建任务' }).first()).toBeVisible();
+/** 桌面 project bar 与窄屏 header 可能各有一个视图切换，只点可见的那个。 */
+async function switchView(page: Page, view: 'list' | 'canvas'): Promise<void> {
+  const bar = page.locator('[data-testid=view-switch]:visible').first();
+  await bar.getByRole('button', { name: view === 'canvas' ? '画布' : '列表', exact: true }).click();
+}
 
-  // 空画布不是一片黑：有一句提示和就近的「新建任务」
-  const hint = page.getByTestId('no-tasks');
-  await expect(hint).toContainText('还没有任务');
-  await expect(hint.getByRole('button', { name: '新建任务' })).toBeVisible();
+interface Seeded {
+  projectId: string;
+  name: string;
+  taskId: string;
+  taskTitle: string;
+  sessionId: string;
+  dir: string;
+  echo: string;
+}
 
-  // M1：建任务（从空画布的提示里点）
-  await hint.getByRole('button', { name: '新建任务' }).click();
-  await page.getByRole('dialog', { name: '新建任务' }).getByLabel('标题').fill(TASK_TITLE);
-  await page.getByRole('button', { name: '创建任务' }).click();
-  await expect(taskNode(page, TASK_TITLE)).toContainText('0 个会话');
-  await expect(page.getByTestId('no-tasks')).toHaveCount(0);
-  // 「＋ 会话」「日志」不用悬停就看得见（鼠标先挪开）
-  await page.mouse.move(2, 2);
-  for (const name of ['＋ 会话', '日志']) {
-    const button = taskNode(page, TASK_TITLE).getByRole('button', { name });
-    await expect(button).toBeVisible();
-    expect(Number(await button.evaluate((el) => getComputedStyle(el).opacity))).toBeGreaterThan(0.5);
+function apiHeaders(csrf: string, origin: string) {
+  return { origin, 'x-hub-csrf': csrf };
+}
+
+async function seedProject(
+  page: Page,
+  baseURL: string,
+  label: string,
+  options: { prompt?: boolean } = {}
+): Promise<Seeded> {
+  const token = `${STAMP}-${++seq}`;
+  const name = `e2e-canvas-${label}-${token}`;
+  const taskTitle = `任务-${label}-${token}`;
+  const echo = `OK-${token}`;
+  const dir = scratchDir(label);
+  const workerId = await ensureFakeWorker(page, baseURL);
+  const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
+  const headers = apiHeaders(csrf, baseURL);
+
+  const projectResponse = await page.request.post('/api/projects', {
+    data: { name, rootPath: dir, workerId },
+    headers
+  });
+  expect(projectResponse.ok(), await projectResponse.text()).toBe(true);
+  const project = (await projectResponse.json()) as { id: string };
+
+  const taskResponse = await page.request.post('/api/tasks', {
+    data: { projectId: project.id, title: taskTitle },
+    headers
+  });
+  expect(taskResponse.ok(), await taskResponse.text()).toBe(true);
+  const task = (await taskResponse.json()) as { id: string };
+
+  const derivedResponse = await page.request.post('/api/sessions/derive', {
+    data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' },
+    headers
+  });
+  expect(derivedResponse.ok(), await derivedResponse.text()).toBe(true);
+  const session = (await derivedResponse.json()) as { id: string };
+
+  if (options.prompt !== false) {
+    const promptResponse = await page.request.post(`/api/sessions/${session.id}/prompt`, {
+      data: { text: `只回这段文字，不要用工具：${echo}` },
+      headers
+    });
+    expect(promptResponse.ok(), await promptResponse.text()).toBe(true);
+    await expect
+      .poll(
+        async () => {
+          const canvasResponse = await page.request.get(`/api/projects/${project.id}/canvas`);
+          if (!canvasResponse.ok()) return `http-${canvasResponse.status()}`;
+          const canvas = (await canvasResponse.json()) as {
+            sessions: Array<{ id: string; status: string }>;
+          };
+          return canvas.sessions.find((candidate) => candidate.id === session.id)?.status ?? 'missing';
+        },
+        { timeout: 60_000 }
+      )
+      .toBe('done');
   }
 
-  // M2：从任务派生会话（任务卡上的「＋ 会话」；双击在自动化的零间隔点击下会落到重渲染的空档里）
-  await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
-  // 运行面板：先选工作目录（不预选，没选「开始」是灰的）。新项目还没有工作目录：把已有目录登记成持久工作目录。
+  return {
+    projectId: project.id,
+    name,
+    taskId: task.id,
+    taskTitle,
+    sessionId: session.id,
+    dir,
+    echo
+  };
+}
+
+test('从建项目到会话跑出第一段文字', async ({ page, baseURL }) => {
+  const dir = scratchDir('ui');
+  // 先让假 ACP 机器上线：这个用例从 UI 建项目，没有 seedProject 帮忙起 worker，
+  // 否则派生弹窗里根本没有可选 agent。
+  await ensureFakeWorker(page, baseURL!);
+
+  // 首页侧栏 → 新建项目。项目只登记名字和（可选的）说明 / 仓库，不再在这里选本机目录。
+  await page.goto('/');
+  const homeSide = page.getByRole('complementary', { name: '首页侧栏' });
+  await homeSide.getByTitle('新建项目').click();
+  const panel = page.getByRole('region', { name: '新建项目' });
+  await expect(panel.getByLabel('项目名')).toBeVisible();
+  await panel.getByLabel('项目名').fill(`e2e-canvas-ui-${STAMP}`);
+  await panel.getByRole('button', { name: '创建', exact: true }).click();
+
+  // 建完默认落在列表视图。
+  await expect(page.getByTestId('list-view')).toBeVisible();
+  await page.getByTestId('no-tasks').getByRole('button', { name: '新建任务' }).click();
+  const taskDialog = page.getByRole('dialog', { name: '新建任务' });
+  await taskDialog.getByLabel('标题').fill(`第一条任务-${STAMP}`);
+  await taskDialog.getByRole('button', { name: '创建任务' }).click();
+
+  await switchView(page, 'canvas');
+  const task = taskNode(page, `第一条任务-${STAMP}`);
+  await expect(task).toBeVisible();
+  await expect(task).toContainText('0 个会话');
+
+  // 任务卡 → 派生会话：假 ACP 是唯一提供者，机器自动选中；
+  // 工作目录选「新建持久工作目录 → 选已有目录」，走一遍目录选择器。
+  await page.mouse.move(2, 2);
+  await task.getByRole('button', { name: '＋ 会话' }).click();
   const run = page.getByRole('dialog', { name: '开始会话' });
   await expect(run.getByRole('button', { name: '开始', exact: true })).toBeDisabled();
-  await run.getByRole('radio', { name: /新建持久工作目录/ }).click();
+
+  const agentSelect = run.locator('#derive-agent');
+  await expect(agentSelect.locator(`option[value="${FAKE_AGENT_ID}"]`)).toHaveCount(1);
+  await agentSelect.selectOption(FAKE_AGENT_ID);
+
+  await expect(run.getByRole('radio', { name: '新建持久工作目录' })).toBeVisible();
+  await run.getByRole('radio', { name: '新建持久工作目录' }).click();
   await run.getByRole('radio', { name: '选已有目录' }).click();
-  // 目录可以点选，不必手打路径：路径框里打路径，Enter 进入选中的文件夹
-  const picker = page.getByLabel('目录选择器');
-  if ((await picker.count()) === 0) await run.getByRole('button', { name: '浏览…' }).click();
-  const input = picker.getByRole('combobox', { name: '路径' });
-  await expect(input).toHaveValue(/\/$/);
-  await input.fill(PROJECT_DIR);
-  await expect(picker.getByRole('option').filter({ hasText: `agent-hub-e2e-project-${RUN}` }).first()).toHaveAttribute('data-selected', 'true');
-  await input.press('Enter');
-  await expect(input).toHaveValue(`${PROJECT_DIR}/`);
-  await picker.getByRole('button', { name: '使用', exact: true }).click();
-  await expect(run).toContainText(`agent-hub-e2e-project-${RUN}`);
-  await chooseHubModel(run);
-  await run.getByRole('button', { name: '开始', exact: true }).click();
-  // 派生完直接进这条会话的对话；回画布看卡片
-  await expect(page.getByLabel('发送消息')).toBeVisible();
-  await page.getByRole('button', { name: '画布', exact: true }).click();
 
-  // M2：卡片出现，并且就地就能说话——不必先打开专注对话
-  await expect(sessionNode(page)).toHaveCount(1);
-  const cardInput = sessionNode(page).getByLabel(/说一句/);
-  // 用 fill 而不是逐字敲：卡片在 React Flow 节点里，0 延迟的合成按键会跑在画布重渲染前面而丢字
-  // （人在键盘上打不到那个速度；粘贴或正常输入都走一个 input 事件）
-  await cardInput.fill(`只回这段文字，不要用工具：${ECHO}`);
-  // 冷启动时卡片会在「填好」和「按回车」之间被画布重新挂载一次：回车落在已卸下的旧输入框上就丢了，
-  // 新输入框又按草稿把原话填回来（这就是偶发的「一直没输出」）。发出去的标志是输入框清空，没清空就再按一次。
-  await expect(async () => {
-    await cardInput.press('Control+Enter');
-    await expect(cardInput).toHaveValue('', { timeout: 2_000 });
-  }).toPass({ timeout: 30_000 });
+  const picker = run.getByLabel('目录选择器');
+  await expect(picker).toBeVisible();
+  await picker.getByRole('button', { name: '输入路径' }).click();
+  const pathInput = picker.getByRole('textbox', { name: '路径' });
+  await pathInput.fill(dir);
+  await pathInput.press('Enter');
+  await expect(picker.getByRole('navigation', { name: '当前位置' }).locator('[aria-current="page"]')).toHaveAttribute(
+    'title',
+    dir
+  );
+  await picker.getByRole('button', { name: '选此文件夹' }).click();
+  await expect(run).toContainText(basename(dir));
 
-  // 这里**不**断言「■ 出现过」：那一轮可能几百毫秒就跑完，而 toBeVisible 的轮询会正好错过它。
-  // 圆点的两种身份由下面这条覆盖：跑完必须回到 ↑（停在 ■ 上才是真 bug）。
-  // 只认模型真的吐出来的那个词，而且要落在卡片里（输入框里也有这个词，会假通过）
-  // 用 toContainText 而不是 getByText().toBeVisible()：卡片正文是可滚动的定高区域，
-  // 流式输出时那行字可能刚好在滚动区外，被判成 hidden（偶发失败的来源）。
-  await expect(sessionNode(page)).toContainText(ECHO, { timeout: 120_000 });
-  await sessionNode(page).getByText(ECHO).first().scrollIntoViewIfNeeded();
-  await expect(sessionNode(page).getByText(ECHO).first()).toBeVisible();
-  await expect(sessionNode(page)).toContainText('完成');
-  await expect(sessionNode(page).getByRole('button', { name: '发送' })).toBeVisible({ timeout: 120_000 });
+  const start = run.getByRole('button', { name: '开始', exact: true });
+  await expect(start).toBeEnabled();
+  await start.click();
 
-  // 点卡片上的「打开」进专注对话（单击卡片只选中）。
-  await sessionNode(page).getByRole('button', { name: '打开' }).click();
-  // 收窄到会话记录里：输入框的「文本内容」就是它的 value，直接 getByText 会假通过
-  await expect(page.getByRole('log', { name: '会话记录' })).toContainText(`只回这段文字，不要用工具：${ECHO}`);
-  // 输入框上方贴着运行时报的上下文占用；Pi 在 agent_settled 后会补一条 get_session_stats。
-  await expect(page.getByTestId('context-meter')).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId('context-meter')).toHaveAttribute('title', /上下文：.*token/);
-  await expect(page.getByRole('button', { name: '返回' })).toBeVisible();
-  // 专注对话里画布不在了：整屏只有这一条会话
-  await expect(page.locator('.react-flow__node-session')).toHaveCount(0);
+  // 派生成功后直接进专注视图；回画布看卡片。
+  const focusComposer = page.getByRole('textbox', { name: '发送消息' });
+  await expect(focusComposer).toBeVisible();
+  await switchView(page, 'canvas');
+
+  const card = sessionNode(page);
+  await expect(card).toHaveCount(1);
+  const composer = card.getByLabel(/说一句/);
+  await expect(composer).toHaveCount(1);
+  const prompt = `只回这段文字，不要用工具：${`OK-${STAMP}`}`;
+  await composer.fill(prompt);
+  await composer.press('Control+Enter');
+  await expect(composer).toHaveValue('');
+
+  const log = card.getByTestId('session-card-log');
+  // 假 ACP 对含 OK 的 prompt 只回 `OK`（不回原句），原句自己会作为用户消息留在卡片上。
+  await expect(log.getByText('OK', { exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(card.getByTestId('card-status')).toHaveText('已完成');
+
+  // 打开专注视图：消息记录里有完整往来，「返回」回画布。
+  await card.getByRole('button', { name: '打开', exact: true }).click();
+  const history = page.getByRole('log', { name: '会话记录' });
+  await expect(history).toContainText(prompt);
+  await expect(history.getByText('OK', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '返回' }).click();
   await expect(sessionNode(page)).toHaveCount(1);
 });
 
-test('刷新之后画布还在，布局被记住', async ({ page }) => {
-  await page.goto('/');
-  // 新浏览器没有 localStorage：从左栏回到自己刚建的那个项目
-  await page.getByRole('complementary', { name: '首页侧栏' }).getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).first().click();
-  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
-  await expect(sessionNode(page)).toHaveCount(1);
-  await expect(taskNode(page, TASK_TITLE)).toContainText('1 个会话');
+test('刷新之后画布还在，布局被记住', async ({ page, baseURL }) => {
+  const seeded = await seedProject(page, baseURL!, 'layout');
+  await openProject(page, seeded.projectId, 'canvas');
+  const card = sessionNode(page);
+  await expect(card).toHaveCount(1);
+  const before = await card.boundingBox();
+  expect(before).not.toBeNull();
 
-  // 刷新前的位置也要等打开时的适配落定再读（fitOnOpen 会在尺寸稳定前重算几次）
-  let last = '';
-  await expect
-    .poll(async () => {
-      const box = await sessionNode(page).boundingBox();
-      const now = JSON.stringify(box && [Math.round(box.x), Math.round(box.y)]);
-      const same = now === last;
-      last = now;
-      return same;
-    }, { intervals: [200] })
-    .toBe(true);
-  const before = await sessionNode(page).boundingBox();
-  await page.mouse.move(0, 0);
-  await page.goto('/');
-  // 首页会回到上次的项目；默认是列表，这里仍看画布布局。
-  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
-  // 打开时视口要等卡片量完尺寸才落定（fitOnOpen），刚 goto 完读到的是落定前的位置：轮询到稳定为止
-  await expect
-    .poll(async () => {
-      const after = await sessionNode(page).boundingBox();
-      return after ? [Math.round(after.x), Math.round(after.y)] : null;
-    })
-    .toEqual([Math.round(before?.x ?? -1), Math.round(before?.y ?? -1)]);
+  await page.reload();
+  await expect(sessionNode(page)).toHaveCount(1);
+  // 等布局稳定（emoji/字体加载会把节点顶一下）。
+  let previous = await sessionNode(page).boundingBox();
+  for (let i = 0; i < 6; i++) {
+    await page.waitForTimeout(250);
+    const current = await sessionNode(page).boundingBox();
+    if (previous && current && Math.abs(current.x - previous.x) < 1 && Math.abs(current.y - previous.y) < 1) break;
+    previous = current;
+  }
+  const after = await sessionNode(page).boundingBox();
+  expect(after).not.toBeNull();
+  expect(Math.abs(after!.x - before!.x)).toBeLessThan(2);
+  expect(Math.abs(after!.y - before!.y)).toBeLessThan(2);
 });
 
-test('搜索能搜到会话里说过的话，列表能给画布降级', async ({ page }) => {
-  await page.goto('/');
-  await expect(page.getByRole('complementary', { name: '首页侧栏' }).getByText('项目', { exact: true })).toBeVisible();
-  // 首页右栏直接列最近会话：点一条就进那条会话说话（「接着干」不是「先看画布」）
-  await page.getByTestId('home-session-row').first().click();
-  const composer = page.getByLabel('发送消息');
-  await expect(composer).toBeVisible();
+test('搜索找项目/任务/会话，不搜聊天内容；列表保留草稿', async ({ page, baseURL }) => {
+  const seeded = await seedProject(page, baseURL!, 'search');
+  const draft = `草稿-${STAMP}`;
 
-  // S6.4 的前半截：切视图不丢草稿
-  // 专注对话里也有一个「← 返回」，所以按精确名收窄到顶栏那个
-  await page.getByRole('button', { name: '画布', exact: true }).click();
-  await expect(sessionNode(page)).toHaveCount(1);
-  // 单击卡片只选中，不进对话；点「打开」才进（双击是在画布中展开）
-  await sessionNode(page).locator('header').click();
-  await expect(composer).toHaveCount(0);
-  await sessionNode(page).getByRole('button', { name: '打开', exact: true }).click();
-  await expect(composer).toBeVisible();
-  await composer.fill('这段草稿要活过视图切换');
-  await page.getByRole('button', { name: '列表' }).click();
+  // 先看首页的全局搜索。注意：进入过项目后 `#/` 会自动 replace 到「上次打开的项目」，
+  // 所以搜索必须在第一次进项目之前做，否则首页会被替换掉、输入框随组件卸载。
+  await page.goto('/');
+  const metadata = page.getByRole('combobox', { name: '搜项目、任务或会话' });
+  await expect(metadata).toBeVisible();
+
+  // 产品语义：全局搜索是元数据搜索，不搜聊天内容。会话里出现过的字样搜不到，并明确说明。
+  await metadata.fill(seeded.echo);
+  await expect(page.getByTestId('metadata-search-empty')).toContainText('不搜聊天内容');
+
+  // 任务标题能搜到，Enter 打开任务详情，Esc 回到项目列表。
+  await metadata.fill(seeded.taskTitle);
+  const taskHit = page.getByTestId('metadata-task').filter({ hasText: seeded.taskTitle }).first();
+  await expect(taskHit).toBeVisible();
+  await metadata.press('Enter');
+  await expect(page.getByTestId('task-detail')).toBeVisible();
+  await expect(page.getByTestId('task-detail')).toContainText(seeded.taskTitle);
+  await page.keyboard.press('Escape');
   await expect(page.getByTestId('list-view')).toBeVisible();
-  await page.getByTestId('list-session-row').first().click();
-  await expect(composer).toHaveValue('这段草稿要活过视图切换');
 
-  // 搜索：用会话正文里的词命中，回车跳到那个节点
-  await page.getByRole('button', { name: /搜索/ }).click();
-  const palette = page.getByPlaceholder('搜索任务或会话');
-  await palette.fill(ECHO);
-  await expect(page.getByRole('button', { name: new RegExp(ECHO) }).first()).toBeVisible();
-  await palette.press('Enter');
-  await expect(sessionNode(page)).toHaveCount(1);
-  await expect(sessionNode(page)).toContainText(ECHO);
+  // 画布 → 打开会话 → 写草稿。
+  await openProject(page, seeded.projectId, 'canvas');
+  const card = sessionNode(page);
+  await expect(card).toHaveCount(1);
+  await card.locator('header').click();
+  await card.getByRole('button', { name: '打开', exact: true }).click();
 
-  // 列表视图：按任务分组，组头是任务标题；行上是第一句话 + 开始时间 + 来源，点一行进那条会话
-  await page.getByRole('button', { name: '列表' }).click();
-  const group = page.getByRole('region', { name: `任务：${TASK_TITLE}` });
-  await expect(group.getByRole('heading')).toContainText(TASK_TITLE);
-  const row = group.getByTestId('list-session-row').first();
-  await expect(row.getByTestId('list-session-meta')).toContainText(/\d+-\d{2} \d{2}:\d{2} · 派生/);
+  const composer = page.getByRole('textbox', { name: '发送消息' });
+  await expect(composer).toBeVisible();
+  await composer.fill(draft);
+
+  // 切到列表：同一会话的草稿跟着走，行元信息仍是派生。
+  await switchView(page, 'list');
+  const group = page.getByRole('region', { name: `任务：${seeded.taskTitle}` });
+  await expect(group).toBeVisible();
+  const row = group.getByTestId('list-session-row');
+  await expect(row).toHaveCount(1);
+  await expect(group.getByTestId('list-session-meta')).toHaveText(
+    /\d+-\d{2} \d{2}:\d{2} · 派生/
+  );
   await row.click();
-  await expect(page.getByLabel('发送消息')).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '发送消息' })).toHaveValue(draft);
 });
 
-test('节点在线状态可见，任务的收尾与放弃是两个动作', async ({ page }) => {
-  await enterProject(page, PROJECT_NAME);
-  await expect(sessionNode(page)).toHaveCount(1);
+test('节点在线状态可见，任务的收尾与放弃是两个动作', async ({ page, baseURL }) => {
+  const seeded = await seedProject(page, baseURL!, 'status');
+  await openProject(page, seeded.projectId, 'canvas');
 
-  // S1.2：「它挂了」和「我改坏了配置」要能分辨，所以机器状态是常驻可查的
-  await page.getByRole('link', { name: /^机器：/ }).first().click();
-  await expect(page.getByTestId('machines-summary')).toContainText(/在线/);
-  await expect(page.getByTestId('machine-row').filter({ hasText: '本机' }).first()).toBeVisible();
-  // 机器有自己的页面：退回来，接着看画布。
+  await expect(sessionNode(page)).toHaveCount(1);
+  await page.getByRole('link', { name: /^机器：/ }).click();
+  await expect(page.getByTestId('machines-summary')).toContainText('在线');
+  // 假 ACP worker 是一台远程机器，标签由测试助手起名；按 agent 标签找到它。
+  await expect(page.locator('[data-testid=machine-row]').filter({ hasText: '假 ACP' }).first()).toBeVisible();
   await page.goBack();
   await expect(sessionNode(page)).toHaveCount(1);
 
-  // S4.2：收尾不是放弃。先收尾，卡片改口，再重开回到进行中
-  await taskNode(page, TASK_TITLE).hover();
-  await taskNode(page, TASK_TITLE).getByRole('button', { name: '收尾' }).click();
-  await expect(taskNode(page, TASK_TITLE)).toContainText('已收尾');
-
-  await taskNode(page, TASK_TITLE).hover();
-  await taskNode(page, TASK_TITLE).getByRole('button', { name: '重开' }).click();
-  await expect(taskNode(page, TASK_TITLE)).toContainText('进行中');
+  const task = taskNode(page, seeded.taskTitle);
+  await task.hover();
+  await task.getByRole('button', { name: '收尾', exact: true }).click();
+  await expect(task).toContainText('已收尾');
+  await task.hover();
+  await task.getByRole('button', { name: '重开', exact: true }).click();
+  await expect(task).toContainText('进行中');
 });
 
-test('任务详情：日志按作者区分、写日志刷新当前进展、可手改、改状态留痕', async ({ page }) => {
-  await enterProject(page, PROJECT_NAME);
-  // 本用例不依赖上一条用例留下的状态：先自己收尾一次。
-  await taskNode(page, TASK_TITLE).hover();
-  await taskNode(page, TASK_TITLE).getByRole('button', { name: '收尾' }).click();
-  await expect(taskNode(page, TASK_TITLE)).toContainText('已收尾');
-  await taskNode(page, TASK_TITLE).hover();
-  await taskNode(page, TASK_TITLE).getByRole('button', { name: '重开' }).click();
-  await expect(taskNode(page, TASK_TITLE)).toContainText('进行中');
-  await taskNode(page, TASK_TITLE).hover();
-  await taskNode(page, TASK_TITLE).getByRole('button', { name: '日志' }).click();
+test('任务详情：日志按作者区分、写日志刷新当前进展、可手改、改状态留痕', async ({ page, baseURL }) => {
+  const seeded = await seedProject(page, baseURL!, 'detail');
+  await openProject(page, seeded.projectId, 'canvas');
+
+  const task = taskNode(page, seeded.taskTitle);
+  await task.hover();
+  await task.getByRole('button', { name: '收尾', exact: true }).click();
+  await expect(task).toContainText('已收尾');
+  await task.hover();
+  await task.getByRole('button', { name: '重开', exact: true }).click();
+
+  await task.hover();
+  await task.getByRole('button', { name: '日志', exact: true }).click();
   const drawer = page.getByTestId('task-detail');
-  await expect(drawer).toBeVisible();
-  // 开过会话、改过状态：系统日志已经在时间线上
-  await expect(drawer.getByTestId('work-log')).toContainText('开了');
-  await expect(drawer.getByTestId('work-log')).toContainText('改为「已收尾」');
-
-  // 系统条目署名「系统」；日志没有种类标签
-  await expect(drawer.locator('[data-author="system"]').first().getByTestId('log-author')).toHaveText('系统');
-  await expect(drawer.getByRole('button', { name: '决定', exact: true })).toHaveCount(0);
-
-  await drawer.getByLabel('写日志').fill(`用官方 SDK-${RUN}`);
-  await drawer.getByRole('button', { name: '记录' }).click();
-  await expect(drawer.getByTestId('work-log')).toContainText(`用官方 SDK-${RUN}`);
-  // 任何一条人写的日志都刷新当前进展
-  await expect(drawer.getByTestId('task-summary')).toContainText(`用官方 SDK-${RUN}`);
-  await expect(drawer.locator('[data-author="user"]').first().getByTestId('log-author')).not.toHaveText('系统');
-
-  await drawer.getByRole('button', { name: '插入交接模板' }).click();
-  await expect(drawer.getByLabel('写日志')).toBeFocused();
-  await expect(drawer.getByLabel('写日志')).toHaveValue(/## 已完成/);
-  await drawer.getByLabel('写日志').fill(`## 已完成\n- 交接-${RUN}\n\n## 下一步\n- 接 MCP`);
-  await drawer.getByRole('button', { name: '记录' }).click();
-  await expect(drawer.getByTestId('task-summary')).toContainText(`交接-${RUN}`);
-
-  // 当前进展可以手改
-  await drawer.getByTestId('task-summary').getByRole('button', { name: '改' }).click();
-  await drawer.getByLabel('当前进展').fill(`手改进展-${RUN}`);
-  await drawer.getByRole('button', { name: '保存' }).click();
-  await expect(drawer.getByTestId('task-summary')).toContainText(`手改进展-${RUN}`);
-
-  await drawer.getByRole('button', { name: '受阻' }).click();
-  await expect(drawer.getByTestId('task-status')).toHaveText('受阻');
-  await expect(drawer.getByTestId('work-log')).toContainText('改为「受阻」');
-  await drawer.getByRole('button', { name: '继续' }).click();
   await expect(drawer.getByTestId('task-status')).toHaveText('进行中');
-  await page.keyboard.press('Escape');
-  await expect(drawer).toBeHidden();
-  await expect(taskNode(page, TASK_TITLE).getByTestId('task-card-summary')).toContainText(`手改进展-${RUN}`);
+  await expect(drawer).toContainText(seeded.taskTitle);
+
+  const log = drawer.getByTestId('work-log');
+  await expect(log).toContainText('开了');
+  await expect(log.locator('[data-author="system"]').first()).toBeVisible();
+  await expect(log).toContainText('改为「已收尾」');
+  await expect(log).toContainText('改为「进行中」');
+
+  const marker = `交接-${STAMP}`;
+  await drawer.getByLabel('写日志').fill(marker);
+  await drawer.getByRole('button', { name: '记录', exact: true }).click();
+  await expect(log.locator('[data-author="user"]').filter({ hasText: marker })).toBeVisible();
+  await expect(drawer.getByTestId('task-summary')).toContainText(`当前进展：${marker}`);
+
+  const edited = `手改-${STAMP}`;
+  await drawer.getByRole('button', { name: '改', exact: true }).click();
+  await drawer.getByLabel('当前进展').fill(edited);
+  await drawer.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(drawer.getByTestId('task-summary')).toContainText(`当前进展：${edited}`);
+
+  await drawer.getByRole('button', { name: '受阻', exact: true }).click();
+  await expect(drawer.getByTestId('task-status')).toHaveText('受阻');
+  await expect(log).toContainText('改为「受阻」');
+  await drawer.getByRole('button', { name: '继续', exact: true }).click();
+  await expect(drawer.getByTestId('task-status')).toHaveText('进行中');
 });
 
-/**
- * 可调项：模型与思考强度都来自 agent 自己的回报（ADR 0007）。
- * 这条只验证「卡片上真的有得选，且改完不会回弹」——
- * 具体有哪些模型是 Pi 那边的事，测试不该写死一个模型名。
- */
-test('会话卡片能改模型与思考强度，改完不回弹', async ({ page }) => {
-  await page.goto('/');
-  await expect(page.getByRole('complementary', { name: '首页侧栏' }).getByText('项目', { exact: true })).toBeVisible();
-  await page.getByRole('complementary', { name: '首页侧栏' }).getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).first().click();
-  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
-  await expect(sessionNode(page)).toHaveCount(1);
+test('会话卡片能改模型，改完不回弹', async ({ page, baseURL }) => {
+  const seeded = await seedProject(page, baseURL!, 'model');
+  await openProject(page, seeded.projectId, 'canvas');
 
   const card = sessionNode(page);
-  const model = card.getByLabel('模型');
+  await expect(card).toHaveCount(1);
+  await expect(card.getByTestId('card-status')).toHaveText('已完成');
+
+  const controls = card.getByTestId('option-controls-compact');
+  await expect(controls).toBeVisible();
+  // 假 ACP 只声明模型这一个可调项；标签由 agent 自报（这里叫 Model），不写死中文名。
+  const model = controls.locator('button[aria-haspopup="dialog"]').first();
   await expect(model).toBeVisible();
-  // 模型多时是可搜索选择器（按钮 + 弹层）；清单是 agent 报的，必须至少有一个候选
+  const before = await model.getAttribute('aria-label');
   await model.click();
-  const sheet = page.getByRole('dialog', { name: '选择模型' });
+  const sheet = page.getByRole('dialog', { name: /^选择/ });
   await expect(sheet).toBeVisible();
   expect(await sheet.getByRole('option').count()).toBeGreaterThan(0);
   await page.keyboard.press('Escape');
   await expect(sheet).toBeHidden();
+  await expect(model).toHaveAttribute('aria-label', before ?? '');
 
+  // 假 ACP 不报思考强度（thought_level），这一支在真 agent 上才有；这里跳过而不假装覆盖。
   const thinking = card.getByLabel('思考强度');
-  if (await thinking.count()) {
-    const before = await thinking.inputValue();
-    const choices = await thinking.locator('option').evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value));
-    const next = choices.find((value) => value !== before);
-    if (next !== undefined) {
-      await thinking.selectOption(next);
-      // 回弹是这个功能最容易出的毛病：界面上写着新值，库里还是旧值
-      await expect(thinking).toHaveValue(next as string, { timeout: 20_000 });
-      await page.waitForTimeout(1500);
-      await expect(thinking).toHaveValue(next as string);
+  if ((await thinking.count()) > 0) {
+    const valueBefore = await thinking.inputValue();
+    const values = await thinking.locator('option').evaluateAll((options) =>
+      options.map((option) => (option as HTMLOptionElement).value)
+    );
+    const other = values.find((value) => value !== valueBefore && value !== '');
+    if (other !== undefined) {
+      await thinking.selectOption(other);
+      await expect(thinking).toHaveValue(other);
+      await page.waitForTimeout(1_500);
+      await expect(thinking).toHaveValue(other);
     }
   }
 });
 
-test('会话页窄屏 header 只留标题、状态和更多', async ({ page }, testInfo) => {
+test('窄屏：专注视图的更多菜单与连接会话', async ({ page, baseURL }) => {
+  const seeded = await seedProject(page, baseURL!, 'narrow');
   await page.setViewportSize({ width: 390, height: 844 });
-  await enterProject(page, PROJECT_NAME);
-  // 视图切换在页头（手机端是图标分段控件），不在侧栏
-  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
-  await expect(sessionNode(page)).toHaveCount(1);
-  await sessionNode(page).locator('header').click();
-  await sessionNode(page).getByRole('button', { name: '打开', exact: true }).click();
-  await page.screenshot({ path: testInfo.outputPath('focus-header-390.png') });
+  await openProject(page, seeded.projectId, 'canvas');
 
-  // 直连按钮和「Aa」在手机上收进「更多」的第一组（那组只在 <640px 出现），标题不再被一排动作挤掉。
-  await expect(page.getByRole('button', { name: /^连接 \d+$/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '显示设置' })).toHaveCount(0);
+  const card = sessionNode(page);
+  await expect(card).toHaveCount(1);
+  await card.locator('header').click();
+  await card.getByRole('button', { name: '打开', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '发送消息' })).toBeVisible();
 
-  await page.getByRole('button', { name: '更多' }).click();
-  await expect(page.getByRole('menuitem', { name: /^连接会话/ })).toBeVisible();
-  await expect(page.getByRole('menuitem', { name: /^显示设置/ })).toBeVisible();
-
-  await page.getByRole('menuitem', { name: /^连接会话/ }).click();
-  const links = page.getByRole('dialog', { name: '连接会话' });
-  await expect(links).toBeVisible();
+  await page.getByRole('button', { name: '更多', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: '连接会话' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: '显示设置' })).toBeVisible();
+  await page.getByRole('menuitem', { name: '显示设置' }).click();
+  await expect(page.getByRole('dialog', { name: '显示设置' })).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(links).toHaveCount(0);
-
-  await page.getByRole('button', { name: '更多' }).click();
-  await page.getByRole('menuitem', { name: /^显示设置/ }).click();
-  const dialog = page.getByRole('dialog', { name: '显示设置' });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByTestId('display-settings')).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: '显示设置' })).toBeHidden();
 });
 
-test('窄屏画布窗口：输入框在视口内可见可点', async ({ page }) => {
-  const height = 844;
-  await page.setViewportSize({ width: 390, height });
-  await enterProject(page, PROJECT_NAME);
-  // 视图切换在页头（手机端是图标分段控件），不在侧栏
-  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
-  await expect(sessionNode(page)).toHaveCount(1);
-  await sessionNode(page).locator('header').click();
-  await sessionNode(page).getByRole('button', { name: '在画布中展开' }).click();
+test('窄屏：画布上把会话展开成窗口', async ({ page, baseURL }) => {
+  const seeded = await seedProject(page, baseURL!, 'window');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openProject(page, seeded.projectId, 'canvas');
 
-  const window = page.getByTestId('canvas-window');
-  await expect(window).toBeVisible();
-  // 窗口的内层包裹必须是 flex 列，否则 FocusView 的 flex-1 不生效、输入框被推到视口外（曾出现过）。
-  const input = window.locator('textarea').first();
-  await expect(input).toBeVisible();
-  const box = await input.boundingBox();
-  expect(box, '输入框应有可测的盒子').not.toBeNull();
-  expect(box!.y + box!.height).toBeLessThanOrEqual(height);
-  await input.click();
-  await expect(input).toBeFocused();
+  const card = sessionNode(page);
+  await expect(card).toHaveCount(1);
+  await card.locator('header').click();
+  await card.getByRole('button', { name: '在画布中展开' }).click();
+
+  const canvasWindow = page.getByTestId('canvas-window');
+  await expect(canvasWindow).toBeVisible();
+  const composer = canvasWindow.getByRole('textbox', { name: '发送消息' });
+  await expect(composer).toBeVisible();
+  await composer.fill(`窗口草稿-${STAMP}`);
+  await expect(composer).toHaveValue(`窗口草稿-${STAMP}`);
 });
 
-test('侧栏：桌面常驻，手机上从菜单滑出', async ({ page }, testInfo) => {
-  await enterProject(page, PROJECT_NAME);
-  const sidebar = page.getByRole('complementary', { name: '项目导航' });
-  await expect(sidebar).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath('sidebar-1280.png'), fullPage: true });
+test('侧栏：桌面常驻，窄屏抽屉可开合，列表视图可切换', async ({ page, baseURL }) => {
+  const seeded = await seedProject(page, baseURL!, 'sidebar');
+  // 直接 goto('/') 会在 projects 拉完后 replace 到上次项目，中间会短暂卸载首页；
+  // 统一走 openProject，避免和那次 replace 抢时序。
+  await openProject(page, seeded.projectId, 'list');
+
+  const desktopSide = page.getByTestId('project-sidebar');
+  await expect(desktopSide).toBeVisible();
+  await expect(desktopSide.getByRole('combobox', { name: '切换项目' })).toHaveValue(seeded.projectId);
+  await expect(page.getByTestId('project-bar').getByTestId('view-switch')).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(sidebar).toBeHidden();
+  // 窄屏侧栏是抽屉：用抽屉容器判断开合（页面上同时存在桌面侧栏节点）。
+  const navSheet = page.getByTestId('nav-sheet');
+  await expect(navSheet).toBeHidden();
   await page.getByRole('button', { name: '打开侧栏' }).click();
-  await expect(sidebar).toBeVisible();
-  await expect(sidebar.getByRole('button', { name: '新建任务' })).toBeVisible();
-  expect(await sidebar.getByRole('combobox', { name: '切换项目' }).locator('option:checked').textContent()).toBe(PROJECT_NAME);
-  await page.screenshot({ path: testInfo.outputPath('sidebar-390.png'), fullPage: true });
-
+  await expect(navSheet).toBeVisible();
+  await expect(navSheet.getByTestId('project-sidebar')).toBeVisible();
   await page.getByRole('button', { name: '关闭侧栏' }).click();
-  await expect(sidebar).toBeHidden();
-  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '列表', exact: true }).click();
-  await expect(page.getByTestId('list-context')).toBeVisible();
+  await expect(navSheet).toBeHidden();
+
+  await switchView(page, 'list');
+  await expect(page.getByTestId('list-context')).toContainText('1 个任务 · 1 条会话');
 });

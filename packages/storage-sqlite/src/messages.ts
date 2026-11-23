@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { AgentMessage, Bot, BotDefinition, MessageAuditEntry, MessageStore, MessagingConfig, SpawnRecord } from '@agent-hub/domain';
-import { asProjectId, asSessionId, botIdFrom } from '@agent-hub/domain';
+import { asProjectId, asSessionId, botIdFrom, HANDOFF_BUS_ORIGIN } from '@agent-hub/domain';
 import { upsertSql } from './upsert.ts';
 
 type Row = Record<string, unknown>;
@@ -90,12 +90,14 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   reply_parts TEXT,
   read_at INTEGER,
   hold_reason TEXT,
-  from_label TEXT
+  from_label TEXT,
+  handoff_origin TEXT
 );
 CREATE INDEX IF NOT EXISTS agent_messages_target ON agent_messages(target_session_id, status, created_at);
 CREATE INDEX IF NOT EXISTS agent_messages_from ON agent_messages(from_session_id, created_at);
 CREATE INDEX IF NOT EXISTS agent_messages_trace ON agent_messages(trace_id, created_at);
 CREATE INDEX IF NOT EXISTS agent_messages_project ON agent_messages(project_id, status);
+CREATE INDEX IF NOT EXISTS agent_messages_project_handoff ON agent_messages(project_id, kind, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS agent_messages_idem ON agent_messages(from_session_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE TABLE IF NOT EXISTS agent_spawns (
   session_id TEXT PRIMARY KEY,
@@ -141,7 +143,8 @@ const MESSAGE_COLUMNS: readonly [string, string][] = [
   ['reply_parts', 'TEXT'],
   ['read_at', 'INTEGER'],
   ['hold_reason', 'TEXT'],
-  ['from_label', 'TEXT']
+  ['from_label', 'TEXT'],
+  ['handoff_origin', 'TEXT']
 ];
 
 const parseParts = (raw: unknown): AgentMessage['parts'] => {
@@ -183,7 +186,9 @@ const toMessage = (row: Row): AgentMessage => ({
   replyParts: parseParts(row.reply_parts),
   readAt: (row.read_at as number | null) ?? null,
   holdReason: (row.hold_reason as AgentMessage['holdReason']) ?? null,
-  fromLabel: (row.from_label as string | null) ?? null
+  fromLabel: (row.from_label as string | null) ?? null,
+  // 只认 Hub 写的已知值；NULL（老数据）和任何别的值都是来源未知，不推断。
+  ...(row.handoff_origin === HANDOFF_BUS_ORIGIN ? { handoffOrigin: HANDOFF_BUS_ORIGIN } : {})
 });
 
 const toSpawn = (row: Row): SpawnRecord => ({
@@ -217,8 +222,8 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
   const upsert = db.prepare(
     `INSERT INTO agent_messages (id, trace_id, depth, project_id, kind, from_session_id, on_behalf_of, to_address, target_session_id, role, reply_to, body,
        status, failure, failure_detail, reply_body, reply_source, idempotency_key, created_at, updated_at, delivered_at, deadline_at,
-       parts, wake, reply_status, reply_parts, read_at, hold_reason, from_label)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       parts, wake, reply_status, reply_parts, read_at, hold_reason, from_label, handoff_origin)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET target_session_id = excluded.target_session_id, status = excluded.status, failure = excluded.failure,
        failure_detail = excluded.failure_detail, reply_body = excluded.reply_body, reply_source = excluded.reply_source,
        updated_at = excluded.updated_at, delivered_at = excluded.delivered_at, deadline_at = excluded.deadline_at,
@@ -240,6 +245,26 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
   const delivered = db.prepare("SELECT * FROM agent_messages WHERE target_session_id = ? AND status = 'delivered' ORDER BY delivered_at, rowid");
   const byTrace = db.prepare('SELECT * FROM agent_messages WHERE trace_id = ? ORDER BY created_at, rowid');
   const forSession = db.prepare('SELECT * FROM agent_messages WHERE from_session_id = ? OR target_session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?');
+  // 历史 parts 可能损坏；先 json_valid，再要求顶层是数组，json_each 只进入 object 元素。
+  // 数组里混入字符串 / 数字时不会被 json_extract 当 JSON 解析（那会报 malformed）。
+  // JSON path 全是固定字面量，不拼接任何输入；schema 也只认这一个版本。
+  const byCandidateSource = db.prepare(
+    `SELECT m.* FROM agent_messages m
+     WHERE m.project_id = ?
+       AND m.handoff_origin = ?
+       AND m.kind = 'send'
+       AND CASE WHEN json_valid(m.parts) THEN
+         CASE WHEN json_type(m.parts) = 'array' THEN EXISTS (
+           SELECT 1 FROM json_each(m.parts) AS part
+           WHERE part.type = 'object'
+             AND json_extract(part.value, '$.type') = 'data'
+             AND json_extract(part.value, '$.schema') = 'project-candidate/v1'
+             AND json_extract(part.value, '$.data.sourceSessionId') = ?
+         ) ELSE 0 END
+       ELSE 0 END
+     ORDER BY m.created_at DESC, m.rowid DESC
+     LIMIT ?`
+  );
   const awaiting = db.prepare("SELECT * FROM agent_messages WHERE project_id = ? AND status = 'awaiting_approval' ORDER BY created_at");
   const overdue = db.prepare("SELECT * FROM agent_messages WHERE kind = 'ask' AND status IN ('queued', 'delivered') AND deadline_at IS NOT NULL AND deadline_at <= ?");
   const getConfig = db.prepare('SELECT * FROM agent_messaging_config WHERE project_id = ?');
@@ -262,7 +287,7 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
         m.status, m.failure, m.failureDetail, m.replyBody, m.replySource, m.idempotencyKey, m.createdAt, m.updatedAt, m.deliveredAt, m.deadlineAt,
         m.parts && m.parts.length > 0 ? JSON.stringify(m.parts) : null, m.wake === false ? 0 : 1, m.replyStatus ?? null,
         m.replyParts && m.replyParts.length > 0 ? JSON.stringify(m.replyParts) : null, m.readAt ?? null, m.holdReason ?? null,
-        m.fromLabel ?? null
+        m.fromLabel ?? null, m.handoffOrigin ?? null
       );
     },
     async claimDelivered(id, at) {
@@ -281,6 +306,8 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
     deliveredTo: async (sessionId) => (delivered.all(sessionId) as Row[]).map(toMessage),
     byTrace: async (traceId) => (byTrace.all(traceId) as Row[]).map(toMessage),
     forSession: async (sessionId, limit) => (forSession.all(sessionId, sessionId, limit) as Row[]).map(toMessage),
+    byCandidateSource: async (projectId, sourceSessionId, limit) =>
+      (byCandidateSource.all(projectId, HANDOFF_BUS_ORIGIN, sourceSessionId, limit) as Row[]).map(toMessage),
     awaitingApproval: async (projectId) => (awaiting.all(projectId) as Row[]).map(toMessage),
     overdue: async (now) => (overdue.all(now) as Row[]).map(toMessage),
     async config(projectId) {

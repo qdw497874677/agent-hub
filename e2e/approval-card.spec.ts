@@ -2,8 +2,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+
+test.afterAll(() => stopFakeWorker());
 
 /**
  * 批准卡（ADR 0023）：运行时要批准时对话里出一张「允许 / 拒绝」卡，手机上按钮整行、≥44px。
@@ -15,20 +17,17 @@ test('批准卡：显示、手机尺寸、点允许发出回答；不存在的�
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const workerId = await ensureFakeWorker(page, baseURL!);
   const dir = mkdtempSync(join(tmpdir(), 'e2e-approval-'));
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 批准 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 批准 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '批准' }, headers })).json()) as { id: string };
-  const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
-  await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: '你好', attachments: [] }, headers });
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' }, headers });
+  expect(derived.status(), await derived.text()).toBe(201);
+  const { id } = (await derived.json()) as { id: string };
+  const sent = await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: '你好', attachments: [] }, headers });
+  expect(sent.ok(), await sent.text()).toBe(true);
   await expect
-    .poll(async () => ((await (await page.request.get(`/api/sessions/${id}/events`)).json()) as Array<{ event?: { kind?: string } }>).length > 0, { timeout: 30_000 })
+    .poll(async () => ((await (await page.request.get(`/api/sessions/${id}/events`)).json()) as Array<{ event?: { kind?: string } }>).some((entry) => entry.event?.kind === 'ended'), { timeout: 30_000 })
     .toBe(true);
 
   const missing = await page.request.post(`/api/sessions/${id}/approvals/nope`, { data: { decision: 'allow' }, headers });

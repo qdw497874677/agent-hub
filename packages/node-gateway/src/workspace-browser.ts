@@ -7,7 +7,7 @@ import { rm } from 'node:fs/promises';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import fuzzysort from 'fuzzysort';
 import type { BranchBase, BrowserEntry, ChangedFile, DirectoryPage, DomainError, FileChangeNotice, FileGitStatus, Result, WorkspaceBrowser } from '@agent-hub/domain';
-import { FILES_LIMITS, conflict, isCheckpointPrefix, isCheckpointRef, invalid, isBrowsablePath, isCommitId, isSensitivePath, looksBinary, notFound, unavailable } from '@agent-hub/domain';
+import { FILES_LIMITS, conflict, isCheckpointPrefix, isCheckpointRef, invalid, isBrowsablePath, isCommitId, isSensitivePath, looksBinary, notFound, patchOnlyTouches, unavailable } from '@agent-hub/domain';
 
 /**
  * WorkspaceBrowser 的本机实现（ADR 0025）：fs + git CLI + fuzzysort + chokidar。
@@ -25,6 +25,13 @@ const WALK_SKIP = new Set(['.git', 'node_modules', 'dist', 'build', 'target', 'c
 const WALK_LIMIT = 20_000;
 /** git 的空树：基准没有提交时拿它当起点。 */
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+/**
+ * 单文件 diff 的固定开关：字面量路径、关掉仓库提供的外部 diff / textconv、不做改名相似度、
+ * 固定 a/ b/ 前缀，让 patch 头的路径可以被逐字核对。
+ */
+const DIFF_FLAGS = ['--relative', '--no-renames', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/'] as const;
+/** --no-index 不吃 --relative，其余同上。 */
+const NO_INDEX_FLAGS = ['--no-ext-diff', '--no-textconv', '--no-renames', '--src-prefix=a/', '--dst-prefix=b/'] as const;
 
 class Fail extends Error {
   readonly error: DomainError;
@@ -48,7 +55,7 @@ async function attempt<T>(run: () => Promise<T>): Promise<Result<T, DomainError>
 }
 
 interface Git {
-  (args: readonly string[], options?: { allowExit?: readonly number[]; input?: string; env?: Record<string, string> }): Promise<string>;
+  (args: readonly string[], options?: { allowExit?: readonly number[]; input?: string; env?: Record<string, string>; literalPathspec?: boolean }): Promise<string>;
 }
 
 export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceBrowser {
@@ -82,7 +89,7 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
       const child = execFile(
         'git',
         ['-c', 'core.quotepath=off', '-c', 'color.ui=false', ...args],
-        { cwd, timeout: gitTimeoutMs, maxBuffer: 64 * 1024 * 1024, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...opts.env } },
+        { cwd, timeout: gitTimeoutMs, maxBuffer: 64 * 1024 * 1024, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...(opts.literalPathspec ? { GIT_LITERAL_PATHSPECS: '1' } : {}), ...opts.env } },
         (error, stdout) => {
           const exit = error && typeof (error as { code?: unknown }).code === 'number' ? ((error as { code: number }).code) : error ? -1 : 0;
           if (error && !(opts.allowExit ?? []).includes(exit)) reject(error);
@@ -172,6 +179,26 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
     } catch {
       return null; // 还没有提交：全部算新增
     }
+  }
+
+  /**
+   * 单文件 diff 的准确清单：路径按字面量交给 git（GIT_LITERAL_PATHSPECS 关掉 glob / pathspec magic），
+   * 再确认输出里只有请求的这个路径。目录会展开成子树、模式会匹配到别的文件，两种情况都算「无法确认」。
+   */
+  async function changedPathsOf(git: Git, range: readonly string[], path: string): Promise<void> {
+    const out = await git(['diff', '--name-only', '-z', ...DIFF_FLAGS, ...range, '--', path], { literalPathspec: true });
+    if (out.split('\0').filter(Boolean).some((item) => item !== path)) fail(invalid('这个路径不是单个文件，不能查看单文件 diff'));
+  }
+
+  /**
+   * 产出即校验：section 头必须只提到这一个字面量路径。清单和 patch 是两次 git 调用，工作树在
+   * 中间被换成目录 / 被换成别的文件时，靠这里把「路径又变成模式」的结果拦掉。
+   * 说明：这不是原子快照 —— git 返回之后文件再变不在此列；这里只保证「返回的这段 patch 只属于这个路径」。
+   */
+  async function exactPatchOf(git: Git, args: readonly string[], path: string, allowExit?: readonly number[]): Promise<string> {
+    const patch = await git(args, { literalPathspec: true, ...(allowExit ? { allowExit } : {}) });
+    if (!patchOnlyTouches(patch, path)) fail(invalid('无法确认单文件 diff 的准确输出'));
+    return patch;
   }
 
   const browser: WorkspaceBrowser = {
@@ -303,23 +330,38 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
       attempt(async () => {
         const real = await rootOf(root);
         if (!isBrowsablePath(path) || path === '') fail(invalid('路径不合法'));
-        await inside(real, path).catch((error: unknown) => {
-          // 已删除的文件 realpath 不到：允许，diff 由 git 给
+        // 已删除的文件 realpath 不到：允许，diff 由 git 给；工作区里存在的必须是普通文件，
+        // 目录会展开成整棵子树的 diff，FIFO 之类还会把 git 卡住，都不算单文件。
+        const existing = await inside(real, path).catch((error: unknown) => {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          return null;
         });
+        if (existing !== null) {
+          const info = await stat(existing);
+          if (!info.isFile()) fail(invalid(info.isDirectory() ? '只能查看单个文件的 diff（目录请逐个文件查看）' : '只能查看普通文件的 diff'));
+        }
         const git = gitIn(real);
         if (!(await isRepo(git))) fail(invalid('不是 git 仓库，没有 diff'));
         const ref = await baseRef(git, base);
         const to = await targetRef(git, target);
+        // 有 git 对比范围时先要一份「只有这个文件」的准确清单；拿不到就 fail closed。
+        const range = to !== null ? [ref ?? EMPTY_TREE, to] : ref === null ? null : [ref];
+        if (range !== null) await changedPathsOf(git, range, path);
         if (to !== null) {
-          const patch = await git(['diff', '--relative', '-M', ref ?? EMPTY_TREE, to, '--', path]);
+          const patch = await exactPatchOf(git, ['diff', ...DIFF_FLAGS, ref ?? EMPTY_TREE, to, '--', path], path);
           const truncated = Buffer.byteLength(patch) > maxBytes;
           return { path, patch: truncated ? Buffer.from(patch).subarray(0, maxBytes).toString('utf8') : patch, truncated, binary: /^Binary files /m.test(patch) };
         }
-        let patch = ref === null ? '' : await git(['diff', '--relative', '-M', ref, '--', path]);
+        let patch = ref === null ? '' : await exactPatchOf(git, ['diff', ...DIFF_FLAGS, ref, '--', path], path);
         if (patch === '') {
-          const tracked = (await git(['ls-files', '-z', '--', path])).length > 0;
-          if (!tracked || ref === null) patch = await git(['diff', '--no-index', '--', '/dev/null', path], { allowExit: [1] });
+          const tracked = (await git(['ls-files', '-z', '--', path], { literalPathspec: true })).length > 0;
+          if (!tracked || ref === null) {
+            // 未跟踪 / 还没有提交：和 /dev/null 比。--no-index 撞上目录只会给空 stdout + exit 1，
+            // 空输出回头核对磁盘：路径还在就说明没拼出准确内容，不当作空 diff；真不在就是「没有可看的」。
+            const created = await exactPatchOf(git, ['diff', '--no-index', ...NO_INDEX_FLAGS, '--', '/dev/null', path], path, [1]);
+            if (created !== '') patch = created;
+            else if ((await lstat(existing ?? join(real, path)).catch(() => null)) !== null) fail(invalid('无法确认单文件 diff 的准确输出'));
+          }
         }
         const binary = /^Binary files /m.test(patch);
         const truncated = Buffer.byteLength(patch) > maxBytes;

@@ -75,6 +75,7 @@ function memoryMessages(): MessageStore & { all: Map<string, AgentMessage> } {
     deliveredTo: async (s) => list().filter((m) => m.targetSessionId === s && m.status === 'delivered'),
     byTrace: async (t) => list().filter((m) => m.traceId === t),
     forSession: async (s, limit) => list().filter((m) => m.fromSessionId === s || m.targetSessionId === s).reverse().slice(0, limit),
+    byCandidateSource: async () => [],
     awaitingApproval: async (p) => list().filter((m) => m.projectId === p && m.status === 'awaiting_approval'),
     overdue: async (now) => list().filter((m) => m.kind === 'ask' && (m.status === 'queued' || m.status === 'delivered') && m.deadlineAt !== null && m.deadlineAt <= now),
     config: async () => null,

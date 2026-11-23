@@ -3,6 +3,7 @@ import { AccountMenu } from '../../shell/auth.tsx';
 import { NotificationBell } from '../../shell/market/notifications.tsx';
 import { AttentionBadge, AttentionInbox } from '../../atoms/attention.tsx';
 import { TaskQueue } from './task-queue.tsx';
+import { RefreshButton, useRefresh } from '../../atoms/refresh-button.tsx';
 import {
   useDeferredValue,
   useEffect,
@@ -73,6 +74,8 @@ export function HomePage({
   const queryClient = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
   const home = useQuery({ queryKey: ['home'], queryFn: api.home, refetchInterval: 10_000 });
+  // 一个动作把首页这一屏的定时查询都提前拉一遍：收件箱、派发队列、连接器提示。
+  const refresh = useRefresh([['home'], ['attention'], ['dispatch'], ['connector-notices']]);
 
   const projects = home.data?.projects ?? [];
   const recent = useMemo(() => homeSessionRows(home.data?.recentSessions ?? []), [home.data]);
@@ -307,11 +310,25 @@ export function HomePage({
           {creating ? null : (
             <div className="mb-1">
               <AttentionInbox
+                headerAction={
+                  <RefreshButton
+                    testId="home-refresh"
+                    label="刷新首页待办"
+                    busy={refresh.busy}
+                    error={refresh.error}
+                    onRefresh={refresh.refresh}
+                  />
+                }
                 onOpen={(item) => {
                   const project = projectById.get(item.projectId);
                   if (project) onOpen(project, item.sessionId);
                 }}
               />
+              {refresh.error ? (
+                <p role="alert" data-testid="home-refresh-error" className="mb-3 text-meta text-rust">
+                  刷新没成功：{refresh.error}
+                </p>
+              ) : null}
               <TaskQueue />
             </div>
           )}

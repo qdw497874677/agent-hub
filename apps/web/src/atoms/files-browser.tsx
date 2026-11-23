@@ -3,19 +3,24 @@ import { currentTheme } from '../shell/theme.ts';
 import { Notice } from './notice.tsx';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto, type FilesContextMemberDto } from '../shell/api.ts';
-import { clampListWidth, crumbs, FILES_LIST_WIDTH_KEY, FILES_QUERY, filesErrorText, filesRefetch, readListWidth, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths } from './files-core.ts';
+import { clampListWidth, compareScope, crumbs, FILES_LIST_WIDTH_KEY, FILES_QUERY, filesErrorText, filesRefetch, readListWidth, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths, type CompareScope } from './files-core.ts';
 import { filesInvalidationKeys, filesKeys, type FilesKeys } from '../shell/query-keys.ts';
 import { inSelection, isWholeFileAddition, diffWindowRange, parsePatchLines, selectionRange, selectionRef, toggleLine, type DiffRow, type DiffSide, type LineSelection } from './diff-selection.ts';
 
 /**
  * 工作目录文件浏览（ADR 0025 · P1，只读）。嵌在会话的「文件 / 改动」标签页里（页签由会话头部管）：
- * - 手机：目录列表 → 点文件进全屏查看，左上「返回」；桌面：左树右看。
- * - 「文件 | 改动(n)」两页；改动的基准可切（会话开始 / 当前 HEAD）。
+ * - 手机：目录列表 ↔ 全屏查看是可逆的两页，返回后列表的展开、滚动位置和刚看过的文件都还在；
+ *   桌面：左树右看，右边没选东西时先说清在比什么。
+ * - 「文件 | 改动(n)」两页；改动的范围可切（会话开始 / 当前 HEAD / 分支起点 / 已记录的回合）。
+ *   这些范围都不是任意 Git 版本：前三者比当前工作树，回合比两个快照，正文顶栏一直写着在比什么。
  * - 敏感文件默认藏起；打开要确认（服务端记审计）。被忽略的灰显但能展开；.git 不列。
+ * - 只取真正看过的那一个文件 / 那一段 diff，不预取兄弟文件，也不预取没选中的范围。
  * - 不缓存（决定 8）：机器不在线就如实显示「机器离线」。
  */
 type Base = string; // 'session' | 'head' | 'branch' | 'turn' | 'turn:<n>'
 type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number | null; member?: string | null };
+/** 刚看过的文件：从全屏回到列表时高亮它、把焦点还给它（TAB 的顺序不被打乱）。 */
+type LastRead = { path: string; member: string | null };
 /** 从对话里的工具路径跳过来：打开这个文件，知道行号就滚到那一行。nonce 变了就再跳一次。 */
 export type Reveal = { path: string; line: number | null; nonce: number };
 
@@ -69,11 +74,13 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
   }, [wanted?.nonce]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
   const [opened, setOpened] = useState<Opened | null>(null);
+  const [lastRead, setLastRead] = useState<LastRead | null>(null);
   const [showSensitive, setShowSensitive] = useState(false);
   const [query, setQuery] = useState('');
 
   useEffect(() => {
     setOpened(null);
+    setLastRead(null);
     setExpanded(new Set(['']));
     setQuery('');
   }, [member]);
@@ -84,11 +91,13 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
     if (sensitive && !window.confirm(`「${reveal.path}」可能含密钥或凭据。确定要打开吗？（会记入审计）`)) return;
     setQuery('');
     setExpanded((current) => new Set([...current, ...crumbs(reveal.path).slice(0, -1).map((c) => c.path)]));
+    setLastRead({ path: reveal.path, member });
     setOpened({ path: reveal.path, confirmed: sensitive, diff: false, line: reveal.line });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal?.nonce]);
 
-  const changes = useQuery({ ...fresh, queryKey: keys.changes(base), queryFn: () => filesApi.changes(sessionId, base, member) });
+  // 文件页不看改动，只读当前文件；改动页才取改动列表和回合清单。离开就停，不预取别的范围。
+  const changes = useQuery({ ...fresh, enabled: tab === 'changes', queryKey: keys.changes(base), queryFn: () => filesApi.changes(sessionId, base, member) });
   const aggregate = members.length > 1 && tab === 'changes';
   const groupedChanges = useQueries({
     queries: members.map((item) => ({
@@ -98,7 +107,7 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
       queryFn: () => filesApi.changes(sessionId, base, item.workspaceId)
     }))
   });
-  const turns = useQuery({ ...fresh, queryKey: keys.turns(), queryFn: () => filesApi.turns(sessionId, member) });
+  const turns = useQuery({ ...fresh, enabled: tab === 'changes', queryKey: keys.turns(), queryFn: () => filesApi.turns(sessionId, member) });
   const context = useQuery({ queryKey: keys.context(), queryFn: () => filesApi.context(sessionId, member), staleTime: 15_000 });
   const others = context.data?.otherProjectSessions ?? 0;
   const found = useQuery({ ...fresh, enabled: query.trim() !== '', queryKey: keys.find(query.trim()), queryFn: () => filesApi.find(sessionId, query.trim(), member) });
@@ -178,6 +187,7 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
 
   const open = (entry: { path: string; sensitive?: boolean; member?: string | null }, diff = false) => {
     if (entry.sensitive && !window.confirm(`「${entry.path}」可能含密钥或凭据。确定要打开吗？（会记入审计）`)) return;
+    setLastRead({ path: entry.path, member: entry.member ?? null });
     setOpened({ path: entry.path, confirmed: Boolean(entry.sensitive), diff, member: entry.member ?? null });
   };
   const activeMember = opened?.member ?? member;
@@ -191,9 +201,58 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
     });
 
   const changed = shown(changes);
-  const showList = wide || opened === null;
-  const root = context.data?.root;
+  // 列表标题和正文顶栏共用同一句说明：范围、基准的 sha、以及这个范围的边界。
+  const info = {
+    commit: changed?.commit,
+    target: changed?.target,
+    branch: changed?.branch,
+    turn: changed?.turn,
+    turnNumber: turns.data?.at(-1)?.turn ?? null,
+    sessionBase: context.data?.sessionBase
+  };
+  const scope = useMemo(
+    () => compareScope(base, info),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [base, info.commit, info.target, info.branch, info.turn, info.turnNumber, info.sessionBase]
+  );
+  /** 正在看 / 刚看过的文件：返回列表后它仍然高亮，读屏也知道「当前项」。 */
+  const picked = opened ?? lastRead;
+  const mark = (path: string, ws: string | null = member) => ({
+    on: picked !== null && picked.path === path && (picked.member ?? member) === (ws ?? member),
+    last: lastRead !== null && lastRead.path === path && (lastRead.member ?? member) === (ws ?? member)
+  });
   const listRef = useRef<HTMLElement | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
+  const backToRow = useRef(false);
+  /** 手机从正文回列表：回的是同一页列表（展开、滚动都没丢），焦点落回刚看的那一行。 */
+  const back = () => {
+    if (opened === null) return;
+    backToRow.current = true;
+    setOpened(null);
+  };
+  const reading = opened !== null;
+  useEffect(() => {
+    if (opened !== null || !backToRow.current) return;
+    backToRow.current = false;
+    let tries = 0;
+    const focusRow = () => {
+      const row = listRef.current?.querySelector<HTMLElement>('[data-last-read="true"]');
+      if (row) {
+        // 只把焦点还给它，别再让浏览器为了「看见它」把整页带动一下：列表本来就停在那一页。
+        row.focus({ preventScroll: true });
+        return;
+      }
+      // 列表刚显示出来、行还没排好时再等几帧；确实找不到（例如目录被收起）就不抢焦点。
+      if (tries++ < 6) window.requestAnimationFrame(focusRow);
+    };
+    window.requestAnimationFrame(focusRow);
+  }, [opened]);
+  // 手机上列表进正文时列表整个藏起来：焦点不能留在被藏起来的按钮上，交给正文的「返回」。
+  useEffect(() => {
+    if (!reading || wide) return;
+    mainRef.current?.querySelector<HTMLElement>('[data-testid="files-back"]')?.focus({ preventScroll: true });
+  }, [reading, wide, opened?.path, opened?.diff]);
+  const root = context.data?.root;
   const [listWidth, setListWidth] = useState(() =>
     readListWidth(typeof window === 'undefined' ? null : window.localStorage.getItem(FILES_LIST_WIDTH_KEY))
   );
@@ -219,7 +278,18 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
     window.addEventListener('pointercancel', stop);
   };
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-canvas" role="tabpanel" aria-label="工作目录文件" data-testid={`files-panel-${tab}`}>
+    <div
+      className="flex min-h-0 flex-1 flex-col bg-canvas"
+      role="tabpanel"
+      aria-label="工作目录文件"
+      data-testid={`files-panel-${tab}`}
+      onKeyDown={(event) => {
+        // 手机上「返回」也是 Esc：只在读正文时生效，桌面左右并排不需要。
+        if (event.key !== 'Escape' || wide || opened === null) return;
+        event.preventDefault();
+        back();
+      }}
+    >
       {switcher ? <div className="shrink-0 border-b border-hair px-3 py-1.5">{switcher}</div> : null}
       {others > 0 ? (
         <p data-testid="files-other-projects" className="shrink-0 border-b border-hair px-3 py-1 text-meta text-rust">
@@ -227,111 +297,127 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
         </p>
       ) : null}
       <div className="flex min-h-0 flex-1">
-        {showList ? (
-          <aside ref={listRef} style={wide ? { width: listWidth } : undefined} className={`flex min-h-0 flex-col ${wide ? 'shrink-0' : 'flex-1'}`}>
-            {tab === 'files' ? (
-              <>
-                <div className="flex items-center gap-2 px-3 py-2">
-                  <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="找文件…" className="min-w-0 flex-1 rounded bg-card px-2 py-1 text-sub outline-none" data-testid="files-find" />
-                  <label className="flex shrink-0 items-center gap-1 text-meta text-tertiary">
-                    <input type="checkbox" checked={showSensitive} onChange={(e) => setShowSensitive(e.target.checked)} data-testid="files-show-sensitive" />
-                    显示敏感文件
-                  </label>
-                </div>
-                <RootPath root={root} wide={wide} />
-                <div className="min-h-0 flex-1 overflow-y-auto py-1" data-testid="files-tree">
-                  {query.trim() !== '' ? (
-                    found.error ? <p className="px-3 text-meta text-rust">{problem(found.error)}</p> :
-                    (shown(found) ?? []).map((p) => (
-                      <button key={p} className="flex h-7 w-full items-center rounded-md px-3 text-left font-mono text-sub text-secondary transition-colors [scroll-margin-block:8px] hover:bg-hair/40" onClick={() => open({ path: p, sensitive: /(^|\/)(\.env|id_rsa|id_ed25519)|\.(pem|key|p12)$/.test(p) })}>
+        {/* 手机进正文时列表只是藏起来，不卸载：展开的目录、滚动位置、以及返回后要回去的那一行都还在 */}
+        <aside
+          ref={listRef}
+          style={wide ? { width: listWidth } : undefined}
+          className={`min-h-0 flex-col ${wide ? 'flex shrink-0' : reading ? 'hidden' : 'flex flex-1'}`}
+          data-testid="files-list"
+          data-reading={!wide && reading ? 'true' : undefined}
+        >
+          {tab === 'files' ? (
+            <>
+              <div className="flex shrink-0 items-center gap-2 px-3 py-2">
+                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="找文件…" className="min-w-0 flex-1 rounded bg-card px-2 py-1 text-sub outline-none" data-testid="files-find" />
+                <label className="flex shrink-0 items-center gap-1 text-meta text-tertiary">
+                  <input type="checkbox" checked={showSensitive} onChange={(e) => setShowSensitive(e.target.checked)} data-testid="files-show-sensitive" />
+                  显示敏感文件
+                </label>
+              </div>
+              <RootPath root={root} wide={wide} />
+              <div className="min-h-0 flex-1 overflow-y-auto py-1" data-testid="files-tree">
+                {query.trim() !== '' ? (
+                  found.error ? <p className="px-3 text-meta text-rust">{problem(found.error)}</p> :
+                  (shown(found) ?? []).map((p) => {
+                    const m = mark(p);
+                    return (
+                      <button key={p} aria-current={m.on ? 'true' : undefined} data-last-read={m.last ? 'true' : undefined}
+                        className={`flex h-7 w-full items-center rounded-md px-3 text-left font-mono text-sub text-secondary transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${m.on ? 'bg-hair/60' : ''}`}
+                        onClick={() => open({ path: p, sensitive: /(^|\/)(\.env|id_rsa|id_ed25519)|\.(pem|key|p12)$/.test(p) })}>
                         <span className="min-w-0 truncate">{p}</span>
                       </button>
-                    ))
-                  ) : (
-                    <Directory sessionId={sessionId} member={member} keys={keys} path="" depth={0} expanded={expanded} toggle={toggle} open={open} showSensitive={showSensitive} selected={opened?.path ?? null} />
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="min-h-0 flex-1 overflow-y-auto" data-testid="changes-list">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-meta text-tertiary">
-                  对比
+                    );
+                  })
+                ) : (
+                  <Directory sessionId={sessionId} member={member} keys={keys} path="" depth={0} expanded={expanded} toggle={toggle} open={open} showSensitive={showSensitive} selected={picked?.path ?? null} />
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-y-auto" data-testid="changes-list">
+              {/* 改动页的标题：先选范围，再用一行字说清这个范围比的是什么、边界在哪 */}
+              <div className="sticky top-0 z-10 shrink-0 border-b border-hair/60 bg-canvas px-3 py-2" data-testid="changes-heading">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-meta">
+                  <span className="text-secondary">对比</span>
                   <select value={base} onChange={(e) => setBase(e.target.value as Base)} className="rounded bg-card px-1 py-0.5 text-sub text-secondary" data-testid="changes-base">
-                    <option value="session">整个会话</option>
-                    <option value="head">对比 HEAD</option>
-                    <option value="branch">对比分支起点</option>
+                    <option value="session">会话开始以来</option>
+                    <option value="head">相对当前 HEAD</option>
+                    <option value="branch">相对分支起点</option>
                     {(turns.data?.length ?? 0) > 0 ? <option value="turn">本轮（第 {turns.data!.at(-1)!.turn} 轮）</option> : null}
                     {[...(turns.data ?? [])].reverse().slice(1).map((t) => (
                       <option key={t.turn} value={`turn:${t.turn}`}>第 {t.turn} 轮{t.files !== null ? ` · ${t.files} 个文件` : ''}</option>
                     ))}
                   </select>
-                  {base === 'branch' ? (
-                    changed?.branch === undefined || changed.branch === null ? (
-                      <span className="text-tertiary" data-testid="branch-none">这条会话没有可对比的分支</span>
-                    ) : (
-                      <span className="font-mono" data-testid="branch-base" title={changed.branch}>{changed.branch}</span>
-                    )
-                  ) : null}
-                  {base.startsWith('turn') && changed?.target === null ? <span className="text-accent" data-testid="turn-live">进行中</span> : null}
-                  {changed?.commit ? <span className="font-mono">{changed.commit.slice(0, 8)}</span> : null}
                 </div>
-                <RootPath root={root} wide={wide} />
-                {aggregate ? (
-                  groupedChanges.some((item) => item.error) ? (
-                    <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(groupedChanges.find((item) => item.error)?.error)}</p>
-                  ) : null
-                ) : changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}
-                {aggregate ? (
-                  members.every((_, index) => (shown(groupedChanges[index]!)?.files.length ?? 0) === 0) ? (
-                    <p className="px-3 py-2 text-meta text-tertiary">没有改动</p>
-                  ) : (
-                    members.map((item, index) => {
-                      const group = shown(groupedChanges[index]!);
-                      const files = group?.files ?? [];
-                      if (files.length === 0) return null;
-                      return (
-                        <div key={item.workspaceId} className="mb-1" data-testid={`changes-group-${item.name}`}>
-                          <p className="px-3 py-1 font-mono text-meta text-secondary">{item.name}（{files.length}）</p>
-                          {files.map((f) => (
+                <p className="mt-0.5 min-w-0 font-mono text-meta leading-snug" data-testid="changes-scope" data-unknown={scope.unknown ? 'true' : undefined}>
+                  <span className={scope.unknown ? 'text-rust' : 'text-secondary'}>{scope.detail}</span>
+                  {scope.note ? <span className="text-tertiary"> · {scope.note}</span> : null}
+                </p>
+              </div>
+              <RootPath root={root} wide={wide} />
+              {aggregate ? (
+                groupedChanges.some((item) => item.error) ? (
+                  <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(groupedChanges.find((item) => item.error)?.error)}</p>
+                ) : null
+              ) : changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}
+              {aggregate ? (
+                members.every((_, index) => (shown(groupedChanges[index]!)?.files.length ?? 0) === 0) ? (
+                  <p className="px-3 py-2 text-meta text-tertiary">没有改动</p>
+                ) : (
+                  members.map((item, index) => {
+                    const group = shown(groupedChanges[index]!);
+                    const files = group?.files ?? [];
+                    if (files.length === 0) return null;
+                    return (
+                      <div key={item.workspaceId} className="mb-1" data-testid={`changes-group-${item.name}`}>
+                        <p className="px-3 py-1 font-mono text-meta text-secondary">{item.name}（{files.length}）</p>
+                        {files.map((f) => {
+                          const m = mark(f.path, item.workspaceId);
+                          return (
                             <button key={`${item.workspaceId}:${f.path}`} onClick={() => open({ path: f.path, member: item.workspaceId }, true)} data-testid="change-row"
-                              className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${opened && opened.path === f.path && (opened.member ?? member) === item.workspaceId ? 'bg-hair/60' : ''}`}>
+                              aria-current={m.on ? 'true' : undefined} data-last-read={m.last ? 'true' : undefined}
+                              className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${m.on ? 'bg-hair/60' : ''}`}>
                               <span className="w-3 shrink-0 font-mono text-meta text-warning">{GIT_LABEL[f.status] ?? '?'}</span>
                               <span className="min-w-0 flex-1 truncate font-mono text-sub text-secondary">{f.path}</span>
                               <span className="shrink-0 font-mono text-meta text-sage">+{f.additions}</span>
                               <span className="shrink-0 font-mono text-meta text-rust">−{f.deletions}</span>
                             </button>
-                          ))}
-                        </div>
-                      );
-                    })
-                  )
-                ) : (
-                  <>
-                {changed?.files.length === 0 ? (
-                  // 「整个会话」要有会话开始时的 git 基准；没有基准时空列表不等于「没改」，照实说原因
-                  changed.base === 'session' && changed.commit === null ? (
-                    <p className="px-3 py-2 text-meta text-tertiary" data-testid="changes-no-git">
-                      没有 git 改动（当前目录不是仓库）
-                    </p>
-                  ) : (
-                    <p className="px-3 py-2 text-meta text-tertiary">没有改动</p>
-                  )
-                ) : null}
-                {changed?.files.map((f) => (
-                  <button key={f.path} onClick={() => open({ path: f.path }, true)} data-testid="change-row"
-                    className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${opened?.path === f.path ? 'bg-hair/60' : ''}`}>
-                    <span className="w-3 shrink-0 font-mono text-meta text-warning">{GIT_LABEL[f.status] ?? '?'}</span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-sub text-secondary">{f.path}</span>
-                    <span className="shrink-0 font-mono text-meta text-sage">+{f.additions}</span>
-                    <span className="shrink-0 font-mono text-meta text-rust">−{f.deletions}</span>
-                  </button>
-                ))}
-                  </>
-                )}
-              </div>
-            )}
-          </aside>
-        ) : null}
+                          );
+                        })}
+                      </div>
+                    );
+                  })
+                )
+              ) : (
+                <>
+                  {changed?.files.length === 0 ? (
+                    // 「会话开始以来」要有会话开始时的 git 基准；没有基准时空列表不等于「没改」，照实说原因
+                    changed.base === 'session' && changed.commit === null ? (
+                      <p className="px-3 py-2 text-meta text-tertiary" data-testid="changes-no-git">
+                        {context.data?.sessionBase === null ? '无法确认改动：会话起点没有记录，或当前目录不是仓库' : '没有 git 改动（当前目录不是仓库）'}
+                      </p>
+                    ) : (
+                      <p className="px-3 py-2 text-meta text-tertiary">没有改动</p>
+                    )
+                  ) : null}
+                  {changed?.files.map((f) => {
+                    const m = mark(f.path);
+                    return (
+                      <button key={f.path} onClick={() => open({ path: f.path }, true)} data-testid="change-row"
+                        aria-current={m.on ? 'true' : undefined} data-last-read={m.last ? 'true' : undefined}
+                        className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${m.on ? 'bg-hair/60' : ''}`}>
+                        <span className="w-3 shrink-0 font-mono text-meta text-warning">{GIT_LABEL[f.status] ?? '?'}</span>
+                        <span className="min-w-0 flex-1 truncate font-mono text-sub text-secondary">{f.path}</span>
+                        <span className="shrink-0 font-mono text-meta text-sage">+{f.additions}</span>
+                        <span className="shrink-0 font-mono text-meta text-rust">−{f.deletions}</span>
+                      </button>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          )}
+        </aside>
         {wide ? (
           <div
             role="separator"
@@ -352,16 +438,23 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
             <span aria-hidden className="absolute inset-y-0 -left-1 -right-1" />
           </div>
         ) : null}
-        {wide || opened ? (
-          <main className="min-w-0 flex-1 overflow-auto">
-            {opened ? (
-              opened.diff ? <DiffView sessionId={sessionId} member={activeMember} keys={activeKeys} path={opened.path} base={base} wide={wide} root={root} onQuote={onQuote} onBack={() => setOpened(null)} /> :
-              <FileView sessionId={sessionId} member={activeMember} keys={activeKeys} opened={opened} wide={wide} root={root} onBack={() => setOpened(null)} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
-            ) : (
-              <p className="p-6 text-sub text-tertiary">选一个文件查看</p>
-            )}
-          </main>
-        ) : null}
+        {/* 手机没进正文时右边不占位；桌面一直是「左列表 + 右正文」，没选文件时右边先说清在比什么 */}
+        <main ref={mainRef} className={`min-w-0 flex-1 overflow-auto ${wide || reading ? '' : 'hidden'}`}>
+          {opened ? (
+            opened.diff ? <DiffView sessionId={sessionId} member={activeMember} keys={activeKeys} path={opened.path} base={base} scope={scope} wide={wide} root={root} onQuote={onQuote} onBack={back} /> :
+            <FileView sessionId={sessionId} member={activeMember} keys={activeKeys} opened={opened} wide={wide} root={root} onBack={back} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
+          ) : (
+            <div className="flex flex-col gap-1 p-6" data-testid="reader-empty">
+              <p className="text-sub text-secondary">{tab === 'changes' ? '选一个改动看' : '选一个文件看'}</p>
+              {tab === 'changes' ? (
+                <p className="font-mono text-meta leading-snug text-tertiary" data-testid="reader-scope" data-unknown={scope.unknown ? 'true' : undefined}>
+                  <span className={scope.unknown ? 'text-rust' : undefined}>{scope.detail}</span>
+                  {scope.note ? ` · ${scope.note}` : ''}
+                </p>
+              ) : null}
+            </div>
+          )}
+        </main>
       </div>
     </div>
   );
@@ -381,6 +474,8 @@ function Directory(props: { sessionId: string; member: string | null; keys: File
         return (
           <div key={e.path}>
             <button onClick={() => (isDir ? props.toggle(e.path) : props.open(e))} data-testid="file-row" data-path={e.path}
+              aria-current={props.selected === e.path ? 'true' : undefined}
+              data-last-read={props.selected === e.path && !isDir ? 'true' : undefined}
               className={`flex h-7 w-full items-center gap-1.5 rounded-md pr-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${props.selected === e.path ? 'bg-hair/60' : ''} ${e.ignored ? 'opacity-50' : ''}`}
               style={{ paddingLeft: 12 + depth * 14 }}>
               <span className="w-3 shrink-0 text-meta text-tertiary">{isDir ? (isOpen ? '▾' : '▸') : ''}</span>
@@ -402,7 +497,7 @@ function Directory(props: { sessionId: string; member: string | null; keys: File
 function RootPath({ root, wide }: { root: string | undefined; wide: boolean }) {
   if (!root) return null;
   return (
-    <p data-testid="files-root" title={root} className="min-w-0 border-b border-hair px-3 py-1 font-mono text-meta leading-snug text-tertiary">
+    <p data-testid="files-root" title={root} className="min-w-0 shrink-0 border-b border-hair px-3 py-1 font-mono text-meta leading-snug text-tertiary">
       <span className="select-text [overflow-wrap:anywhere]">{wide ? root : shortPath(root, 30)}</span>
     </p>
   );
@@ -411,13 +506,15 @@ function RootPath({ root, wide }: { root: string | undefined; wide: boolean }) {
 /**
  * 预览顶栏：完整相对路径是这一栏最显眼的信息。
  * 桌面每一段仍可点回目录；手机放不下面包屑，直接给整条路径，并在下面一行说明根在哪。
+ * 看 diff 时再补一行「范围」：正文自己说清在比哪两个东西，不靠列表标题的记忆。
  */
-function PathBar({ path, root, wide, download, size, onCrumb, onBack }: {
+function PathBar({ path, root, wide, download, size, range, onCrumb, onBack }: {
   path: string;
   root: string | undefined;
   wide: boolean;
   download?: string;
   size?: number;
+  range?: CompareScope | null;
   onCrumb?: (p: string) => void;
   onBack?: () => void;
 }) {
@@ -450,6 +547,13 @@ function PathBar({ path, root, wide, download, size, onCrumb, onBack }: {
           {download ? <a href={download} download className="text-link" data-testid="file-download">下载</a> : null}
         </span>
       </div>
+      {range ? (
+        <p className="min-w-0 select-text font-mono text-meta leading-snug" data-testid="diff-range" data-unknown={range.unknown ? 'true' : undefined}>
+          <span className="text-tertiary">范围 </span>
+          <span className={range.unknown ? 'text-rust' : 'text-secondary'}>{range.detail}</span>
+          {range.note ? <span className="text-tertiary"> · {range.note}</span> : null}
+        </p>
+      ) : null}
       {root ? (
         <p className="min-w-0 truncate font-mono text-meta text-tertiary" title={root} data-testid="file-root">位于 {shortPath(root, wide ? 96 : 26)}</p>
       ) : null}
@@ -521,12 +625,14 @@ const DIFF_WINDOW_OVERSCAN = 20;
  * 而外来 HTML 只能靠命令式打补丁，所以改成自己画行——代价是不再区分并排 / 单列两种版式，
  * 一律单列，宽度交给横向滚动。
  */
-function DiffView({ sessionId, member, keys, path, base, wide, root, onBack, onQuote }: {
+function DiffView({ sessionId, member, keys, path, base, scope, wide, root, onBack, onQuote }: {
   sessionId: string;
   member: string | null;
   keys: FilesKeys;
   path: string;
   base: Base;
+  /** 这一段 diff 比的是什么（列表标题、正文顶栏、桌面空正文共用同一个说明）。 */
+  scope: CompareScope;
   wide: boolean;
   root: string | undefined;
   onBack: () => void;
@@ -551,7 +657,7 @@ function DiffView({ sessionId, member, keys, path, base, wide, root, onBack, onQ
   };
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="diff-view">
-      <PathBar path={path} root={root} wide={wide} onBack={onBack} />
+      <PathBar path={path} root={root} wide={wide} range={scope} onBack={onBack} />
       {diff.isPending ? <p className="p-4 text-meta text-tertiary">读取中…</p> : null}
       {diff.error ? <p className="p-4 text-sub text-rust" data-testid="files-error">{problem(diff.error)}</p> : null}
       {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件有改动</p> : null}

@@ -2,7 +2,8 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { cpSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { test, expect, type APIRequestContext, type BrowserContext } from '@playwright/test';
+import { test, expect, type APIRequestContext, type BrowserContext, type Request } from '@playwright/test';
+import { stop } from '../apps/server/src/test-support/spawn.ts';
 import { e2eWorkerRoots } from './isolation.ts';
 import { loginByApi, mailedLink } from './login.ts';
 import { currentRun } from './run-id.ts';
@@ -20,12 +21,11 @@ const csrfOf = async (context: BrowserContext) =>
 
 /** 测试里接进来的机器都真跑着：离线又没连过的机器不会出现在 /api/workers 里，界面也就没有它。 */
 const running: { child: ChildProcess; state: string }[] = [];
-test.afterEach(() => {
-  while (running.length > 0) {
-    const entry = running.pop();
-    entry?.child.kill();
-    if (entry) rmSync(entry.state, { recursive: true, force: true });
-  }
+test.afterEach(async () => {
+  await Promise.all(running.splice(0).map(async ({ child, state }) => {
+    await stop(child);
+    rmSync(state, { recursive: true, force: true, maxRetries: 3 });
+  }));
 });
 
 /** 走真实 CLI 凭码接入一台远程机器，然后让它一直连着（界面里的列表只收已连上的机器）。 */
@@ -126,6 +126,19 @@ test('机器只有一个入口：侧栏、折叠侧栏、全站导航都到 #/ma
   await page.getByTestId('nav-machines').click();
   await expect(page).toHaveURL(/#\/machines$/);
   await expect(page.getByTestId('machines-page')).toBeVisible();
+  await expect(page.getByTestId('machines-summary')).toContainText(/在线/);
+
+  // 刷新：一次点击把列表（/api/workers，首页机器徽标共用同一条 query）和版本数据（/api/admin/workers）都拉一遍
+  const seen: string[] = [];
+  const watch = (req: Request) => seen.push(new URL(req.url()).pathname);
+  page.on('request', watch);
+  await page.getByTestId('machines-refresh').click();
+  await expect
+    .poll(() => ['/api/workers', '/api/admin/workers'].filter((path) => !seen.includes(path)), { timeout: 5_000 })
+    .toEqual([]);
+  page.off('request', watch);
+  await expect(page.getByTestId('machines-refresh')).not.toHaveAttribute('aria-busy', 'true');
+  // 刷新是重取数据，不是换一页：列表还在原处
   await expect(page.getByTestId('machines-summary')).toContainText(/在线/);
 
   // 一行一台，点进去是它自己的地址
@@ -298,6 +311,13 @@ test('窄屏：列表滚到哪，进详情再退回来还在哪', async ({ page,
   });
   const at = await main.evaluate((node) => node.scrollTop);
   expect(at).toBeGreaterThan(150);
+
+  // 手机上点刷新：请求走一趟，列表不重挂载，滚动位置不动
+  const refreshed = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/workers');
+  await page.getByTestId('machines-refresh').click();
+  await refreshed;
+  await expect(page.getByTestId('machines-refresh')).not.toHaveAttribute('aria-busy', 'true');
+  expect(await main.evaluate((node) => node.scrollTop)).toBe(at);
 
   const row = page.getByTestId('machine-row').nth(3);
   await row.getByRole('link').click();

@@ -24,7 +24,7 @@ test('没有原生模型时要显式选 Hub 模型，「开始」才可用', asy
   await picker.getByRole('button', { name: '新建文件夹' }).click();
   await picker.getByLabel('新文件夹名').fill(folder);
   await picker.getByLabel('新文件夹名').press('Enter');
-  await picker.getByRole('button', { name: '使用', exact: true }).click();
+  await picker.getByRole('button', { name: '选此文件夹', exact: true }).click();
   await expect(run).toContainText(folder);
   const start = run.getByRole('button', { name: '开始', exact: true });
   await expect(run.locator('#derive-model')).toBeVisible();

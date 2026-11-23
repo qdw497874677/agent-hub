@@ -137,6 +137,14 @@ function Workspace() {
     if (project) void queryClient.invalidateQueries({ queryKey: ['canvas', project.id] });
   }, [project, queryClient]);
 
+  // 列表上的「刷新」：真的再拉一次，而且等它落地才算完（按钮转圈、期间禁用）。
+  // 顺手把项目清单也刷一遍——顶栏的项目名/数量就在那份数据里。
+  const refreshList = useCallback(async () => {
+    const results = await Promise.all([canvas.refetch(), projects.refetch()]);
+    const failed = results.find((result) => result.error !== null);
+    if (failed?.error) throw failed.error;
+  }, [canvas, projects]);
+
   // 内存里的会话流：先用画布投影的历史播种，之后只吃比它新的帧；断线重连后补帧并刷新画布。
   const { live, seed, loadHistory, state: stream } = useLiveStream(refresh);
 
@@ -495,6 +503,7 @@ function Workspace() {
               onTaskDetail={setTaskDetail}
               onNewTask={() => setNewTask(true)}
               onChanged={refresh}
+              onRefresh={refreshList}
               focusTaskId={createdTask?.id ?? null}
             />
           ) : display ? (
@@ -568,6 +577,11 @@ function Workspace() {
           onOpenSession={(sessionId) => {
             setTaskDetail(null);
             openSession(sessionId);
+          }}
+          onDerive={(id) => {
+            // 关掉详情再开配置：弹窗盖在抽屉上会变成两层，返回时也说不清该退到哪。
+            setTaskDetail(null);
+            setDeriveFor(id);
           }}
         />
       ) : null}

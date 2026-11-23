@@ -9,7 +9,7 @@ import type { Principal, Role, User, UserId } from '../account.ts';
 import type { MessageStore } from '../ports/message-store.ts';
 import type { AgentMessage, MessageAuditEntry, MessagingConfig, SpawnRecord } from '../messaging.ts';
 import type { PersistentAgentDefinition } from '../bot.ts';
-import { STORM_LIMITS, wrapUntrusted } from '../messaging.ts';
+import { STORM_LIMITS, HANDOFF_BUS_ORIGIN, wrapUntrusted } from '../messaging.ts';
 import { recordEvent } from './sessions.ts';
 import { createMessageBus } from './messaging.ts';
 import { canonicalLink } from '../session-link.ts';
@@ -38,6 +38,26 @@ function memoryMessages(): MessageStore & { all: Map<string, AgentMessage>; audi
     deliveredTo: async (s) => list().filter((m) => m.targetSessionId === s && m.status === 'delivered'),
     byTrace: async (t) => list().filter((m) => m.traceId === t),
     forSession: async (s, limit) => list().filter((m) => m.fromSessionId === s || m.targetSessionId === s).reverse().slice(0, limit),
+    byCandidateSource: async (projectId, sourceSessionId, limit) =>
+      list()
+        .filter(
+          (m) =>
+            m.projectId === projectId
+            && m.handoffOrigin === HANDOFF_BUS_ORIGIN
+            && m.kind === 'send'
+            && (m.parts ?? []).some((part) => {
+              if (part.type !== 'data' || part.schema !== 'project-candidate/v1') return false;
+              const data = part.data;
+              return (
+                typeof data === 'object'
+                && data !== null
+                && !Array.isArray(data)
+                && (data as Record<string, unknown>).sourceSessionId === sourceSessionId
+              );
+            })
+        )
+        .reverse()
+        .slice(0, limit),
     awaitingApproval: async (p) => list().filter((m) => m.projectId === p && m.status === 'awaiting_approval'),
     overdue: async (now) => list().filter((m) => m.kind === 'ask' && (m.status === 'queued' || m.status === 'delivered') && m.deadlineAt !== null && m.deadlineAt <= now),
     config: async (p) => configs.get(p) ?? null,
@@ -1031,6 +1051,38 @@ test('会话交接 P2：公共 accept 不接受调用方自报的放行标记', 
   const isolated = await w.bus.accept(legacyIsolation);
   assert.equal(!isolated.ok && isolated.error.code, 'forbidden');
   assert.match(!isolated.ok ? isolated.error.message : '', /默认隔离/);
+});
+
+test('会话交接 P2：来源标记只由交接入口写入；普通发送同 schema / 自报字段都不带', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+  const parts = [{ type: 'data' as const, schema: 'handoff/v1', data: { note: '看起来像交接' } }];
+
+  // 普通发送可以自选 data.schema，也可以多塞一个字段；都不能变成可信交接。
+  const forged = {
+    fromSessionId: a.id,
+    kind: 'send' as const,
+    to: `session:${b.id}`,
+    body: '普通消息',
+    parts,
+    handoffOrigin: HANDOFF_BUS_ORIGIN
+  };
+  const ordinary = await w.bus.accept(forged);
+  assert.ok(ordinary.ok);
+  const ordinaryStored = await w.messages.byId(ordinary.value.messageId);
+  assert.equal(ordinaryStored?.handoffOrigin, undefined, '普通发送不能自报可信来源');
+  assert.equal(ordinaryStored?.parts?.[0]?.type, 'data', '同样的 data.schema 也不影响判断');
+
+  const handed = await w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: b.id, body: '交接', requestKey: 'origin-1' });
+  assert.ok(handed.ok);
+  assert.equal((await w.messages.byId(handed.value.messageId))?.handoffOrigin, 'handoff_bus');
+
+  // 同键回执读同一行，标记仍在。
+  const replay = await w.bus.handoff({ fromSessionId: a.id, actorId: 'alice', targetSessionId: b.id, body: '交接', requestKey: 'origin-1' });
+  assert.ok(replay.ok);
+  assert.equal(replay.value.messageId, handed.value.messageId);
+  assert.equal((await w.messages.byId(replay.value.messageId))?.handoffOrigin, 'handoff_bus');
 });
 
 test('会话交接 P2：审计不落正文，只记录长度、parts 数和 wake', async () => {

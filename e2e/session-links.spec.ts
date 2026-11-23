@@ -3,6 +3,10 @@ import { mkdirSync } from 'node:fs';
 import { currentRun } from './run-id.ts';
 import { loginByApi } from './login.ts';
 import { chooseHubModel } from './hub-model.ts';
+import { ensureFakeWorker, stopFakeWorker } from './fake-worker.ts';
+
+// 只用本文件自己的假 agent：别的 spec 留下的离线假 ACP 机器不会挤进对话框的机器列表。
+const AGENT_ID = 'fakeacplinks';
 
 const RUN = currentRun();
 const PROJECT_NAME = `e2e-links-${RUN}`;
@@ -37,11 +41,17 @@ test.beforeAll(() => {
   mkdirSync(PROJECT_DIR, { recursive: true });
 });
 
+test.afterAll(() => {
+  stopFakeWorker();
+});
+
 test.beforeEach(async ({ page }) => {
   await loginByApi(page);
 });
 
-test('对话页选择器和画布拖线连的是同一份会话关系', async ({ page }) => {
+test('对话页选择器和画布拖线连的是同一份会话关系', async ({ page, baseURL }) => {
+  // 本机 Pi 的就绪探测会真起进程、机器忙时超时；这里固定用假 ACP，避免派生对话框一台机器都选不了。
+  const fakeWorkerId = await ensureFakeWorker(page, baseURL!, AGENT_ID);
   await page.goto('/');
 
   const nav = page.getByRole('complementary', { name: '首页侧栏' });
@@ -54,22 +64,24 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   await page.getByTestId('no-tasks').getByRole('button', { name: '新建任务' }).click();
   await page.getByRole('dialog', { name: '新建任务' }).getByLabel('标题').fill(TASK_TITLE);
   await page.getByRole('button', { name: '创建任务' }).click();
+  // 项目默认落在列表；这条用例看的是画布上的任务 / 会话节点。
+  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
   await expect(taskNode(page, TASK_TITLE)).toContainText('0 个会话');
 
   // 第一条会话：把 /tmp 下的目录登记成持久工作目录。
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
   const firstRun = page.getByRole('dialog', { name: '开始会话' });
+  await firstRun.locator('#derive-agent').selectOption(AGENT_ID);
   await firstRun.getByRole('radio', { name: /新建持久工作目录/ }).click();
   await firstRun.getByRole('radio', { name: '选已有目录' }).click();
   const picker = page.getByLabel('目录选择器');
   if ((await picker.count()) === 0) await firstRun.getByRole('button', { name: '浏览…' }).click();
-  const pathInput = picker.getByRole('combobox', { name: '路径' });
-  await expect(pathInput).toHaveValue(/\/$/);
+  await picker.getByRole('button', { name: '输入路径' }).click();
+  const pathInput = picker.getByRole('textbox', { name: '路径' });
   await pathInput.fill(PROJECT_DIR);
-  await expect(picker.getByRole('option').filter({ hasText: `agent-hub-e2e-links-${RUN}` }).first()).toHaveAttribute('data-selected', 'true');
   await pathInput.press('Enter');
-  await expect(pathInput).toHaveValue(`${PROJECT_DIR}/`);
-  await picker.getByRole('button', { name: '使用', exact: true }).click();
+  await expect(picker.getByRole('navigation', { name: '当前位置' }).locator('[aria-current="page"]')).toHaveAttribute('title', PROJECT_DIR);
+  await picker.getByRole('button', { name: '选此文件夹', exact: true }).click();
   await expect(firstRun).toContainText(`agent-hub-e2e-links-${RUN}`);
   await chooseHubModel(firstRun);
   await firstRun.getByRole('button', { name: '开始', exact: true }).click();
@@ -79,6 +91,7 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   // 第二条会话：直接选刚登记的工作目录。
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
   const secondRun = page.getByRole('dialog', { name: '开始会话' });
+  await secondRun.locator('#derive-agent').selectOption(AGENT_ID);
   const existing = secondRun.getByRole('radio').filter({ hasText: `agent-hub-e2e-links-${RUN}` }).first();
   await expect(existing).toBeVisible();
   await existing.click();
@@ -104,7 +117,8 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   await expect(checkbox).not.toBeChecked();
   // 同名会话也能靠任务 / 机器 / 工作目录 / 短号区分。
   const firstOption = dialog.getByTestId('session-link-options').locator('label').first();
-  const workerLabel = ((await (await page.request.get('/api/workers')).json()) as Array<{ label: string }>)[0]?.label ?? '本机';
+  const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ workerId?: string; id?: string; label: string }>;
+  const workerLabel = workers.find((worker) => (worker.workerId ?? worker.id) === fakeWorkerId)?.label ?? '本机';
   await expect(firstOption).toContainText(TASK_TITLE);
   await expect(firstOption).toContainText(workerLabel);
   await expect(firstOption).toContainText(/#[0-9a-f]{8}/);

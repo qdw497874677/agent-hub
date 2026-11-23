@@ -1,5 +1,6 @@
 import { AppShell, PageBody, PageHeader } from '../page-shell.tsx';
 import { SaveStatus } from '../../atoms/save-status.tsx';
+import { RefreshButton, useRefresh } from '../../atoms/refresh-button.tsx';
 import { BuiltinBadge } from '../builtin-badge.tsx';
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -296,9 +297,24 @@ function Pending() {
   const reviews = useQuery({ queryKey: [...KEY, 'reviews'], queryFn: marketApi.reviews });
   const requests = useQuery({ queryKey: [...KEY, 'install-requests'], queryFn: marketApi.installRequests });
   const decide = useMarketAction(({ id, approve }: { id: string; approve: boolean }) => marketApi.decideInstall(id, approve));
+  // 待审这一屏的两个 query 也喂着页签上的 pending-count：刷一次，标题里的数字一起新。
+  const refresh = useRefresh([[...KEY, 'reviews'], [...KEY, 'install-requests']]);
   return (
     <>
-      <Section title="等我审核">
+      <Section
+        title="等我审核"
+        aside={
+          <div className="flex self-center">
+            <RefreshButton
+              testId="market-pending-refresh"
+              label="刷新待审核列表"
+              busy={refresh.busy}
+              error={refresh.error}
+              onRefresh={refresh.refresh}
+            />
+          </div>
+        }
+      >
         <Panel>
           <ul>
             {(reviews.data ?? []).map(({ submission, asset, submitter, routedToHub }) => (
@@ -319,6 +335,11 @@ function Pending() {
           </ul>
           {reviews.data && !reviews.data.length ? <Empty text="没有等你审核的提交" /> : null}
         </Panel>
+        {refresh.error ? (
+          <p role="alert" data-testid="market-pending-refresh-error" className="mt-2 text-meta text-rust">
+            刷新没成功：{refresh.error}
+          </p>
+        ) : null}
       </Section>
       <Section title="安装申请（装到我管的机器）">
         <Panel>

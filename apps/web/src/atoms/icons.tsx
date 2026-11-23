@@ -149,6 +149,12 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle cx="12" cy="12" r="1" />
       <circle cx="19" cy="12" r="1" />
     </>
+  ),
+  refresh: (
+    <>
+      <path d="M20.5 12a8.5 8.5 0 1 1-2.49-6.01" />
+      <path d="M20.5 3.5V9h-5.5" />
+    </>
   )
 };
 

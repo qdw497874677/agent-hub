@@ -30,7 +30,9 @@ test('列表视图：按任务分组，手机上每行都有能区分的信息',
 
   await page.goto(`/#/p/${project.id}`);
   await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '列表', exact: true }).click();
-  await expect(page.getByTestId('list-context')).toContainText(project.name);
+  // 手机上顶栏已经有项目名，列表头只留计数（桌面仍显示项目名）
+  await expect(page.getByTestId('list-context')).toContainText('1 个任务 · 2 条会话');
+  await expect(page.getByTestId('list-refresh')).toBeVisible();
   const group = page.getByRole('region', { name: '任务：同名任务' });
   await expect(group.getByRole('heading')).toContainText('2 条会话');
   const rows = group.getByTestId('list-session-row');

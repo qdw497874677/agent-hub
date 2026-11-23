@@ -12,6 +12,7 @@ import {
   shortSha
 } from '../../atoms/delegation.ts';
 import { DelegationPublishDialog } from './publish-dialog.tsx';
+import { DelegationEvidenceDialog } from './delegation-evidence.tsx';
 
 const TONE_CLASS: Record<ReturnType<typeof delegationTone>, string> = {
   ok: 'text-sage',
@@ -53,6 +54,7 @@ export function DelegationPanel({
   const client = useQueryClient();
   const { rows, loading, error, reload } = useDelegations(coordinatorSessionId);
   const [publishing, setPublishing] = useState<DelegationDto | null>(null);
+  const [evidence, setEvidence] = useState<DelegationDto | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
 
@@ -186,6 +188,21 @@ export function DelegationPanel({
                   复核发布…
                 </button>
               ) : null}
+              {/*
+                验收和发布一样，只对能证明「当前执行会话存在」的派工开放：
+                没有执行会话就没有可核对的工作树，入口也不画（宁可少一个，不给幽灵链接）。
+              */}
+              {record.executionSessionExists === true ? (
+                <button
+                  type="button"
+                  className="min-h-9 rounded-control border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary"
+                  onClick={() => setEvidence(record)}
+                  data-testid="delegation-evidence-open"
+                  data-delegation-id={record.id}
+                >
+                  验收…
+                </button>
+              ) : null}
             </div>
           </li>
         ))}
@@ -198,6 +215,14 @@ export function DelegationPanel({
           onPublished={() => {
             void client.invalidateQueries({ queryKey: delegationKeys.forCoordinator(coordinatorSessionId) });
           }}
+        />
+      ) : null}
+
+      {evidence !== null ? (
+        <DelegationEvidenceDialog
+          record={evidence}
+          taskTitle={titleOf(evidence.taskId)}
+          onClose={() => setEvidence(null)}
         />
       ) : null}
     </section>

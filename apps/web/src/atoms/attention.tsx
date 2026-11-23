@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, connectorApi, type AttentionItemDto, type AttentionPhase } from '../shell/api.ts';
 import { formatRoute } from '../shell/route.ts';
@@ -146,7 +146,14 @@ export function useAutoAck(sessionId: string | null, delayMs = 3000) {
 }
 
 /** 首页顶部收件箱；没事时收成一行灰字。 */
-export function AttentionInbox({ onOpen }: { onOpen(item: AttentionItemDto): void }) {
+export function AttentionInbox({
+  onOpen,
+  headerAction
+}: {
+  onOpen(item: AttentionItemDto): void;
+  /** 标题行右端的动作（首页放刷新）：空态和加载态也留着这一行，按钮不跳位。 */
+  headerAction?: ReactNode;
+}) {
   const attention = useAttention();
   const ack = useAckAttention();
   const narrow = useNarrow();
@@ -208,15 +215,31 @@ export function AttentionInbox({ onOpen }: { onOpen(item: AttentionItemDto): voi
     </div>
   ) : null;
 
-  if (!attention.data) return <><ConnectorNotices />{undoStrip}</>;
+  if (!attention.data) {
+    return (
+      <>
+        <ConnectorNotices />
+        {headerAction ? (
+          <div className="mb-4 flex items-center justify-between gap-2">
+            <p className="text-meta text-tertiary">等我处理</p>
+            <div className="shrink-0">{headerAction}</div>
+          </div>
+        ) : null}
+        {undoStrip}
+      </>
+    );
+  }
   const { items, working } = attention.data;
   if (items.length === 0) {
     return (
       <>
         <ConnectorNotices />
-        <p data-testid="attention-quiet" className="mb-4 text-meta text-tertiary">
-          没有待办{working > 0 ? ` · ${working} 条在跑` : ''}
-        </p>
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <p data-testid="attention-quiet" className="text-meta text-tertiary">
+            没有待办{working > 0 ? ` · ${working} 条在跑` : ''}
+          </p>
+          {headerAction ? <div className="shrink-0">{headerAction}</div> : null}
+        </div>
         {undoStrip}
       </>
     );
@@ -227,16 +250,20 @@ export function AttentionInbox({ onOpen }: { onOpen(item: AttentionItemDto): voi
   return (
     <><ConnectorNotices />
     <section data-testid="attention-inbox" className="mb-5 rounded-md border border-rust/40 bg-card">
-      {/* 角标跳过来时焦点落在这行标题上：读屏会先念「等我处理 · N」，再往下 Tab 才是各条。 */}
-      <h2
-        id="attention-title"
-        data-testid="attention-title"
-        tabIndex={-1}
-        className="border-b border-hair px-3 py-2 text-meta font-normal text-primary outline-none focus-visible:outline-2"
-      >
-        等我处理 · {items.length}
-        {working > 0 ? <span className="text-tertiary"> （另有 {working} 条在跑）</span> : null}
-      </h2>
+      {/* 角标跳过来时焦点落在这行标题上：读屏会先念「等我处理 · N」，再往下 Tab 才是各条。
+          刷新放在标题行右端，不占顶栏动作位；手机上按钮自己撑满 44px。 */}
+      <div className="flex items-center justify-between gap-1 border-b border-hair pl-3 pr-1">
+        <h2
+          id="attention-title"
+          data-testid="attention-title"
+          tabIndex={-1}
+          className="min-w-0 flex-1 py-2 text-meta font-normal text-primary outline-none focus-visible:outline-2"
+        >
+          等我处理 · {items.length}
+          {working > 0 ? <span className="text-tertiary"> （另有 {working} 条在跑）</span> : null}
+        </h2>
+        {headerAction ? <div className="shrink-0">{headerAction}</div> : null}
+      </div>
       <ul>
         {preview.map((item) => (
           <li key={`${item.sessionId}|${item.phase}`} data-testid="attention-item" data-phase={item.phase}

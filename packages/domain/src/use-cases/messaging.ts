@@ -11,6 +11,7 @@ import {
   MAX_ASK_TIMEOUT_SEC,
   MAX_BODY_CHARS,
   STORM_LIMITS,
+  HANDOFF_BUS_ORIGIN,
   defaultHandle,
   isHandle,
   externalAddress,
@@ -808,7 +809,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
           replyStatus: null,
           replyParts: [],
           readAt: null,
-          holdReason
+          holdReason,
+          handoffOrigin: HANDOFF_BUS_ORIGIN
         };
         try {
           await deps.messages.save(message);

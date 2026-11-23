@@ -19,6 +19,16 @@ export interface MessageStore {
   byTrace(traceId: string): Promise<AgentMessage[]>;
   /** 进出这个会话的消息（新的在前）。 */
   forSession(sessionId: SessionId, limit: number): Promise<AgentMessage[]>;
+  /**
+   * 项目内以某个会话为候选来源的交接消息（新的在前，VibeX 二期 V6）。
+   * 只做粗筛：项目 + Hub 交接来源 + `project-candidate/v1` 里 `sourceSessionId` 命中。
+   * 调用方仍要逐条复核候选 project / 仓库 / 完整 SHA 和读权限，不能直接当证据。
+   */
+  byCandidateSource(
+    projectId: ProjectId,
+    sourceSessionId: SessionId,
+    limit: number
+  ): Promise<AgentMessage[]>;
   /** 项目里等人批的派生请求。 */
   awaitingApproval(projectId: ProjectId): Promise<AgentMessage[]>;
   /** 到点了还没回的 ask（queued / delivered，deadlineAt ≤ now）。 */
