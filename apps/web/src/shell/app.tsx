@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AttachmentInputDto, CanvasDto, ProjectDto, PromptAckDto, TaskDto } from './api.ts';
+import type { AttachmentInputDto, CanvasDto, ProjectDto, PromptAckDto, SessionDto, TaskDto } from './api.ts';
 import { api } from './api.ts';
 import { HomePage } from '../surfaces/workbench/home.tsx';
 import { AdminPage } from './admin/page.tsx';
@@ -29,6 +29,7 @@ import { Sheet } from './dialog-shell.tsx';
 import { TaskDetail } from '../surfaces/workbench/task-detail.tsx';
 import { UndoToast } from '../atoms/undo-toast.tsx';
 import { splitArchivedTasks } from '../atoms/task-display.ts';
+import { patchCanvasSessionConfig, patchSessionConfig, patchCanvasTask } from './confirmed-patch.ts';
 import type { View } from './route.ts';
 
 const LAST_PROJECT = 'agent-hub:last-project';
@@ -124,7 +125,7 @@ function Workspace() {
 
   const canvas = useQuery({
     queryKey: ['canvas', project?.id],
-    queryFn: () => api.canvas(project?.id ?? ''),
+    queryFn: ({ signal }) => api.canvas(project?.id ?? '', signal),
     enabled: project !== null,
     // Worker 还没上线时自己轮询：别让「等 worker」变成用户要记住的手动刷新
     refetchInterval: (query) => ((query.state.data?.agents.length ?? 0) === 0 ? 2000 : false)
@@ -136,6 +137,26 @@ function Workspace() {
   const refresh = useCallback(() => {
     if (project) void queryClient.invalidateQueries({ queryKey: ['canvas', project.id] });
   }, [project, queryClient]);
+
+  /**
+   * 归档回执只负责 archivedAt：先掐掉可能在飞的旧画布请求，再把这一条并进缓存。
+   * 不整张重拉——列表不该为一次归档等一圈网络，旧响应也不该把刚改的投影盖回去；
+   * 任务其余字段可能比回执新（SSE 已推过），合并时保留它们。
+   * 没有回执的调用（删会话、分叉等）仍走原来的刷新。
+   */
+  const applyTask = useCallback(
+    async (task?: TaskDto) => {
+      if (!project || !task) {
+        refresh();
+        return;
+      }
+      await queryClient.cancelQueries({ queryKey: ['canvas', project.id] });
+      queryClient.setQueryData<CanvasDto>(['canvas', project.id], (current) =>
+        current ? patchCanvasTask(current, task) : current
+      );
+    },
+    [project, queryClient, refresh]
+  );
 
   // 列表上的「刷新」：真的再拉一次，而且等它落地才算完（按钮转圈、期间禁用）。
   // 顺手把项目清单也刷一遍——顶栏的项目名/数量就在那份数据里。
@@ -181,15 +202,43 @@ function Workspace() {
     [refresh]
   );
 
-  // 改可调项：候选清单是 agent 报的，服务端把新值交给 agent 后才落库。
+  // 同一会话连点两下：只认最后一次请求的回执，别让先到的旧配置盖住后选的。
+  const optionRequests = useRef(new Map<string, number>());
+
+  /**
+   * 改可调项：回执是服务端落库后的快照，可能仍是旧值（agent 超时没确认）。
+   * 所以只并这条请求负责的 model/options/optionSpec，成功与否都看回执，不假装已切到目标。
+   */
   const changeOption = useCallback(
     async (sessionId: string, optionId: string, value: string | boolean) => {
-      await api.changeOption(sessionId, optionId, value);
-      refresh();
+      const projectId = project?.id;
+      const request = (optionRequests.current.get(sessionId) ?? 0) + 1;
+      optionRequests.current.set(sessionId, request);
+
+      const confirmed = await api.changeOption(sessionId, optionId, value);
+
+      // 两个取消都要等完：等的过程中可能又发起了下一次修改，落地前再认一次「我是不是最新的」。
+      await Promise.all([
+        projectId ? queryClient.cancelQueries({ queryKey: ['canvas', projectId] }) : undefined,
+        queryClient.cancelQueries({ queryKey: ['session', sessionId] })
+      ]);
+      if (optionRequests.current.get(sessionId) !== request) return;
+
+      // 中间没有 await：旧回执不会在这里插进来。
+      if (projectId) {
+        queryClient.setQueryData<CanvasDto>(['canvas', projectId], (current) =>
+          current ? patchCanvasSessionConfig(current, confirmed) : current
+        );
+      }
+      // 侧聊不进画布，单条会话缓存也要跟回执对齐。
+      queryClient.setQueryData<SessionDto>(['session', sessionId], (current) =>
+        current ? patchSessionConfig(current, confirmed) : current
+      );
     },
-    [refresh]
+    [project, queryClient]
   );
 
+  // 停止只是「已经请求」：真正结束以运行时回来的状态帧为准，这里只刷新拿服务端证据。
   const interruptSession = useCallback(
     async (sessionId: string) => {
       await api.interrupt(sessionId);
@@ -502,7 +551,7 @@ function Workspace() {
               onDerive={setDeriveFor}
               onTaskDetail={setTaskDetail}
               onNewTask={() => setNewTask(true)}
-              onChanged={refresh}
+              onChanged={applyTask}
               onRefresh={refreshList}
               focusTaskId={createdTask?.id ?? null}
             />

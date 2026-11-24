@@ -277,6 +277,14 @@ body {
     height: 1.75rem;
   }
 }
+/* 触屏上「模型 / Agent / 思考强度」和发送圆点一样是 44px 的点击目标。
+   放在 md 规则之后：同等优先级靠后覆盖，别让 2.5rem 的小盒子把触屏目标缩回去。 */
+@media (pointer: coarse) {
+  .option-control {
+    height: 44px;
+    min-height: 44px;
+  }
+}
 
 /* React Flow 默认的浅色变量在这一层被覆盖 */
 .react-flow {

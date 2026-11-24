@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { RuntimeOptionDto } from '../shell/api.ts';
 import { ModelPicker } from './model-picker.tsx';
 import type { ModelItem } from './model-list.ts';
@@ -6,7 +7,7 @@ import { filterModelsByScope, sameModelScope, scopeNote } from './model-scope.ts
 interface Props {
   readonly options: readonly RuntimeOptionDto[];
   readonly values: Readonly<Record<string, string | boolean>>;
-  readonly onChange: (optionId: string, value: string | boolean) => void;
+  readonly onChange: (optionId: string, value: string | boolean) => void | Promise<unknown>;
   /** 卡片里空间只有 320px：只留模型、Agent、模式与思考强度，其余在检查器里。 */
   readonly compact?: boolean;
   readonly disabled?: boolean;
@@ -35,6 +36,22 @@ export function currentOf(
 const CHIP = 'rounded-full border border-hair bg-transparent px-2.5 hover:bg-hover';
 
 export function OptionControls({ options, values, onChange, compact = false, disabled = false }: Props) {
+  // 一次请求没回来之前，这个可调项显示“切换中…”，但绝不显示还没被确认的目标值。
+  const [pending, setPending] = useState<Readonly<Record<string, true>>>({});
+  const runChange = (optionId: string, value: string | boolean) => {
+    const result = onChange(optionId, value);
+    if (!(result instanceof Promise)) return;
+    setPending((current) => ({ ...current, [optionId]: true }));
+    const clear = () =>
+      setPending((current) => {
+        if (current[optionId] !== true) return current;
+        const next = { ...current };
+        delete next[optionId];
+        return next;
+      });
+    // 失败由调用方呈现；这里只负责把“切换中”收掉，别留下未处理的 rejection。
+    void result.then(clear, clear);
+  };
   const visible = compact
     ? options
         .filter((option) => COMPACT_CATEGORIES.includes(option.category))
@@ -51,6 +68,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
     >
       {visible.map((option) => {
         const current = currentOf(options, values, option);
+        const waiting = pending[option.id] === true;
         if (option.kind === 'boolean') {
           return (
             <label
@@ -62,8 +80,9 @@ export function OptionControls({ options, values, onChange, compact = false, dis
                 type="checkbox"
                 aria-label={option.label}
                 checked={current === true}
-                disabled={disabled}
-                onChange={(event) => onChange(option.id, event.target.checked)}
+                disabled={disabled || waiting}
+                aria-busy={waiting || undefined}
+                onChange={(event) => runChange(option.id, event.target.checked)}
               />
               {option.label}
             </label>
@@ -84,9 +103,10 @@ export function OptionControls({ options, values, onChange, compact = false, dis
               scope={option.id}
               items={scoped.items}
               value={String(current)}
-              disabled={disabled}
+              disabled={disabled || waiting}
+              pending={waiting}
               note={note}
-              onChange={(value) => onChange(option.id, value)}
+              onChange={(value) => runChange(option.id, value)}
               short={compact}
               className={`${compact ? `min-w-[80px] flex-1 option-control ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} max-w-[160px] text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
             />
@@ -102,11 +122,12 @@ export function OptionControls({ options, values, onChange, compact = false, dis
             data-category={option.category}
             className={`${compact ? 'shrink-0' : ''} ${option.category === 'agent' ? 'max-w-[112px]' : 'max-w-[72px] sm:max-w-[132px]'} ${compact ? `option-control appearance-none ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} truncate text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
             value={String(current)}
-            disabled={disabled}
+            disabled={disabled || waiting}
+            aria-busy={waiting || undefined}
             // 下拉里选东西不该顺手把卡片拖走
             onClick={(event) => event.stopPropagation()}
             onDoubleClick={(event) => event.stopPropagation()}
-            onChange={(event) => onChange(option.id, event.target.value)}
+            onChange={(event) => runChange(option.id, event.target.value)}
           >
             <>
                 {option.choices.length === 0 ? <option value={String(current)}>{String(current)}</option> : null}

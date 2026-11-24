@@ -537,7 +537,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           <OptionControls
             options={sessionOptions.options}
             values={session.options}
-            onChange={(optionId, value) => void run(() => onChangeOption(optionId, value))}
+            onChange={(optionId, value) => run(() => onChangeOption(optionId, value))}
             compact
           />
           {/* 卡片宽 320px：提醒单独一行，宁可多一行也不压模型下拉。 */}

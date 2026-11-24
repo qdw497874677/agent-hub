@@ -264,12 +264,15 @@ test('项目能力：默认全关、六项独立开启、单关是减法、最�
     '任何时候都不该发空的 scopes 数组'
   ).toBe(false);
 
-  // 手机 390：详情是底部抽屉；最后一项的授权行和开关也要在视口里、能点到。
+  // 手机 390：详情是底部抽屉；项目能力默认收成一行摘要，点开才是六行开关。
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   panel = await openDetails(page);
   const mobileSection = panel.getByTestId('project-grant');
   await expect(mobileSection).toBeVisible({ timeout: 20_000 });
+  await expect(mobileSection.locator(':scope > summary')).toBeVisible();
+  await expect(panel.locator('[data-testid="project-grant-row"]').first()).toBeHidden();
+  await mobileSection.locator(':scope > summary').click();
   const mobileAsset = mobileSection.locator('[data-testid="project-grant-row"][data-scope="asset:write"]');
   await mobileAsset.scrollIntoViewIfNeeded();
   await expect(mobileAsset.getByTestId('project-grant-toggle')).toBeVisible();

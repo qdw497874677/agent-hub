@@ -1,11 +1,19 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { deliveryApi, type DeliveryDto } from '../shell/api.ts';
+import { deliveryNeedsAction, HELD_DELIVERY_STATES, queuedBehind } from './turn-hint.ts';
 
-/** 送达状态（ADR 0031 D2）：按 prompt 的 seq 查。送达了就什么都不显示（安静）。 */
-export const DeliveryContext = createContext<{ sessionId: string; bySeq: ReadonlyMap<number, DeliveryDto> } | null>(null);
-
-const PENDING = new Set(['queued', 'sending', 'undelivered']);
+/**
+ * 送达状态（ADR 0031 D2）：按 prompt 的 seq 查。送达了就什么都不显示（安静）。
+ *
+ * `quiet` 给窄屏用：纯等待（还在投递 / 排队等前面那条）由对话末尾那一条进度说，
+ * 气泡下面就不再重复；要人动手的（未送达、重试倒计时、带回撤的排队）照旧显示在这儿。
+ */
+export const DeliveryContext = createContext<{
+  sessionId: string;
+  bySeq: ReadonlyMap<number, DeliveryDto>;
+  quiet?: boolean;
+} | null>(null);
 
 /**
  * 送达状态按会话缓存。eventCount 只当「又有事件了」的提醒，不进 key：
@@ -17,7 +25,7 @@ export function useDeliveries(sessionId: string, eventCount: number) {
     queryFn: () => deliveryApi.list(sessionId),
     retry: false,
     staleTime: 0,
-    refetchInterval: (q) => ((q.state.data ?? []).some((d) => PENDING.has(d.state)) ? 2_000 : false)
+    refetchInterval: (q) => ((q.state.data ?? []).some((d) => HELD_DELIVERY_STATES.has(d.state)) ? 2_000 : false)
   });
   const lastCount = useRef(eventCount);
   useEffect(() => {
@@ -47,8 +55,12 @@ export function DeliveryNote({ seq }: { seq: number }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const now = useNow(d?.state === 'queued' && d.nextAt !== null);
-  if (!ctx || !d || !PENDING.has(d.state)) {
+  if (!ctx || !d || !HELD_DELIVERY_STATES.has(d.state)) {
     return d?.state === 'cancelled' ? <p className="text-meta text-tertiary" data-testid="delivery-note">已撤回 · 没有发给 agent</p> : null;
+  }
+  // 窄屏：纯等待的两种（投递在途、排队等前面那条）由 turn-hint 统一说，这里不重复。
+  if (ctx.quiet === true && (d.state === 'sending' || (d.state === 'queued' && !deliveryNeedsAction(d, ctx.bySeq.values())))) {
+    return null;
   }
   const act = (run: typeof deliveryApi.retry) => async () => {
     setBusy(true);
@@ -77,7 +89,7 @@ export function DeliveryNote({ seq }: { seq: number }) {
   else if (d.state === 'undelivered')
     body = <span className="text-rust" title={d.lastError ?? undefined}>未送达{d.lastError ? `：${d.lastError}` : ''}{actions}</span>;
   else if (d.attempt === 0) {
-    const behind = [...ctx.bySeq.values()].some((o) => o.seq < d.seq && PENDING.has(o.state));
+    const behind = queuedBehind(d, ctx.bySeq.values());
     body = behind
       ? <span className="text-tertiary">排队中 · 等上一条送达</span>
       : <span className="text-tertiary">排队中 · {cancel}</span>;

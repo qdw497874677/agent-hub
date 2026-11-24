@@ -67,7 +67,9 @@ export function turnProgress({ blocks, awaiting, startedAt, now, agentLabel }: T
   let label: string;
   if (after.length === 0) {
     phase = 'starting';
-    label = `正在启动 ${agentLabel}…`;
+    // 「启动中」是从「还没有任何块」推出来的：进程可能早就起来了，只是还没说话。
+    // 所以只说在等什么，不替运行时宣称已经启动。
+    label = `等 ${agentLabel} 的第一条输出…`;
   } else if (last?.kind === 'tool') {
     phase = 'tool';
     label = `正在用 ${shortTool(last.name)}…`;
@@ -77,7 +79,8 @@ export function turnProgress({ blocks, awaiting, startedAt, now, agentLabel }: T
   } else {
     // 只有 artifact / subagent / 批准卡这类登记信息：模型还没开口，别假装它在写。
     phase = 'waiting';
-    label = '已发送，等待模型…';
+    // 不说「已发送」：走到这里说明运行时确实动了，但说的是「在等回应」，不是替服务器宣布送达。
+    label = '等待模型回应…';
   }
 
   // 「正在回复」四个字保留在这里：悬停、读屏、以及 e2e 的 `/正在回复/` 都认它。

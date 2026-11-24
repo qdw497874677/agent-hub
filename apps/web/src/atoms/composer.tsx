@@ -35,7 +35,7 @@ interface Props {
   /** 专注对话里盒子更大、能长高；画布右栏里它受限于 320px 宽。 */
   readonly large?: boolean;
   /** agent 自己报上来的可调项（模型、思考强度、模式…），原样渲染。 */
-  readonly onChangeOption: (optionId: string, value: string | boolean) => void;
+  readonly onChangeOption: (optionId: string, value: string | boolean) => void | Promise<unknown>;
   /** 这个 agent 收不收附件：denied 时按钮灰掉并说原因，limited 时提示怎么降级。 */
   readonly capability: CapabilityDto;
   /** `/` 命令面板里能选的动作。 */
@@ -530,10 +530,13 @@ export function Composer({
             size={large ? 'md' : 'sm'}
           />
         </div>
-        {/* 「换提供商会重启进程」：独占一行、放在底栏下面，窄屏也不会把模型控件挤成一条线。 */}
-        <div className="mt-1 empty:hidden">
-          <HubSwitchNote note={sessionOptions.note} />
-        </div>
+        {/* 「换提供商会重启进程」：桌面独占一行放在底栏下面。窄屏把它移到模型选择器里
+            （换提供方这件事是在那里发生的），输入区只留一行模型芯片。 */}
+        {sessionOptions.note === undefined ? null : (
+          <div className="mt-1 hidden md:block">
+            <HubSwitchNote note={sessionOptions.note} />
+          </div>
+        )}
       </div>
     </div>
   );

@@ -135,6 +135,11 @@ export interface PendingPromptsProps {
    * 传了就以它为准（不再叠默认 gap，Tailwind 的同类工具类谁排在后面谁赢，不能靠拼接顺序）。
    */
   readonly className?: string;
+  /**
+   * 窄屏：已在本地发出去、还没写进对话的那条，状态由对话末尾的 turn-hint 统一说，
+   * 这里就不再重复一行。未送达（带重试/放弃）永远保留：那是要人动手的。
+   */
+  readonly quiet?: boolean;
 }
 
 /**
@@ -148,7 +153,8 @@ export function PendingPrompts({
   renderPrompt,
   testIdPrefix = '',
   compact = false,
-  className = ''
+  className = '',
+  quiet = false
 }: PendingPromptsProps) {
   if (pending.length === 0) return null;
   return (
@@ -171,6 +177,7 @@ export function PendingPrompts({
             onRetry={onRetry}
             onDiscard={onDiscard}
             testIdPrefix={testIdPrefix}
+            quiet={quiet}
           />
         </div>
       ))}
@@ -186,12 +193,14 @@ function PendingStateLine({
   prompt,
   onRetry,
   onDiscard,
-  testIdPrefix
+  testIdPrefix,
+  quiet
 }: {
   readonly prompt: PendingPrompt;
   readonly onRetry: (prompt: PendingPrompt) => void;
   readonly onDiscard: (id: string) => void;
   readonly testIdPrefix: string;
+  readonly quiet: boolean;
 }) {
   if (prompt.state === 'unknown') {
     return (
@@ -220,6 +229,8 @@ function PendingStateLine({
       </div>
     );
   }
+  // 窄屏只留一条进度：这条已经在发、还没有结果，等 turn-hint 那一行说。
+  if (quiet) return null;
   return (
     <p
       className="max-w-[85%] self-end truncate text-right text-meta text-tertiary transition-opacity duration-150"

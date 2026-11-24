@@ -1,0 +1,127 @@
+import type { DeliveryDto } from '@agent-hub/contract';
+import type { PendingPrompt } from './pending-prompt.ts';
+import type { TurnPhase, TurnProgress } from './turn-progress.ts';
+
+/**
+ * 窄屏对话末尾的那**一条**进度：现在到底到哪一步了。
+ *
+ * 原来同一件事有三处说法：气泡下面的「发送中…」、输入框上方的「正在启动 …」、还有一个「⋯」，
+ * 手机上三条叠在一起，读起来像三件不同的事。这里只挑一条，而且只挑有证据的：
+ *
+ * 1. 还只在本机、或刚拿到回执还没写进对话的那一条（`pending`）才是「当前这一句」——
+ *    上一句的运行时进度不能算到它头上；
+ * 2. 服务器收下了（`DeliveryDto` 的 queued / sending）——排队 / 投递在途，仍是送达层的事实；
+ * 3. 只有**看到这一轮的输出或工具**（`writing` / `tool`）才说运行时。
+ *    「还没有块」（`starting`）和「只有登记块」（`waiting`）都只是没有证据，不等于 agent 在动。
+ *
+ * 两条硬约束：
+ * - 不看时钟推断成败：状态只由服务端/运行时的事实推进，等再久也不会自己变成「失败」；
+ * - 不因为「在发 / 服务器收下了」就说「已发送」或「已启动」：这两句要等真正的事实。
+ *
+ * 有动作要人做的那几种（未送达、重试倒计时、撤回）不在这里说：那几行自带按钮，
+ * 留在气泡下面更近，见 `deliveryNeedsAction`。
+ */
+
+/** 还没送到的送达状态：气泡留在原位，只是样子淡一点。 */
+export const HELD_DELIVERY_STATES: ReadonlySet<DeliveryDto['state']> = new Set(['queued', 'sending', 'undelivered']);
+
+/** 这一条前面还有没送到的消息吗（那它就是在排队，不是在投递）。 */
+export function queuedBehind(delivery: DeliveryDto, all: Iterable<DeliveryDto>): boolean {
+  for (const other of all) {
+    if (other.seq < delivery.seq && HELD_DELIVERY_STATES.has(other.state)) return true;
+  }
+  return false;
+}
+
+/**
+ * 气泡下面那行是不是「要人动手」：报错、重试倒计时、撤回。
+ *
+ * 是的话它就是这件事唯一的说法，对话末尾不再重复一条进度；不是的话（纯等待）
+ * 由 `turnHint` 那一条承担，气泡下面保持安静。
+ */
+export function deliveryNeedsAction(delivery: DeliveryDto, all: Iterable<DeliveryDto>): boolean {
+  if (delivery.state === 'undelivered' || delivery.attempt > 0) return true;
+  // 排在别人后面时只写「等上一条送达」，没有按钮；轮到它自己才有「撤回」。
+  return delivery.state === 'queued' && !queuedBehind(delivery, all);
+}
+
+/** 这一条进度说的是哪一层的事：送达（服务端）还是运行时（agent 进程）。 */
+export type TurnHintStage = 'delivery' | 'runtime';
+
+export interface TurnHint {
+  /** 一行主文案。窄屏会截断，控制在十几个字以内。 */
+  readonly text: string;
+  /** 完整说明：不悬停、不展开也能读懂（`title` / `aria-label`）。 */
+  readonly detail: string;
+  readonly stage: TurnHintStage;
+  readonly phase: 'sending' | 'queued' | 'starting' | 'waiting' | 'writing' | 'tool';
+}
+
+export interface TurnHintInput {
+  /** 还没写进对话的消息（本地乐观气泡）。 */
+  readonly pending: readonly PendingPrompt[];
+  /** 最后一条问话的送达状态；还没查到就是 undefined。 */
+  readonly delivery: DeliveryDto | undefined;
+  /** 这条会话全部送达状态：判断「是不是排在别人后面」要用。 */
+  readonly deliveries: Iterable<DeliveryDto>;
+  /** 这一轮的运行时进度（`turnProgress`）；回合没在跑时是 null。 */
+  readonly progress: TurnProgress | null;
+}
+
+/** 能算作「agent 真的在动」的相位：要么有输出，要么在等工具。空窗和只有登记块都不算。 */
+const RUNTIME_ACTIVITY: ReadonlySet<TurnPhase> = new Set<TurnPhase>(['writing', 'tool']);
+
+export function turnHint({ pending, delivery, deliveries, progress }: TurnHintInput): TurnHint | null {
+  // 1. 本地还有一条比 `delivery` 更晚的消息（没回执，或已有回执但还没写进对话）：
+  //    当前这一句是它，运行时进度属于上一句，不能借来说它。
+  const newest = pending[pending.length - 1];
+  if (newest !== undefined && (newest.seq === undefined || delivery === undefined || newest.seq > delivery.seq)) {
+    // 超时只是「不确定」，不是失败：重试 / 放弃两个按钮在那行上，别在这里再说一遍。
+    if (newest.state === 'unknown') return null;
+    if (newest.state === 'queued') {
+      return {
+        text: '排队中 · 还没交给 agent',
+        detail: '服务器已经收下这条消息，前面那条还没送完',
+        stage: 'delivery',
+        phase: 'queued'
+      };
+    }
+    return {
+      text: '正在发送…',
+      detail: newest.seq === undefined ? '消息已经发出，还没收到服务器的回执' : '服务器已经收下这条消息，正在交给 agent',
+      stage: 'delivery',
+      phase: 'sending'
+    };
+  }
+
+  // 2. 服务端已经收下（或正在投递）：这是持久化的事实，不是运行时。
+  //    `sending` 会一直占到这一轮真的结束（结束证据才写 delivered，ADR 0031 D2），
+  //    所以它压不住**有证据**的运行时；但「还没有块」只是没证据，送达层怎么说就怎么说。
+  if (delivery !== undefined && HELD_DELIVERY_STATES.has(delivery.state)) {
+    if (deliveryNeedsAction(delivery, deliveries)) return null;
+    if (delivery.state === 'sending') {
+      if (progress !== null && RUNTIME_ACTIVITY.has(progress.phase)) {
+        return { text: progress.label, detail: progress.detail, stage: 'runtime', phase: progress.phase };
+      }
+      return {
+        text: '正在发送…',
+        detail: '服务器正在把这条消息交给 agent，还没看到它的输出',
+        stage: 'delivery',
+        phase: 'sending'
+      };
+    }
+    return {
+      text: '排队中 · 还没交给 agent',
+      detail: '服务器已经存下这条消息，前面那条还没送完',
+      stage: 'delivery',
+      phase: 'queued'
+    };
+  }
+  if (delivery?.state === 'cancelled') return null;
+
+  // 3. 运行时：只认输出 / 工具。「还没有块」和「只有登记块」都不算 agent 在动。
+  if (progress !== null && RUNTIME_ACTIVITY.has(progress.phase)) {
+    return { text: progress.label, detail: progress.detail, stage: 'runtime', phase: progress.phase };
+  }
+  return null;
+}

@@ -91,7 +91,10 @@ test('送达状态：未送达 / 排队中 / 撤回 / 重连后送达', async ({
     await expect(log.getByText('离线时发的第三句')).toBeVisible();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/delivery-pending-1280.png` });
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(notes.nth(1)).toBeVisible();
+    // 窄屏只留一条进度：排在后面的那条不再在气泡下重复，改成对话末尾那一条；
+    // 未送达（带「立即重试 / 撤回」）仍然留在气泡下面，那是要人动手的。
+    await expect(page.getByTestId('delivery-note')).toHaveCount(1);
+    await expect(page.getByTestId('turn-hint')).toContainText('排队中');
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/delivery-pending-390.png` });
     await page.setViewportSize({ width: 1280, height: 800 });
 

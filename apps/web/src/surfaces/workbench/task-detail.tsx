@@ -10,6 +10,7 @@ import { useAccount } from '../../shell/auth.tsx';
 import { canAdminister } from '../../shell/account-context.ts';
 import { defaultAgentSummary, type DefaultAgentRef } from '../../shell/default-agent.ts';
 import { DefaultAgentEditor } from './default-agent-editor.tsx';
+import { patchCanvasTask } from '../../shell/confirmed-patch.ts';
 
 /** 可选的交接模板（只是一段可插入的文字，不是日志类型）：与 domain 的 HANDOFF_TEMPLATE 同文（web 不依赖 domain，抄一份）。 */
 const HANDOFF_TEMPLATE = '## 已完成\n- \n\n## 进行中\n- \n\n## 下一步\n- \n\n## 风险/待决\n- \n\n## 关键文件\n- ';
@@ -169,7 +170,12 @@ export function TaskDetail({
   });
   const archive = useMutation({
     mutationFn: (next: boolean) => api.archiveTask(taskId, next),
-    onSuccess: refresh
+    // 回执就是新投影：掐掉在飞的旧画布再替换这一条，按钮和“已归档”标记不必等整张画布。
+    onSuccess: async (updated) => {
+      const key = projectKeys.canvas(canvas.project.id);
+      await client.cancelQueries({ queryKey: key });
+      client.setQueryData<CanvasDto>(key, (current) => (current ? patchCanvasTask(current, updated) : current));
+    }
   });
 
   if (!task) return null;

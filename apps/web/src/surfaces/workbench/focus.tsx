@@ -16,7 +16,7 @@ import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
 import { Composer } from '../../atoms/composer.tsx';
 import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './continue-elsewhere.tsx';
 import { SessionDetails } from './inspector.tsx';
-import { useWide } from '../../shell/device.ts';
+import { useNarrow, useWide } from '../../shell/device.ts';
 import { localTime } from '../../shell/local-time.ts';
 import { StatusPill } from '../../atoms/status.tsx';
 import { attachmentsCapability } from '../../atoms/attachments.ts';
@@ -25,6 +25,7 @@ import { ScrollToEnd } from '../../atoms/scroll-to-end.tsx';
 import { backgroundActivityText } from '../../atoms/background-activity.ts';
 import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
 import { useTurnProgress } from '../../atoms/use-turn-progress.ts';
+import { turnHint } from '../../atoms/turn-hint.ts';
 import { TurnWave } from '../../atoms/wave.tsx';
 import { sessionCommands } from '../../atoms/commands.ts';
 import { useIsFetching, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -35,6 +36,7 @@ import { FilesBrowser, type Reveal } from '../../atoms/files-browser.tsx';
 import { appendRef } from '../../atoms/diff-selection.ts';
 import { GitDialog, PullRequestChips } from './git-dialog.tsx';
 import { RepoSwitcher, useSessionRepo } from './repo-switcher.tsx';
+import { WorkspaceSheet } from './workspace-sheet.tsx';
 import { gitApi } from '../../shell/api.ts';
 import { FileLinksContext, type FileLinks } from '../../atoms/file-links.tsx';
 import { SESSION_TABS, readStoredTab, sessionTabLabel, stepTab, storeTab, type SessionTab } from '../../atoms/session-tabs.ts';
@@ -466,6 +468,8 @@ export function FocusView({
     }
   }
   const turnRunning = waitingForReply(live, status);
+  // 窄屏：进度收成对话末尾一条、工作区收成一个入口。桌面布局一点不动。
+  const narrow = useNarrow();
   // 只有这一轮已经结束、会话也不在跑时，才把待答项当成「现在可以回」；
   // 正在跑的时候列表里可能还留着上一轮的线索，不能顺手说成当前阻塞。
   const answerItem =
@@ -503,6 +507,8 @@ export function FocusView({
   })();
   const workspace = canvas.workspaces.find((candidate) => candidate.id === repoWorkspaceId)
     ?? canvas.workspaces.find((candidate) => candidate.id === session.workspaceId);
+  /** 工作区抽屉里显示哪个目录：优先当前看的那个仓库。 */
+  const workspacePath = workspace?.path ?? workspaceRoot ?? null;
   // 和 OpenCode 一样把当前分支放在输入框旁边；分支可能被 agent 切换，所以回合结束后刷新。
   const gitState = shown(useQuery({
     queryKey: gitKeys.state(repoWorkspaceId, session.id),
@@ -513,6 +519,7 @@ export function FocusView({
   }));
   const forkable = !busy && forkHint === null;
   const [gitOpen, setGitOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [rewindAt, setRewindAt] = useState<number | null>(null);
   useEffect(() => setRewindAt(null), [session.id]);
   // 每轮「改了 N 个文件」（ADR 0027 阶段 1 的检查点）：挂在这一轮最后、下一句问话之前
@@ -536,6 +543,25 @@ export function FocusView({
   };
   const lastPrompt = promptSeqs[promptSeqs.length - 1];
   const lastBadge = lastPrompt === undefined ? null : (doneTurns.find((t) => t.promptSeq === lastPrompt) ?? null);
+  /**
+   * 窄屏对话末尾那一条进度。只挑一条：谁的事实更靠前就说谁（本地在发 → 服务端排队/投递 → 运行时）。
+   * 桌面不渲染它，桌面仍由输入框上方那一行负责。
+   */
+  const hint = narrow
+    ? turnHint({
+        pending: delivery.pending,
+        delivery: lastPrompt === undefined ? undefined : deliveriesBySeq.get(lastPrompt),
+        deliveries: deliveriesBySeq.values(),
+        progress
+      })
+    : null;
+  /**
+   * 输入框上方那条：桌面是「正在做什么 / 分支」，窄屏不重复进度（已移到对话末尾），
+   * 只留一个「工作区」入口——分支、路径、加仓库都在里面。
+   */
+  const showStatusRow = narrow
+    ? workspacePath !== null
+    : Boolean(progress || gitState?.isGit || live?.contextUsage || repo.isCombo);
   const [turnBase, setTurnBase] = useState<{ base: string; nonce: number } | null>(null);
   const openTurn = (turn: number) => {
     setTurnBase({ base: `turn:${turn}`, nonce: Date.now() });
@@ -617,12 +643,13 @@ export function FocusView({
     await run(() => actions.setPinned(session, next));
   }
 
-  async function run(action: () => Promise<unknown>): Promise<boolean> {
+  async function run(action: () => Promise<unknown>, refreshAfter = true): Promise<boolean> {
     setBusy(true);
     setError(null);
     try {
       await action();
-      onChanged();
+      // 改可调项的回执已经带了配置投影，调用方会让这里跳过整张画布刷新。
+      if (refreshAfter) onChanged();
       return true;
     } catch (failure) {
       setError((failure as Error).message);
@@ -957,6 +984,23 @@ export function FocusView({
       )}
       {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
       {gitOpen ? <GitDialog sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} taskId={session.taskId} onClose={() => setGitOpen(false)} switcher={switcher} /> : null}
+      {/* 工作区抽屉：git 状态三态——拿到结论就用结论；查询没跑起来（离线 / 出错）时，
+          只有工作区登记里明确写了「不是 git」才敢说不是，否则是「暂未确认」。 */}
+      {narrow && workspaceOpen ? (
+        <WorkspaceSheet
+          path={workspacePath}
+          branch={gitState?.branch ?? null}
+          isGit={gitState === undefined ? (workspace?.isGit === false ? false : null) : gitState.isGit}
+          ahead={gitState === undefined ? null : gitState.ahead}
+          changes={gitState === undefined ? null : gitState.files.length}
+          switcher={switcher}
+          onOpenGit={() => {
+            setWorkspaceOpen(false);
+            setGitOpen(true);
+          }}
+          onClose={() => setWorkspaceOpen(false)}
+        />
+      ) : null}
       {delegating ? (
         <DelegateDialog
           canvas={canvas}
@@ -1148,7 +1192,7 @@ export function FocusView({
               <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
             ) : (
               <FileLinksContext.Provider value={fileLinks}>
-              <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
+              <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quiet: narrow }}>
               {timelineItems.map((item) => {
                 const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }) => (
                   <ChatBlock
@@ -1185,6 +1229,7 @@ export function FocusView({
                 pending={delivery.pending}
                 onRetry={(pending) => void retryPending(pending)}
                 onDiscard={delivery.discard}
+                quiet={narrow}
                 className={settings.compact ? 'gap-2' : 'gap-4'}
                 renderPrompt={(pending, _index, seq) => (
                   <ChatBlock
@@ -1201,6 +1246,20 @@ export function FocusView({
               />
               {reason && !['error', 'stopped'].includes(timelineBlocks[timelineBlocks.length - 1]?.kind ?? '') ? (
                 <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
+              ) : null}
+              {/* 窄屏唯一的进度：贴在对话末尾，和消息同一个左边界，不再在输入框上方重复一行 */}
+              {hint ? (
+                <p
+                  className="flex min-w-0 items-center gap-1.5 self-start text-meta text-secondary"
+                  data-testid="turn-hint"
+                  data-stage={hint.stage}
+                  data-phase={hint.phase}
+                  title={hint.detail}
+                  aria-label={hint.detail}
+                >
+                  <TurnWave />
+                  <span className="min-w-0 truncate">{hint.text}</span>
+                </p>
               ) : null}
               </DeliveryContext.Provider>
               </FileLinksContext.Provider>
@@ -1247,10 +1306,10 @@ export function FocusView({
               })}
             </div>
           ) : null}
-          {/* 输入框上方的状态行：在跑时是「● 正在做什么 · 几秒」，不跑时是分支；右边是上下文占用 */}
-          {progress || gitState?.isGit || live?.contextUsage || repo.isCombo ? (
+          {/* 输入框上方的状态行：桌面是「● 正在做什么 · 几秒」/分支；窄屏只剩「工作区」入口 */}
+          {showStatusRow ? (
             <div className="mb-1.5 flex min-h-5 items-center justify-between gap-3 px-1" data-testid="composer-status">
-              {progress ? (
+              {progress && !narrow ? (
                 <div
                   className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-meta text-tertiary"
                   aria-live="polite"
@@ -1263,21 +1322,40 @@ export function FocusView({
                 </div>
               ) : <span />}
               <div className="flex min-w-0 shrink-0 items-center gap-3">
-                {switcher}
-                {gitState?.isGit ? (
+                {narrow ? (
                   <button
                     type="button"
-                    className="flex min-w-0 items-center gap-1 text-meta text-tertiary hover:text-primary"
-                    title={`${gitState.branch ?? '分离 HEAD'}${gitState.ahead > 0 ? ` · 领先 ${gitState.ahead}` : ''}${gitState.files.length > 0 ? ` · ${gitState.files.length} 个未提交改动` : ''}`}
-                    data-testid="git-branch"
-                    onClick={() => setGitOpen(true)}
+                    className="flex min-h-[44px] min-w-0 items-center gap-1 rounded-full border border-hair px-3 text-meta text-secondary hover:border-strong hover:text-primary"
+                    data-testid="workspace-entry"
+                    aria-haspopup="dialog"
+                    title={workspacePath ?? undefined}
+                    onClick={() => setWorkspaceOpen(true)}
                   >
-                    <span aria-hidden>⎇</span>
-                    <span className="max-w-[160px] truncate font-mono">{gitState.branch ?? 'HEAD'}</span>
-                    {gitState.files.length > 0 ? <span className="shrink-0 text-secondary">{gitState.files.length} 改动</span> : null}
-                    {gitState.ahead > 0 ? <span className="shrink-0 text-tertiary">↑{gitState.ahead}</span> : null}
+                    <span aria-hidden>▦</span>
+                    <span className="shrink-0">工作区</span>
+                    {gitState !== undefined && gitState.files.length > 0 ? (
+                      <span className="shrink-0 text-tertiary">{gitState.files.length} 改动</span>
+                    ) : null}
                   </button>
-                ) : null}
+                ) : (
+                  <>
+                    {switcher}
+                    {gitState?.isGit ? (
+                      <button
+                        type="button"
+                        className="flex min-w-0 items-center gap-1 text-meta text-tertiary hover:text-primary"
+                        title={`${gitState.branch ?? '分离 HEAD'}${gitState.ahead > 0 ? ` · 领先 ${gitState.ahead}` : ''}${gitState.files.length > 0 ? ` · ${gitState.files.length} 个未提交改动` : ''}`}
+                        data-testid="git-branch"
+                        onClick={() => setGitOpen(true)}
+                      >
+                        <span aria-hidden>⎇</span>
+                        <span className="max-w-[160px] truncate font-mono">{gitState.branch ?? 'HEAD'}</span>
+                        {gitState.files.length > 0 ? <span className="shrink-0 text-secondary">{gitState.files.length} 改动</span> : null}
+                        {gitState.ahead > 0 ? <span className="shrink-0 text-tertiary">↑{gitState.ahead}</span> : null}
+                      </button>
+                    ) : null}
+                  </>
+                )}
                 {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
               </div>
             </div>
@@ -1350,7 +1428,7 @@ export function FocusView({
             busy={busy}
             error={error}
             awaiting={turnRunning}
-            onChangeOption={(optionId, value) => void run(() => onChangeOption(optionId, value))}
+            onChangeOption={(optionId, value) => run(() => onChangeOption(optionId, value), false)}
             capability={attachmentsCapability(agent?.capabilities)}
             commands={sessionCommands(session, runtimeCommands, forkHint)}
             projectId={canvas.project.id}

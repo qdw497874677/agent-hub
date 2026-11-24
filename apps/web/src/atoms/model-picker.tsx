@@ -36,6 +36,7 @@ export function ModelPicker({
   scope,
   label = '模型',
   disabled = false,
+  pending = false,
   className = '',
   id,
   short = false,
@@ -49,6 +50,8 @@ export function ModelPicker({
   scope: string;
   label?: string;
   disabled?: boolean;
+  /** 请求还在飞：按钮写「切换中…」，不先显示还没被确认的目标值。 */
+  pending?: boolean;
   className?: string;
   id?: string;
   /** 窄屏底栏只显示模型名本身，不把提供方前缀也塞进去。 */
@@ -67,11 +70,12 @@ export function ModelPicker({
       <button
         type="button"
         id={id}
-        aria-label={`${label}：${full || placeholder}`}
+        aria-label={`${label}：${full || placeholder}${pending ? '（切换中…）' : ''}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        disabled={disabled}
-        title={full}
+        aria-busy={pending || undefined}
+        disabled={disabled || pending}
+        title={pending ? `${full || placeholder} · 正在等 agent 确认` : full}
         className={`flex min-w-0 items-center justify-between gap-1 text-left ${className}`}
         onClick={(event) => {
           event.stopPropagation();
@@ -79,7 +83,7 @@ export function ModelPicker({
         }}
         onDoubleClick={(event) => event.stopPropagation()}
       >
-        <span className="min-w-0 truncate">{shown || placeholder}</span>
+        <span className="min-w-0 truncate">{pending ? '切换中…' : shown || placeholder}</span>
         <span aria-hidden className="shrink-0 text-tertiary">
           ▾
         </span>
@@ -186,6 +190,16 @@ function ModelSheet({
               取消
             </button>
           </div>
+          {narrow && note !== undefined ? (
+            // 窄屏：抽屉一打开就在搜索框下面，还没选模型就先看见「换提供方会重启进程」。
+            // 放在列表外面，滚动候选时也不会被推走。
+            <p
+              data-testid="model-scope-note"
+              className="mx-1.5 mb-1 shrink-0 border-l-2 border-rust/60 bg-rust/5 px-2 py-1.5 text-meta leading-snug text-secondary"
+            >
+              {note}
+            </p>
+          ) : null}
           <Command.List className="min-h-0 flex-1 overflow-y-auto p-1.5 [scroll-padding-block:6px]">
             <Command.Empty className="px-3 py-3 text-meta text-tertiary">没有匹配的{label}</Command.Empty>
             {groups.map((group) => (
@@ -219,7 +233,7 @@ function ModelSheet({
                 ))}
               </Command.Group>
             ))}
-            {note === undefined ? null : (
+            {note === undefined || narrow ? null : (
               // 说明行不是候选项：disabled 让 cmdk 跳过它（键盘不聚焦、点了也不选），
               // value 用不可能跟模型 id 撞的值，免得它被当成「当前选中」。
               <Command.Item

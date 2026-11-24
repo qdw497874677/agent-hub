@@ -95,7 +95,8 @@ async function seed(page: Page, baseURL: string, tag: string) {
 }
 
 async function openTaskLog(page: Page, title: string) {
-  await page.getByRole('button', { name: `${title} 的日志` }).click();
+  // 有会话的任务只在分组头上；旧的「${title} 的日志」按钮已随桌面任务 chip 一起移除。
+  await page.getByTestId('list-task-group').filter({ hasText: title }).getByTestId('list-group-open').click();
   await expect(page.getByTestId('task-detail')).toBeVisible();
 }
 
@@ -110,7 +111,7 @@ test.describe('桌面 1280', () => {
     await openTaskLog(page, `归档任务-桌面`);
     await page.getByTestId('task-archive').click();
     await expect(page.getByTestId('task-archived')).toBeVisible();
-    await page.getByRole('button', { name: '关闭' }).click();
+    await page.getByTestId('task-detail').getByRole('button', { name: '关闭' }).click();
 
     // 日常分组里退场；保留任务本来就没有会话，仍在「未开始」区。
     await expect(page.getByTestId('list-task-group').filter({ hasText: `归档任务-桌面` })).toHaveCount(0);
@@ -134,7 +135,7 @@ test.describe('桌面 1280', () => {
     await expect(page.getByTestId('task-detail')).toBeVisible();
     await expect(page.getByTestId('task-archived')).toBeVisible();
     await expect(page.getByRole('button', { name: `开始会话：归档任务-桌面` })).toHaveCount(0);
-    await page.getByRole('button', { name: '关闭' }).click();
+    await page.getByTestId('task-detail').getByRole('button', { name: '关闭' }).click();
 
     // 直接链接打开已有会话，不因任务归档而 404。
     await page.goto(`/#/p/${project.id}/focus/${session}`);
@@ -147,7 +148,7 @@ test.describe('桌面 1280', () => {
     await page.getByTestId('list-archived-open').click();
     await page.getByTestId('task-archive').click();
     await expect(page.getByTestId('task-archived')).toHaveCount(0);
-    await page.getByRole('button', { name: '关闭' }).click();
+    await page.getByTestId('task-detail').getByRole('button', { name: '关闭' }).click();
     await expect(page.getByTestId('list-task-group').filter({ hasText: '归档任务-桌面' })).toBeVisible();
     await expect(page.getByTestId('list-task-start').filter({ hasText: '归档任务-桌面' })).toHaveCount(0);
   });

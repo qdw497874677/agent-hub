@@ -235,7 +235,7 @@ test('清单里两个服务器：名字/transport/来源都对，关掉那行变
   await expect(rowA.getByTestId('session-mcp-toggle')).toBeChecked();
   await expect(rowA).toHaveAttribute('data-disabled', 'false');
 
-  // 手机端（<640px）：详情收在「更多」里，这一段照样完整显示、能拨。
+  // 手机端（<640px）：详情收在「更多」里；MCP 默认是一行摘要，点开才是清单、能拨。
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   const narrow = page.getByRole('complementary', { name: '会话详情' });
@@ -244,8 +244,14 @@ test('清单里两个服务器：名字/transport/来源都对，关掉那行变
     await page.getByRole('button', { name: '更多' }).click();
     await page.getByRole('menuitem', { name: /^详情/ }).click();
   }
-  await expect(narrow.getByTestId('session-mcp')).toBeVisible({ timeout: 20_000 });
+  const narrowMcp = narrow.getByTestId('session-mcp');
+  await expect(narrowMcp).toBeVisible({ timeout: 20_000 });
+  await expect(narrowMcp.getByTestId('session-mcp-summary')).toHaveText('2 个 · 关掉 1 个');
   await expect(narrow.getByTestId('session-mcp-row')).toHaveCount(2);
-  await narrow.getByTestId('session-mcp').scrollIntoViewIfNeeded();
+  await expect(narrow.getByTestId('session-mcp-row').first()).toBeHidden();
+  await narrowMcp.locator(':scope > summary').click();
+  await expect(rowB).toBeVisible();
+  await expect(rowA.getByTestId('session-mcp-toggle')).toBeVisible();
+  await narrowMcp.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${SHOTS}/session-mcp-mobile.png` });
 });

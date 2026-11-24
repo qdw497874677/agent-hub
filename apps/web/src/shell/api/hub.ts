@@ -200,7 +200,8 @@ export const api = {
   workspaceChanges: (workspaceId: string) => call<WorkspaceChangesDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/changes`),
   removeWorkspace: (workspaceId: string, input: RemoveWorkspaceRequest) =>
     post<WorkspaceDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/remove`, input),
-  canvas: (projectId: string) => call<CanvasDto>(`/api/projects/${projectId}/canvas`),
+  canvas: (projectId: string, signal?: AbortSignal) =>
+    call<CanvasDto>(`/api/projects/${projectId}/canvas`, signal ? { signal } : undefined),
   /** 单条会话：侧聊这类不进画布的会话要单独取。 */
   session: (id: string) => call<SessionDto>(`/api/sessions/${id}`),
   createTask: (input: CreateTaskRequest) => post<TaskDto>('/api/tasks', input),

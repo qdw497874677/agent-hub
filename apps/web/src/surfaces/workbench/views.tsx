@@ -69,8 +69,8 @@ export function ListView({
   onDerive: (taskId: string) => void;
   onTaskDetail: (taskId: string) => void;
   onNewTask: () => void;
-  /** 删掉会话之后让外层重拉画布；外层还会顺手把这条会话从缓存里摘掉。 */
-  onChanged: () => void;
+  /** 数据变化后让外层更新：带任务回执时就地改投影，否则重拉画布。 */
+  onChanged: (task?: TaskDto) => void | Promise<void>;
   /** 刚建好的任务：列表滚到这一行，别让「创建成功」只停在 toast 里。 */
   focusTaskId?: string | null;
   /** 主动刷新：重拉画布 + 项目清单（外层传进来，和自动刷新用同一份查询）。 */
@@ -201,8 +201,9 @@ export function ListView({
     setNotice(null);
     try {
       await api.interrupt(session.id);
+      // 回执只证明请求送到了；状态仍是 running 就继续显示 running，等运行时结束帧。
       onChanged();
-      setNotice({ message: `已停止「${label}」`, actionLabel: '关闭', action: () => setNotice(null) });
+      setNotice({ message: `已请求停止「${label}」`, actionLabel: '关闭', action: () => setNotice(null) });
     } catch (failure) {
       setNotice({
         message: `没停下「${label}」`,
@@ -219,8 +220,9 @@ export function ListView({
     setBusyId(task.id);
     setNotice(null);
     try {
-      await api.archiveTask(task.id, next);
-      onChanged();
+      const updated = await api.archiveTask(task.id, next);
+      // 回执就是新投影：先落到缓存（含未归档列表 / 归档区），再显示成功。
+      await onChanged(updated);
       setNotice(
         next
           ? {

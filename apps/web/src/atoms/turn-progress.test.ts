@@ -30,17 +30,17 @@ test('awaiting 为假：什么都不显示（回合结束，整行都得消失�
   assert.equal(progress([], false), null);
 });
 
-test('刚发出去、还没有任何块：正在启动，并带上 agent 名', () => {
+test('刚发出去、还没有任何块：只说在等第一条输出（不宣称已经启动）', () => {
   const state = progress([]);
   assert.equal(state?.phase, 'starting');
-  assert.equal(state?.label, '正在启动 Codex…');
+  assert.equal(state?.label, '等 Codex 的第一条输出…');
   assert.equal(state?.seconds, 6);
 });
 
-test('有 prompt 但之后没块：仍然算启动中（第一段输出还没来）', () => {
+test('有 prompt 但之后没块：仍然是在等第一条输出（第一段输出还没来）', () => {
   const state = progress([prompt()]);
   assert.equal(state?.phase, 'starting');
-  assert.equal(state?.label, '正在启动 Codex…');
+  assert.equal(state?.label, '等 Codex 的第一条输出…');
 });
 
 test('上一轮的块不算数：只看最后一条 prompt 之后', () => {
@@ -81,9 +81,9 @@ test('工具回来后又有文本：回到正在输出', () => {
   assert.equal(state?.phase, 'writing');
 });
 
-test('只有登记类块（附件 / 产物）：已发送，等待模型', () => {
+test('只有登记类块（附件 / 产物）：在等模型回应，不说「已发送」', () => {
   assert.equal(progress([prompt(), { kind: 'artifact', path: 'a.png', bytes: 10, seq: 2 }])?.phase, 'waiting');
-  assert.equal(progress([prompt(), { kind: 'artifact', path: 'a.png', bytes: 10, seq: 2 }])?.label, '已发送，等待模型…');
+  assert.equal(progress([prompt(), { kind: 'artifact', path: 'a.png', bytes: 10, seq: 2 }])?.label, '等待模型回应…');
 });
 
 test('秒数取整：6.9 秒算 6 秒', () => {

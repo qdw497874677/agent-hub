@@ -183,7 +183,8 @@ test('列表行「⋯」：不导航就能删，取消保留，确认只删这�
   await expect(blockedSettle).toHaveAttribute('title', '会话还在跑，停下来才能收起');
   await menu.getByTestId('list-session-menu-interrupt').click();
   await expect(menu).toHaveCount(0);
-  await expect(page.getByTestId('list-action-toast')).toContainText(`已停止「${runningTitle}」`);
+  // 回执只说明中断请求送到了；运行时真正结束前不写「已停止」。
+  await expect(page.getByTestId('list-action-toast')).toContainText(`已请求停止「${runningTitle}」`);
   await expect
     .poll(async () => {
       const current = (await (await page.request.get(`/api/projects/${project.id}/canvas`, { headers })).json()) as {
@@ -212,8 +213,8 @@ test('列表行「⋯」：不导航就能删，取消保留，确认只删这�
   await expect(row(keep)).toBeVisible();
   await expect(page.getByRole('region', { name: `任务：甲任务-${suffix}` })).toContainText('1 条会话');
   await expect(page.getByRole('region', { name: `任务：乙任务-${suffix}` })).toContainText('1 条会话');
-  await expect(list.getByRole('button', { name: `甲任务-${suffix}`, exact: true })).toBeVisible();
-  await expect(list.getByRole('button', { name: `乙任务-${suffix}`, exact: true })).toBeVisible();
+  await expect(list.getByTestId('list-group-open').filter({ hasText: `甲任务-${suffix}` })).toBeVisible();
+  await expect(list.getByTestId('list-group-open').filter({ hasText: `乙任务-${suffix}` })).toBeVisible();
 
   const canvas = (await (await page.request.get(`/api/projects/${project.id}/canvas`, { headers })).json()) as {
     sessions: { id: string }[];
