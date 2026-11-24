@@ -570,6 +570,137 @@ test('WS upgrade：101 原样回写，双向桥接', async (t) => {
   assert.equal(fake.streams[0]!.written[0]!.end, false);
 });
 
+test('WS 101 响应：动态 Connection 字段与 set-cookie 不进握手，协商结果保留', async (t) => {
+  const { fake, port } = await setup(t);
+  fake.onOpen = (stream, openRequest) => {
+    const key = openRequest.headers.find(([name]) => name.toLowerCase() === 'sec-websocket-key')?.[1] ?? '';
+    const accept = createHash('sha1')
+      .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest('base64');
+    stream.emitHead({
+      status: 101,
+      statusText: 'Switching Protocols',
+      headers: [
+        ['upgrade', 'websocket'],
+        ['connection', 'Upgrade, x-dynamic-response'],
+        ['x-dynamic-response', 'must-not-leak'],
+        ['sec-websocket-accept', accept],
+        ['sec-websocket-protocol', 'graphql-ws'],
+        ['set-cookie', 'ws=1; Path=/']
+      ]
+    });
+  };
+
+  let handshake: IncomingHttpHeaders = {};
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/socket`, ['graphql-ws']);
+  socket.on('upgrade', (response) => {
+    handshake = response.headers;
+  });
+  t.after(() => socket.terminate());
+  await once(socket, 'open');
+
+  assert.equal(handshake['sec-websocket-protocol'], 'graphql-ws');
+  assert.equal(typeof handshake['sec-websocket-accept'], 'string');
+  assert.equal(handshake['x-dynamic-response'], undefined);
+  assert.equal(handshake['set-cookie'], undefined);
+  assert.equal(handshake.connection, 'Upgrade');
+  assert.equal(handshake.upgrade, 'websocket');
+});
+
+test('正常请求 / WS 升级：同一批合成头的剥离结果一致', async (t) => {
+  const { fake, port } = await setup(t);
+  fake.onOpen = (stream, openRequest) => {
+    if (openRequest.upgrade === undefined) {
+      stream.emitHead({
+        status: 200,
+        statusText: 'OK',
+        headers: [
+          ['content-type', 'text/plain'],
+          ['set-cookie', 'upstream=1; Path=/'],
+          ['connection', 'keep-alive, x-dynamic-response'],
+          ['x-dynamic-response', 'must-not-leak']
+        ]
+      });
+      stream.emitData('plain');
+      stream.emitEnd();
+      return;
+    }
+    const key = openRequest.headers.find(([name]) => name.toLowerCase() === 'sec-websocket-key')?.[1] ?? '';
+    const accept = createHash('sha1')
+      .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest('base64');
+    stream.onWrite = () => stream.emitData(unmaskedTextFrame('pong'));
+    stream.emitHead({
+      status: 101,
+      statusText: 'Switching Protocols',
+      headers: [
+        ['upgrade', 'websocket'],
+        ['connection', 'Upgrade'],
+        ['sec-websocket-accept', accept]
+      ]
+    });
+  };
+
+  // 客户端塞进来的合成头：凭据 / 只对当前连接有意义的头 / proxy-*。
+  const leaked: Record<string, string> = {
+    cookie: 'hub_login=abc',
+    authorization: 'Bearer hub-secret',
+    'proxy-authorization': 'Basic abc',
+    expect: '100-continue',
+    te: 'trailers',
+    'proxy-connection': 'keep-alive'
+  };
+  // 普通头：名字会被 Node 规范化成小写，值必须原样过去。
+  const kept = { 'X-Case-Probe': 'MiXeD', 'user-agent': 'parity-fixture' };
+
+  const httpResponse = await request(port, '/plain', {
+    headers: { ...leaked, ...kept, connection: 'keep-alive, x-dynamic-hop', 'x-dynamic-hop': 'must-not-leak' }
+  });
+  assert.equal(httpResponse.status, 200);
+  assert.equal(httpResponse.body, 'plain');
+  // 上游的 set-cookie 不落到 hub 的 origin 上；Connection 点名的响应头同样是逐跳的。
+  assert.equal(httpResponse.headers['set-cookie'], undefined);
+  assert.equal(httpResponse.headers['x-dynamic-response'], undefined);
+
+  // ws 客户端自己会写 Connection/Upgrade，浏览器侧真正的动态 token 由上面的 HTTP 请求覆盖。
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/socket`, { headers: { ...leaked, ...kept } });
+  t.after(() => socket.terminate());
+  await once(socket, 'open');
+  socket.send('ping');
+  const [message] = (await once(socket, 'message')) as [Buffer];
+  assert.equal(String(message), 'pong');
+
+  assert.equal(fake.calls.length, 2);
+  const forwardedOf = (index: number): Map<string, string> =>
+    new Map(fake.calls[index]!.request.headers.map(([name, value]) => [name.toLowerCase(), value]));
+  const httpForwarded = forwardedOf(0);
+  const wsForwarded = forwardedOf(1);
+
+  for (const name of Object.keys(leaked)) {
+    assert.equal(httpForwarded.get(name), undefined, `HTTP 不该转发 ${name}`);
+    assert.equal(wsForwarded.get(name), undefined, `WS 不该转发 ${name}`);
+  }
+  // Connection 里点名的字段同样是逐跳的。
+  assert.equal(httpForwarded.get('x-dynamic-hop'), undefined);
+  for (const [name, value] of Object.entries(kept)) {
+    assert.equal(httpForwarded.get(name.toLowerCase()), value);
+    assert.equal(wsForwarded.get(name.toLowerCase()), value);
+  }
+
+  // 升级必需的 connection/upgrade 必须保留并改写成固定值。
+  assert.equal(wsForwarded.get('connection'), 'Upgrade');
+  assert.equal(wsForwarded.get('upgrade'), 'websocket');
+  assert.equal(wsForwarded.get('sec-websocket-key')?.length, 24);
+  // 两种入口的 Host / X-Forwarded-* 语义一致，只有协议不同。
+  assert.equal(httpForwarded.get('host'), '127.0.0.1:3000');
+  assert.equal(wsForwarded.get('host'), '127.0.0.1:3000');
+  assert.equal(httpForwarded.get('x-forwarded-proto'), 'http');
+  // 端口模式下 hub 的 `proto` 默认就是 http（升级请求也一样），这里只验证没改默认值。
+  assert.equal(wsForwarded.get('x-forwarded-proto'), 'http');
+  assert.equal(httpForwarded.get('x-forwarded-host'), `127.0.0.1:${port}`);
+  assert.equal(wsForwarded.get('x-forwarded-host'), `127.0.0.1:${port}`);
+});
+
 test('端口被占：EADDRINUSE 走 onConflict，不抛', async (t) => {
   const port = await freePort();
   const blocker = createServer();

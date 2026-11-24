@@ -1,8 +1,9 @@
 import { lstat, mkdir, realpath } from 'node:fs/promises';
-import { join, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DomainError, Result } from '@agent-hub/domain';
 import { folderNameProblem, invalid, unavailable } from '@agent-hub/domain';
+import { isEqualOrDescendantPath } from './path-boundary.ts';
 
 /** 当前进程跑的 agent-hub 代码目录（Worker 的安装目录，即 AGENT_HUB_DIR）。 */
 export const INSTALL_DIR = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
@@ -31,11 +32,11 @@ export async function makeDirectoryWithin(
   }
   const realRoots = await Promise.all(roots.map((root) => realpath(resolve(root)).catch(() => null)));
   const inside = (path: string) =>
-    realRoots.some((root) => root !== null && (path === root || path.startsWith(root.endsWith(sep) ? root : root + sep)));
+    realRoots.some((root) => root !== null && isEqualOrDescendantPath(root, path));
   if (!inside(realParent)) return { ok: false, error: invalid(`「${parent}」不在允许新建文件夹的目录里（${roots.join(':')}）`) };
   const target = join(realParent, name);
   const realForbidden = await Promise.all(forbidden.map((dir) => realpath(resolve(dir)).catch(() => null)));
-  const under = (path: string) => realForbidden.some((dir) => dir !== null && (path === dir || path.startsWith(dir + sep)));
+  const under = (path: string) => realForbidden.some((dir) => dir !== null && isEqualOrDescendantPath(dir, path));
   if (under(target)) return { ok: false, error: invalid(`不能在 agent-hub 的安装目录里新建文件夹：${target}`) };
   try {
     const existing = await lstat(target).catch(() => null);

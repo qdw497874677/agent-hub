@@ -7,7 +7,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/node-kit';
-import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, createServiceHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, defaultGroupsDir, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot, createPreviewClient, scanProcesses } from '@agent-hub/node-gateway';
+import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, createServiceHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, defaultGroupsDir, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot, createPreviewClient, scanProcesses, isEqualOrDescendantPath, isStrictDescendantPath } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentAlias, AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 import { applyAgentAliases, readAgentAliases, type BuiltAliasHarness } from './agent-aliases.ts';
@@ -136,7 +136,7 @@ const log = (message: string): void => {
 /** ADR 0027 D10：新建 worktree 放哪（WORKER_WORKTREES_DIR），默认仓库旁 `.worktrees/`。必须在 WORKER_ROOTS 里面，否则忽略。 */
 const worktreesDirEnv = env['WORKER_WORKTREES_DIR']?.trim();
 const worktreesDirRaw = worktreesDirEnv ? resolve(worktreesDirEnv.startsWith('~/') ? join(homedir(), worktreesDirEnv.slice(2)) : worktreesDirEnv) : undefined;
-const worktreesDir = worktreesDirRaw && roots.some((root) => worktreesDirRaw === root || worktreesDirRaw.startsWith(`${root}/`)) ? worktreesDirRaw : undefined;
+const worktreesDir = worktreesDirRaw && roots.some((root) => isEqualOrDescendantPath(root, worktreesDirRaw)) ? worktreesDirRaw : undefined;
 log(`允许访问的目录（WORKER_ROOTS${env['WORKER_ROOTS'] === undefined ? '，未配置，默认 $HOME' : ''}）：${roots.join(':')}`);
 if (worktreesDirRaw && !worktreesDir) log(`WORKER_WORKTREES_DIR=${worktreesDirRaw} 不在 WORKER_ROOTS 里，忽略；新建 worktree 仍放在仓库旁 .worktrees/`);
 else log(`新建 worktree 放在：${worktreesDir ? `${worktreesDir}/<仓库名>/<目录名>（WORKER_WORKTREES_DIR）` : '仓库旁 .worktrees/<仓库名>/<目录名>（默认，可设 WORKER_WORKTREES_DIR）'}`);
@@ -148,7 +148,7 @@ else log(`新建 worktree 放在：${worktreesDir ? `${worktreesDir}/<仓库名>
 const groupsDirEnv = env['WORKER_GROUPS_DIR']?.trim();
 const groupsDirRaw = groupsDirEnv ? resolve(groupsDirEnv.startsWith('~/') ? join(homedir(), groupsDirEnv.slice(2)) : groupsDirEnv) : undefined;
 /** 严格在 root 里面（等于 root 不算：容器不能就是 root 本身）。 */
-const underRoots = (path: string): boolean => roots.some((root) => path !== root && path.startsWith(`${root}/`));
+const underRoots = (path: string): boolean => roots.some((root) => isStrictDescendantPath(root, path));
 const groupsDir = groupsDirRaw && underRoots(groupsDirRaw) ? groupsDirRaw : defaultGroupsDir(roots);
 if (groupsDirRaw && groupsDir !== groupsDirRaw) log(`警告：WORKER_GROUPS_DIR=${groupsDirRaw} 不在 WORKER_ROOTS 里，回落到 ${groupsDir}`);
 else log(`组合工作空间目录：${groupsDir}${groupsDirRaw ? '（WORKER_GROUPS_DIR）' : '（默认，可设 WORKER_GROUPS_DIR）'}`);

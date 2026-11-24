@@ -4,6 +4,9 @@ import { WebSocket } from 'ws';
 import {
   PREVIEW_FRAME_BYTES,
   PREVIEW_MAX_PAYLOAD,
+  previewConnectionTokensFromPairs,
+  previewRequestHeaderDropped,
+  previewResponseHeaderDropped,
   previewUpSchema,
   type PreviewDownFrame,
   type PreviewUpFrame
@@ -66,18 +69,6 @@ const MAX_TUNNEL_HEAD_BYTES = 64 * 1024;
 const SCAN_INTERVAL_MS = 10_000;
 /** 契约 `preview_ports.ports` 的上限；本机监听端口再多也只报前 256 个。 */
 const MAX_REPORTED_PORTS = 256;
-
-/** 逐跳头：不透传给上游（也不能透传回 hub）。 */
-const HOP_BY_HOP = new Set([
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade'
-]);
 
 type FailureCode = 'refused' | 'timeout' | 'forbidden';
 
@@ -297,18 +288,29 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
     else openHttp(stream, frame);
   }
 
-  /** 上游头：Host 改写成回环地址，剥掉逐跳头，补 X-Forwarded-*。 */
-  function rewriteHeaders(headers: HeaderPairs, port: number, proto: string): Array<[string, string]> {
+  /**
+   * 上游头：Host 改写成回环地址，剥掉逐跳头 / hub 私头 / Connection 点名的动态逐跳头，补 X-Forwarded-*。
+   *
+   * 规则与 hub 入口同一份（contract 的 `previewRequestHeaderDropped`）。hub 已经在入口剥过一次，
+   * 这里再剥是纵深防御：worker 能连本机任意端口，不该假设所有入口都已经做对了。
+   */
+  function rewriteHeaders(headers: HeaderPairs, port: number, proto: string, upgrade: boolean): Array<[string, string]> {
     const originalHost = headers.find(([name]) => name.toLowerCase() === 'host')?.[1];
+    const forwardedHost = headers.find(([name]) => name.toLowerCase() === 'x-forwarded-host')?.[1];
+    const forwardedProto = headers.find(([name]) => name.toLowerCase() === 'x-forwarded-proto')?.[1];
+    const connectionTokens = previewConnectionTokensFromPairs(headers);
     const out: Array<[string, string]> = [];
     for (const [name, value] of headers) {
-      const lower = name.toLowerCase();
-      if (lower === 'host' || HOP_BY_HOP.has(lower)) continue;
+      if (previewRequestHeaderDropped(name, { upgrade, connectionTokens })) continue;
       out.push([name, value]);
     }
     out.push(['host', `127.0.0.1:${port}`]);
-    if (originalHost !== undefined && originalHost !== '') out.push(['x-forwarded-host', originalHost]);
-    out.push(['x-forwarded-proto', proto]);
+    // hub 给的 x-forwarded-host 是浏览器看到的 Host；别再拿回环地址把它覆盖掉，也别重复追加。
+    if ((forwardedHost === undefined || forwardedHost === '') && originalHost !== undefined && originalHost !== '') {
+      out.push(['x-forwarded-host', originalHost]);
+    }
+    // 同理：hub 已经标明协议就不要再叠一条。
+    if (forwardedProto === undefined || forwardedProto === '') out.push(['x-forwarded-proto', proto]);
     return out;
   }
 
@@ -336,7 +338,7 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
   }
 
   function openHttp(stream: StreamState, frame: Extract<PreviewUpFrame, { kind: 'preview_open' }>): void {
-    const headers = rewriteHeaders(frame.headers, frame.port, 'http');
+    const headers = rewriteHeaders(frame.headers, frame.port, 'http', false);
     let req: ClientRequest;
     try {
       req = httpRequest({
@@ -406,27 +408,29 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
     if (!chunked && (length === undefined || length === '0')) req.end();
   }
 
-  /** 回给 hub 的响应头：同样过滤逐跳头（transfer-encoding 在帧里没意义）。 */
+  /**
+   * 回给 hub 的响应头：共享响应谓词（逐跳、`set-cookie`、`proxy-*`、Connection 点名的动态字段）。
+   * CSP / Referrer-Policy / x-frame-options 留给 hub 按模式处理，两种模式的策略本来就不同。
+   */
   function responseHeaders(res: IncomingMessage): Array<[string, string]> {
-    const out: Array<[string, string]> = [];
+    const pairs: Array<[string, string]> = [];
     for (let index = 0; index + 1 < res.rawHeaders.length; index += 2) {
-      const name = res.rawHeaders[index]!;
-      const value = res.rawHeaders[index + 1]!;
-      const lower = name.toLowerCase();
-      if (HOP_BY_HOP.has(lower)) continue;
-      out.push([name, value]);
+      pairs.push([res.rawHeaders[index]!, res.rawHeaders[index + 1]!]);
     }
-    return out;
+    const connectionTokens = previewConnectionTokensFromPairs(pairs);
+    return pairs.filter(([name]) => !previewResponseHeaderDropped(name, { connectionTokens }));
   }
 
   function openTunnel(stream: StreamState, frame: Extract<PreviewUpFrame, { kind: 'preview_open' }>): void {
-    const protocol = frame.upgrade?.protocol ?? headerValue(frame.headers, 'upgrade') ?? 'websocket';
-    const headers = rewriteHeaders(frame.headers, frame.port, 'ws');
+    // `frame.upgrade.protocol` 是浏览器的 Sec-WebSocket-Protocol（子协议），不是 Upgrade 令牌。
+    // 拿它当升级令牌会发出 `upgrade: graphql-ws` 这种非法握手；升级令牌固定 websocket，
+    // 子协议本身随 `sec-websocket-protocol` 头原样转给上游。
+    const headers = rewriteHeaders(frame.headers, frame.port, 'ws', true);
     const lines = [
       `${frame.method} ${frame.path} HTTP/1.1`,
       ...headers.map(([name, value]) => `${name}: ${value}`),
       'connection: Upgrade',
-      `upgrade: ${protocol}`,
+      'upgrade: websocket',
       '',
       ''
     ];
@@ -477,7 +481,7 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
           streamId: stream.streamId,
           status: head.status,
           statusText: head.statusText,
-          headers: head.headers
+          headers: tunnelResponseHeaders(head.status, head.headers)
         });
         // 非 101 也照常把剩余字节当响应体转出去，socket 关掉就结束。
       }
@@ -523,6 +527,34 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
       headers.push([line.slice(0, colon).trim(), line.slice(colon + 1).trim()]);
     }
     return { status: Number(match[1]), statusText: match[2] ?? '', headers };
+  }
+
+  /**
+   * 隧道响应头：和普通 HTTP 用同一份响应谓词（逐跳 / `set-cookie` / `proxy-*` / 动态 Connection）。
+   *
+   * 只对 101 补唯一的 `connection: Upgrade` + `upgrade: websocket`；非 101 不补，保持「普通响应」
+   * 语义。`sec-websocket-protocol` / `sec-websocket-accept` 是协商结果，101 上强制保留；
+   * `content-length` 等帧格式相关头不动——非 101 的 body 仍按原字节转给 hub。
+   */
+  function tunnelResponseHeaders(status: number, headers: HeaderPairs): Array<[string, string]> {
+    const upgrade = status === 101;
+    const connectionTokens = previewConnectionTokensFromPairs(headers);
+    const out: Array<[string, string]> = [];
+    for (const [name, value] of headers) {
+      const lower = name.toLowerCase();
+      if (upgrade && (lower === 'sec-websocket-protocol' || lower === 'sec-websocket-accept')) {
+        out.push([name, value]);
+        continue;
+      }
+      if (previewResponseHeaderDropped(name, { connectionTokens })) continue;
+      // permessage-deflate 关闭（设计稿 §7）：101 上不透传扩展协商。
+      if (upgrade && lower === 'sec-websocket-extensions') continue;
+      out.push([name, value]);
+    }
+    if (upgrade) {
+      out.push(['connection', 'Upgrade'], ['upgrade', 'websocket']);
+    }
+    return out;
   }
 
   function enqueue(stream: StreamState, chunk: Buffer): void {

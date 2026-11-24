@@ -9,6 +9,7 @@ import type { DeliveryQueue } from '../ports/delivery-queue.ts';
 import { ensureHosted } from './hosting.ts';
 import { recordEvent } from './sessions.ts';
 import { withActiveTask } from './task-admission.ts';
+import { readInFlightTurn, readJournalTail, readRecentTurnDeliveries, turnVerdictInTail } from './turn-evidence.ts';
 
 /**
  * 送达（ADR 0031 D2）。只有「依赖不在线」（unavailable）才重试：
@@ -48,6 +49,9 @@ export const TURN_STALE_MS = 30 * 60_000;
  * 没有送达记录的老回合（定时触发 / 早期数据）退回 journal 尾部扫描，跳过还没送出去的 prompt。
  * 该扫描只读最近 2,000 条，尾部被截断时无法证明这一轮已经结束，按仍在跑处理；这是已知的有界读限制，
  * 新回合都有送达记录可核对，不依赖这个兜底。
+ *
+ * 有界读与尾部扫描骨架在 `turn-evidence.ts`（和切换门共用）；**优先级归本函数**：
+ * 先 delivered 的归属证据，再看 status，最后才是 journal 兜底。共享件里不放通用 isBusy。
  */
 export async function turnInProgress(deps: Pick<Deps, 'sessions' | 'now'> & { readonly deliveries?: DeliveryQueue }, sessionId: SessionId): Promise<boolean> {
   const session = await deps.sessions.byId(sessionId);
@@ -55,8 +59,8 @@ export async function turnInProgress(deps: Pick<Deps, 'sessions' | 'now'> & { re
 
   // sending 用精确 inFlight 查，不能只看 recent(200)：积压超过窗口时，最早那条
   // 在途记录会被挤出去，漏掉它就会把下一句塞进仍在跑的回合。
-  if (deps.deliveries && (await deps.deliveries.inFlight(sessionId))) return true;
-  const recent = deps.deliveries ? await deps.deliveries.recent(sessionId, 200) : [];
+  if (await readInFlightTurn(deps.deliveries, sessionId)) return true;
+  const recent = await readRecentTurnDeliveries(deps.deliveries, sessionId);
   const delivered = latestDelivered(recent);
   if (delivered) {
     // 先核对送达记录自己的结束证据，再看状态字段：status 可能是状态帧 / 维护改的，
@@ -69,18 +73,10 @@ export async function turnInProgress(deps: Pick<Deps, 'sessions' | 'now'> & { re
   if (session.status !== 'running') return false;
 
   const unsent = new Set(recent.filter((d) => d.state !== 'delivered' && d.state !== 'sending').map((d) => d.seq));
-  const raw = await deps.sessions.tail(sessionId, 2_000);
-  // 尾部读满且不是从 seq 1 开始，说明更早的 prompt 可能被截断。先按原始窗口算，
-  // 避免过滤掉待送 prompt 后误以为「整个 journal 都读到了」。
-  const truncated = raw.length >= 2_000 && raw[0]!.seq > 1;
-  const tail = raw.filter((e) => !(e.event.kind === 'prompt' && unsent.has(e.seq)));
-  for (let i = tail.length - 1; i >= 0; i--) {
-    const e = tail[i]!;
-    if (e.event.kind === 'ended') return false;
-    if (e.event.kind === 'prompt') return true;
-  }
-  // 没读到 ended / prompt：只有能证明窗口覆盖整段 journal 时才敢判空闲；否则 fail closed。
-  return truncated;
+  const tail = await readJournalTail(deps, sessionId);
+  // 送达门自己的跳过集合：任何没送出去的送达记录（queued / undelivered / cancelled / …）
+  // 对应的 prompt 都还没开局。截断且没有证据时 `unknown` 照样按在跑处理（fail closed）。
+  return turnVerdictInTail(tail, (entry) => unsent.has(entry.seq)) !== 'idle';
 }
 
 /** 最近一条已经交给运行时的送达（`recent` 是时间正序）。 */

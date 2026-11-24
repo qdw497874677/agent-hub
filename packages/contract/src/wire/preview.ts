@@ -6,6 +6,113 @@ export const PREVIEW_WS_PATH = '/preview';
 export const PREVIEW_FRAME_BYTES = 64 * 1024;
 export const PREVIEW_MAX_PAYLOAD = 2 * 1024 * 1024;
 
+/**
+ * 预览链路上「哪些头不该继续往前走」的唯一一份规则（hub 两种模式 + worker 共用）。
+ *
+ * 放在 contract 里是因为 hub（apps/server）与 worker（packages/node-gateway）都要用，
+ * 而 worker 不能反向依赖 apps/server。两边各写一份的话，换个入口就等于换个安全边界。
+ * 这里只做规范化判断（大小写不敏感），具体模式差异（CSP / Referer / host 重写）留在各自入口。
+ */
+
+/** HTTP 逐跳头：只在单条连接上有意义，代理不该转发（RFC 9110 §7.6.1）。 */
+export const PREVIEW_HOP_BY_HOP: ReadonlySet<string> = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade'
+]);
+
+/** 只属于 hub 这一跳的凭据：dev server 不该看到，也不该拿它冒充用户。 */
+export const PREVIEW_PRIVATE_REQUEST_HEADERS: ReadonlySet<string> = new Set([
+  'cookie',
+  'authorization',
+  'proxy-authorization'
+]);
+
+/** 客户端发来的、不该转给上游的头（host 重写、expect 只对当前连接有意义）。 */
+export const PREVIEW_REQUEST_DROP: ReadonlySet<string> = new Set([
+  'host',
+  'expect',
+  ...PREVIEW_PRIVATE_REQUEST_HEADERS
+]);
+
+/** 上游响应的、不该回给浏览器的头。`set-cookie` 会让 dev server 在 hub 的 origin 上写 cookie。 */
+export const PREVIEW_RESPONSE_DROP: ReadonlySet<string> = new Set(['set-cookie']);
+
+/** 分享令牌走查询串，固定不让它经 Referer 外泄；上游自己设的也覆盖掉。 */
+export const PREVIEW_REFERRER_POLICY = 'no-referrer';
+
+/** 把 `Connection` 头拆成小写 token 集合（这些字段同样是逐跳的，必须一起丢）。 */
+export function previewConnectionTokens(value: string | readonly string[] | undefined): ReadonlySet<string> {
+  const tokens = new Set<string>();
+  if (value === undefined) return tokens;
+  for (const item of typeof value === 'string' ? [value] : value) {
+    for (const token of item.toLowerCase().split(',')) {
+      const trimmed = token.trim();
+      if (trimmed !== '') tokens.add(trimmed);
+    }
+  }
+  return tokens;
+}
+
+/**
+ * 从「名字可能重复」的头对里收集**所有** `Connection` 行。
+ *
+ * 只取第一条会漏掉后一条点名的动态逐跳字段（Node 的 rawHeaders / hub 的 `PreviewHead`
+ * 都是按对给出的，重复行很常见）。
+ */
+export function previewConnectionTokensFromPairs(
+  headers: Iterable<readonly [string, string]>
+): ReadonlySet<string> {
+  const values: string[] = [];
+  for (const [name, value] of headers) {
+    if (name.toLowerCase() === 'connection') values.push(value);
+  }
+  return previewConnectionTokens(values);
+}
+
+/**
+ * 请求头该不该丢掉（名字大小写不敏感）。
+ *
+ * `upgrade` 为 true 时仍会丢掉 `connection` / `upgrade`：升级请求必须带这两个头，
+ * 但值由调用方显式补成规范形式，避免把浏览器的那份再叠加一遍。
+ * 同时关掉 `sec-websocket-extensions`：预览隧道不做 permessage-deflate 协商。
+ * `connectionTokens` 是 RFC 9110 要求的动态逐跳字段。
+ */
+export function previewRequestHeaderDropped(
+  name: string,
+  options: { readonly upgrade?: boolean; readonly connectionTokens?: ReadonlySet<string> } = {}
+): boolean {
+  const lower = name.toLowerCase();
+  if (lower.startsWith('proxy-')) return true;
+  if (PREVIEW_REQUEST_DROP.has(lower)) return true;
+  if (PREVIEW_HOP_BY_HOP.has(lower)) return true;
+  if (options.connectionTokens?.has(lower) === true) return true;
+  return options.upgrade === true && lower === 'sec-websocket-extensions';
+}
+
+/**
+ * 响应头该不该丢掉（名字大小写不敏感）。
+ *
+ * 和请求方向共用同一份逐跳 / `proxy-*` / `set-cookie` 规则，外加 `Connection` 点名的动态字段。
+ * 101 的 `connection` / `upgrade` 也在这里丢掉，由调用方补成唯一的规范值；
+ * 协商结果（`sec-websocket-protocol` / `sec-websocket-accept`）不在此名单里，保持原样。
+ */
+export function previewResponseHeaderDropped(
+  name: string,
+  options: { readonly connectionTokens?: ReadonlySet<string> } = {}
+): boolean {
+  const lower = name.toLowerCase();
+  if (lower.startsWith('proxy-')) return true;
+  if (PREVIEW_RESPONSE_DROP.has(lower)) return true;
+  if (PREVIEW_HOP_BY_HOP.has(lower)) return true;
+  return options.connectionTokens?.has(lower) === true;
+}
+
 const streamIdSchema = z.string().regex(/^[0-9a-f]{16}$/);
 const headerSchema = z.array(z.tuple([z.string().max(256), z.string().max(8192)])).max(128);
 const base64Schema = z.string().max(90_000);

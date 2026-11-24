@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
 import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { DomainError, Result } from '@agent-hub/domain';
 import { conflict, invalid, unavailable } from '@agent-hub/domain';
+import { isStrictDescendantPath } from './path-boundary.ts';
 
 /**
  * 组合工作空间（docs/design/multi-repo.md §11.3 / §12.5）的容器目录。
@@ -30,14 +31,10 @@ export function defaultGroupsDir(roots: readonly string[]): string {
 
 /**
  * `target` 是不是 `groupsDir` 的严格子路径（不含 groupsDir 自己）。
- * 用 `relative()` 按路径段比较，不会把 `agent-hub-groups-evil` 误判成在 `agent-hub-groups` 里。
+ * 按路径段比较（`path-boundary.ts`），不会把 `agent-hub-groups-evil` 误判成在 `agent-hub-groups` 里。
  */
 export function insideGroups(groupsDir: string, target: string): boolean {
-  const base = resolve(groupsDir);
-  const path = resolve(target);
-  const rel = relative(base, path);
-  if (rel === '' || isAbsolute(rel)) return false;
-  return rel !== '..' && !rel.startsWith(`..${sep}`);
+  return isStrictDescendantPath(resolve(groupsDir), resolve(target));
 }
 
 export interface GroupDirOptions {

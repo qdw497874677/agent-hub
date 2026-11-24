@@ -8,6 +8,7 @@ import type {
   ComponentJobResult
 } from '@agent-hub/domain';
 import { formatRootCommand, readAcquisition } from '@agent-hub/domain';
+import { isEqualOrDescendantPath } from './path-boundary.ts';
 
 /**
  * Worker 侧执行目录项声明的有序获取策略。只认识那四种类型，不写死某个组件。
@@ -87,10 +88,6 @@ function defaultIsFile(path: string): boolean {
   }
 }
 
-function containedBy(root: string, path: string): boolean {
-  return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
-}
-
 /**
  * 候选二进制里的平台标记（例如 chrome-linux/、chrome-mac-arm64/、chrome-win64/、*.exe）。
  * 没有标记 = 各平台通用；同一路径声明了多个平台 = 保守地不采用。
@@ -135,7 +132,7 @@ function matchesLocate(
 ): string | null {
   const rootReal = defaultRealpath(root);
   const pathReal = defaultRealpath(path);
-  if (!rootReal || !pathReal || !containedBy(rootReal, pathReal)) return null;
+  if (!rootReal || !pathReal || !isEqualOrDescendantPath(rootReal, pathReal)) return null;
   const relative = pathReal.slice(rootReal.length).split(sep).filter(Boolean);
   if (relative.length < 2) return null;
   const directory = relative[0]!;

@@ -33,3 +33,24 @@ test('读写过边界：库内软链接可读，指向外面的软链接不能�
     await rm(base, { recursive: true, force: true });
   }
 });
+
+test('root 有软链接别名（例如 /tmp 在 macOS 上指向 /private/tmp）时，经别名访问仍算在边界内', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'wf-alias-'));
+  try {
+    const real = join(base, 'proj');
+    const alias = join(base, 'proj-alias');
+    await mkdir(real);
+    await symlink(real, alias);
+    await writeFile(join(real, 'a.txt'), 'ok');
+    const files = createWorkerFiles({ roots: [real], enforced: true });
+
+    // 别名路径和真实路径都要能读写：边界在 realpath 之后判断。
+    assert.equal(await files.check(alias), null);
+    assert.equal(await files.check(real), null);
+    assert.equal(Buffer.from((await files.readFile(join(alias, 'a.txt'), 100)) ?? []).toString(), 'ok');
+    await files.writeFile(join(alias, 'b.txt'), Buffer.from('ok'));
+    assert.equal(await readFile(join(real, 'b.txt'), 'utf8'), 'ok');
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});

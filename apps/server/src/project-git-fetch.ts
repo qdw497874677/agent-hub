@@ -1,19 +1,21 @@
 import { Buffer } from 'node:buffer';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { lookup as dnsLookup } from 'node:dns';
 import { constants as fsConstants, createReadStream } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createMcpEgress, normalizeEgressHost, type EgressResolver } from './mcp-egress.ts';
 import {
-  createMcpEgress,
-  normalizeEgressHost,
-  type EgressResolver,
-  type ResolvedAddress
-} from './mcp-egress.ts';
+  createLoopbackResolver,
+  isAcceptableBasicAuthorization,
+  isMetadataHost,
+  LOOPBACK_HOSTS,
+  originKey,
+  parseAllowedOrigins
+} from './project-git-https-policy.ts';
 
 /**
  * 隔离执行器里的「项目 HTTPS Git 抓取」机制（不接路由，不碰会话工作区）。
@@ -46,7 +48,6 @@ const DEFAULT_MAX_BUNDLE_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENT = 1;
 const MAX_GIT_STDOUT_BYTES = 64 * 1024;
 const MAX_BRANCH_LENGTH = 255;
-const MAX_AUTHORIZATION_LENGTH = 8192;
 
 const ADVERTISEMENT_CONTENT_TYPE = 'application/x-git-upload-pack-advertisement';
 const REQUEST_CONTENT_TYPE = 'application/x-git-upload-pack-request';
@@ -164,86 +165,6 @@ function failure(code: ProjectGitFetchFailureCode): ProjectGitFetchOutcome {
   return { ok: false, code, message: MESSAGES[code] ?? MESSAGES.generic };
 }
 
-/** 精确 origin 的规范化 key；IPv6 主机名重新加回方括号。 */
-function originKey(url: URL): string {
-  const host = normalizeEgressHost(url.hostname);
-  const hostPart = host.includes(':') ? `[${host}]` : host;
-  return `${url.protocol}//${hostPart}${url.port === '' ? '' : `:${url.port}`}`;
-}
-
-function parseAllowedOrigins(entries: readonly string[]): ReadonlySet<string> {
-  const origins = new Set<string>();
-  for (const entry of entries) {
-    const raw = entry.trim();
-    if (raw === '' || raw.includes('*')) {
-      throw new Error('ProjectGitFetch: allowedOrigins 必须是精确的 HTTPS origin');
-    }
-    let url: URL;
-    try {
-      url = new URL(raw);
-    } catch {
-      throw new Error('ProjectGitFetch: allowedOrigins 里有不合法的 URL');
-    }
-    if (
-      url.protocol !== 'https:' ||
-      url.username !== '' ||
-      url.password !== '' ||
-      url.search !== '' ||
-      url.hash !== '' ||
-      (url.pathname !== '' && url.pathname !== '/')
-    ) {
-      throw new Error('ProjectGitFetch: allowedOrigins 只接受纯 HTTPS origin');
-    }
-    origins.add(originKey(url));
-  }
-  return origins;
-}
-
-const METADATA_HOSTS = new Set(['metadata', 'metadata.google.internal', 'instance-data']);
-const METADATA_ADDRESSES = new Set(['169.254.169.254', '169.254.170.2', '100.100.100.200', 'fd00:ec2::254']);
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
-
-function isMetadataHost(host: string): boolean {
-  if (METADATA_HOSTS.has(host)) return true;
-  if (host.endsWith('.metadata.google.internal')) return true;
-  if (METADATA_ADDRESSES.has(host)) return true;
-  return host.includes('169.254.169.254') || host.includes('100.100.100.200');
-}
-
-function isLoopbackAddress(address: string): boolean {
-  if (address === '::1') return true;
-  const parts = address.split('.');
-  return (
-    parts.length === 4 &&
-    parts[0] === '127' &&
-    parts.every((part) => /^\d{1,3}$/u.test(part) && Number(part) <= 255)
-  );
-}
-
-const defaultResolver: EgressResolver = (hostname) =>
-  new Promise((resolve, reject) => {
-    dnsLookup(hostname, { all: true, verbatim: true }, (error, addresses) => {
-      if (error) reject(error);
-      else resolve(addresses as ResolvedAddress[]);
-    });
-  });
-
-/** 测试 loopback 模式下，loopback 主机名只能解析到真 loopback。 */
-function createLoopbackResolver(base: EgressResolver | undefined): EgressResolver {
-  const resolve = base ?? defaultResolver;
-  return async (hostname) => {
-    const host = normalizeEgressHost(hostname);
-    const addresses = await resolve(hostname);
-    if (
-      LOOPBACK_HOSTS.has(host) &&
-      (addresses.length === 0 || !addresses.every((entry) => isLoopbackAddress(entry.address)))
-    ) {
-      throw new Error('ProjectGitFetch: 测试 loopback 目标解析到了非回环地址');
-    }
-    return addresses;
-  };
-}
-
 function positiveInt(value: number | undefined, fallback: number, name: string): number {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -273,12 +194,7 @@ function checkedBranch(raw: string): string | null {
 /** 只接受调用方已经生成好的单行 Basic 头；空串 = 不带上游凭据。 */
 function authorizationValue(raw: string): string | undefined {
   if (raw === '') return undefined;
-  if (
-    typeof raw !== 'string' ||
-    raw.length > MAX_AUTHORIZATION_LENGTH ||
-    /[\r\n\u0000]/u.test(raw) ||
-    !/^Basic [A-Za-z0-9+/]+={0,2}$/iu.test(raw)
-  ) {
+  if (!isAcceptableBasicAuthorization(raw)) {
     throw new FetchFailure('bad_authorization');
   }
   return raw;
@@ -886,10 +802,10 @@ export function createProjectGitFetcher(options: ProjectGitFetchOptions): Projec
   if (!isAbsolute(options.outputDir)) {
     throw new Error('ProjectGitFetch: outputDir 必须是绝对路径');
   }
-  const allowedOrigins = parseAllowedOrigins(options.allowedOrigins);
+  const allowedOrigins = parseAllowedOrigins(options.allowedOrigins, 'ProjectGitFetch');
   const testLoopback = options.testOnlyAllowLoopback === true;
   const allowPrivateHosts = testLoopback ? [...LOOPBACK_HOSTS] : [];
-  const resolve = testLoopback ? createLoopbackResolver(options.resolve) : options.resolve;
+  const resolve = testLoopback ? createLoopbackResolver(options.resolve, 'ProjectGitFetch') : options.resolve;
   const egress = createMcpEgress({
     // 独立显式策略：不读 MCP_EGRESS_*，上游只允许 HTTPS 公网；私网只给测试 loopback 开。
     policy: { allowPrivateHosts, allowHttpHosts: [] },

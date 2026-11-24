@@ -9,6 +9,7 @@ export type { CommandResolution } from './command-resolver.ts';
 export type { HarnessRegistry } from './harness-registry.ts';
 export type { WorkerLink, WorkerLinkOptions } from './worker-link.ts';
 export { createLocalFs } from './local-fs.ts';
+export { isEqualOrDescendantPath, isStrictDescendantPath } from './path-boundary.ts';
 export { createWorkerFiles, boundaryHint, OutsideRootsError } from './worker-files.ts';
 export type { WorkerFiles } from './worker-files.ts';
 export { createWorkerAssets, defaultAssetsRoot, type WorkerAssets, type FetchBlobs, type SessionAssetRequest, type SessionAssetView } from './worker-assets.ts';

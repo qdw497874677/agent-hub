@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { redactSecrets } from './redact.ts';
+import { isEqualOrDescendantPath } from './path-boundary.ts';
 
 /**
  * 只读的进程 / 端口清单（不做进程管理，不落库）。
@@ -120,7 +121,7 @@ function realpathOr(path: string): string {
 
 /** cwd 是否落在某个 root 之内（root 本身也算）。 */
 function underRoot(cwd: string, roots: readonly string[]): boolean {
-  return roots.some((root) => cwd === root || cwd.startsWith(root.endsWith('/') ? root : `${root}/`));
+  return roots.some((root) => isEqualOrDescendantPath(root, cwd));
 }
 
 /** 按 pid 数字升序的 `/proc/<pid>` 名字；只留纯数字目录。 */

@@ -75,11 +75,27 @@ const prefix = (channel: PreviewChannel, extra: Partial<Parameters<typeof create
   });
 
 test('前缀模式：路径透传到 worker 并透传响应体', async () => {
-  const harness = fakeChannel({ body: 'hello' });
+  const harness = fakeChannel({
+    body: 'hello',
+    headers: [
+      ['connection', 'keep-alive, x-dynamic-response'],
+      ['x-dynamic-response', 'must-not-leak'],
+      ['set-cookie', 'up=1; Path=/']
+    ]
+  });
   const handler = prefix(harness.channel);
   const response = await handler.handle(
     new Request('http://hub:17900/preview/pv_1/assets/a.js?share=pvs_x&v=1', {
-      headers: { cookie: 'hub_login=abc', authorization: 'Bearer hub-secret' }
+      headers: {
+        cookie: 'hub_login=abc',
+        authorization: 'Bearer hub-secret',
+        'proxy-authorization': 'Basic abc',
+        expect: '100-continue',
+        te: 'trailers',
+        connection: 'keep-alive, x-dynamic-hop',
+        'x-dynamic-hop': 'must-not-leak',
+        'X-Case-Probe': 'MiXeD'
+      }
     })
   );
   assert.ok(response !== null);
@@ -89,12 +105,23 @@ test('前缀模式：路径透传到 worker 并透传响应体', async () => {
   // share 只给 hub 鉴权；其余查询串原样。
   assert.equal(harness.opened[0]?.path, '/assets/a.js?v=1');
   assert.ok(harness.opened[0]?.headers.some(([key, value]) => key === 'host' && value === '127.0.0.1:5173'));
-  // Hub 的凭据头不转给上游。
+  // Hub 的凭据头不转给上游；逐跳头和 Connection 点名的动态头也一样（与端口模式同一份规则）。
   const forwarded = new Map(harness.opened[0]!.headers.map(([key, value]) => [key.toLowerCase(), value]));
   assert.equal(forwarded.get('cookie'), undefined);
   assert.equal(forwarded.get('authorization'), undefined);
+  assert.equal(forwarded.get('proxy-authorization'), undefined);
+  assert.equal(forwarded.get('expect'), undefined);
+  assert.equal(forwarded.get('te'), undefined);
+  assert.equal(forwarded.get('connection'), undefined);
+  assert.equal(forwarded.get('x-dynamic-hop'), undefined);
+  // 普通头照旧透传（名字规范化、值不改）。
+  assert.equal(forwarded.get('x-case-probe'), 'MiXeD');
+  assert.equal(forwarded.get('x-forwarded-proto'), 'http');
   assert.equal(response.headers.get('x-frame-options'), null);
   assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+  // Connection 点名的响应头与 set-cookie 同样在出口被剥掉。
+  assert.equal(response.headers.get('x-dynamic-response'), null);
+  assert.equal(response.headers.get('set-cookie'), null);
 });
 
 test('前缀模式：不命中前缀返回 null，未知链接 404，未授权 302 回登录页', async () => {
@@ -116,11 +143,18 @@ test('前缀模式：上游 set-cookie 与自带 referrer-policy 都在出口被
     body: 'x',
     headers: [
       ['referrer-policy', 'same-origin'],
-      ['set-cookie', 'upstream=1; Path=/']
+      ['set-cookie', 'upstream=1; Path=/'],
+      // 逐跳头在两种模式里都不该回给浏览器。
+      ['connection', 'keep-alive'],
+      ['te', 'trailers'],
+      ['proxy-authenticate', 'Basic realm="upstream"']
     ]
   });
   const response = await prefix(harness.channel).handle(new Request('http://hub:17900/preview/pv_1/'));
   assert.ok(response !== null);
   assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
   assert.equal(response.headers.get('set-cookie'), null);
+  assert.equal(response.headers.get('connection'), null);
+  assert.equal(response.headers.get('te'), null);
+  assert.equal(response.headers.get('proxy-authenticate'), null);
 });

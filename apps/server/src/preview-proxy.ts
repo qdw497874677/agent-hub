@@ -3,7 +3,7 @@ import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { PreviewLink } from '@agent-hub/domain';
 import { PreviewStreamError, type PreviewChannel, type PreviewHead, type PreviewStream } from './preview-channel.ts';
-import { PREVIEW_HOP_BY_HOP, PREVIEW_REFERRER_POLICY, PREVIEW_REQUEST_DROP, PREVIEW_RESPONSE_DROP } from './preview-headers.ts';
+import { PREVIEW_REFERRER_POLICY, previewConnectionTokens, previewConnectionTokensFromPairs, previewRequestHeaderDropped, previewResponseHeaderDropped } from './preview-headers.ts';
 
 /**
  * 预览反代（docs/design/preview.md §7）：每个预览链接在 hub 的绑定地址上多开一个监听端口，
@@ -12,15 +12,6 @@ import { PREVIEW_HOP_BY_HOP, PREVIEW_REFERRER_POLICY, PREVIEW_REQUEST_DROP, PREV
  * 路径零重写：浏览器把 `http://hub:17901/foo` 当成独立 origin，dev server 的绝对路径、
  * redirect、cookie path、HMR 全都自然正确。这里只做鉴权、头改写与流式搬运。
  */
-
-const HOP_BY_HOP = PREVIEW_HOP_BY_HOP;
-
-/**
- * 客户端发来的、不该转给上游的头（除了 hop-by-hop）见 `preview-headers.ts`：
- * Hub 的登录 cookie 与 Authorization 是**给 hub 的**，上游 dev server 既不该看到、也不该拿它
- * 去冒充用户（预览链接可能指向任何本机服务）。分享令牌走查询串，也不转发（见 `stripShareParam`）。
- */
-const REQUEST_DROP = PREVIEW_REQUEST_DROP;
 
 const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
 const DEFAULT_HEADER_TIMEOUT_MS = 10_000;
@@ -56,23 +47,12 @@ function headerValue(value: string | string[] | undefined): string {
 }
 
 function requestHeaders(request: IncomingMessage, link: PreviewLink, proto: string, upgrade: boolean): Array<[string, string]> {
-  const connectionTokens = new Set(
-    headerValue(request.headers.connection)
-      .toLowerCase()
-      .split(',')
-      .map((token) => token.trim())
-      .filter((token) => token !== '')
-  );
+  // RFC 9110：Connection 里列出的字段也是逐跳的，必须跟着一起丢（不只看固定名单）。
+  const connectionTokens = previewConnectionTokens(request.headers.connection);
   const out: Array<[string, string]> = [];
   for (const [name, value] of Object.entries(request.headers)) {
     if (value === undefined) continue;
-    const lower = name.toLowerCase();
-    if (REQUEST_DROP.has(lower) || lower.startsWith('proxy-')) continue;
-    // WS 隧道要保留 upgrade / connection 的语义，等下面显式补；HTTP 请求则一律剔掉。
-    if (HOP_BY_HOP.has(lower) && !(upgrade && (lower === 'upgrade' || lower === 'connection'))) continue;
-    if (connectionTokens.has(lower)) continue;
-    // permessage-deflate 关闭（设计稿 §7）：不透传扩展协商。
-    if (upgrade && lower === 'sec-websocket-extensions') continue;
+    if (previewRequestHeaderDropped(name, { upgrade, connectionTokens })) continue;
     for (const item of Array.isArray(value) ? value : [value]) out.push([name, item]);
   }
   out.push(['host', `127.0.0.1:${link.port}`]);
@@ -89,14 +69,19 @@ function requestHeaders(request: IncomingMessage, link: PreviewLink, proto: stri
   return out;
 }
 
-/** 响应的头：剥 `x-frame-options` / CSP `frame-ancestors` / hop-by-hop，其余原样。 */
+/** 响应的头：剥 `x-frame-options` / CSP `frame-ancestors` / 共享的逐跳、私头、动态 Connection 字段，其余原样。 */
 function responseHeaders(head: PreviewHead, keepUpgradeHeaders: boolean): Array<[string, string]> {
+  const connectionTokens = previewConnectionTokensFromPairs(head.headers);
   const out: Array<[string, string]> = [];
   for (const [name, value] of head.headers) {
     const lower = name.toLowerCase();
+    // 101 的协商结果必须留下：即使上游把 Connection 写成这两项，也不能把握手结果剥掉。
+    if (keepUpgradeHeaders && (lower === 'sec-websocket-protocol' || lower === 'sec-websocket-accept')) {
+      out.push([name, value]);
+      continue;
+    }
+    if (previewResponseHeaderDropped(name, { connectionTokens })) continue;
     if (lower === 'x-frame-options') continue;
-    if (PREVIEW_RESPONSE_DROP.has(lower)) continue;
-    if (lower.startsWith('proxy-')) continue;
     // 固定成 no-referrer：上游自己设的也要覆盖（分享令牌不能经 Referer 外泄）。
     if (lower === 'referrer-policy') continue;
     if (lower === 'content-security-policy' || lower === 'content-security-policy-report-only') {
@@ -104,12 +89,8 @@ function responseHeaders(head: PreviewHead, keepUpgradeHeaders: boolean): Array<
       if (cleaned !== '') out.push([name, cleaned]);
       continue;
     }
-    if (keepUpgradeHeaders) {
-      if (lower === 'transfer-encoding' || lower === 'keep-alive' || lower === 'sec-websocket-extensions') continue;
-      out.push([name, value]);
-      continue;
-    }
-    if (HOP_BY_HOP.has(lower)) continue;
+    // permessage-deflate 关闭（设计稿 §7）：101 上不透传扩展协商。
+    if (keepUpgradeHeaders && lower === 'sec-websocket-extensions') continue;
     out.push([name, value]);
   }
   // 分享令牌在查询串里（`?share=`），别让它通过 Referer 漏给页面里的第三方资源。

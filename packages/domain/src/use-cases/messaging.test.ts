@@ -1115,6 +1115,28 @@ test('会话交接 P2：审计不落正文，只记录长度、parts 数和 wake
   assert.match(entry.detail, /wake=false/);
 });
 
+test('会话交接 P2：链限额和普通发送同一套——第 5 跳的交接 / send 都 depth_exceeded，审计落在来源会话', async () => {
+  const w = await world();
+  const chain: Session[] = [];
+  for (let i = 0; i < 6; i += 1) chain.push(await w.newSession('alice'));
+  for (let i = 0; i < 4; i += 1) {
+    const sent = await w.bus.accept({ fromSessionId: chain[i]!.id, kind: 'send', to: `session:${chain[i + 1]!.id}`, body: `hop ${i + 1}` });
+    assert.ok(sent.ok, `hop ${i + 1}`);
+  }
+
+  const handed = await w.bus.handoff({ fromSessionId: chain[4]!.id, actorId: 'alice', targetSessionId: chain[5]!.id, body: '交接第 5 跳', requestKey: 'deep-1' });
+  const sent = await w.bus.accept({ fromSessionId: chain[4]!.id, kind: 'send', to: `session:${chain[5]!.id}`, body: 'send 第 5 跳' });
+  assert.equal(!handed.ok && handed.error.code, 'conflict');
+  assert.equal(!sent.ok && sent.error.code, 'conflict');
+  // 拒绝的码和文案同源；只有审计 detail 里的入口前缀不同（handoff / send）。
+  assert.equal(handed.ok ? '' : handed.error.message, sent.ok ? '' : sent.error.message);
+  const denials = w.messages.audits.filter((e) => e.action === 'denied' && e.actor === chain[4]!.id && e.detail.includes('depth_exceeded'));
+  assert.equal(denials.length, 2);
+  assert.equal(new Set(denials.map((e) => e.traceId)).size, 1);
+  assert.ok(denials.some((e) => e.detail.startsWith('depth_exceeded: handoff ')));
+  assert.ok(denials.some((e) => e.detail.startsWith('depth_exceeded: send ')));
+});
+
 // ---- 委派上报：内部入口，和交接共用核心但永远不唤醒 ----
 
 test('委派上报：只落收件箱，伪造的 wake / parts / handoffOrigin 都不生效', async () => {

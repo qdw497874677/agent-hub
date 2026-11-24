@@ -1,9 +1,10 @@
 import { constants } from 'node:fs';
 import { mkdir, open, realpath, stat, type FileHandle } from 'node:fs/promises';
-import { dirname, resolve, sep } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import type { DirectoryEntry } from '@agent-hub/domain';
 import { createLocalFs } from './local-fs.ts';
 import { makeDirectoryWithin } from './make-directory.ts';
+import { isEqualOrDescendantPath } from './path-boundary.ts';
 
 /**
  * Worker 这一侧的文件操作，全部过 WORKER_ROOTS 这道边界。
@@ -62,7 +63,7 @@ export function createWorkerFiles(options: { readonly roots: readonly string[]; 
   async function check(path: string): Promise<string | null> {
     if (!options.enforced) return null;
     const target = await real(path);
-    const inside = (await realRoots).some((root) => target === root || target.startsWith(root.endsWith(sep) ? root : root + sep));
+    const inside = (await realRoots).some((root) => isEqualOrDescendantPath(root, target));
     return inside ? null : boundaryHint(resolve(path), roots);
   }
 

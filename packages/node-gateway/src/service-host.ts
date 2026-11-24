@@ -1,9 +1,10 @@
 import { chmodSync, readFileSync, readdirSync, readlinkSync, realpathSync } from 'node:fs';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve, sep } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { ServiceRestart, ServiceState } from '@agent-hub/domain';
 import { scrubCredentials, setupEnv, tailOutput } from './setup-script.ts';
+import { isEqualOrDescendantPath } from './path-boundary.ts';
 
 /**
  * 会话服务（docs/design/session-service.md §5）：Worker 侧的本地长驻进程。
@@ -177,7 +178,7 @@ function ownedBy(port: number, pid: number, procRoot: string): boolean {
   return false;
 }
 
-const inside = (root: string, candidate: string): boolean => candidate === root || candidate.startsWith(root.endsWith(sep) ? root : root + sep);
+const inside = (root: string, candidate: string): boolean => isEqualOrDescendantPath(root, candidate);
 
 export function createServiceHost(options: ServiceHostOptions): ServiceHost {
   const entries = new Map<string, Entry>();

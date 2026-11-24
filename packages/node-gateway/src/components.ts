@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { join } from 'node:path';
 import { BUILTIN_CHROMIUM, trustedAcquisitionStrategies, type AcquisitionResolution, type ComponentJobResult, type ComponentJobSpec } from '@agent-hub/domain';
 import { acquisitionJobResult, runAcquisitionStrategies, type AcquireHooks } from './acquire.ts';
+import { isEqualOrDescendantPath } from './path-boundary.ts';
 
 /**
  * hub 管理的组件安装（ADR 0021 P2）。目录布局（inventory.ts 读同一份）：
@@ -68,8 +69,7 @@ function installedVersion(root: string, runtime: string, id: string): string | n
 }
 
 function inside(root: string, path: string): boolean {
-  const base = realpathSync(root);
-  return path === base || path.startsWith(base + sep);
+  return isEqualOrDescendantPath(realpathSync(root), path);
 }
 
 /** 这次装进来的树里，哪些包带安装脚本（审计用）：锁文件标了 hasInstallScript 的，再读它自己的 package.json。 */

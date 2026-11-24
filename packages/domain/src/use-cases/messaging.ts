@@ -32,10 +32,12 @@ import {
   type AgentMessage,
   type FailureCode,
   type HandoffOrigin,
+  type HoldReason,
   type MessageAuditAction,
   type MessageKind,
   type MessageLimits,
   type MessagingConfig,
+  type PrivilegeTier,
   type SpawnRecord
 } from '../messaging.ts';
 import type { MessageStore } from '../ports/message-store.ts';
@@ -738,6 +740,67 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     return null;
   };
 
+  /** 两个入口（普通 accept / 内部投递）共用的拒绝形状：文案由各自的 deny 记审计。 */
+  type GateDenial = { readonly code: FailureCode; readonly message: string };
+
+  /**
+   * 协作链限额闸门：深度、同时进行中、这一跳外发。普通 accept 和交接 / 委派上报走同一套文案。
+   * 没有入站消息 = 链头，不扫整条链；trace 仍按 traceId 查（和以前逐字一致）。
+   */
+  const chainGate = async (
+    projectId: ProjectId,
+    traceId: string,
+    fromId: SessionId,
+    depth: number,
+    incoming: AgentMessage | null
+  ): Promise<{ readonly config: MessagingConfig; readonly trace: AgentMessage[] } | GateDenial> => {
+    const config = await loadConfig(projectId);
+    const limits = effectiveLimits(config.limits);
+    if (depth > limits.maxDepth) return { code: 'depth_exceeded', message: `协作链深度 ${depth} 超过上限 ${limits.maxDepth}` };
+    const trace = incoming ? await deps.messages.byTrace(traceId) : [];
+    if (trace.filter((m) => isActive(m) && m.kind !== 'reply').length >= limits.maxConcurrent) {
+      return { code: 'rate_limited', message: `这条协作链同时进行中的消息已到上限 ${limits.maxConcurrent}` };
+    }
+    if (trace.filter((m) => m.fromSessionId === fromId && m.kind !== 'reply').length >= limits.maxFanOut) {
+      return { code: 'rate_limited', message: `这一跳往外发的消息已到上限 ${limits.maxFanOut}` };
+    }
+    return { config, trace };
+  };
+
+  /**
+   * 放行闸门（防风暴 + 权限档位）：accept 与内部投递共用。
+   * 拒收（速率 / 重复 / 队列满）返回 GateDenial；放行时带回 holdReason 和档位（accept 的 accepted 审计要用 tiers）。
+   */
+  const holdGate = async (
+    from: Session,
+    target: Session | null,
+    body: string,
+    parts: readonly MessagePart[],
+    trace: readonly AgentMessage[],
+    config: MessagingConfig
+  ): Promise<
+    | { readonly holdReason: HoldReason | null; readonly tiers: { readonly from: PrivilegeTier; readonly to: PrivilegeTier } | null }
+    | GateDenial
+  > => {
+    const storm = target ? await stormCheck(from, target, body, parts, trace) : null;
+    // P1f 权限档位：guarded → auto 先拦下（不能借自动批准的会话做自己要审批的事）；项目 trustPeers 可关。
+    // 分档看整个会话：强制 yolo 的运行时（grok 固定 yoloMode 开会话）按 auto 分档（MED3）。
+    const tiers = target ? { from: privilegeTierFor(from), to: privilegeTierFor(target) } : null;
+    if (storm === 'hold') return { holdReason: 'pingpong', tiers };
+    if (storm) return storm;
+    const holdReason = tiers && tiers.from === 'guarded' && tiers.to === 'auto' && config.trustPeers !== true ? 'privilege' : null;
+    return { holdReason, tiers };
+  };
+
+  /** 被拦下的消息统一记 held 审计；文案只在这里维护，两个入口不会分叉。 */
+  const auditHeld = async (message: AgentMessage, holdReason: HoldReason | null): Promise<void> => {
+    if (holdReason === 'privilege') {
+      await audit(message, message, 'held', 'hub', '权限档位升级：要审批的会话（guarded）发给自动批准的会话（auto），等发起人或项目管理员放行');
+    } else if (holdReason) {
+      await audit(message, message, 'held', 'hub', `同一条链里和对方来回已到 ${STORM_LIMITS.pingpongMax} 次，等人放行`);
+    }
+  };
+
   /** 已收起的会话：排队 / 拦下的消息一律失败（ask 会告诉提问方）。 */
   const drainArchived = async (target: Session): Promise<void> => {
     const pending = (await deps.messages.forSession(target.id, 500)).filter((m) => m.targetSessionId === target.id && (m.status === 'queued' || m.status === 'held'));
@@ -859,16 +922,9 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     if (isolated) return deny('denied', isolated);
     if (target.settledAt) return deny('archived', '对方会话已收起；要先重开才能收消息');
 
-    const config = await loadConfig(project.id);
-    const limits = effectiveLimits(config.limits);
-    if (depth > limits.maxDepth) return deny('depth_exceeded', `协作链深度 ${depth} 超过上限 ${limits.maxDepth}`);
-    const trace = incoming ? await deps.messages.byTrace(traceId) : [];
-    if (trace.filter((m) => isActive(m) && m.kind !== 'reply').length >= limits.maxConcurrent) {
-      return deny('rate_limited', `这条协作链同时进行中的消息已到上限 ${limits.maxConcurrent}`);
-    }
-    if (trace.filter((m) => m.fromSessionId === from.id && m.kind !== 'reply').length >= limits.maxFanOut) {
-      return deny('rate_limited', `这一跳往外发的消息已到上限 ${limits.maxFanOut}`);
-    }
+    const gate = await chainGate(project.id, traceId, from.id, depth, incoming);
+    if ('code' in gate) return deny(gate.code, gate.message);
+    const { config, trace } = gate;
 
     const commit = async (): Promise<Result<AgentMessage, DomainError>> => {
       // 并发同键在锁内再查一次：同参回收先到的结果，异参拒绝，绝不覆盖。
@@ -878,12 +934,9 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         return ok(raced);
       }
 
-      let holdReason: AgentMessage['holdReason'] = null;
-      const storm = await stormCheck(from, target, body, parts, trace);
-      if (storm && storm !== 'hold') return deny(storm.code, storm.message);
-      if (storm === 'hold') holdReason = 'pingpong';
-      const tiers = { from: privilegeTierFor(from), to: privilegeTierFor(target) };
-      if (!holdReason && tiers.from === 'guarded' && tiers.to === 'auto' && config.trustPeers !== true) holdReason = 'privilege';
+      const hold = await holdGate(from, target, body, parts, trace, config);
+      if ('code' in hold) return deny(hold.code, hold.message);
+      const { holdReason } = hold;
 
       const now = deps.now();
       const message: AgentMessage = {
@@ -929,11 +982,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         return err(unavailable('交接消息未能保存，请稍后重试'));
       }
       await audit(message, message, 'accepted', from.id, `${input.label} ${message.to} depth=${depth} chars=${body.length} parts=${parts.length}${wake ? ' wake=true' : ' wake=false'}${input.auditExtra ? ` ${input.auditExtra}` : ''}`);
-      if (holdReason === 'privilege') {
-        await audit(message, message, 'held', 'hub', '权限档位升级：要审批的会话（guarded）发给自动批准的会话（auto），等发起人或项目管理员放行');
-      } else if (holdReason) {
-        await audit(message, message, 'held', 'hub', `同一条链里和对方来回已到 ${STORM_LIMITS.pingpongMax} 次，等人放行`);
-      }
+      await auditHeld(message, holdReason);
       return ok(message);
     };
 
@@ -996,16 +1045,9 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       if (!(await allowed(caller, permission, project))) return deny('denied', `会话主人没有 ${permission}`);
       if (onBehalfOf !== caller && !(await allowed(onBehalfOf, permission, project))) return deny('denied', `代理的人没有 ${permission}`);
 
-      const config = await loadConfig(project.id);
-      const limits = effectiveLimits(config.limits);
-      if (depth > limits.maxDepth) return deny('depth_exceeded', `协作链深度 ${depth} 超过上限 ${limits.maxDepth}`);
-      const trace = incoming ? await deps.messages.byTrace(traceId) : [];
-      if (trace.filter((m) => isActive(m) && m.kind !== 'reply').length >= limits.maxConcurrent) {
-        return deny('rate_limited', `这条协作链同时进行中的消息已到上限 ${limits.maxConcurrent}`);
-      }
-      if (trace.filter((m) => m.fromSessionId === from.id && m.kind !== 'reply').length >= limits.maxFanOut) {
-        return deny('rate_limited', `这一跳往外发的消息已到上限 ${limits.maxFanOut}`);
-      }
+      const gate = await chainGate(project.id, traceId, from.id, depth, incoming);
+      if ('code' in gate) return deny(gate.code, gate.message);
+      const { config, trace } = gate;
 
       let target: Session | null = null;
       let bot: PersistentAgent | null = null;
@@ -1061,16 +1103,9 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       // 并发 accept 同一对时会同时读到同一份计数，全都过线。投递（pump）在锁释放后排同一条串行队，
       // 不能在锁内调 pump——它会再入 serial(target.id)，排在还没结东的当前链后面，直接死锁。
       const commit = async (): Promise<Result<AgentMessage, DomainError>> => {
-        let holdReason: AgentMessage['holdReason'] = null;
-        if (target) {
-          const storm = await stormCheck(from, target, body, parts, trace);
-          if (storm === 'hold') holdReason = 'pingpong';
-          else if (storm) return deny(storm.code, storm.message);
-        }
-        // P1f 权限档位：guarded → auto 先拦下（不能借自动批准的会话做自己要审批的事）；项目 trustPeers 可关。
-        // 分档看整个会话：强制 yolo 的运行时（grok 固定 yoloMode 开会话）按 auto 分档（MED3）。
-        const tiers = target ? { from: privilegeTierFor(from), to: privilegeTierFor(target) } : null;
-        if (target && tiers && !holdReason && tiers.from === 'guarded' && tiers.to === 'auto' && config.trustPeers !== true) holdReason = 'privilege';
+        const hold = await holdGate(from, target, body, parts, trace, config);
+        if ('code' in hold) return deny(hold.code, hold.message);
+        const { holdReason, tiers } = hold;
         const wake = command.wake !== false;
         const now = deps.now();
         const message: AgentMessage = {
@@ -1106,11 +1141,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         await deps.messages.save(message);
         const tierNote = tiers && (tiers.from === 'unknown' || tiers.to === 'unknown') ? ` tier=${tiers.from}→${tiers.to}` : '';
         await audit(message, message, 'accepted', from.id, `${command.kind} ${message.to} depth=${depth}${parts.length > 0 ? ` parts=${parts.length}` : ''}${wake ? '' : ' wake=false'}${tierNote} ${summary(body)}`);
-        if (holdReason === 'privilege') {
-          await audit(message, message, 'held', 'hub', '权限档位升级：要审批的会话（guarded）发给自动批准的会话（auto），等发起人或项目管理员放行');
-        } else if (holdReason) {
-          await audit(message, message, 'held', 'hub', `同一条链里和对方来回已到 ${STORM_LIMITS.pingpongMax} 次，等人放行`);
-        } else if (!target) {
+        await auditHeld(message, holdReason);
+        if (!target) {
           await audit(message, message, 'spawn_requested', from.id, `${bot ? botAddress(bot.name) : 'bot'}（${bot?.ref.runtime}）等人批准`);
         }
         return ok(message);

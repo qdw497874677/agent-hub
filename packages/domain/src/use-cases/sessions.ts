@@ -25,6 +25,7 @@ import { authorizeSession, authorizeWorker, projectOfSessionOrigin } from './aut
 import { agentProfileForUse } from './agent-profiles.ts';
 import { resolveDefaultAgent } from './resolve-default-agent.ts';
 import { withActiveTask } from './task-admission.ts';
+import { readInFlightTurn, readJournalTail, readRecentTurnDeliveries, turnVerdictInTail } from './turn-evidence.ts';
 
 export interface DeriveCommand {
   /** 归属任务。容器会话（群角色 / bot P2P，#221 步骤 7）不传，改用 `projectId` 定位项目。 */
@@ -502,36 +503,29 @@ export async function changeSessionOption(
  * （把 queued 翻成 sending）不会在切换持锁期间插进来；`claimPrompt` 的入队写入仍在
  * 队列外，但它只产生 queued 行，不占回合。若送达侧的串行化退化，这里读到的就只是
  * 检查那一刻的快照。
+ *
+ * 有界读与尾部扫描骨架和送达门共用 `turn-evidence.ts`；**这里的优先级不同**：
+ * 精确 sending → 非 running 即已停止 → journal 尾部。不要把两套顺序合并成一个 isBusy。
  */
 async function turnStillRunning(
   deps: Pick<Deps, 'sessions'> & { readonly deliveries?: DeliveryQueue },
   session: Session
 ): Promise<boolean> {
-  if (deps.deliveries && (await deps.deliveries.inFlight(session.id))) return true;
+  if (await readInFlightTurn(deps.deliveries, session.id)) return true;
   if (session.status !== 'running') return false;
   // queued = 还没认领；undelivered = 已放弃；cancelled = 用户撤回。三种都还没开局。
   const notStarted = new Set(
-    deps.deliveries
-      ? (await deps.deliveries.recent(session.id, 200))
-          .filter(
-            (delivery) =>
-              delivery.kind === 'prompt' &&
-              (delivery.state === 'queued' || delivery.state === 'undelivered' || delivery.state === 'cancelled')
-          )
-          .map((delivery) => delivery.seq)
-      : []
+    (await readRecentTurnDeliveries(deps.deliveries, session.id))
+      .filter(
+        (delivery) =>
+          delivery.kind === 'prompt' &&
+          (delivery.state === 'queued' || delivery.state === 'undelivered' || delivery.state === 'cancelled')
+      )
+      .map((delivery) => delivery.seq)
   );
-  const tail = await deps.sessions.tail(session.id, 2_000);
-  const truncated = tail.length >= 2_000 && tail[0]!.seq > 1;
-  for (let i = tail.length - 1; i >= 0; i--) {
-    const entry = tail[i]!;
-    if (entry.event.kind === 'ended') return false;
-    if (entry.event.kind !== 'prompt') continue;
-    if (notStarted.has(entry.seq)) continue;
-    // 没有送达记录的老 prompt，或记录已是 sending / delivered：都在等结束证据。
-    return true;
-  }
-  return truncated;
+  const tail = await readJournalTail(deps, session.id);
+  // 没开局的老 prompt 跳过；没有 ended 证据且窗口被截断时按仍在跑（fail closed）。
+  return turnVerdictInTail(tail, (entry) => notStarted.has(entry.seq)) !== 'idle';
 }
 
 /**
