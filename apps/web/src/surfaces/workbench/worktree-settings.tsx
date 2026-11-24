@@ -3,6 +3,7 @@ import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
+import { projectKeys } from '../../shell/query-keys.ts';
 import { useAccount } from '../../shell/auth.tsx';
 import { canAdminister } from '../../shell/account-context.ts';
 import { SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
@@ -49,7 +50,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
   const savePort = useMutation({
     mutationFn: () => api.saveProjectPreviewPort(project.id, portValue),
     onSuccess: (next) => {
-      queryClient.setQueryData(['canvas', next.id], (old: unknown) =>
+      queryClient.setQueryData(projectKeys.canvas(next.id), (old: unknown) =>
         old !== null && typeof old === 'object' && 'project' in old ? { ...(old as object), project: next } : old
       );
       void queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -60,7 +61,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
   const saveSubmodules = useMutation({
     mutationFn: (submodules: 'off' | 'recursive') => api.saveProjectSubmodules(project.id, submodules),
     onSuccess: (next) => {
-      queryClient.setQueryData(['canvas', next.id], (old: unknown) =>
+      queryClient.setQueryData(projectKeys.canvas(next.id), (old: unknown) =>
         old !== null && typeof old === 'object' && 'project' in old ? { ...(old as object), project: next } : old
       );
       void queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -72,7 +73,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['projects'] }),
         queryClient.invalidateQueries({ queryKey: ['home'] }),
-        queryClient.invalidateQueries({ queryKey: ['canvas', project.id] })
+        queryClient.invalidateQueries({ queryKey: projectKeys.canvas(project.id) })
       ]);
     }
   });

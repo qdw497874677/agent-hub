@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type CanvasDto, type CreateWorkspaceRequest, type WorkerInfoDto, type WorkspaceDto, type WorkspaceViewDto } from '../../shell/api.ts';
 import { DirectoryPicker } from './directory-picker.tsx';
+import { projectKeys } from '../../shell/query-keys.ts';
 import { WorkerChip, WorkerPicker, resolveWorker, useWorkers } from '../../shell/workers.tsx';
 import { RecheckButton, harnessHint, harnessReason } from '../../shell/harness.tsx';
 import { machineAvailability, machineSelectable, workerOffersAgent } from '../../shell/harness-gate.ts';
@@ -176,7 +177,7 @@ export function WorkspaceChooser({
   const recheckMachines = () => {
     void Promise.all([
       queryClient.invalidateQueries({ queryKey: ['workers'] }),
-      queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] })
+      queryClient.invalidateQueries({ queryKey: projectKeys.canvas(canvas.project.id) })
     ]);
   };
 

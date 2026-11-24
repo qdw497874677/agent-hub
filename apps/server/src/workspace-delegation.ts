@@ -47,7 +47,6 @@ import {
   type DirectDelegateWorkspaceCommand,
   type DomainError,
   type GitAuth,
-  type Principal,
   type Project,
   type Result,
   type Session,
@@ -62,6 +61,7 @@ import {
 } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
+import { humanOf, NO_STORE, readJson } from './http-helpers.ts';
 import { authHeaderFor } from './repo-auth.ts';
 
 /**
@@ -81,12 +81,6 @@ import { authHeaderFor } from './repo-auth.ts';
 /** 严格 worker 的失败文案：只有「可能已产生目录 / 分支」才允许标 uncertain。 */
 function prepareFailureKind(message: string): 'fatal' | 'uncertain' {
   return message.includes('无法确认') || message.includes('可能已') ? 'uncertain' : 'fatal';
-}
-
-function humanOf(subject: Subject | null): Principal | null {
-  const principal = principalOfSubject(subject);
-  if (!principal || principal.via) return null;
-  return principal;
 }
 
 /**
@@ -801,8 +795,6 @@ const createBody = z.object({
   options: z.record(z.string(), z.union([z.string(), z.boolean()])).optional()
 });
 
-const noStore = { 'cache-control': 'no-store' } as const;
-
 /** 确认接口不接受浏览器重放整份配置：只允许空 body 或 `{}`。 */
 function emptyConfirmBody(raw: string): boolean {
   if (raw.trim() === '') return true;
@@ -824,7 +816,7 @@ export function installDelegationRoutes(
   app.post('/api/coordinators/:sessionId/delegations', async (c) => {
     const actor = subjectOf(c);
     if (!humanOf(actor)) return c.json({ error: { code: 'forbidden', message: '只有当前登录的人能发起委派' } }, 403);
-    const parsed = createBody.safeParse(await c.req.json().catch(() => null));
+    const parsed = createBody.safeParse(await readJson(c));
     if (!parsed.success) {
       return c.json({ error: { code: 'invalid', message: parsed.error.issues[0]?.message ?? '请求格式不对' } }, 400);
     }
@@ -865,7 +857,7 @@ export function installDelegationRoutes(
         delegation: delegationView(result.value.record, executionSessionExists)
       },
       result.value.allocation === 'created' ? 201 : 200,
-      noStore
+      NO_STORE
     );
   });
 
@@ -899,7 +891,7 @@ export function installDelegationRoutes(
       return c.json(
         { created: false, claimed: false, delegation: delegationView(record, executionSessionExists) },
         200,
-        noStore
+        NO_STORE
       );
     }
     if (record.state !== 'pending' || record.claim !== null) {
@@ -950,7 +942,7 @@ export function installDelegationRoutes(
         )
       },
       200,
-      noStore
+      NO_STORE
     );
   });
 
@@ -977,6 +969,6 @@ export function installDelegationRoutes(
         delegationView(record, await executionSessionExistsFor(deps, actor, context.project, record))
       )
     );
-    return c.json({ delegations: views }, 200, noStore);
+    return c.json({ delegations: views }, 200, NO_STORE);
   });
 }

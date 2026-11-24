@@ -103,7 +103,7 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
     queries: members.map((item) => ({
       ...fresh,
       enabled: aggregate,
-      queryKey: ['files', sessionId, 'changes', base, item.workspaceId],
+      queryKey: keys.memberChanges(base, item.workspaceId),
       queryFn: () => filesApi.changes(sessionId, base, item.workspaceId)
     }))
   });

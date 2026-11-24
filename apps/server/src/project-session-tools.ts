@@ -15,6 +15,7 @@ import {
   type ToolProvider,
   type ToolScope
 } from '@agent-hub/domain';
+import { asObject, exactString, hasControl, rejectUnknownKeys, requiredExact } from './project-session-input.ts';
 
 /**
  * 项目会话写工具（docs/design/project-session-mcp.md 实施顺序 1）。
@@ -45,8 +46,6 @@ const LIST_DEFAULT = 20;
 const LIST_MAX = 50;
 const LIST_TITLE_MAX = 200;
 const LIST_STATUS_MAX = 40;
-const UNKNOWN_KEYS_SHOWN = 5;
-const UNKNOWN_KEY_MAX = 40;
 
 /**
  * 写工具各自使用不同的 scope 字符串；装配方传入，不在本文件里签发。
@@ -476,57 +475,8 @@ function sessionListDescriptor(scope: ToolScope): ToolDescriptor {
   };
 }
 
-/** 控制字符不能出现在 id / 分支 / 配置 id 里；goal 与 instructions 例外（可含换行）。 */
-function hasControl(value: string): boolean {
-  return /[\u0000-\u001f\u007f]/.test(value);
-}
-
-function asObject(input: unknown): Result<Record<string, unknown>, DomainError> {
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-    return err(invalid('参数必须是对象'));
-  }
-  return ok(input as Record<string, unknown>);
-}
-
-/**
- * 未知键一律拒绝（actor / project_id / worktree_path / token / repo_url 等）。
- * 诊断只列**键名**，不把键值写进错误或审计。
- */
-function rejectUnknownKeys(raw: Record<string, unknown>, allowed: ReadonlySet<string>): DomainError | null {
-  const unknown = Object.keys(raw).filter((key) => !allowed.has(key));
-  if (unknown.length === 0) return null;
-  const shown = unknown.slice(0, UNKNOWN_KEYS_SHOWN).map((key) => key.slice(0, UNKNOWN_KEY_MAX));
-  const suffix = unknown.length > UNKNOWN_KEYS_SHOWN ? ' 等' : '';
-  return invalid(`不支持的参数：${shown.join(', ')}${suffix}`);
-}
-
-/** id / 请求键 / 分支 / 模型 id：非空、无首尾空白、无控制字符、限长。 */
-function exactString(
-  raw: Record<string, unknown>,
-  key: string,
-  max: number
-): Result<string | null, DomainError> {
-  const value = raw[key];
-  if (value === undefined || value === null) return ok(null);
-  if (typeof value !== 'string') return err(invalid(`${key} 必须是字符串`));
-  if (value === '' || value !== value.trim()) {
-    return err(invalid(`${key} 必须是非空字符串，且不能有首尾空白`));
-  }
-  if (value.length > max) return err(invalid(`${key} 不能超过 ${max} 字符`));
-  if (hasControl(value)) return err(invalid(`${key} 不能包含控制字符`));
-  return ok(value);
-}
-
-function requiredExact(
-  raw: Record<string, unknown>,
-  key: string,
-  max: number
-): Result<string, DomainError> {
-  const parsed = exactString(raw, key, max);
-  if (!parsed.ok) return parsed;
-  if (parsed.value === null) return err(invalid(`${key} 必填`));
-  return ok(parsed.value);
-}
+/* 通用输入校验（hasControl / asObject / rejectUnknownKeys / exactString / requiredExact）
+   与资产工具共用同一份实现；这里只保留会话工具自己的 trim / 正文 / 分支语义。 */
 
 /** 标题 / 目标：按 trim 后语义使用；目标允许为空（存 null）。 */
 function requiredText(

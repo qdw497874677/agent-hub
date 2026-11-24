@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { CanvasDto, SessionDto } from '../shell/api.ts';
 import { api, sessionsApi } from '../shell/api.ts';
+import { projectKeys } from '../shell/query-keys.ts';
 import { dropSession, normalizeSessionTitle, patchSession } from './session-actions.ts';
 
 /**
@@ -23,7 +24,7 @@ export interface SessionActions {
 export function useSessionActions(projectId: string): SessionActions {
   const queries = useQueryClient();
   return useMemo(() => {
-    const canvasKey = ['canvas', projectId];
+    const canvasKey = projectKeys.canvas(projectId);
     const patch = (sessionId: string, change: Partial<SessionDto>): void => {
       queries.setQueryData<CanvasDto>(canvasKey, (current) => (current ? patchSession(current, sessionId, change) : current));
       // 侧聊这类不进画布的会话：单条查询是它唯一的缓存。

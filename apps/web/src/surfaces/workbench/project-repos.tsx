@@ -3,6 +3,7 @@ import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
+import { projectKeys } from '../../shell/query-keys.ts';
 import { useAccount } from '../../shell/auth.tsx';
 import { canAdminister } from '../../shell/account-context.ts';
 import { INPUT, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
@@ -84,7 +85,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['projects'] }),
         queryClient.invalidateQueries({ queryKey: ['home'] }),
-        queryClient.invalidateQueries({ queryKey: ['canvas', project.id] })
+        queryClient.invalidateQueries({ queryKey: projectKeys.canvas(project.id) })
       ]);
     }
   });

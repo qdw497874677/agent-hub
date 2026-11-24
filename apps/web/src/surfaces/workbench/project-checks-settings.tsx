@@ -3,6 +3,7 @@ import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
+import { projectKeys } from '../../shell/query-keys.ts';
 import { useAccount } from '../../shell/auth.tsx';
 import { canAdminister } from '../../shell/account-context.ts';
 import { SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
@@ -36,7 +37,7 @@ export function ProjectChecksSettings({ project }: { project: ProjectDto }) {
     mutationFn: () => api.saveProjectChecks(project.id, parseChecks(text)),
     onSuccess: (next) => {
       // 和预览端口那段一致：画布缓存里换掉这个项目，列表也跟着失效。
-      queryClient.setQueryData(['canvas', next.id], (old: unknown) =>
+      queryClient.setQueryData(projectKeys.canvas(next.id), (old: unknown) =>
         old !== null && typeof old === 'object' && 'project' in old ? { ...(old as object), project: next } : old
       );
       void queryClient.invalidateQueries({ queryKey: ['projects'] });

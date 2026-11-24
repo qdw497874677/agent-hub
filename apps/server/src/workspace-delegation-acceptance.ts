@@ -8,7 +8,6 @@ import {
   invalid,
   notFound,
   ok,
-  principalOfSubject,
   unavailable,
   withActiveTask,
   type AccessPolicy,
@@ -30,6 +29,7 @@ import {
   type WorkspaceDelegationStore
 } from '@agent-hub/domain';
 import { fail } from './http-error.ts';
+import { humanOf, NO_STORE, readJson } from './http-helpers.ts';
 import type { SubjectOf } from './auth.ts';
 
 /**
@@ -144,17 +144,6 @@ const ACCEPT_BODY = z
   })
   .strict();
 
-const NO_STORE = { 'cache-control': 'no-store' };
-
-function humanOf(subject: Subject | null): Principal | null {
-  const principal = principalOfSubject(subject);
-  return principal !== null && principal.via === undefined ? principal : null;
-}
-
-async function readJson(c: Context): Promise<unknown> {
-  return c.req.json().catch(() => null);
-}
-
 function acceptanceView(record: DelegationAcceptance): DelegationAcceptanceEntryView {
   return {
     requestKey: record.requestKey,
@@ -167,7 +156,7 @@ function acceptanceView(record: DelegationAcceptance): DelegationAcceptanceEntry
 /** 失败响应也禁止缓存：错误里可能暴露某条派工是否存在。 */
 function failed(c: Context, error: DomainError): Response {
   const response = fail(c, error);
-  response.headers.set('cache-control', 'no-store');
+  response.headers.set('cache-control', NO_STORE['cache-control']);
   return response;
 }
 

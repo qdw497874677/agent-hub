@@ -13,7 +13,6 @@ import {
   isUsable,
   notFound,
   ok,
-  principalOfSubject,
   publishWorkspaceDelegationUseCase,
   repoTokenKey,
   unavailable,
@@ -37,7 +36,6 @@ import {
   type Result,
   type SecretVault,
   type SessionRepository,
-  type Subject,
   type TaskGate,
   type TaskRepository,
   type Workspace,
@@ -48,6 +46,7 @@ import {
 } from '@agent-hub/domain';
 import { authHeaderFor } from './repo-auth.ts';
 import { fail } from './http-error.ts';
+import { humanOf, NO_STORE, readJson } from './http-helpers.ts';
 import type { SubjectOf } from './auth.ts';
 
 /**
@@ -370,17 +369,6 @@ const PUBLISH_BODY = z
   .strict();
 
 const RECONCILE_BODY = z.object({ approvalKey: APPROVAL_KEY }).strict();
-
-const NO_STORE = { 'cache-control': 'no-store' };
-
-function humanOf(subject: Subject | null) {
-  const principal = principalOfSubject(subject);
-  return principal !== null && principal.via === undefined ? principal : null;
-}
-
-async function readJson(c: Context): Promise<unknown> {
-  return c.req.json().catch(() => null);
-}
 
 /**
  * 挂载：

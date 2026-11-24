@@ -93,11 +93,15 @@ test('老数据清理：系统条目里的空「（）」和进展行里的 mark
   const dir = mkdtempSync(join(tmpdir(), 'hub-clean-'));
   const file = join(dir, 'hub.db');
   try {
-    const first = openSqliteStore(file);
-    first.db.exec(`INSERT INTO projects(id, name, root_path, created_at) VALUES ('p', 'demo', '/tmp', 1);
-      INSERT INTO tasks(id, project_id, title, status, created_at, updated_at, summary) VALUES ('t', 'p', 't', 'todo', 1, 1, '**接好了** \`mcp\`');
+    // 直接在升级前的库形状里造数据：清理是一次性迁移，只有老库首次打开时才会跑。
+    const old = new DatabaseSync(file);
+    old.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, goal TEXT, status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, summary TEXT);
+      CREATE TABLE task_log_entries (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, seq INTEGER NOT NULL, author TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, links TEXT NOT NULL DEFAULT '[]', attachments TEXT NOT NULL DEFAULT '[]', session_id TEXT, created_at INTEGER NOT NULL, supersedes TEXT, superseded_by TEXT);
+      INSERT INTO projects VALUES ('p', 'demo', '/tmp', 1);
+      INSERT INTO tasks VALUES ('t', 'p', 't', NULL, 'todo', 1, 1, '**接好了** \`mcp\`');
       INSERT INTO task_log_entries(id, task_id, seq, author, kind, body, created_at) VALUES ('e', 't', 1, '{"kind":"system"}', 'note', '开了 grok 会话（）', 1);`);
-    first.close();
+    old.close();
     const store = openSqliteStore(file);
     const body = (store.db.prepare("SELECT body FROM task_log_entries WHERE id = 'e'").get() as { body: string }).body;
     const summary = (store.db.prepare("SELECT summary FROM tasks WHERE id = 't'").get() as { summary: string }).summary;

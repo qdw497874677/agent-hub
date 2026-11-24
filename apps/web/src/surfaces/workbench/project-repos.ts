@@ -1,5 +1,3 @@
-import type { ProjectDto } from '@agent-hub/contract';
-
 /**
  * 项目仓库清单（docs/design/multi-repo.md §2 §7）的产品层逻辑：草稿行、就地校验、PATCH body。
  *
@@ -570,6 +568,3 @@ export function repoProbeText(
 export function repoProbeAffected(patch: Partial<ProjectRepoRow>): boolean {
   return 'url' in patch || 'defaultBranch' in patch || 'credential' in patch || 'clearToken' in patch;
 }
-
-/** 契约里的仓库形状 → 草稿行（项目列表拿到的就是完整的 ProjectDto）。 */
-export type ProjectReposFromProject = ProjectDto['repos'];

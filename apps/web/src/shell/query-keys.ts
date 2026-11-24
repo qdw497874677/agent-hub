@@ -51,7 +51,13 @@ export function filesKeys(workspaceId: string | null | undefined, sessionId: str
         ? (['files', sessionId, 'diff', path, base] as const)
         : (['files', dir, 'diff', path, base] as const),
     /** 会话的检查点（每轮改了哪些文件）只属于这条会话。 */
-    turns: () => ['files', sessionId, 'turns'] as const
+    turns: () => ['files', sessionId, 'turns'] as const,
+    /**
+     * 组合工作目录里某个成员的改动：同一会话下按成员各取一份。
+     * 前缀仍是本会话的 changes，后面多一节 workspaceId，和成员维度对齐。
+     */
+    memberChanges: (base: string, workspaceId: string) =>
+      ['files', sessionId, 'changes', base, workspaceId] as const
   };
 }
 
@@ -110,8 +116,19 @@ export const workspaceKeys = {
   changes: (workspaceId: string) => ['workspace-changes', workspaceId] as const
 };
 
+/** 目录选择器：同一台机器上的浏览位置；换机器 / 路径 / 项目都是独立一份。 */
+export const directoryKeys = {
+  /** 机器维度前缀：在这台机器上新建 / 改名后整批重读。 */
+  all: (workerId: string | null | undefined) => ['directories', workerId] as const,
+  listing: (workerId: string | null | undefined, path: string, project: string) =>
+    ['directories', workerId, path, project] as const
+};
+
 export const projectKeys = {
-  canvas: (projectId: string) => ['canvas', projectId] as const
+  /** 所有项目的画布前缀：归属或目录变了要整批刷新。 */
+  all: ['canvas'] as const,
+  /** 单个项目的画布；项目还没确定时 `projectId` 可以是 null / undefined。 */
+  canvas: (projectId: string | null | undefined) => ['canvas', projectId] as const
 };
 
 /**

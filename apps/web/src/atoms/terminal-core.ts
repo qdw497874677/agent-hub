@@ -231,11 +231,6 @@ export function terminalReducer(state: TerminalState, event: TerminalEvent): Ter
   }
 }
 
-/** 只有断线且还没把 5 次用完时才自动重连；退出和 error 都是终态（error 不自动重试）。 */
-export function shouldAutoRetry(state: TerminalState): boolean {
-  return state.phase === 'reconnecting' && state.attempt <= TERMINAL_MAX_RETRIES;
-}
-
 // ---------------------------------------------------------------- 文案 ----------------------------------------------------------------
 
 export interface TerminalStatusLine {

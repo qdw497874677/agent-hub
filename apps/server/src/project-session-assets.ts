@@ -51,6 +51,7 @@ import type {
   ProjectAssetWriteSnapshot
 } from './project-session-asset-tools.ts';
 import type { ProjectSessionGrantService } from './project-session-grant.ts';
+import { checkRelativePath, hasControl, PATH_MAX } from './project-session-input.ts';
 
 /**
  * 项目会话资产工具的动作层（docs/design/project-session-mcp.md「资产工具的实现边界」）。
@@ -76,14 +77,12 @@ const PROJECT_ASSET_SET_ENABLED_OPERATION = 'project.asset.set_enabled';
 const REQUEST_KEY_MAX = 200;
 const ID_MAX = 200;
 const NAME_MAX = 64;
-const PATH_MAX = 512;
 const STATUS_MAX = 40;
 const DIGEST_LENGTH = 64;
 const READ_CONTENT_MAX = 64 * 1024;
 const LIST_LIMIT_MAX = 200;
 const RECEIPT_VERSION = 1;
 
-const CONTROL = /[\u0000-\u001f\u007f]/;
 const HEX64 = /^[a-f0-9]{64}$/;
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -164,25 +163,8 @@ function viewerOf(project: ProjectLike, actor: Principal): AssetViewer {
 
 /* ── 基础校验（provider 已校验一遍，这里仍按信任边界再查） ── */
 
-function hasControl(value: string): boolean {
-  return CONTROL.test(value);
-}
-
 function validText(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= max && value === value.trim() && !hasControl(value);
-}
-
-function checkRelativePath(value: string): DomainError | null {
-  if (value.length > PATH_MAX) return invalid(`文件路径不能超过 ${PATH_MAX} 字符`);
-  if (value.startsWith('/') || value.includes('\\') || value.includes(':')) {
-    return invalid('文件路径不合法：必须是资产内的相对 POSIX 路径');
-  }
-  if (value.endsWith('/')) return invalid('文件路径不合法：不能以 / 结尾');
-  if (value.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
-    return invalid('文件路径不合法：不能包含空段、. 或 ..');
-  }
-  if (hasControl(value)) return invalid('文件路径不能包含控制字符');
-  return null;
 }
 
 function checkOpaqueId(value: string, label: string): DomainError | null {

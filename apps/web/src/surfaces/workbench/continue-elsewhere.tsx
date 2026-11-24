@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CanvasDto, SessionDto } from '../../shell/api.ts';
 import { api, providersApi } from '../../shell/api.ts';
+import { projectKeys } from '../../shell/query-keys.ts';
 import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
 import { carriedProtocol, startBlockReason } from '../../shell/harness-gate.ts';
@@ -77,7 +78,7 @@ export function ContinueDialog({
       }
       const created = await api.continueElsewhere(session.id, { target, saveWip: saveWip && from?.isGit === true });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] }),
+        queryClient.invalidateQueries({ queryKey: projectKeys.canvas(canvas.project.id) }),
         queryClient.invalidateQueries({ queryKey: ['workspaces', canvas.project.id] })
       ]);
       onDone(created);

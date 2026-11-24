@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { WorkspaceDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
+import { projectKeys } from '../../shell/query-keys.ts';
 import { setupOutputTail, setupStatusLine, workspaceSetup } from './worktree-config.ts';
 
 /**
@@ -23,7 +24,7 @@ export function WorktreeStatusLine({ workspace, projectId }: { workspace: Worksp
       // 重跑一开始，上一次的失败输出就过期了：收起来，等新日志
       setOutputOpen(false);
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['canvas', projectId] }),
+        queryClient.invalidateQueries({ queryKey: projectKeys.canvas(projectId) }),
         queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] })
       ]);
     }

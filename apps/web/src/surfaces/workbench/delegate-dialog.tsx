@@ -5,7 +5,7 @@ import { delegationsApi, providersApi } from '../../shell/api.ts';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
 import { ModelPicker } from '../../atoms/model-picker.tsx';
-import { delegationKeys } from '../../shell/query-keys.ts';
+import { delegationKeys, projectKeys } from '../../shell/query-keys.ts';
 import { modelsFor, withHubModels } from '../../shell/dialogs.tsx';
 import { matchRepoForWorkspace } from '../../atoms/delegation.ts';
 
@@ -87,7 +87,7 @@ export function DelegateDialog({
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: delegationKeys.forCoordinator(session.id) }),
-        queryClient.invalidateQueries({ queryKey: ['canvas', projectId] })
+        queryClient.invalidateQueries({ queryKey: projectKeys.canvas(projectId) })
       ]);
       onStarted(result.delegation.id);
     } catch (cause) {

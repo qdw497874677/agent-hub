@@ -29,6 +29,14 @@ export async function loadActor(
   return withAccess(access, { user, loginId: loginId as LoginId }, Date.now());
 }
 
+/** bot / 群 / 连接器派生共用的 agent 引用映射：ref 原样垫入，botId 用于归属。 */
+export function roleSessionAgentRef(role: {
+  readonly id: string;
+  readonly ref: { readonly runtime: string; readonly model: string; readonly options: Readonly<Record<string, string | boolean>> };
+}): { agentId: string; model: string; options: Readonly<Record<string, string | boolean>>; botId: string } {
+  return { agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, botId: role.id };
+}
+
 /**
  * bot / 群会话（容器会话，ADR 0036）：直接派生，不再合成假任务。
  * 归属靠 `botId`（以及调用方已记的群成员关系）；派生失败原样返回，不写来历、不写派生记录。

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type TeamWorkspaceViewDto } from '../../shell/api.ts';
+import { projectKeys } from '../../shell/query-keys.ts';
 import { SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
 import { errorText } from '../../shell/admin/shared.tsx';
@@ -84,7 +85,7 @@ export function LinkWorkspaces({
         client.invalidateQueries({ queryKey: ['workspaces'] }),
         client.invalidateQueries({ queryKey: TEAM_WORKSPACES_KEY }),
         client.invalidateQueries({ queryKey: ['projects'] }),
-        client.invalidateQueries({ queryKey: ['canvas'] })
+        client.invalidateQueries({ queryKey: projectKeys.all })
       ]);
       setMoved(workspace.label ?? workspace.path.split('/').pop() ?? workspace.path);
       setAsking(null);

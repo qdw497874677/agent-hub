@@ -14,7 +14,6 @@ import {
   newSessionId,
   notFound,
   ok,
-  principalOfSubject,
   setupNotReady,
   usableByProject,
   type Deps,
@@ -30,6 +29,7 @@ import {
 import { sessionSchema } from '@agent-hub/contract';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
+import { humanOf, readJson } from './http-helpers.ts';
 
 /**
  * 项目主会话（workspace delegation A 阶段，docs/design/workspace-delegation.md §A）。
@@ -57,11 +57,7 @@ export type CoordinatorReservation = import('@agent-hub/domain').CoordinatorRese
 export type CoordinatorRegistry = WorkspaceCoordinatorRegistry;
 
 /** 只有当前登录的人（cookie 会话，不经任何令牌）能开主会话。 */
-export function humanOf(subject: Subject | null): Principal | null {
-  const principal = principalOfSubject(subject);
-  if (!principal || principal.via) return null;
-  return principal;
-}
+export { humanOf };
 
 /**
  * 注册表里的会话是否还是「这条工作空间的主会话」。
@@ -293,7 +289,7 @@ export function installCoordinatorRoutes(app: Hono<any>, options: CoordinatorRou
     const subject = subjectOf(c);
     const actor = humanOf(subject);
     if (!actor) return fail(c, forbidden('只有登录的人能开项目主会话'));
-    const parsed = startBody.safeParse(await c.req.json().catch(() => null));
+    const parsed = startBody.safeParse(await readJson(c));
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
       return fail(c, invalid(issue ? `${issue.path.join('.')}: ${issue.message}` : '开主会话的参数不对'));

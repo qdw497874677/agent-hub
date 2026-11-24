@@ -91,8 +91,3 @@ export function machineUpdateView(worker: WorkerInfoDto | undefined | null, acti
   if (version === 'unknown') return { status, action: 'blocked-version' };
   return { status, action: actions.update ? 'trial' : 'none' };
 }
-
-/** 一台机器上有没有任何「管理」动作可做（用来决定要不要显示说明性的那一行）。 */
-export function anyManageAction(actions: MachineActions): boolean {
-  return actions.update || actions.disconnect || actions.rotateCredential || actions.revokeCredential || actions.installRuntime || actions.installComponent || actions.configureResources;
-}

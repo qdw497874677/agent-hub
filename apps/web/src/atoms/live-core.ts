@@ -315,18 +315,6 @@ export function blocksFromEntries(entries: readonly JournalEntryDto[]): readonly
   return entries.reduce<readonly Block[]>((blocks, entry) => applyBlocks(blocks, entry.event, entry.seq), []);
 }
 
-/**
- * 历史块 + 实时块接起来。
- *
- * 只在「内存里还没这条会话」时才需要接：正常路径是先用历史**播种**（`seed`），
- * 之后每条帧按 seq 单调追加，历史与实时就不会各说一遍。
- */
-export function mergeBlocks(history: readonly Block[], live: readonly Block[]): readonly Block[] {
-  if (live.length === 0) return history;
-  if (history.length === 0) return live;
-  return live;
-}
-
 /** 历史里最后一条 ended 决定「上次是怎么结束的」——failed 的原因也要能重开后读到。 */
 export function reasonFromEntries(entries: readonly JournalEntryDto[]): string | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {

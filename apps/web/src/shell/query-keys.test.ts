@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { directoryScope, filesInvalidationKeys, filesKeys, gitKeys, projectKeys, taskKeys, workspaceKeys } from './query-keys.ts';
+import { directoryKeys, directoryScope, filesInvalidationKeys, filesKeys, gitKeys, projectKeys, taskKeys, workspaceKeys } from './query-keys.ts';
 
 test('目录归属：有工作目录用 workspaceId，老会话回退 sessionId', () => {
   assert.equal(directoryScope('wsp-1', 'ses-1'), 'wsp-1');
@@ -50,8 +50,23 @@ test('失效前缀：共享目录时两条，没有工作目录时只有一条',
   assert.deepEqual(solo, [['files', 'ses-1']]);
 });
 
+test('组合工作目录的成员改动保留成员维度', () => {
+  const keys = filesKeys('wsp-1', 'ses-1');
+  assert.deepEqual(keys.memberChanges('head', 'wsp-2'), ['files', 'ses-1', 'changes', 'head', 'wsp-2']);
+  assert.deepEqual(keys.memberChanges('session', 'wsp-2'), ['files', 'ses-1', 'changes', 'session', 'wsp-2']);
+});
+
+test('目录选择器按机器分段，路径 / 项目逐层细分', () => {
+  assert.deepEqual(directoryKeys.all('wrk-1'), ['directories', 'wrk-1']);
+  assert.deepEqual(directoryKeys.all(null), ['directories', null]);
+  assert.deepEqual(directoryKeys.listing('wrk-1', '/srv', 'prj-1'), ['directories', 'wrk-1', '/srv', 'prj-1']);
+  assert.deepEqual(directoryKeys.listing(null, '', ''), ['directories', null, '', '']);
+});
+
 test('其余同源 key 的小函数', () => {
   assert.deepEqual(taskKeys.pullRequests('tsk-1'), ['task-prs', 'tsk-1']);
   assert.deepEqual(workspaceKeys.changes('wsp-1'), ['workspace-changes', 'wsp-1']);
   assert.deepEqual(projectKeys.canvas('prj-1'), ['canvas', 'prj-1']);
+  assert.deepEqual(projectKeys.canvas(undefined), ['canvas', undefined]);
+  assert.deepEqual(projectKeys.all, ['canvas']);
 });

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
+import { projectKeys } from './query-keys.ts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, assetsApi, assetSetsApi, providersApi, type CanvasDto, type HubModelsDto, type SessionDto, type TaskDto, type WorkerInfoDto } from './api.ts';
 import {
@@ -47,7 +48,7 @@ export function NewTaskDialog({
   const create = useMutation({
     mutationFn: () => api.createTask({ projectId, title: title.trim(), goal: goal.trim() || undefined }),
     onSuccess: async (task) => {
-      await queryClient.invalidateQueries({ queryKey: ['canvas', projectId] });
+      await queryClient.invalidateQueries({ queryKey: projectKeys.canvas(projectId) });
       onDone();
       onCreated?.(task);
     }
@@ -382,7 +383,7 @@ export function DeriveDialog({
     },
     onSuccess: async (session) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['canvas', projectId] }),
+        queryClient.invalidateQueries({ queryKey: projectKeys.canvas(projectId) }),
         queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] })
       ]);
       if (onDerived) onDerived(session);

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent }
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../shell/api.ts';
+import { directoryKeys } from '../../shell/query-keys.ts';
 import { breadcrumbs, filterEntries, visibleEntries } from '../../shell/directory-path.ts';
 import { Icon } from '../../atoms/icons.tsx';
 import { Notice } from '../../atoms/notice.tsx';
@@ -88,7 +89,7 @@ function DirectoryPickerBody({
   // 同 key 重新取数失败时 React Query 会留着上一次的成功结果——失败就当作没有当前目录，
   // 不能让人对着旧列表按「选此文件夹」或继续往里走。
   const listing = useQuery({
-    queryKey: ['directories', workerId, path, project],
+    queryKey: directoryKeys.listing(workerId, path, project),
     queryFn: () => api.listDirectories(path, workerId, project)
   });
   const current = listing.isError ? undefined : listing.data;
@@ -97,7 +98,7 @@ function DirectoryPickerBody({
   atRef.current = current?.path ?? null;
 
   const queryClient = useQueryClient();
-  const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['directories', workerId] });
+  const invalidate = () => void queryClient.invalidateQueries({ queryKey: directoryKeys.all(workerId) });
 
   const go = (next: string) => {
     focusAfterNav.current = true;

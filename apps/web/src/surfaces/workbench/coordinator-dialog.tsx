@@ -5,7 +5,7 @@ import { api, coordinatorsApi, providersApi } from '../../shell/api.ts';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
 import { ModelPicker } from '../../atoms/model-picker.tsx';
-import { coordinatorKeys } from '../../shell/query-keys.ts';
+import { coordinatorKeys, projectKeys } from '../../shell/query-keys.ts';
 import { modelsFor, withHubModels } from '../../shell/dialogs.tsx';
 import { startBlockReason } from '../../shell/harness-gate.ts';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from './workspace-chooser.tsx';
@@ -65,7 +65,7 @@ export function CoordinatorDialog({
     onSuccess: async (result) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: coordinatorKeys.forProject(projectId) }),
-        queryClient.invalidateQueries({ queryKey: ['canvas', projectId] }),
+        queryClient.invalidateQueries({ queryKey: projectKeys.canvas(projectId) }),
         queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] })
       ]);
       onStarted(result.session, result.created);

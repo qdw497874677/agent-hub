@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AttachmentInputDto, CanvasDto, ProjectDto, PromptAckDto, SessionDto, TaskDto } from './api.ts';
 import { api } from './api.ts';
+import { projectKeys } from './query-keys.ts';
 import { HomePage } from '../surfaces/workbench/home.tsx';
 import { AdminPage } from './admin/page.tsx';
 import { MachinesPage } from './machines.tsx';
@@ -124,7 +125,7 @@ function Workspace() {
   );
 
   const canvas = useQuery({
-    queryKey: ['canvas', project?.id],
+    queryKey: projectKeys.canvas(project?.id),
     queryFn: ({ signal }) => api.canvas(project?.id ?? '', signal),
     enabled: project !== null,
     // Worker 还没上线时自己轮询：别让「等 worker」变成用户要记住的手动刷新
@@ -135,7 +136,7 @@ function Workspace() {
   const display = useMemo(() => (canvas.data ? splitArchivedTasks(canvas.data) : null), [canvas.data]);
 
   const refresh = useCallback(() => {
-    if (project) void queryClient.invalidateQueries({ queryKey: ['canvas', project.id] });
+    if (project) void queryClient.invalidateQueries({ queryKey: projectKeys.canvas(project.id) });
   }, [project, queryClient]);
 
   /**
@@ -150,8 +151,8 @@ function Workspace() {
         refresh();
         return;
       }
-      await queryClient.cancelQueries({ queryKey: ['canvas', project.id] });
-      queryClient.setQueryData<CanvasDto>(['canvas', project.id], (current) =>
+      await queryClient.cancelQueries({ queryKey: projectKeys.canvas(project.id) });
+      queryClient.setQueryData<CanvasDto>(projectKeys.canvas(project.id), (current) =>
         current ? patchCanvasTask(current, task) : current
       );
     },
@@ -219,14 +220,14 @@ function Workspace() {
 
       // 两个取消都要等完：等的过程中可能又发起了下一次修改，落地前再认一次「我是不是最新的」。
       await Promise.all([
-        projectId ? queryClient.cancelQueries({ queryKey: ['canvas', projectId] }) : undefined,
+        projectId ? queryClient.cancelQueries({ queryKey: projectKeys.canvas(projectId) }) : undefined,
         queryClient.cancelQueries({ queryKey: ['session', sessionId] })
       ]);
       if (optionRequests.current.get(sessionId) !== request) return;
 
       // 中间没有 await：旧回执不会在这里插进来。
       if (projectId) {
-        queryClient.setQueryData<CanvasDto>(['canvas', projectId], (current) =>
+        queryClient.setQueryData<CanvasDto>(projectKeys.canvas(projectId), (current) =>
           current ? patchCanvasSessionConfig(current, confirmed) : current
         );
       }
@@ -307,7 +308,7 @@ function Workspace() {
     async (aSessionId: string, bSessionId: string) => {
       if (!project) return;
       const link = await api.createSessionLink(project.id, aSessionId, bSessionId);
-      queryClient.setQueryData<CanvasDto>(['canvas', project.id], (current) => {
+      queryClient.setQueryData<CanvasDto>(projectKeys.canvas(project.id), (current) => {
         if (!current || current.edges.some((edge) => edge.kind === 'link' && edge.aSessionId === link.aSessionId && edge.bSessionId === link.bSessionId)) return current;
         return { ...current, edges: [...current.edges, { kind: 'link' as const, aSessionId: link.aSessionId, bSessionId: link.bSessionId }] };
       });
@@ -319,7 +320,7 @@ function Workspace() {
     async (aSessionId: string, bSessionId: string) => {
       if (!project) return;
       await api.deleteSessionLink(project.id, aSessionId, bSessionId);
-      queryClient.setQueryData<CanvasDto>(['canvas', project.id], (current) =>
+      queryClient.setQueryData<CanvasDto>(projectKeys.canvas(project.id), (current) =>
         current
           ? {
               ...current,

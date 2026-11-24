@@ -10,7 +10,7 @@ import {
   type UserId
 } from '@agent-hub/domain';
 import { inMemoryDeps } from '@agent-hub/domain/testing';
-import { loadActor, openRoleSession } from './role-session.ts';
+import { loadActor, openRoleSession, roleSessionAgentRef } from './role-session.ts';
 
 const fake: AgentDescriptor = {
   id: asAgentId('fake'),
@@ -135,6 +135,14 @@ test('任务建不成或没有这个运行时：不写来历、不写派生记�
   assert.equal(missingAgent.ok, false);
   assert.equal(spawned, 0);
   assert.deepEqual(w.order, []);
+});
+
+test('roleSessionAgentRef：ref 三件套原样映射，botId 来自角色 id', () => {
+  const options = { thought_level: 'medium', yolo: true };
+  assert.deepEqual(
+    roleSessionAgentRef({ id: 'bot_0123456789abcdef', ref: { runtime: 'grok', model: 'grok-4', options } }),
+    { agentId: 'grok', model: 'grok-4', options, botId: 'bot_0123456789abcdef' }
+  );
 });
 
 test('botId 落进会话（#221 步骤 4）', async () => {

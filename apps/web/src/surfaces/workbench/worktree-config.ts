@@ -18,8 +18,6 @@ export const SETUP_COMMAND_MAX = 4000;
 /** 新任务默认档位 + 建好 worktree 后要跑的准备命令（Project.worktree）。形状直接取契约。 */
 export type ProjectWorktreeConfig = NonNullable<ProjectDto['worktree']>;
 
-export type WorktreeSetupConfig = NonNullable<ProjectWorktreeConfig['setup']>;
-
 /** 某个工作目录这一刻的准备状态（Workspace.setup），形状直接取契约。 */
 export type WorkspaceSetup = NonNullable<WorkspaceDto['setup']>;
 

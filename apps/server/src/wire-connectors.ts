@@ -35,7 +35,7 @@ import { createTimerSource } from '@agent-hub/connector-timer';
 import { createSqliteGitHostTokens, createSqlitePullRequests, type SqliteStore } from '@agent-hub/storage-sqlite';
 import { createBotOfSession } from './bot-session.ts';
 import { createFakeChannel, createFakeOutbound, createFakeReplies } from './fake-channel.ts';
-import { loadActor, openRoleSession } from './role-session.ts';
+import { loadActor, openRoleSession, roleSessionAgentRef } from './role-session.ts';
 import { createTaskProgress } from './task-progress.ts';
 import type { Schedules } from './schedules.ts';
 
@@ -93,7 +93,7 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
     principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-message'),
     deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
     spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-      projectId: project.id, title, ownerId: actor.user.id, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, botId: role.id, actor, via: 'bot'
+      projectId: project.id, title, ownerId: actor.user.id, ...roleSessionAgentRef(role), actor, via: 'bot'
     })
   });
   schedules.every(30_000, () => void messageBus.sweep().catch(() => undefined));
@@ -110,7 +110,7 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
     principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-group'),
     deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
     spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-      projectId: project.id, title, ownerId: actor.user.id, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, botId: role.id, actor, via: 'group'
+      projectId: project.id, title, ownerId: actor.user.id, ...roleSessionAgentRef(role), actor, via: 'group'
     }),
     interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
     lane: sessionLane,
@@ -253,7 +253,7 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
       const actor = await loadActor(store.users, store.access, ownerId, 'agent-connector');
       if (!actor) return err(forbidden('建这个触发的账号已停用'));
       const opened = await openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-        projectId, title, ownerId, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, botId: role.id, actor, via: 'bot',
+        projectId, title, ownerId, ...roleSessionAgentRef(role), actor, via: 'bot',
         afterDerive: async (session: Session) => {
           // 记成这个 bot 的派生会话：职责说明（系统提示）照常垫进去。先于来历。
           await store.messages.saveSpawn({ sessionId: session.id, projectId: projectId as ProjectId, role: agentName, spawnerSessionId: session.id, traceId: `connector:${session.id}`, createdAt: Date.now() });

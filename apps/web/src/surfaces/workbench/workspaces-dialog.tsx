@@ -22,7 +22,7 @@ import { ProjectAssetSets } from './project-asset-sets.tsx';
 import { ProjectRepos } from './project-repos.tsx';
 import { projectWorktree } from './worktree-config.ts';
 import { workspaceSummary, workspaceSummaryTone } from './workspace-summary.ts';
-import { workspaceKeys } from '../../shell/query-keys.ts';
+import { projectKeys, workspaceKeys } from '../../shell/query-keys.ts';
 
 type Pending = { workspace: WorkspaceDto; mode: 'unlink' | 'unregister' | 'delete' | 'force' };
 
@@ -261,7 +261,7 @@ function ProjectDefaultAgentSettings({ project }: { project: ProjectDto }) {
     setCurrent(project.defaultAgent ?? null);
   }, [stored]);
   const canvas = useQuery({
-    queryKey: ['canvas', project.id],
+    queryKey: projectKeys.canvas(project.id),
     queryFn: () => api.canvas(project.id),
     staleTime: 30_000
   });
@@ -269,7 +269,7 @@ function ProjectDefaultAgentSettings({ project }: { project: ProjectDto }) {
     mutationFn: (agent: DefaultAgentRef | null) => api.saveProjectDefaultAgent(project.id, agent),
     onSuccess: (next) => {
       setCurrent(next.defaultAgent ?? null);
-      queryClient.setQueryData<CanvasDto>(['canvas', next.id], (old) =>
+      queryClient.setQueryData<CanvasDto>(projectKeys.canvas(next.id), (old) =>
         old === undefined ? old : { ...old, project: next }
       );
       void queryClient.invalidateQueries({ queryKey: ['projects'] });

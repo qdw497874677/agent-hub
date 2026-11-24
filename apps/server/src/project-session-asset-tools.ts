@@ -18,6 +18,15 @@ import {
   type ToolProvider,
   type ToolScope
 } from '@agent-hub/domain';
+import {
+  asObject,
+  checkRelativePath,
+  exactString,
+  hasControl,
+  PATH_MAX,
+  rejectUnknownKeys,
+  requiredExact
+} from './project-session-input.ts';
 
 /**
  * 项目会话资产工具（docs/design/project-session-mcp.md）。
@@ -46,14 +55,11 @@ export const PROJECT_ASSET_SET_ENABLED_TOOL_NAME = 'project.asset.set_enabled';
 const REQUEST_KEY_MAX = 200;
 const ID_MAX = 200;
 const NAME_MAX = 64;
-const PATH_MAX = 512;
 const STATUS_MAX = 40;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 const LIST_DEFAULT = 50;
 const LIST_MAX = 200;
 const READ_CONTENT_MAX = 64 * 1024;
-const UNKNOWN_KEYS_SHOWN = 5;
-const UNKNOWN_KEY_MAX = 40;
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /** 读 / 写各自一个 scope；装配方注入，默认授权里不出现。 */
@@ -409,58 +415,13 @@ function setEnabledDescriptor(scope: ToolScope): ToolDescriptor {
   };
 }
 
-/** 控制字符不能出现在 id / 名称 / 路径 / 状态里；文件正文允许换行与制表符。 */
-function hasControl(value: string): boolean {
-  return /[\u0000-\u001f\u007f]/.test(value);
-}
-
+/** 文件正文允许换行与制表符，但不能有 NUL。 */
 function hasNul(value: string): boolean {
   return value.includes('\u0000');
 }
 
-function asObject(input: unknown): Result<Record<string, unknown>, DomainError> {
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-    return err(invalid('参数必须是对象'));
-  }
-  return ok(input as Record<string, unknown>);
-}
-
-/** 未知键一律拒绝；诊断只列键名，不把键值写进错误或审计。 */
-function rejectUnknownKeys(raw: Record<string, unknown>, allowed: ReadonlySet<string>): DomainError | null {
-  const unknown = Object.keys(raw).filter((key) => !allowed.has(key));
-  if (unknown.length === 0) return null;
-  const shown = unknown.slice(0, UNKNOWN_KEYS_SHOWN).map((key) => key.slice(0, UNKNOWN_KEY_MAX));
-  const suffix = unknown.length > UNKNOWN_KEYS_SHOWN ? ' 等' : '';
-  return invalid(`不支持的参数：${shown.join(', ')}${suffix}`);
-}
-
-/** id / 请求键 / 路径 / 名称：非空、无首尾空白、无控制字符、限长。 */
-function exactString(
-  raw: Record<string, unknown>,
-  key: string,
-  max: number
-): Result<string | null, DomainError> {
-  const value = raw[key];
-  if (value === undefined || value === null) return ok(null);
-  if (typeof value !== 'string') return err(invalid(`${key} 必须是字符串`));
-  if (value === '' || value !== value.trim()) {
-    return err(invalid(`${key} 必须是非空字符串，且不能有首尾空白`));
-  }
-  if (value.length > max) return err(invalid(`${key} 不能超过 ${max} 字符`));
-  if (hasControl(value)) return err(invalid(`${key} 不能包含控制字符`));
-  return ok(value);
-}
-
-function requiredExact(
-  raw: Record<string, unknown>,
-  key: string,
-  max: number
-): Result<string, DomainError> {
-  const parsed = exactString(raw, key, max);
-  if (!parsed.ok) return parsed;
-  if (parsed.value === null) return err(invalid(`${key} 必填`));
-  return ok(parsed.value);
-}
+/* 通用输入校验（hasControl / asObject / rejectUnknownKeys / exactString / requiredExact /
+   checkRelativePath）与动作层共用同一份实现；这里只保留资产 provider 自己的 kind / name / files。 */
 
 function parseKind(value: unknown): Result<AssetKind, DomainError> {
   if (typeof value === 'string' && (ASSET_KINDS as readonly string[]).includes(value)) {
@@ -474,20 +435,6 @@ function parseAssetName(value: string): Result<string, DomainError> {
     return err(invalid('name 不合规：只能用小写字母、数字和单个连字符，1–64 个字符'));
   }
   return ok(value);
-}
-
-/** 资产内相对路径：不做规范化、不接受绝对路径 / 反斜杠 / 盘符 / 空段 / `.` / `..`。 */
-function checkRelativePath(value: string): DomainError | null {
-  if (value.length > PATH_MAX) return invalid(`文件路径不能超过 ${PATH_MAX} 字符`);
-  if (value.startsWith('/') || value.includes('\\') || value.includes(':')) {
-    return invalid('文件路径不合法：必须是资产内的相对 POSIX 路径');
-  }
-  if (value.endsWith('/')) return invalid('文件路径不合法：不能以 / 结尾');
-  if (value.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
-    return invalid('文件路径不合法：不能包含空段、. 或 ..');
-  }
-  if (hasControl(value)) return invalid('文件路径不能包含控制字符');
-  return null;
 }
 
 /** 资产标识不是路径：不许出现分隔符、盘符、空白或 `.` / `..`。 */
