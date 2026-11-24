@@ -94,6 +94,17 @@ export interface WorkerConnectionObservation {
   readonly at: number;
 }
 
+/** A terminal install report from the same eligible connection that received the job. */
+export interface WorkerRuntimeInstallObservation {
+  readonly connectionId: string;
+  readonly workerId: string;
+  readonly origin: 'local' | 'remote';
+  readonly enrollment: { readonly enrolledBy: string; readonly createdAt: number } | null;
+  readonly action: 'install';
+  readonly state: 'succeeded' | 'failed' | 'refused';
+  readonly at: number;
+}
+
 export interface GatewayHooks {
   readonly token: string | null;
   /**
@@ -120,6 +131,8 @@ export interface GatewayHooks {
   }): Promise<{ readonly ok: true; readonly capabilities?: readonly string[]; readonly via?: 'credential' | 'shared'; readonly enrollment?: { readonly workerId: string; readonly enrolledBy: string; readonly createdAt: number } } | { readonly ok: false; readonly reason: string }>;
   /** Best-effort observation of locally proven or credential-authenticated connections. */
   onConnectionObservation?(observation: WorkerConnectionObservation): void;
+  /** Best-effort, sanitized terminal install observations; independent of runtime job UX. */
+  onObservedRuntimeInstall?(observation: WorkerRuntimeInstallObservation): void;
   /** 经反向代理进来时，来源地址取 X-Forwarded-For 最后一跳（HUB_TRUST_PROXY=1）。默认只信 socket 地址。 */
   readonly trustProxy?: boolean;
   onHello(worker: WorkerStatus, agents: AgentDto[], sessions: readonly string[]): void;
@@ -237,6 +250,8 @@ export function clientAddressOf(request: IncomingMessage | undefined, trustProxy
 interface Registered {
   readonly workerId: string;
   readonly closeObservation: () => void;
+  observationIdentity: Omit<WorkerRuntimeInstallObservation, 'action' | 'state' | 'at'> | null;
+  observedInstallJobId: string | null;
   label: string;
   origin: WorkerStatus['origin'];
   /** null = 离线。离线的 Worker 留在登记表里：管理视图要能显示「上次见到是什么时候」。 */
@@ -839,6 +854,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         entry = {
           workerId: frame.workerId,
           closeObservation: () => closeObservation(),
+          observationIdentity: null,
+          observedInstallJobId: null,
           label: frame.label,
           origin: frame.origin === 'local' && provenLocal ? 'local' : 'remote',
           socket,
@@ -913,6 +930,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           const origin = entry.origin;
           if (origin === 'local' || binding !== null) {
             const observation = { connectionId: randomUUID(), workerId: frame.workerId, origin, enrollment: origin === 'local' ? null : binding };
+            entry.observationIdentity = observation;
             const emit = (kind: WorkerConnectionObservation['kind']): void => {
               try { hooks.onConnectionObservation?.({ ...observation, enrollment: observation.enrollment ? { ...observation.enrollment } : null, kind, at: now() }); } catch { /* Observers cannot affect the connection. */ }
             };
@@ -966,7 +984,16 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           ...(frame.version !== undefined && frame.version !== null ? { version: frame.version } : {}),
           ...(frame.component ? { result: frame.component } : {})
         };
-        if (terminal) hooks.onRuntimeJob?.(entry.workerId, entry.runtimeJob);
+        const updatedJob = entry.runtimeJob;
+        if ((frame.state === 'succeeded' || frame.state === 'failed' || frame.state === 'refused') &&
+            entry.observedInstallJobId === frame.jobId && entry.observationIdentity && socket.readyState === WebSocket.OPEN) {
+          entry.observedInstallJobId = null;
+          const identity = entry.observationIdentity;
+          try {
+            hooks.onObservedRuntimeInstall?.({ ...identity, enrollment: identity.enrollment ? { ...identity.enrollment } : null, action: 'install', state: frame.state, at: now() });
+          } catch { /* Observers cannot affect runtime job processing. */ }
+        }
+        if (terminal) hooks.onRuntimeJob?.(entry.workerId, updatedJob);
         return;
       }
       if (frame.type === 'inventory') {
@@ -1467,6 +1494,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         } satisfies ServerToWorker)
       );
       entry.runtimeJob = job;
+      entry.observedInstallJobId = job.action === 'install' && entry.observationIdentity ? job.jobId : null;
       return true;
     },
     close(): void {

@@ -23,8 +23,25 @@ export interface MachineObserveAppend {
   readonly at: number;
 }
 
+export interface MachineObserveInstall {
+  readonly connectionId: string;
+  readonly workerId: string;
+  readonly origin: 'local' | 'remote';
+  readonly enrollment: { readonly enrolledBy: string; readonly createdAt: number } | null;
+  readonly action: 'install';
+  readonly state: 'succeeded' | 'failed' | 'refused';
+  readonly at: number;
+}
+export interface MachineInstallReport {
+  readonly id: string;
+  readonly state: MachineObserveInstall['state'];
+  readonly at: number;
+}
+
 export const MACHINE_OBSERVE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const MACHINE_OBSERVE_MAX_ROWS = 100_000;
+export const MACHINE_OBSERVE_INSTALL_PER_CONNECTION = 100;
+export const MACHINE_OBSERVE_INSTALL_MAX_ROWS = 100_000;
 // Wire's worker id is an unbounded non-empty string. Observe deliberately supports
 // at most 512 UTF-8 bytes per identifier (including 120 four-byte characters);
 // larger IDs remain valid for the handshake but are not recorded or projected.
@@ -44,7 +61,25 @@ export function createSqliteMachineObserve(db: DatabaseSync) {
        OR (origin = 'remote' AND enrolled_by IS NOT NULL AND enrollment_created_at IS NOT NULL))
   );
   CREATE INDEX IF NOT EXISTS machine_observe_time ON machine_observe_connections(connected_at DESC, connection_id DESC);`);
-  const insert = db.prepare('INSERT OR IGNORE INTO machine_observe_connections VALUES (?, ?, ?, ?, ?, ?, NULL)');
+  db.exec(`CREATE TABLE IF NOT EXISTS machine_observe_install_truncations (connection_id TEXT PRIMARY KEY);
+  CREATE TABLE IF NOT EXISTS machine_observe_installs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('succeeded','failed','refused')), at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS machine_observe_installs_connection ON machine_observe_installs(connection_id, id DESC);
+  DROP TRIGGER IF EXISTS machine_observe_connection_deleted;
+  DROP TRIGGER IF EXISTS machine_observe_install_deleted;
+  CREATE TRIGGER machine_observe_connection_deleted AFTER DELETE ON machine_observe_connections
+    BEGIN DELETE FROM machine_observe_installs WHERE connection_id = OLD.connection_id;
+      DELETE FROM machine_observe_install_truncations WHERE connection_id = OLD.connection_id; END;
+  CREATE TRIGGER machine_observe_install_deleted AFTER DELETE ON machine_observe_installs
+    BEGIN INSERT OR IGNORE INTO machine_observe_install_truncations(connection_id)
+      SELECT OLD.connection_id WHERE EXISTS (SELECT 1 FROM machine_observe_connections WHERE connection_id = OLD.connection_id); END;`);
+  // Preserve truncation markers in transient development databases created by the
+  // short-lived column-based version; never alter the original seven columns.
+  const columns = db.prepare('PRAGMA table_info(machine_observe_connections)').all() as { name: string }[];
+  if (columns.some((c) => c.name === 'installs_truncated')) db.exec('INSERT OR IGNORE INTO machine_observe_install_truncations SELECT connection_id FROM machine_observe_connections WHERE installs_truncated <> 0');
+  const insert = db.prepare('INSERT OR IGNORE INTO machine_observe_connections(connection_id, worker_id, origin, enrolled_by, enrollment_created_at, connected_at, disconnected_at) VALUES (?, ?, ?, ?, ?, ?, NULL)');
   const close = db.prepare(`UPDATE machine_observe_connections SET disconnected_at = ?
     WHERE connection_id = ? AND worker_id = ? AND origin = ? AND enrolled_by IS ? AND enrollment_created_at IS ?
       AND disconnected_at IS NULL AND connected_at <= ?`);
@@ -52,6 +87,16 @@ export function createSqliteMachineObserve(db: DatabaseSync) {
   const count = db.prepare('SELECT count(*) AS n FROM machine_observe_connections');
   const trim = db.prepare('DELETE FROM machine_observe_connections WHERE connection_id IN (SELECT connection_id FROM machine_observe_connections ORDER BY connected_at ASC, connection_id ASC LIMIT ?)');
   const byId = db.prepare('SELECT * FROM machine_observe_connections WHERE connection_id = ?');
+  const insertInstall = db.prepare(`INSERT INTO machine_observe_installs(connection_id, state, at)
+    SELECT connection_id, ?, ? FROM machine_observe_connections
+    WHERE connection_id = ? AND worker_id = ? AND origin = ? AND enrolled_by IS ? AND enrollment_created_at IS ?
+      AND disconnected_at IS NULL AND connected_at <= ?`);
+  const pruneInstallConnection = db.prepare(`DELETE FROM machine_observe_installs WHERE id IN (
+    SELECT id FROM machine_observe_installs WHERE connection_id = ? ORDER BY id DESC LIMIT -1 OFFSET ${MACHINE_OBSERVE_INSTALL_PER_CONNECTION})`);
+  const installCount = db.prepare('SELECT count(*) AS n FROM machine_observe_installs');
+  const trimInstalls = db.prepare('DELETE FROM machine_observe_installs WHERE id IN (SELECT id FROM machine_observe_installs ORDER BY id ASC LIMIT ?)');
+  const installList = db.prepare(`SELECT id, state, at FROM machine_observe_installs WHERE connection_id = ? ORDER BY id DESC LIMIT ${MACHINE_OBSERVE_INSTALL_PER_CONNECTION + 1}`);
+  const installTruncated = db.prepare('SELECT 1 FROM machine_observe_install_truncations WHERE connection_id = ?');
   const list = db.prepare(`SELECT m.* FROM machine_observe_connections m INDEXED BY machine_observe_time
     WHERE m.connected_at >= ?
       AND length(CAST(m.connection_id AS BLOB)) BETWEEN 1 AND 512
@@ -77,6 +122,24 @@ export function createSqliteMachineObserve(db: DatabaseSync) {
       expired.run(input.at - MACHINE_OBSERVE_RETENTION_MS);
       const excess = Number((count.get() as { n: number }).n) - MACHINE_OBSERVE_MAX_ROWS;
       if (excess > 0) trim.run(Math.min(excess, 256));
+    },
+    appendInstall(input: MachineObserveInstall): void {
+      if (!input || !text(input.connectionId) || !text(input.workerId) || !timestamp(input.at) || input.action !== 'install' ||
+        !['succeeded', 'failed', 'refused'].includes(input.state) ||
+        !((input.origin === 'local' && input.enrollment === null) || (input.origin === 'remote' && input.enrollment !== null && text(input.enrollment?.enrolledBy) && timestamp(input.enrollment?.createdAt)))) return;
+      const result = insertInstall.run(input.state, input.at, input.connectionId, input.workerId, input.origin, input.enrollment?.enrolledBy ?? null, input.enrollment?.createdAt ?? null, input.at);
+      if (!result.changes) return;
+      pruneInstallConnection.run(input.connectionId);
+      const excess = Number((installCount.get() as { n: number }).n) - MACHINE_OBSERVE_INSTALL_MAX_ROWS;
+      if (excess > 0) trimInstalls.run(Math.min(excess, 256));
+      expired.run(input.at - MACHINE_OBSERVE_RETENTION_MS);
+    },
+    installs(connectionId: string): { readonly items: readonly MachineInstallReport[]; readonly truncated: boolean } {
+      if (!text(connectionId)) return { items: [], truncated: false };
+      const parent = byId.get(connectionId) as Row | undefined;
+      if (!parent || !text(parent.worker_id) || (parent.enrolled_by !== null && !text(parent.enrolled_by))) return { items: [], truncated: false };
+      const rows = installList.all(connectionId) as { id: number; state: MachineInstallReport['state']; at: number }[];
+      return { items: rows.slice(0, MACHINE_OBSERVE_INSTALL_PER_CONNECTION).map((r) => ({ id: String(r.id), state: r.state, at: r.at })), truncated: !!installTruncated.get(connectionId) || rows.length > MACHINE_OBSERVE_INSTALL_PER_CONNECTION };
     },
     list(input: { readonly bindings: readonly MachineObserveBinding[]; readonly since: number; readonly limit: number }): readonly MachineObserveRecord[] {
       if (!input || !Array.isArray(input.bindings) || input.bindings.length === 0) return [];

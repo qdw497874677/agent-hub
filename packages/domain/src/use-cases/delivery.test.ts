@@ -85,6 +85,73 @@ async function world(overrides: Parameters<typeof inMemoryDeps>[0] = {}) {
 
 type World = Awaited<ReturnType<typeof world>>;
 
+test('worker first-output tag requires exact open in-flight delivery and nonempty top-level text', async () => {
+  const w = await world();
+  w.online();
+  const first = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'first' });
+  assert.ok(first.ok && first.value.deliveryId);
+  await settle();
+  const id = first.value.deliveryId;
+  const second = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'queued' });
+  assert.ok(second.ok && second.value.deliveryId);
+
+  const cases = [
+    { input: { kind: 'text' as const, delta: 'first output', firstOutputDeliveryId: id }, expected: { kind: 'text', delta: 'first output', firstOutputDeliveryId: id } },
+    { input: { kind: 'text' as const, delta: 'stale', firstOutputDeliveryId: 'stale' }, expected: { kind: 'text', delta: 'stale' } },
+    { input: { kind: 'text' as const, delta: 'queued', firstOutputDeliveryId: second.value.deliveryId }, expected: { kind: 'text', delta: 'queued' } },
+    { input: { kind: 'text' as const, delta: '', firstOutputDeliveryId: id }, expected: { kind: 'text', delta: '' } },
+    { input: { kind: 'text' as const, delta: 'child', subagentId: 'child', firstOutputDeliveryId: id }, expected: { kind: 'text', delta: 'child', subagentId: 'child' } },
+    { input: { kind: 'text' as const, delta: 'ordinary' }, expected: { kind: 'text', delta: 'ordinary' } }
+  ];
+  for (const { input, expected } of cases) {
+    const result = await ingestWorkerEvent(w.deps, w.sid, input);
+    assert.ok(result.ok);
+    assert.deepEqual((await w.deps.sessions.tail(w.sid, 1))[0]?.event, expected);
+  }
+
+  // An ended event is journaled before release; the delivery remains in flight meanwhile.
+  await ingestWorkerEvent(w.deps, w.sid, { kind: 'ended', outcome: 'done', deliveryId: id });
+  assert.equal((await w.deliveries.inFlight(w.sid))?.id, id);
+  await ingestWorkerEvent(w.deps, w.sid, { kind: 'text', delta: 'late', firstOutputDeliveryId: id });
+  assert.deepEqual((await w.deps.sessions.tail(w.sid, 1))[0]?.event, { kind: 'text', delta: 'late' });
+});
+
+test('worker first-output tag is stripped without a matching session delivery', async () => {
+  const w = await world();
+  const event = { kind: 'text' as const, delta: 'output', firstOutputDeliveryId: 'delivery' };
+  await ingestWorkerEvent(w.deps, w.sid, event);
+  assert.deepEqual((await w.deps.sessions.tail(w.sid, 1))[0]?.event, { kind: 'text', delta: 'output' });
+
+  // Defend against an inconsistent queue implementation returning another session's delivery.
+  const delivery = { id: 'delivery', sessionId: 'other', seq: 1, kind: 'prompt' as const, payload: { text: '', parts: [] }, state: 'sending' as const, attempt: 0, nextAt: null, lastError: null, createdAt: 1, updatedAt: 1 };
+  const deps = { ...w.deps, deliveries: { ...w.deliveries, inFlight: async () => delivery } };
+  await ingestWorkerEvent(deps, w.sid, event);
+  assert.deepEqual((await w.deps.sessions.tail(w.sid, 1))[0]?.event, { kind: 'text', delta: 'output' });
+
+  await ingestWorkerEvent({ ...w.deps, deliveries: undefined }, w.sid, event);
+  assert.deepEqual((await w.deps.sessions.tail(w.sid, 1))[0]?.event, { kind: 'text', delta: 'output' });
+});
+
+test('worker text survives first-output marker lookup failures', async () => {
+  const w = await world();
+  w.online();
+  const first = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'first' });
+  assert.ok(first.ok && first.value.deliveryId);
+  await settle();
+  const event = { kind: 'text' as const, delta: 'output', firstOutputDeliveryId: first.value.deliveryId };
+  const failure = () => { throw new Error('marker lookup failed'); };
+  const lookupFails = { ...w.deps, deliveries: { ...w.deliveries, inFlight: async () => failure() } };
+  const journalFails = { ...w.deps, sessions: { ...w.deps.sessions, eventsAfter: async () => failure() } };
+  for (const deps of [lookupFails, journalFails]) {
+    const result = await ingestWorkerEvent(deps, w.sid, event);
+    assert.ok(result.ok);
+    assert.deepEqual((await w.deps.sessions.tail(w.sid, 1))[0]?.event, { kind: 'text', delta: 'output' });
+  }
+
+  const appendFails = { ...w.deps, sessions: { ...w.deps.sessions, append: async () => { throw new Error('append failed'); } } };
+  await assert.rejects(ingestWorkerEvent(appendFails, w.sid, event), /append failed/);
+});
+
 /**
  * 落一条真实回合结束。默认带上当前在途送达的 deliveryId——新语义下只有精确 id 才能收掉 sending。
  * 传 `deliveryId: null` 可模拟老协议 / 不带 id 的 ended。

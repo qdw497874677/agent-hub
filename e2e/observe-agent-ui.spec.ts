@@ -75,7 +75,8 @@ test('默认把所有来源放在一起，状态说中文且不重复原生英�
 
 test('机器连接按来源显示历史连接证据，项目筛选说明不属于项目', async ({ page, baseURL }) => {
   const record = item({ id: 'machine:connection-1', source: 'machine', title: '机器连接记录', projectId: null, nativeState: 'connected', nativeStateLabel: '已连接（未记录断开）' });
-  const connection = node({ id: 'connection-1', name: '连接记录', kind: 'machine_connection', state: 'connected', stateLabel: '已连接（未记录断开）' });
+  const report = node({ id: 'install-1', name: '运行时安装报告', kind: 'machine_install_report', state: 'failed', stateLabel: '安装失败', endedAt: Date.now() });
+  const connection = node({ id: 'connection-1', name: '连接记录', kind: 'machine_connection', state: 'connected', stateLabel: '已连接（未记录断开）', links: [{ to: report.id, label: '同一连接上的安装报告' }] });
   const requested: string[] = [];
   await page.route(LIST, (route) => {
     const params = new URL(route.request().url()).searchParams;
@@ -84,8 +85,8 @@ test('机器连接按来源显示历史连接证据，项目筛选说明不属�
   });
   await page.route(/\/api\/observe\/machine\/[^/?]+/, (route) => route.fulfill({ json: {
     enabled: true,
-    trace: { id: record.id, source: 'machine', headId: connection.id, title: record.title, projectId: null, externalUrl: null, nodes: [connection] },
-    tree: { roots: [{ node: connection, children: [], links: [] }], missingParent: [], unlinked: [], unrecorded: [] }
+    trace: { id: record.id, source: 'machine', headId: connection.id, title: record.title, projectId: null, externalUrl: null, nodes: [connection, report] },
+    tree: { roots: [{ node: connection, children: [], links: [{ label: '同一连接上的安装报告', branch: { node: report, children: [], links: [] } }] }], missingParent: [], unlinked: [], unrecorded: [] }
   } }));
   const dir = mkdtempSync('/tmp/opencode/observe-machine-project-');
   try {
@@ -106,6 +107,10 @@ test('机器连接按来源显示历史连接证据，项目筛选说明不属�
     await expect(page.getByTestId('observe-tree')).toContainText('已连接（未记录断开）');
     await expect(page.getByTestId('observe-node-detail')).toContainText('机器连接');
     await expect(page.getByTestId('observe-detail')).not.toContainText('在线');
+    await page.getByTestId('observe-node').filter({ hasText: '运行时安装报告' }).click();
+    await expect(page.getByTestId('observe-node-detail')).toContainText('安装报告');
+    await expect(page.getByTestId('observe-node-detail')).toContainText('安装失败');
+    await expect(page.getByTestId('observe-node-detail')).not.toContainText('machine_install_report');
     await page.goto('/#/observe');
     await page.getByTestId('observe-source').selectOption('machine');
     await page.getByTestId('observe-project').selectOption(project.id);
@@ -236,8 +241,9 @@ test('Agent 详情沿用现有树：父级缺失、未记录和无时间各说�
   const turn = node({
     id: 'turn-1', name: 'Agent 回合', kind: 'turn', state: 'done', stateLabel: '完成',
     startedAt: Date.now() - 60_000, endedAt: Date.now() - 30_000, durationMs: 30_000, durationLabel: '记录跨度',
-    attrs: [{ key: '会话', value: 's-e2e' }]
+    attrs: [{ key: '会话', value: 's-e2e' }], links: [{ to: 'output-1', label: '送达 ID 精确匹配' }]
   });
+  const output = node({ id: 'output-1', name: '首条输出已观察', kind: 'first_output', endedAt: Date.now() - 45_000 });
   const reply = node({ id: 'reply-1', name: '等待回复', kind: 'reply', parentId: 'turn-1' });
   const legacyResult = node({ id: 'result-1', name: '回合结果', kind: 'sink', parentId: 'turn-1' });
   const missing = node({ id: 'trigger-1', name: '触发', kind: 'trigger', state: 'queued', stateLabel: '排队中', parentId: 'gone' });
@@ -247,10 +253,10 @@ test('Agent 详情沿用现有树：父级缺失、未记录和无时间各说�
       enabled: true,
       trace: {
         id: 'turn-1', source: 'agent', headId: 'turn-1', title: '修一下登录页', projectId: 'p-e2e',
-        externalUrl: null, nodes: [turn, reply, legacyResult, missing]
+        externalUrl: null, nodes: [turn, reply, legacyResult, missing, output]
       },
       tree: {
-        roots: [{ node: turn, children: [{ node: reply, children: [], links: [] }, { node: legacyResult, children: [], links: [] }], links: [] }],
+        roots: [{ node: turn, children: [{ node: reply, children: [], links: [] }, { node: legacyResult, children: [], links: [] }], links: [{ label: '送达 ID 精确匹配', branch: { node: output, children: [], links: [] } }] }],
         missingParent: [missing], unlinked: [], unrecorded: []
       }
     }
@@ -271,6 +277,10 @@ test('Agent 详情沿用现有树：父级缺失、未记录和无时间各说�
   await page.getByTestId('observe-node').filter({ hasText: '回合结果' }).click();
   await expect(page.getByTestId('observe-node-detail')).toContainText('回合结果');
   await expect(page.getByTestId('observe-node-detail')).not.toContainText('回写');
+
+  await page.getByTestId('observe-node').filter({ hasText: '首条输出已观察' }).click();
+  await expect(page.getByTestId('observe-node-detail')).toContainText('首条输出');
+  await expect(page.getByTestId('observe-node-detail')).not.toContainText(/first_output|模型耗时/);
 
   await page.getByTestId('observe-node').filter({ hasText: '触发' }).click();
   const detail = page.getByTestId('observe-node-detail');

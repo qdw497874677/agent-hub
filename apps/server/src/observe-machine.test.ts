@@ -60,3 +60,37 @@ test('reader excludes oversized or malformed record and credential identifiers w
   for (const id of ['bad-worker', 'bad-owner', bad, 'bad-control']) assert.equal(await reader.get(id, admin), null);
   assert.ok(await reader.get('valid', admin));
 });
+
+test('authorized detail links only exact install reports and indicates truncation', async () => {
+  const rows: MachineObserveRecord[] = [
+    { id: 'one', workerId: 'w', origin: 'remote', enrollment: { enrolledBy: 'u', createdAt: 1 }, connectedAt: 10, disconnectedAt: 20 },
+    { id: 'two', workerId: 'w', origin: 'remote', enrollment: { enrolledBy: 'u', createdAt: 1 }, connectedAt: 30, disconnectedAt: null }
+  ];
+  const credential = { workerId: 'w', enrolledBy: asUserId('u'), createdAt: 1, revokedAt: null } as WorkerCredential;
+  let calls = 0;
+  let revoked = false;
+  const reader = createMachineObserveReader({
+    records: {
+      list: () => rows,
+      byId: (id) => rows.find((r) => r.id === id) ?? null,
+      installs: (id) => { calls++; return { items: id === 'one' ? [{ id: '1', state: 'succeeded' as const, at: 11 }, { id: '2', state: 'failed' as const, at: 11 }, { id: '3', state: 'refused' as const, at: 12 }] : [], truncated: id === 'one' }; }
+    },
+    enrollment: { listCredentials: async () => [credential], credentialFor: async () => revoked ? { ...credential, revokedAt: 99 } : credential },
+    users: { byId: async () => user },
+    policy: { context: async () => ({ hubTeamId: 't', settings: { membersCanAddMachines: true } }), worker: async () => { throw new Error('unexpected'); } }
+  });
+  const trace = await reader.get('one', member);
+  assert.ok(trace);
+  assert.deepEqual(trace.nodes[0]?.links.map((l) => l.to), ['machine-install:1', 'machine-install:2', 'machine-install:3']);
+  assert.deepEqual(trace.nodes.slice(1).map((n) => n.stateLabel), ['报告安装成功', '报告安装失败', '报告拒绝安装']);
+  assert.match(JSON.stringify(trace.nodes[0]?.attrs), /部分报告未保留或未展示/);
+  assert.equal((await reader.get('two', member))?.nodes.length, 1);
+  const before = calls;
+  revoked = true;
+  assert.equal(await reader.get('one', member), null);
+  assert.equal(calls, before);
+  revoked = false;
+  assert.deepEqual((await reader.list(query, member)).items.map((i) => i.nativeState), ['disconnected', 'connected']);
+  assert.equal(calls, before);
+  assert.deepEqual((await reader.list({ ...query, needsLook: true }, member)).items, []);
+});

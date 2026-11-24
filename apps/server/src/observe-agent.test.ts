@@ -82,6 +82,7 @@ interface WorldSeed {
   readonly records?: readonly AgentTurnRecord[];
   readonly ends?: Readonly<Record<string, AgentTurnEnd>>;
   readonly actors?: Readonly<Record<string, unknown>>;
+  readonly outputs?: Readonly<Record<string, { seq: number; at: number }>>;
   readonly projects?: readonly Project[];
   readonly sessions?: readonly Session[];
   readonly tasks?: readonly { readonly id: string; readonly projectId: string }[];
@@ -96,7 +97,8 @@ function world(seed: WorldSeed = {}) {
   const calls = {
     list: [] as { projectIds: readonly string[]; since: number; limit: number }[],
     byId: [] as string[],
-    ended: [] as { sessionId: string; deliveryId: string; afterSeq: number }[]
+    ended: [] as { sessionId: string; deliveryId: string; afterSeq: number }[],
+    output: [] as [string, string, number, number | null][]
   };
   const reader = createAgentObserveReader({
     projects: {
@@ -125,7 +127,11 @@ function world(seed: WorldSeed = {}) {
         calls.ended.push({ sessionId, deliveryId, afterSeq });
         return ends[deliveryId] ?? null;
       },
-      promptActor: async (sessionId, seq) => (seed.actors?.[`${sessionId}:${seq}`] ?? null) as never
+      promptActor: async (sessionId, seq) => (seed.actors?.[`${sessionId}:${seq}`] ?? null) as never,
+      firstOutput: async (sessionId, deliveryId, afterSeq, beforeSeq) => {
+        calls.output.push([sessionId, deliveryId, afterSeq, beforeSeq]);
+        return seed.outputs?.[deliveryId] ?? null;
+      }
     },
     policy
   });
@@ -135,6 +141,26 @@ function world(seed: WorldSeed = {}) {
 const endNode = (trace: ObserveTrace | null) => trace?.nodes.find((node) => node.id.startsWith('end:'));
 const sinkNode = (trace: ObserveTrace | null) => trace?.nodes.find((node) => node.id.startsWith('sink:'));
 const headNode = (trace: ObserveTrace | null) => trace?.nodes.find((node) => node.id.startsWith('turn:'));
+
+test('首条输出：只显示精确证据的时间，不显示正文、开始时间或模型耗时', async () => {
+  const { reader, calls } = world({
+    records: [record({ id: 'a', state: 'delivered' }), record({ id: 'b', state: 'queued', seq: 2 }), record({ id: 'c', state: 'sending', seq: 3 })],
+    ends: { a: { seq: 5, at: NOW + 50, outcome: 'done', unknownOutcome: false } },
+    outputs: { a: { seq: 4, at: NOW + 10 }, b: { seq: 6, at: NOW + 70 }, c: { seq: 3, at: NOW + 80 } }
+  });
+  const a = await reader.get('a', subject());
+  const output = a?.nodes.find((node) => node.kind === 'first_output');
+  assert.equal(output?.endedAt, NOW + 10);
+  assert.equal(output?.startedAt, null);
+  assert.equal(output?.durationMs, null);
+  assert.deepEqual(headNode(a)?.links.map(({ to }) => to), ['output:a', 'end:a']);
+  for (const id of ['b', 'c']) {
+    const trace = await reader.get(id, subject());
+    assert.equal(trace?.nodes.some((node) => node.kind === 'first_output'), false);
+    assert.equal(headNode(trace)?.attrs.find(({ key }) => key === '首条输出')?.value, '未记录');
+  }
+  assert.deepEqual(calls.output, [['s1', 'a', 1, 5], ['s1', 'c', 3, null]]);
+});
 
 test('发起类别只显示受限标签；损坏和旧记录不暴露任何原始值', async () => {
   const { reader } = world({

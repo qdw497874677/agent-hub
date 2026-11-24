@@ -63,6 +63,8 @@ export interface AgentTurnRecords {
   ended(sessionId: string, deliveryId: string, afterSeq: number): Awaitable<AgentTurnEnd | null>;
   /** 精确读取对应 prompt 的受限类别；缺失 / 损坏一律 null。 */
   promptActor(sessionId: string, seq: number): Awaitable<PromptActor | null>;
+  /** 只读精确标记的日期和序号，不读正文到投影。 */
+  firstOutput(sessionId: string, deliveryId: string, afterSeq: number, beforeSeq: number | null): Awaitable<{ seq: number; at: number } | null>;
 }
 
 export interface AgentObserveDeps {
@@ -254,15 +256,24 @@ export function createAgentObserveReader(deps: AgentObserveDeps): ObserveReader 
       // held（seq 0）不是一轮 prompt，不能拿第一条 ended 冒充它的结果。
       const ended = await exactEnd(row);
       const promptActor = row.seq > 0 ? await deps.records.promptActor(row.sessionId, row.seq) : null;
-      return traceFor(row, access.project, ended, promptActor);
+      const output = row.seq > 0 && (row.state === 'sending' || row.state === 'delivered')
+        ? await deps.records.firstOutput(row.sessionId, row.id, row.seq, ended?.seq ?? null) : null;
+      const firstOutput = output && Number.isSafeInteger(output.seq) && output.seq > row.seq &&
+        Number.isSafeInteger(output.at) && output.at >= row.createdAt && output.at <= 8_640_000_000_000_000 &&
+        (!ended || (output.seq < ended.seq && output.at <= ended.at)) ? output : null;
+      return traceFor(row, access.project, ended, promptActor, firstOutput);
     }
   };
 }
 
-function traceFor(row: ValidTurnRecord, project: Project, ended: AgentTurnEnd | null, promptActor: unknown): ObserveTrace {
+function traceFor(row: ValidTurnRecord, project: Project, ended: AgentTurnEnd | null, promptActor: unknown, firstOutput: { seq: number; at: number } | null): ObserveTrace {
   const headId = `turn:${row.id}`;
   const endId = `end:${row.id}`;
-  const links: ObserveLink[] = ended ? [{ to: endId, label: 'deliveryId 对得上的结束' }] : [];
+  const outputId = `output:${row.id}`;
+  const links: ObserveLink[] = [
+    ...(firstOutput ? [{ to: outputId, label: '同一送达的首条输出' }] : []),
+    ...(ended ? [{ to: endId, label: 'deliveryId 对得上的结束' }] : [])
+  ];
   const root: ObserveNode = {
     id: headId,
     name: 'Agent 回合',
@@ -282,6 +293,7 @@ function traceFor(row: ValidTurnRecord, project: Project, ended: AgentTurnEnd | 
       { key: '尝试', value: String(row.attempt) },
       { key: '当前状态', value: DELIVERY_LABEL[row.state] },
       { key: '发起类别', value: actorLabel(promptActor) },
+      { key: '首条输出', value: firstOutput ? '已记录' : '未记录' },
       ...(!ended && row.state !== 'delivered' ? [{ key: '结果', value: pendingNote(row.state) }] : []),
       // 过了 ACL 才给会话跳转所需的字段；没权限时整条 trace 都不会返回。
       { key: '会话', value: row.sessionId },
@@ -289,6 +301,11 @@ function traceFor(row: ValidTurnRecord, project: Project, ended: AgentTurnEnd | 
     ]
   };
   const nodes: ObserveNode[] = [root];
+  if (firstOutput) nodes.push({
+    id: outputId, name: '首条输出', kind: 'first_output', state: 'observed', stateLabel: '已记录',
+    startedAt: null, endedAt: firstOutput.at, durationMs: null, durationLabel: null, parentId: null, links: [],
+    attrs: [{ key: '输出 seq', value: String(firstOutput.seq) }, { key: '时间口径', value: 'Hub 收到输出的时间，不是模型首字耗时' }]
+  });
   if (ended) {
     nodes.push({
       id: endId,

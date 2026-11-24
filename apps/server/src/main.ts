@@ -828,7 +828,10 @@ const syncAssets = (workerId: string) =>
 serverGateway = createServerGateway({
   token,
   authenticate: (hello) => authenticateWorker(enrollmentDeps, hello),
-  ...(machineObserve ? { onConnectionObservation: (observation) => machineObserve.append(observation) } : {}),
+  ...(machineObserve ? {
+    onConnectionObservation: (observation) => machineObserve.append(observation),
+    onObservedRuntimeInstall: (observation) => machineObserve.appendInstall(observation)
+  } : {}),
   trustProxy: process.env['HUB_TRUST_PROXY'] === '1',
   localSecret: spawnWorker === '1' ? localSecret : null,
   onAgents(worker, agents) {

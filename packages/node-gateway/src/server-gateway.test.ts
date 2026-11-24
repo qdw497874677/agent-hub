@@ -8,6 +8,7 @@ import { PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_PROJECT_GIT_BUND
 import { createServerGateway, type GatewayHooks, type GatewayOptions, type WorkerConnectionObservation } from './server-gateway.ts';
 import { serveProjectGitBundleImport } from './worker-fs-rpc.ts';
 import type { ProjectGitBundleImportInput, ProjectGitBundleImporter } from './project-git-bundle-import.ts';
+import type { RuntimeJob } from '@agent-hub/domain';
 
 interface Call {
   readonly method: string;
@@ -25,6 +26,8 @@ interface HarnessOptions {
   readonly localSecret?: string;
   readonly token?: string;
   readonly onConnectionObservation?: GatewayHooks['onConnectionObservation'];
+  readonly onObservedRuntimeInstall?: GatewayHooks['onObservedRuntimeInstall'];
+  readonly onRuntimeJob?: GatewayHooks['onRuntimeJob'];
   readonly agentConfig?: GatewayHooks['agentConfig'];
   readonly onTerminalData?: GatewayHooks['onTerminalData'];
   readonly onTerminalExit?: GatewayHooks['onTerminalExit'];
@@ -43,6 +46,8 @@ async function harness(options: HarnessOptions = {}) {
     ...(options.localSecret ? { localSecret: options.localSecret } : {}),
     ...(options.authenticate ? { authenticate: options.authenticate } : {}),
     ...(options.onConnectionObservation ? { onConnectionObservation: options.onConnectionObservation } : {}),
+    ...(options.onObservedRuntimeInstall ? { onObservedRuntimeInstall: options.onObservedRuntimeInstall } : {}),
+    ...(options.onRuntimeJob ? { onRuntimeJob: options.onRuntimeJob } : {}),
     ...(options.agentConfig ? { agentConfig: options.agentConfig } : {}),
     onHello: () => {
       helloSeen = true;
@@ -236,6 +241,100 @@ test('local observation precedes asynchronous aliases and observer exceptions do
   await until(() => observations.length === 2);
   assert.equal(observations[1]!.connectionId, observations[0]!.connectionId);
   await h.stop(wire);
+});
+
+const syntheticInstall = (jobId: string, action: RuntimeJob['action'] = 'install'): RuntimeJob => ({
+  jobId, agentId: 'private-agent-name', action, version: '1.2.3', state: 'running',
+  message: 'private config', log: 'private log', startedAt: 1, endedAt: null, actorEmail: 'private@example.test'
+});
+
+test('install observations require the exact dispatched job and explicit terminal state, and consume once', async () => {
+  const observations: NonNullable<Parameters<NonNullable<GatewayHooks['onObservedRuntimeInstall']>>[0]>[] = [];
+  const connections: WorkerConnectionObservation[] = [];
+  const completed: RuntimeJob[] = [];
+  let markers = 0;
+  const h = await harness({
+    authenticate: async ({ workerId }) => ({ ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'synthetic-owner', createdAt: 7 } }),
+    onConnectionObservation: (o) => connections.push(o),
+    onObservedRuntimeInstall: (o) => { observations.push(o); throw new Error('observer failure'); },
+    onRuntimeJob: (_workerId, job) => completed.push(job),
+    onTerminalData: () => { markers++; },
+    gateway: { now: () => 99, echoMs: 0 }
+  });
+  const wire = await h.connect('synthetic-worker');
+  const send = (jobId: string, state: string) => wire.ws.send(JSON.stringify({ type: 'runtime_job_status', jobId, state, message: 'private error', lines: ['private output'], version: 'private version' }));
+  const sync = async () => { const target = markers + 1; wire.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' })); await until(() => markers === target); };
+  assert.equal(h.gateway.requestRuntimeJob('synthetic-worker', syntheticInstall('job-1')), true);
+  send('old-job', 'succeeded');
+  send('job-1', 'running');
+  send('job-1', 'unknown');
+  wire.ws.send(JSON.stringify({ type: 'update_status', state: 'failed', message: 'private', logTail: 'private' }));
+  await sync();
+  assert.equal(observations.length, 0);
+  send('job-1', 'succeeded');
+  send('job-1', 'failed');
+  await sync();
+  assert.deepEqual(observations, [{ connectionId: connections[0]!.connectionId, workerId: 'synthetic-worker', origin: 'remote', enrollment: { enrolledBy: 'synthetic-owner', createdAt: 7 }, action: 'install', state: 'succeeded', at: 99 }]);
+  assert.equal(completed.length, 2); // Existing runtime-job callback is unchanged, including duplicate terminal frames.
+  assert.equal(h.gateway.requestRuntimeJob('synthetic-worker', syntheticInstall('job-2', 'uninstall')), true);
+  send('job-2', 'succeeded');
+  await sync();
+  assert.equal(observations.length, 1);
+  await h.stop(wire);
+});
+
+test('install observations do not follow jobs to another connection or include unauthenticated connections', async () => {
+  const observed: NonNullable<Parameters<NonNullable<GatewayHooks['onObservedRuntimeInstall']>>[0]>[] = [];
+  let markers = 0;
+  const h = await harness({
+    authenticate: async ({ workerId }) => workerId === 'shared'
+      ? { ok: true, via: 'shared' }
+      : { ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'synthetic-owner', createdAt: 1 } },
+    onObservedRuntimeInstall: (o) => observed.push(o),
+    onTerminalData: () => { markers++; },
+    gateway: { echoMs: 0 }
+  });
+  const first = await h.connect('synthetic-worker');
+  assert.equal(h.gateway.requestRuntimeJob('synthetic-worker', syntheticInstall('job-1')), true);
+  const replacement = await h.connect('synthetic-worker');
+  replacement.ws.send(JSON.stringify({ type: 'runtime_job_status', jobId: 'job-1', state: 'failed', message: 'private', lines: [] }));
+  replacement.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' }));
+  await until(() => markers === 1);
+  assert.equal(observed.length, 0);
+  const shared = await h.connect('shared');
+  assert.equal(h.gateway.requestRuntimeJob('shared', syntheticInstall('job-2')), true);
+  shared.ws.send(JSON.stringify({ type: 'runtime_job_status', jobId: 'job-2', state: 'refused', message: 'private', lines: [] }));
+  shared.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' }));
+  await until(() => markers === 2);
+  assert.equal(observed.length, 0);
+  assert.equal(h.gateway.requestRuntimeJob('absent', syntheticInstall('job-3')), false);
+  await h.stop(first, replacement, shared);
+  assert.equal(observed.length, 0);
+
+  const bare = await harness({ onObservedRuntimeInstall: (o) => observed.push(o), gateway: { echoMs: 0 } });
+  const unauthenticated = await bare.connect('bare');
+  assert.equal(bare.gateway.requestRuntimeJob('bare', syntheticInstall('job-4')), true);
+  unauthenticated.ws.send(JSON.stringify({ type: 'runtime_job_status', jobId: 'job-4', state: 'succeeded', message: 'private', lines: [] }));
+  await until(() => bare.gateway.workers()[0]?.runtimeJob?.state === 'succeeded');
+  await bare.stop(unauthenticated);
+  assert.equal(observed.length, 0);
+});
+
+test('proven local connection observes terminal install failures without reporting disconnect as failure', async () => {
+  const observed: NonNullable<Parameters<NonNullable<GatewayHooks['onObservedRuntimeInstall']>>[0]>[] = [];
+  const h = await harness({ localSecret: 'synthetic-local-secret', onObservedRuntimeInstall: (o) => observed.push(o), gateway: { echoMs: 0 } });
+  const first = await h.connect('local', { origin: 'local', localSecret: 'synthetic-local-secret' });
+  assert.equal(h.gateway.requestRuntimeJob('local', syntheticInstall('job-1')), true);
+  first.ws.send(JSON.stringify({ type: 'runtime_job_status', jobId: 'job-1', state: 'refused', message: 'private', lines: [] }));
+  await until(() => observed.length === 1);
+  assert.equal(observed[0]!.state, 'refused');
+  assert.equal(observed[0]!.origin, 'local');
+  assert.equal(observed[0]!.enrollment, null);
+  assert.equal(h.gateway.requestRuntimeJob('local', syntheticInstall('job-2')), true);
+  first.ws.close();
+  await until(() => h.gateway.workers()[0]?.state !== 'online');
+  assert.equal(observed.length, 1);
+  await h.stop(first);
 });
 
 async function until(predicate: () => boolean, message = '等待超时'): Promise<void> {

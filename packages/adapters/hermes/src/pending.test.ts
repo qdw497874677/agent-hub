@@ -32,6 +32,133 @@ async function take(events: AsyncIterable<SessionEvent>, until: (e: SessionEvent
 }
 const exists = (path: string) => access(path).then(() => true, () => false);
 
+test('fresh runs mark only their first assistant text, never child text or unkeyed runs', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hermes-first-output-'));
+  let run = 0;
+  const hermes = await fakeHermes((req, res) => {
+    if (req.method === 'POST' && req.url === '/v1/runs') {
+      res.writeHead(202, { 'content-type': 'application/json' }).end(JSON.stringify({ run_id: `r${++run}`, status: 'started' }));
+      return;
+    }
+    if (req.url?.endsWith('/events')) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end([
+        { event: 'reasoning.delta', delta: 'thinking' },
+        { event: 'tool.started', tool: 'search' },
+        { event: 'message.delta', delta: 'child', child_session_id: 'child-1' },
+        { event: 'message.delta', delta: 'user', role: 'user' },
+        { event: 'message.delta', delta: '' },
+        { event: 'message.delta', delta: 'first' },
+        { event: 'message.interim', text: 'second' },
+        { event: 'run.completed' }
+      ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const s = session(hermes.baseUrl, home);
+    for (const deliveryId of ['delivery-a', 'delivery-b', undefined]) {
+      assert.equal((await s.prompt({ text: 'hi', parts: [], ...(deliveryId ? { deliveryId } : {}) })).ok, true);
+      const events = await take(s.events(), (e) => e.kind === 'ended');
+      assert.deepEqual(events.filter((e) => e.kind === 'text'), [
+        { kind: 'text', delta: 'child' },
+        { kind: 'text', delta: 'user' },
+        { kind: 'text', delta: 'first', ...(deliveryId ? { firstOutputDeliveryId: deliveryId } : {}) },
+        { kind: 'text', delta: 'second' }
+      ]);
+      assert.deepEqual(events.at(-1), { kind: 'ended', outcome: 'done', ...(deliveryId ? { deliveryId } : {}) });
+    }
+  } finally {
+    await hermes.close();
+  }
+});
+
+test('reconnect and reconciliation never mark replayed text', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hermes-first-reconnect-'));
+  let streams = 0;
+  const hermes = await fakeHermes((req, res) => {
+    if (req.method === 'POST' && req.url === '/v1/runs') {
+      res.writeHead(202, { 'content-type': 'application/json' }).end('{"run_id":"r1","status":"started"}');
+      return;
+    }
+    if (req.url === '/v1/runs/r1/events') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      if (++streams === 1) return res.end('data: {"event":"reasoning.delta","delta":"thinking"}\n\n');
+      return res.end('data: {"event":"message.delta","delta":"replayed"}\n\ndata: {"event":"run.completed"}\n\n');
+    }
+    if (req.url === '/v1/runs/r1') return res.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"running"}');
+    res.writeHead(404).end();
+  });
+  try {
+    const s = session(hermes.baseUrl, home);
+    assert.equal((await s.prompt({ text: 'hi', parts: [], deliveryId: 'delivery-r' })).ok, true);
+    const events = await take(s.events(), (e) => e.kind === 'ended');
+    assert.deepEqual(events.filter((e) => e.kind === 'text'), [{ kind: 'text', delta: 'replayed' }]);
+    assert.deepEqual(events.at(-1), { kind: 'ended', outcome: 'done', deliveryId: 'delivery-r' });
+
+    const resumedHome = await mkdtemp(join(tmpdir(), 'hermes-first-resume-'));
+    await writeFile(join(resumedHome, PENDING_FILE), JSON.stringify({ key: 'k', inputHash: 'h', runId: 'r1', at: 1, deliveryId: 'delivery-resumed' }));
+    const resumed = session(hermes.baseUrl, resumedHome);
+    await resumed.reconcile();
+    const resumedEvents = await take(resumed.events(), (e) => e.kind === 'ended');
+    assert.deepEqual(resumedEvents.filter((e) => e.kind === 'text'), [{ kind: 'text', delta: 'replayed' }]);
+    assert.deepEqual(resumedEvents.at(-1), { kind: 'ended', outcome: 'done', deliveryId: 'delivery-resumed' });
+  } finally {
+    await hermes.close();
+  }
+});
+
+test('an internally retried submission cannot mark its first stream', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hermes-first-submit-retry-'));
+  let posts = 0;
+  const hermes = await fakeHermes((req, res) => {
+    if (req.method === 'POST' && req.url === '/v1/runs') {
+      if (++posts === 1) return res.writeHead(503, { 'retry-after': '0.001' }).end();
+      return res.writeHead(202, { 'content-type': 'application/json' }).end('{"run_id":"r1","status":"started"}');
+    }
+    if (req.url === '/v1/runs/r1/events') {
+      return res.writeHead(200, { 'content-type': 'text/event-stream' }).end('data: {"event":"message.delta","delta":"possibly replayed"}\n\ndata: {"event":"run.completed"}\n\n');
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const s = session(hermes.baseUrl, home);
+    assert.equal((await s.prompt({ text: 'hi', parts: [], deliveryId: 'delivery-retry' })).ok, true);
+    const events = await take(s.events(), (e) => e.kind === 'ended');
+    assert.equal(posts, 2);
+    assert.deepEqual(events.filter((e) => e.kind === 'text'), [{ kind: 'text', delta: 'possibly replayed' }]);
+    assert.deepEqual(events.at(-1), { kind: 'ended', outcome: 'done', deliveryId: 'delivery-retry' });
+  } finally {
+    await hermes.close();
+  }
+});
+
+test('a successful idempotency replay response cannot mark its first stream', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hermes-first-header-replay-'));
+  let posts = 0;
+  const hermes = await fakeHermes((req, res) => {
+    if (req.method === 'POST' && req.url === '/v1/runs') {
+      posts++;
+      return res.writeHead(202, { 'content-type': 'application/json', 'Idempotency-Replayed': 'true' }).end('{"run_id":"r1","status":"started"}');
+    }
+    if (req.url === '/v1/runs/r1/events') {
+      return res.writeHead(200, { 'content-type': 'text/event-stream' }).end('data: {"event":"message.delta","delta":"replayed"}\n\ndata: {"event":"message.delta","delta":" text"}\n\ndata: {"event":"run.completed"}\n\n');
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const s = session(hermes.baseUrl, home);
+    assert.equal((await s.prompt({ text: 'hi', parts: [], deliveryId: 'delivery-replay' })).ok, true);
+    const events = await take(s.events(), (e) => e.kind === 'ended');
+    assert.equal(posts, 1);
+    assert.deepEqual(events.filter((e) => e.kind === 'text'), [{ kind: 'text', delta: 'replayed' }, { kind: 'text', delta: ' text' }]);
+    assert.deepEqual(events.at(-1), { kind: 'ended', outcome: 'done', deliveryId: 'delivery-replay' });
+  } finally {
+    await hermes.close();
+  }
+});
+
 test('幂等键：没确认收到就断了，重发同一条沿用同一个键；换一条就换键', async () => {
   const home = await mkdtemp(join(tmpdir(), 'hermes-pending-'));
   const keys: string[] = [];
@@ -390,7 +517,7 @@ test('提交结果未知：点停也不丢记录，只放同一条、同一条�
     }
     if (req.url === '/v1/runs/r13/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.end('data: {"event":"run.completed"}\n\n');
+      res.end('data: {"event":"message.delta","delta":"possibly replayed"}\n\ndata: {"event":"run.completed"}\n\n');
       return;
     }
     res.writeHead(404).end();
@@ -426,7 +553,9 @@ test('提交结果未知：点停也不丢记录，只放同一条、同一条�
     const retry = await restarted.prompt({ text: 'one', parts: [], deliveryId: 'd-one' });
     assert.equal(retry.ok, true);
     assert.equal(keys[1], keys[0], '同一条重发要沿用幂等键');
-    const ended = (await take(restarted.events(), (e) => e.kind === 'ended')).find((e) => e.kind === 'ended');
+    const events = await take(restarted.events(), (e) => e.kind === 'ended');
+    assert.deepEqual(events.filter((e) => e.kind === 'text'), [{ kind: 'text', delta: 'possibly replayed' }]);
+    const ended = events.find((e) => e.kind === 'ended');
     assert.deepEqual(ended, { kind: 'ended', outcome: 'done', deliveryId: 'd-one' });
   } finally {
     await hermes.close();

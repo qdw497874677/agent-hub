@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { AGENT_OBSERVE_ENDED_SQL, createSqliteAgentObserve } from './observe-agent.ts';
+import { AGENT_OBSERVE_ENDED_SQL, AGENT_OBSERVE_FIRST_OUTPUT_SQL, createSqliteAgentObserve } from './observe-agent.ts';
 import { openSqliteStore } from './store.ts';
 
 type Fixture = ReturnType<typeof openFixture>;
@@ -90,6 +90,29 @@ function scopedFixture(): Fixture {
   f.delivery({ id: 'd-bad-state', sessionId: 's-task', createdAt: 108, state: 'pending' });
   return f;
 }
+
+test('firstOutput：精确 delivery 与 seq、坏 JSON 安全，查询只投影 at/seq 并命中索引', () => {
+  const f = openFixture();
+  const text = (id: string, extra = {}) => JSON.stringify({ kind: 'text', delta: 'private content', firstOutputDeliveryId: id, ...extra });
+  f.journal('other', 3, 'text', text('a'), 30);
+  f.journal('s1', 1, 'text', text('a'), 10);
+  f.journal('s1', 2, 'text', '{bad', 20);
+  f.journal('s1', 3, 'text', text('a', { subagentId: 'child' }), 30);
+  f.journal('s1', 4, 'text', text('b'), 40);
+  f.journal('s1', 5, 'text', text('a', { delta: '' }), 50);
+  f.journal('s1', 6, 'text', text('a'), 60);
+  f.journal('s1', 7, 'text', text('a'), 70);
+  assert.deepEqual(f.observe.firstOutput('s1', 'a', 1, null), { seq: 6, at: 60 });
+  assert.equal(f.observe.firstOutput('s1', 'a', 1, 6), null);
+  assert.equal(f.observe.firstOutput('s1', 'missing', 1, null), null);
+  const plan = f.db.prepare(`EXPLAIN QUERY PLAN ${AGENT_OBSERVE_FIRST_OUTPUT_SQL}`).all('s1', 'a', 1, 9, 's1', 'a', 1);
+  assert.match(JSON.stringify(plan), /SEARCH.*journal_observe_first_output/);
+  assert.match(JSON.stringify(plan), /SEARCH.*journal_observe_ended_delivery/);
+  f.journal('s1', 8, 'ended', JSON.stringify({ kind: 'ended', deliveryId: 'c', outcome: 'invalid' }), 80);
+  f.journal('s1', 9, 'text', text('c'), 90);
+  assert.equal(f.observe.ended('s1', 'c', 1), null);
+  assert.equal(f.observe.firstOutput('s1', 'c', 1, null), null);
+});
 
 test('list：只列 prompt，项目范围先于 LIMIT，任务缺失 / 来源冲突 / 已删项目失败关闭', () => {
   const f = scopedFixture();

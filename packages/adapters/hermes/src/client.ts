@@ -67,13 +67,22 @@ export async function submitRun(
   body: Record<string, unknown>,
   idempotencyKey: string,
   options: { readonly maxWaitMs?: number; readonly sleep?: (ms: number) => Promise<void>; readonly fetcher?: typeof fetch } = {}
-): Promise<{ run_id: string; status: string }> {
+): Promise<{ run_id: string; status: string; fresh: boolean }> {
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const deadline = Date.now() + (options.maxWaitMs ?? 120_000);
   let delay = 1000;
+  let attempts = 0;
+  let replayed = false;
+  const fetcher: typeof fetch = async (url, init) => {
+    attempts++;
+    const response = await (options.fetcher ?? fetch)(url, init);
+    replayed = response.headers.get('idempotency-replayed')?.trim().toLowerCase() === 'true';
+    return response;
+  };
   for (;;) {
     try {
-      return await hermesJson(endpoint, 'POST', '/v1/runs', body, { 'idempotency-key': idempotencyKey }, options.fetcher);
+      const result = await hermesJson<{ run_id: string; status: string }>(endpoint, 'POST', '/v1/runs', body, { 'idempotency-key': idempotencyKey }, fetcher);
+      return { ...result, fresh: attempts === 1 && !replayed };
     } catch (error) {
       const retryable = error instanceof HermesHttpError ? error.status === 429 || error.status === 503 : error instanceof TypeError;
       if (!retryable || Date.now() + delay > deadline) throw error;

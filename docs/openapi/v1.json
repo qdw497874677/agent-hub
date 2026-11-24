@@ -13771,6 +13771,11 @@
                                   },
                                   "subagentId": {
                                     "type": "string"
+                                  },
+                                  "firstOutputDeliveryId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
                                   }
                                 },
                                 "required": [

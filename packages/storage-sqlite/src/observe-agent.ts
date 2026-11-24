@@ -60,6 +60,8 @@ const SELECT_DELIVERY = `SELECT d.id, d.session_id, d.seq, d.state, d.attempt, d
 const jsonField = (path: string): string => `CASE WHEN json_valid(payload) THEN json_extract(payload, '${path}') END`;
 const deliveryIdField = jsonField('$.deliveryId');
 const endedIndexPredicate = `type = 'ended' AND CASE WHEN json_valid(payload) THEN json_type(payload, '$.deliveryId') END = 'text'`;
+const firstOutputField = jsonField('$.firstOutputDeliveryId');
+const firstOutputIndexPredicate = `type = 'text' AND CASE WHEN json_valid(payload) THEN json_type(payload, '$.firstOutputDeliveryId') END = 'text'`;
 
 // 与表达式索引保持同一表达式和部分索引谓词，允许按精确 deliveryId + seq 定位。
 export const AGENT_OBSERVE_ENDED_SQL = `SELECT seq, at,
@@ -74,6 +76,17 @@ export const AGENT_OBSERVE_ENDED_SQL = `SELECT seq, at,
   WHERE ${endedIndexPredicate} AND session_id = ? AND seq > ?
     AND ${jsonField('$.kind')} = 'ended'
     AND ${deliveryIdField} = ?
+  ORDER BY seq ASC LIMIT 1`;
+
+export const AGENT_OBSERVE_FIRST_OUTPUT_SQL = `SELECT seq, at FROM journal
+  WHERE ${firstOutputIndexPredicate} AND session_id = ? AND ${firstOutputField} = ?
+     AND seq > ? AND seq < ?
+     AND seq < COALESCE((SELECT seq FROM journal
+       WHERE ${endedIndexPredicate} AND session_id = ? AND ${deliveryIdField} = ? AND seq > ?
+         AND ${jsonField('$.kind')} = 'ended' ORDER BY seq ASC LIMIT 1), ${Number.MAX_SAFE_INTEGER})
+     AND CASE WHEN json_valid(payload) THEN
+      json_extract(payload, '$.kind') = 'text' AND json_type(payload, '$.delta') = 'text'
+      AND json_extract(payload, '$.delta') <> '' AND json_type(payload, '$.subagentId') IS NULL END
   ORDER BY seq ASC LIMIT 1`;
 
 type DeliveryRow = {
@@ -114,6 +127,8 @@ export function createSqliteAgentObserve(db: DatabaseSync) {
   // 索引只在 reader 初始化时建立；坏 JSON 和非字符串 deliveryId 不进入索引。
   db.exec(`CREATE INDEX IF NOT EXISTS journal_observe_ended_delivery
     ON journal(session_id, ${deliveryIdField}, seq) WHERE ${endedIndexPredicate}`);
+  db.exec(`CREATE INDEX IF NOT EXISTS journal_observe_first_output
+    ON journal(session_id, ${firstOutputField}, seq) WHERE ${firstOutputIndexPredicate}`);
 
   const list = db.prepare(`${SELECT_DELIVERY}
     AND d.created_at >= ?
@@ -125,6 +140,7 @@ export function createSqliteAgentObserve(db: DatabaseSync) {
   // 不从 prompt 的 seq 窗口或会话状态反推「这一轮结束了没有」。
   // outcome 与结果未知标记都在 SQL 里按固定规则算，不把 payload / reason 原文取出来。
   const ended = db.prepare(AGENT_OBSERVE_ENDED_SQL);
+  const firstOutput = db.prepare(AGENT_OBSERVE_FIRST_OUTPUT_SQL);
   // 只取精确会话 + seq 的 prompt，且只让固定类别离开 SQLite。
   const promptActor = db.prepare(`SELECT CASE WHEN json_valid(payload) THEN
       CASE WHEN json_extract(payload, '$.kind') = 'prompt'
@@ -152,6 +168,15 @@ export function createSqliteAgentObserve(db: DatabaseSync) {
       if (!Number.isSafeInteger(seq) || seq <= 0) return null;
       const row = promptActor.get(sessionId, seq) as { actor: PromptActor | null } | undefined;
       return row?.actor ?? null;
+    },
+
+    firstOutput(sessionId: string, deliveryId: string, afterSeq: number, beforeSeq: number | null): { seq: number; at: number } | null {
+      if (!Number.isSafeInteger(afterSeq) || afterSeq <= 0) return null;
+      if (beforeSeq !== null && (!Number.isSafeInteger(beforeSeq) || beforeSeq <= afterSeq)) return null;
+      // 即使精确结束记录损坏而不能展示结果，它的 seq 仍截住输出查询。
+      const row = firstOutput.get(sessionId, deliveryId, afterSeq, beforeSeq ?? Number.MAX_SAFE_INTEGER,
+        sessionId, deliveryId, afterSeq) as { seq: number; at: number } | undefined;
+      return row ? { seq: row.seq, at: row.at } : null;
     },
 
     ended(sessionId: string, deliveryId: string, afterSeq: number): AgentObserveEnded | null {

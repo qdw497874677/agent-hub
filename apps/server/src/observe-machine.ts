@@ -13,11 +13,17 @@ export interface MachineObserveRecord {
   readonly connectedAt: number;
   readonly disconnectedAt: number | null;
 }
+export interface MachineInstallReport {
+  readonly id: string;
+  readonly state: 'succeeded' | 'failed' | 'refused';
+  readonly at: number;
+}
 type Awaitable<T> = T | Promise<T>;
 export interface MachineObserveDeps {
   readonly records: {
     list(input: { readonly bindings: readonly MachineObserveBinding[]; readonly since: number; readonly limit: number }): Awaitable<readonly MachineObserveRecord[]>;
     byId(id: string): Awaitable<MachineObserveRecord | null>;
+    installs?(connectionId: string): Awaitable<{ readonly items: readonly MachineInstallReport[]; readonly truncated: boolean }>;
   };
   readonly enrollment: Pick<EnrollmentRepository, 'listCredentials' | 'credentialFor'>;
   readonly users: Pick<UserRepository, 'byId'>;
@@ -80,8 +86,21 @@ export function createMachineObserveReader(deps: MachineObserveDeps): ObserveRea
       const row = await deps.records.byId(id);
       if (!valid(row) || row.id !== id || !(await access(bindingOf(row), actor))) return null;
       const state = row.disconnectedAt === null ? 'connected' : 'disconnected';
-      const node: ObserveNode = { id: `machine:${row.id}`, name: 'Worker 连接', kind: 'machine_connection', state, stateLabel: state === 'connected' ? '已连接（未记录断开）' : '已断开', startedAt: row.connectedAt, endedAt: row.disconnectedAt, durationMs: row.disconnectedAt === null ? null : row.disconnectedAt - row.connectedAt, durationLabel: row.disconnectedAt === null ? null : '连接记录跨度', parentId: null, links: [], attrs: [{ key: 'Worker', value: row.workerId }, { key: '来源', value: row.origin === 'local' ? '本机' : '远端' }] };
-      return { id: `machine:${row.id}`, source: 'machine', headId: node.id, title: 'Worker 连接', projectId: null, externalUrl: null, nodes: [node] };
+      const reports = deps.records.installs ? await deps.records.installs(row.id) : { items: [], truncated: false };
+      const labels = { succeeded: '报告安装成功', failed: '报告安装失败', refused: '报告拒绝安装' } as const;
+      const nodes: ObserveNode[] = [];
+      const links: { to: string; label: string }[] = [];
+      const seen = new Set<string>();
+      let truncated = reports.truncated || reports.items.length > 100;
+      for (const report of reports.items.slice(0, 100)) {
+        if (!report || !text(report.id) || !/^[1-9][0-9]*$/.test(report.id) || seen.has(report.id) || !Object.hasOwn(labels, report.state) || !timestamp(report.at) || report.at < row.connectedAt || (row.disconnectedAt !== null && report.at > row.disconnectedAt)) { truncated = true; continue; }
+        seen.add(report.id);
+        const reportId = `machine-install:${report.id}`;
+        links.push({ to: reportId, label: '此连接报告' });
+        nodes.push({ id: reportId, name: '运行时安装报告', kind: 'machine_install_report', state: report.state, stateLabel: labels[report.state], startedAt: null, endedAt: report.at, durationMs: null, durationLabel: null, parentId: null, links: [], attrs: [] });
+      }
+      const node: ObserveNode = { id: `machine:${row.id}`, name: 'Worker 连接', kind: 'machine_connection', state, stateLabel: state === 'connected' ? '已连接（未记录断开）' : '已断开', startedAt: row.connectedAt, endedAt: row.disconnectedAt, durationMs: row.disconnectedAt === null ? null : row.disconnectedAt - row.connectedAt, durationLabel: row.disconnectedAt === null ? null : '连接记录跨度', parentId: null, links, attrs: [{ key: 'Worker', value: row.workerId }, { key: '来源', value: row.origin === 'local' ? '本机' : '远端' }, ...(truncated ? [{ key: '安装报告', value: '部分报告未保留或未展示' }] : [])] };
+      return { id: `machine:${row.id}`, source: 'machine', headId: node.id, title: 'Worker 连接', projectId: null, externalUrl: null, nodes: [node, ...nodes] };
     }
   };
 }

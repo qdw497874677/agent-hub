@@ -410,7 +410,24 @@ export function ingestWorkerEvent(
     // 注意：这里不调用 finishSending。ended 落盘后先让 hooks 跑，显式 releaseAfterTurn
     // 才精确收掉 sending 并放行下一句；否则 1s 泵可能在钩子完成前就送出 B。
     // Worker 事件不可信：不能让它写入 Hub 的发起类别。
-    const safeEvent = event.kind === 'prompt' ? (({ promptActor: _ignored, ...rest }) => rest)(event) : event;
+    let safeEvent = event.kind === 'prompt' ? (({ promptActor: _ignored, ...rest }) => rest)(event) : event;
+    if (safeEvent.kind === 'text' && safeEvent.firstOutputDeliveryId !== undefined) {
+      let valid = false;
+      try {
+        const inFlight = deliveries && safeEvent.delta.length > 0 && safeEvent.subagentId === undefined
+          ? await deliveries.inFlight(sessionId)
+          : null;
+        // Only an exact, still-open delivery can attest this output.
+        valid = !!inFlight && inFlight.sessionId === sessionId && inFlight.id === safeEvent.firstOutputDeliveryId
+          && !(await findDeliveryEnded(deps, inFlight));
+      } catch {
+        // Lookup failures cannot attest the marker, but must not discard the text.
+      }
+      if (!valid) {
+        const { firstOutputDeliveryId: _ignored, ...text } = safeEvent;
+        safeEvent = text;
+      }
+    }
     return recordEvent(deps, {
       sessionId,
       event: await withBytes(deps, sessionId, safeEvent)

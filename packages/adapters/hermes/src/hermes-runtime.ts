@@ -480,6 +480,7 @@ export class HermesSession implements RuntimeSession {
     this.submitting = true;
     try {
       let key: string;
+      let freshSubmission = false;
       let deliveryId = held?.deliveryId ?? input.deliveryId;
       if (held) {
         key = held.key;
@@ -499,6 +500,7 @@ export class HermesSession implements RuntimeSession {
           deliveryId = previous.deliveryId ?? input.deliveryId;
         } else {
           key = `ahub:${this.sessionId}:${++this.seq}:${randomBytes(6).toString('hex')}`;
+          freshSubmission = true;
         }
       }
       // 预约记住这一轮归属的送达：之后重发既不能换内容，也不能换 deliveryId。
@@ -517,6 +519,7 @@ export class HermesSession implements RuntimeSession {
       try {
         const submitted = await submitRun(this.gateway.endpoint, body, key);
         runId = submitted.run_id;
+        freshSubmission &&= submitted.fresh;
       } catch (error) {
         // 429 是明确的「没收下，稍后再来」，可以放下一句；503 可能是网关 / 中间层返回的，
         // 分不清 Hermes 收没收到，按结果未知处理（预约留着，只放同一条重发）。
@@ -538,7 +541,7 @@ export class HermesSession implements RuntimeSession {
       // 先让 run 接管闸门，再松开提交占位：中间没有空窗。
       this.run = { id: runId, abort, following: true };
       this.submission = null;
-      void this.follow(runId, abort, deliveryId);
+      void this.follow(runId, abort, deliveryId, freshSubmission);
       return ok(undefined);
     } finally {
       this.submitting = false;
@@ -615,10 +618,11 @@ export class HermesSession implements RuntimeSession {
    * cancelled、interrupted）；`unknown` 是「查不到 / 结果未知 / 事件流耗尽」，它**不证明**
    * 远端那一轮停了：这时 ended 不带 deliveryId，并且继续占着 `this.run` 的本地闸门。
    */
-  private async follow(runId: string, abort: AbortController, deliveryId?: string): Promise<void> {
+  private async follow(runId: string, abort: AbortController, deliveryId?: string, fresh = false): Promise<void> {
     const map = createHermesEventMapper();
     let terminal = false;
     let unknown = false;
+    let firstOutputPending = fresh && !!deliveryId;
     for (let attempt = 0; !terminal && !unknown && !abort.signal.aborted && attempt < 20; attempt++) {
       try {
         await streamRun(
@@ -630,7 +634,19 @@ export class HermesSession implements RuntimeSession {
             // 先放开「正在跑」再推终态：收到 ended 就马上发下一轮，不该撞上「上一轮还没结束」
             if (mapped.terminal && this.run?.id === runId) this.run = null;
             if (mapped.terminal) this.withdrawRun(runId);
-            for (const event of mapped.events) this.queue.push(tagEnded(event, mapped.terminal ? deliveryId : undefined));
+            for (const event of mapped.events) {
+              // Only the first stream of a fresh submission is attributable: reconnects may replay.
+              // Preserve mapped text even when Hermes identifies it as a child/non-assistant message.
+              const child = raw['child_session_id'] || raw['subagent_id'] || raw['subagentId'] || raw['delegation_id'];
+              const assistant = raw['role'] === undefined || raw['role'] === 'assistant';
+              if (firstOutputPending && deliveryId && attempt === 0 && event.kind === 'text' && event.delta && !event.subagentId && !child && assistant) {
+                const marked = { ...event, firstOutputDeliveryId: deliveryId };
+                this.queue.push(marked);
+                firstOutputPending = false;
+              } else {
+                this.queue.push(tagEnded(event, mapped.terminal ? deliveryId : undefined));
+              }
+            }
             if (mapped.control) void this.answer(runId, mapped.control);
             if (mapped.terminal) terminal = true;
           },

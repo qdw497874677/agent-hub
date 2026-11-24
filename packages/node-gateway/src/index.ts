@@ -1,5 +1,5 @@
 export { createServerGateway } from './server-gateway.ts';
-export type { GatewayHooks, ServerGateway, WorkerConnectionObservation, WorkspaceGroupOps } from './server-gateway.ts';
+export type { GatewayHooks, ServerGateway, WorkerConnectionObservation, WorkerRuntimeInstallObservation, WorkspaceGroupOps } from './server-gateway.ts';
 export { connectWorkerLink } from './worker-link.ts';
 export { createResourceProbe, type ResourceProbeOptions } from './resource-probe.ts';
 export { createHarnessRegistry, sameReadiness, withMissingHint } from './harness-registry.ts';
