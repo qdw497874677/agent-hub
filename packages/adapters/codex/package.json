@@ -11,6 +11,8 @@
     "test": "node --test --test-concurrency=1 \"src/**/*.test.ts\""
   },
   "dependencies": {
-    "@agent-hub/domain": "*"
+    "@agent-hub/contract": "*",
+    "@agent-hub/domain": "*",
+    "@agent-hub/node-kit": "*"
   }
 }

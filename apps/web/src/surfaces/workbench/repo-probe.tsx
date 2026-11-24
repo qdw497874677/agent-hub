@@ -1,5 +1,6 @@
-import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
+import { Fragment, useCallback, useId, useRef, useState } from 'react';
 import type { WorkerInfoDto } from '../../shell/api.ts';
+import { CopyButton, ManualCopy, useCopy } from '../../atoms/copy.tsx';
 import { WorkerPicker } from '../../shell/workers.tsx';
 import {
   repoDiagnosticFrom,
@@ -134,45 +135,17 @@ function RepoProbeDiagnostic({
 }) {
   const diagnostic = repoDiagnosticFrom(result.diagnostic);
   const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
-  // 剪贴板写不进去（普通 HTTP 下 navigator.clipboard 直接没有，或权限被拒）时
-  // 不装作复制成功：展开一段只读文本让用户自己选。每次失败 +1，重新聚焦并全选。
-  const [manualCopies, setManualCopies] = useState(0);
-  const manualRef = useRef<HTMLTextAreaElement | null>(null);
   const panelId = useId();
-  const manualId = useId();
-  useEffect(() => {
-    if (manualCopies === 0) return;
-    const field = manualRef.current;
-    if (field === null) return;
-    field.focus();
-    field.select();
-  }, [manualCopies]);
-  if (diagnostic === null) return null;
   const context = {
     workerLabel,
     credentialSource: result.credentialSource ?? fallbackSource
   };
-  const rows = repoDiagnosticRows(diagnostic, context);
-  const diagnosisText = repoDiagnosticText(diagnostic, context);
-  const copy = () => {
-    setCopied(false);
-    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
-    if (clipboard === undefined || typeof clipboard.writeText !== 'function') {
-      setManualCopies((count) => count + 1);
-      return;
-    }
-    const failed = () => setManualCopies((count) => count + 1);
-    try {
-      void clipboard.writeText(diagnosisText).then(() => {
-        setManualCopies(0);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1_500);
-      }, failed);
-    } catch {
-      failed();
-    }
-  };
+  const rows = diagnostic === null ? [] : repoDiagnosticRows(diagnostic, context);
+  const diagnosisText = diagnostic === null ? '' : repoDiagnosticText(diagnostic, context);
+  // 剪贴板写不进去（普通 HTTP 下 navigator.clipboard 直接没有，或权限被拒）时
+  // 不装作复制成功：展开一段只读文本让用户自己选。每次失败 +1，重新聚焦并全选。
+  const copies = useCopy(diagnosisText);
+  if (diagnostic === null) return null;
   return (
     <div className="mt-1" data-testid={`${testId}-diagnostic`}>
       <button
@@ -201,32 +174,21 @@ function RepoProbeDiagnostic({
               </Fragment>
             ))}
           </dl>
-          <button
-            type="button"
+          <CopyButton
+            action={copies}
+            label="复制诊断"
+            ariaLabel="复制诊断信息"
+            testId={`${testId}-diagnostic-copy`}
             className="mt-1 inline-flex min-h-[44px] items-center text-meta text-tertiary hover:text-primary md:min-h-0"
-            aria-label="复制诊断信息"
-            data-testid={`${testId}-diagnostic-copy`}
-            onClick={copy}
-          >
-            {copied ? '已复制' : '复制诊断'}
-          </button>
-          {manualCopies > 0 ? (
-            <div className="mt-0.5" data-testid={`${testId}-diagnostic-manual`}>
-              <label htmlFor={manualId} className="block text-meta text-tertiary">
-                没法写入剪贴板，下面是同一段诊断；已选中，可直接复制
-              </label>
-              <textarea
-                id={manualId}
-                ref={manualRef}
-                readOnly
-                rows={Math.min(Math.max(diagnosisText.split('\n').length, 3), 8)}
-                value={diagnosisText}
-                spellCheck={false}
-                className="mt-0.5 w-full resize-none rounded-sm border border-hair bg-card px-2 py-1 font-mono text-[11px] leading-4 text-primary"
-                data-testid={`${testId}-diagnostic-manual-text`}
-                onFocus={(event) => event.currentTarget.select()}
-              />
-            </div>
+          />
+          {copies.manual ? (
+            <ManualCopy
+              text={diagnosisText}
+              attempt={copies.attempts}
+              testId={`${testId}-diagnostic-manual`}
+              label="没法写入剪贴板，下面是同一段诊断；已选中，可直接复制"
+              className="mt-0.5"
+            />
           ) : null}
         </div>
       ) : null}

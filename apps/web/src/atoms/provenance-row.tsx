@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type ProvenanceDto } from '../shell/api.ts';
 import { localTime } from '../shell/local-time.ts';
+import { CopyButton, ManualCopy, useCopy } from './copy.tsx';
 
 const VIA: Record<string, string> = {
   web: '网页', mobile: '手机', api: '开放 API', fork: '分叉', rewind: '回退', handoff: '交接',
@@ -56,14 +57,16 @@ export function provenanceSummary(p: ProvenanceDto): string {
 export function ProvenanceRow({ sessionId }: { sessionId: string }) {
   const [p, setP] = useState<ProvenanceDto | null>(null);
   const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const copies = useCopy(p?.id ?? '');
   useEffect(() => {
     let alive = true;
     setP(null);
     setOpen(false);
-    setCopied(false);
+    copies.reset();
     api.provenance(sessionId).then((r) => { if (alive) setP(r); }, () => undefined);
     return () => { alive = false; };
+    // copies.reset 是稳定回调；这里只在会话切换时清状态。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
   if (!p) return null;
   return (
@@ -82,11 +85,18 @@ export function ProvenanceRow({ sessionId }: { sessionId: string }) {
           <dt>权限</dt><dd className="break-all">{permissionText(p)}</dd>
           <dt>时间</dt><dd>{fullTime(p.createdAt)}</dd>
           {p.backfilled ? (<><dt>备注</dt><dd>老会话补录：原发起人和权限当时未记录{p.parent ? '，来源按分叉关系推断' : ''}。</dd></>) : null}
-          <dt>编号</dt><dd className="flex min-w-0 items-center gap-2"><span className="truncate font-mono" title={p.id}>{p.id.slice(0, 8)}…</span>
-            <button type="button" className="shrink-0 rounded-sm border border-hair px-1 hover:text-primary" aria-label="复制来历编号"
-              onClick={() => { void navigator.clipboard?.writeText(p.id).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1_500); }, () => undefined); }}>
-              {copied ? '已复制' : '复制'}
-            </button></dd>
+          <dt>编号</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><span className="truncate font-mono" title={p.id}>{p.id.slice(0, 8)}…</span>
+            <CopyButton action={copies} ariaLabel="复制来历编号" testId="provenance-copy" className="shrink-0 rounded-sm border border-hair px-1 hover:text-primary" />
+            {copies.manual ? (
+              <ManualCopy
+                text={p.id}
+                attempt={copies.attempts}
+                testId="provenance-manual"
+                label="没法写入剪贴板，下面是完整编号；已选中，可直接复制"
+                className="mt-1 w-full"
+              />
+            ) : null}
+          </dd>
         </dl>
       ) : null}
     </div>

@@ -3,6 +3,7 @@ import { Notice } from '../atoms/notice.tsx';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi, type PairingDto, type WorkerInfoDto, type WorkerPreset } from './api.ts';
 import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
+import { CopyButton, selectElementText, useCopy } from '../atoms/copy.tsx';
 
 /**
  * 「添加机器」：签一个一次性接入码，给出在新机器上粘贴运行的一行命令。
@@ -148,18 +149,16 @@ function PresetPicker({ value, onChange, disabled }: { value: WorkerPreset; onCh
 }
 
 function CommandBox({ pairing, expired }: { pairing: PairingDto | undefined; expired: boolean }) {
-  const [copied, setCopied] = useState(false);
   const text = useRef<HTMLElement>(null);
+  const command = pairing?.command ?? '';
+  // 复制不了（普通 HTTP 下没有 navigator.clipboard）：选中命令本身，并如实说明，
+  // 不显示「已复制」。换预设 / 重签命令时清掉上一段的状态。
+  const copies = useCopy(command, { onManual: () => selectElementText(text.current) });
   useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 1800);
-    return () => clearTimeout(timer);
-  }, [copied]);
-  const copy = async () => {
-    if (!pairing) return;
-    if (await copyText(pairing.command)) setCopied(true);
-    else if (text.current) selectContents(text.current); // 复制不了（非安全上下文）：至少选中，长按就能复制
-  };
+    copies.reset();
+    // 只跟命令内容走：copy 状态不应该从旧命令带到新命令。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [command]);
   return (
     <div className={`rounded-sm border border-hair bg-card ${expired ? 'opacity-40' : ''}`}>
       <code
@@ -170,14 +169,19 @@ function CommandBox({ pairing, expired }: { pairing: PairingDto | undefined; exp
         {pairing ? pairing.command : '　'}
       </code>
       <div className="flex justify-end border-t border-hair px-1.5 py-1.5">
-        <button
-          className={`${PRIMARY_BUTTON} min-h-9 min-w-[5.5rem]`}
-          onClick={() => void copy()}
+        <CopyButton
+          action={copies}
+          label="复制命令"
+          testId="copy-command"
           disabled={!pairing || expired}
-        >
-          {copied ? '已复制' : '复制命令'}
-        </button>
+          className={`${PRIMARY_BUTTON} min-h-9 min-w-[5.5rem]`}
+        />
       </div>
+      {copies.manual ? (
+        <p data-testid="copy-command-manual" className="border-t border-hair px-2.5 py-1.5 text-meta text-tertiary">
+          没法写入剪贴板，已经帮你选中命令：按 Ctrl+C（Mac 上 ⌘C）复制。
+        </p>
+      ) : null}
       {pairing?.shortCommand ? (
         <details className="border-t border-hair px-2.5 py-1.5 text-meta text-secondary" data-testid="short-command">
           <summary className="cursor-pointer">简短版（不校验 sha256，没有 sha256sum 的机器用）</summary>
@@ -208,39 +212,4 @@ function useNow(intervalMs: number | null): number {
     return () => clearInterval(timer);
   }, [intervalMs]);
   return now;
-}
-
-/** 剪贴板 API 只在安全上下文里有（tailnet 上走 http 时没有），退回老办法。 */
-async function copyText(value: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(value);
-      return true;
-    }
-  } catch {
-    // 落到下面
-  }
-  const area = document.createElement('textarea');
-  area.value = value;
-  area.setAttribute('readonly', '');
-  area.style.position = 'fixed';
-  area.style.opacity = '0';
-  document.body.appendChild(area);
-  area.select();
-  let done = false;
-  try {
-    done = document.execCommand('copy');
-  } catch {
-    done = false;
-  }
-  area.remove();
-  return done;
-}
-
-function selectContents(element: HTMLElement): void {
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
 }

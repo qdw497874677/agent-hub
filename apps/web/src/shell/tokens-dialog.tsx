@@ -4,6 +4,7 @@ import { tokensApi, RequestFailed, type AccountDto, type ApiScopeDto, type ApiTo
 import { DialogShell } from './dialog-shell.tsx';
 import { McpGuidePanel } from './mcp-guide.tsx';
 import { maskToken } from '../atoms/mcp-guide.ts';
+import { CopyButton, ManualCopy, useCopy } from '../atoms/copy.tsx';
 
 /**
  * 每个 scope 一句人话 + 它实际带上的权限（detail 直接显示，不藏在悬停里）。
@@ -51,15 +52,16 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
   const [scopes, setScopes] = useState<ApiScopeDto[]>(['projects:read', 'sessions:read']);
   const [days, setDays] = useState(30);
   const [fresh, setFresh] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const [shown, setShown] = useState(false);
+  // 新令牌只显示一次：剪贴板写不进去时也不绕开遮罩，先让人点「显示」。
+  const copies = useCopy(fresh ?? '');
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['api-tokens'] });
   const create = useMutation({
     mutationFn: () =>
       tokensApi.create({ name: name.trim(), kind, scopes, expiresAt: days ? Date.now() + days * 86_400_000 : null }),
     onSuccess: async (result) => {
       setFresh(result.token);
-      setCopied(false);
+      copies.reset();
       setShown(false);
       setName('');
       await refresh();
@@ -90,14 +92,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
             {shown ? fresh : maskToken(fresh)}
           </code>
           <div className="mt-2 flex gap-2">
-            <button
-              className={BTN}
-              onClick={() => {
-                void navigator.clipboard?.writeText(fresh).then(() => setCopied(true));
-              }}
-            >
-              {copied ? '已复制' : '复制'}
-            </button>
+            <CopyButton action={copies} testId="token-copy" className={BTN} />
             <button data-testid="token-reveal" className={BTN} onClick={() => setShown((v) => !v)}>
               {shown ? '隐藏' : '显示'}
             </button>
@@ -105,6 +100,21 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
               我已保存
             </button>
           </div>
+          {copies.manual ? (
+            shown ? (
+              <ManualCopy
+                text={fresh}
+                attempt={copies.attempts}
+                testId="token-manual"
+                label="没法写入剪贴板，下面是同一段令牌；已选中，可直接复制"
+                className="mt-2"
+              />
+            ) : (
+              <p data-testid="token-manual-masked" className="mt-2 text-meta text-tertiary">
+                没法写入剪贴板；令牌还遮着，点「显示」后再手动复制。
+              </p>
+            )
+          ) : null}
           <McpGuidePanel />
         </div>
       ) : (

@@ -18,11 +18,12 @@ const ALLOWED = new Map([
   ['@agent-hub/contract', ['@agent-hub/domain']],
   ['@agent-hub/storage-sqlite', ['@agent-hub/domain']],
   ['@agent-hub/node-gateway', ['@agent-hub/domain', '@agent-hub/contract']],
-  ['@agent-hub/adapter-pi', ['@agent-hub/domain', '@agent-hub/contract']],
-  ['@agent-hub/adapter-grok', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/adapter-acp']],
-  ['@agent-hub/adapter-hermes', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/adapter-acp']],
-  ['@agent-hub/adapter-acp', ['@agent-hub/domain', '@agent-hub/contract']],
-  ['@agent-hub/adapter-codex', ['@agent-hub/domain']],
+  ['@agent-hub/node-kit', []],
+  ['@agent-hub/adapter-pi', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-kit']],
+  ['@agent-hub/adapter-grok', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/adapter-acp', '@agent-hub/node-kit']],
+  ['@agent-hub/adapter-hermes', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/adapter-acp', '@agent-hub/node-kit']],
+  ['@agent-hub/adapter-acp', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-kit']],
+  ['@agent-hub/adapter-codex', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-kit']],
   ['@agent-hub/adapter-accounts', ['@agent-hub/domain']],
   ['@agent-hub/adapter-assets', ['@agent-hub/domain']],
   ['@agent-hub/observe', []],
@@ -32,13 +33,18 @@ const ALLOWED = new Map([
   // 飞书用官方 SDK 的长连接（WSClient）收事件；同样只依赖领域。
   ['@agent-hub/connector-feishu', ['@agent-hub/domain']],
   ['@agent-hub/server', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/storage-sqlite', '@agent-hub/node-gateway', '@agent-hub/adapter-accounts', '@agent-hub/adapter-assets', '@agent-hub/connector-timer', '@agent-hub/connector-github', '@agent-hub/connector-feishu', '@agent-hub/observe']],
-  ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-gateway', '@agent-hub/adapter-pi', '@agent-hub/adapter-acp', '@agent-hub/adapter-grok', '@agent-hub/adapter-hermes', '@agent-hub/adapter-codex']],
+  ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-gateway', '@agent-hub/node-kit', '@agent-hub/adapter-pi', '@agent-hub/adapter-acp', '@agent-hub/adapter-grok', '@agent-hub/adapter-hermes', '@agent-hub/adapter-codex']],
   ['@agent-hub/web', ['@agent-hub/contract']]
 ]);
 
 // 文件级规则：路径（相对仓库根，正则）→ 只许 import 的模块（正则）或禁止 import 的模块。
 // RPC 是端口（contract/src/rpc），WebSocket 只是一个适配器（server-gateway / worker-link / worker-enroll）。
 const FILE_RULES = [
+  {
+    files: /^packages\/node-kit\/src\//,
+    only: /^(\.|node:)/,
+    why: 'Node-only 工具包只依赖标准库，不放外部依赖与传输'
+  },
   {
     files: /^packages\/contract\/src\/rpc\/(?!.*\.test\.ts$)/,
     only: /^(\.|zod$)/,

@@ -9,6 +9,7 @@
   "dependencies": {
     "@agent-hub/contract": "*",
     "@agent-hub/domain": "*",
+    "@agent-hub/node-kit": "*",
     "@agentclientprotocol/sdk": "^2.0.2"
   }
 }

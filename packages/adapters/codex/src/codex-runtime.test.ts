@@ -404,3 +404,39 @@ test('送达确认：turn id 没确认进程就没了 → 不确认送达（ende
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('无法解析的 stdout 记录 → 固定诊断，会话照常启动和收尾', async () => {
+  const root = workdir();
+  // 内联假 server：握手 / 开会话都正常，随后往 stdout 塞一行非 JSON。
+  const script = [
+    "const readline = require('node:readline');",
+    "const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n');",
+    "const rl = readline.createInterface({ input: process.stdin });",
+    "rl.on('line', (line) => {",
+    "  let msg;",
+    "  try { msg = JSON.parse(line); } catch { return; }",
+    "  if (msg.id === undefined) return;",
+    "  if (msg.method === 'initialize') { reply(msg.id, {}); return; }",
+    "  if (msg.method === 'thread/start') {",
+    "    reply(msg.id, { thread: { id: 'th_invalid' }, model: 'gpt-5.1-codex' });",
+    "    process.stdout.write('this is not json\\n');",
+    '  }',
+    '});'
+  ].join('\n');
+  const runtime = createCodexRuntime({
+    command: process.execPath,
+    args: ['-e', script],
+    models: MODELS,
+    defaultModel: 'gpt-5.1-codex'
+  });
+  try {
+    await withSession(runtime, spec(root), async (_session, _pid, events) => {
+      const diagnostic = await waitFor(events, '无法解析记录的诊断', (event) => event.kind === 'diagnostic');
+      assert.ok(diagnostic.kind === 'diagnostic');
+      // 固定文案，不含任何对端原文。
+      assert.equal(diagnostic.text, 'Codex 发来一条无法解析的记录，已忽略');
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

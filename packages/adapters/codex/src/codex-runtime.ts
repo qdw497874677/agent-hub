@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { AsyncQueue } from '@agent-hub/contract';
 import { createApprovalGate, invalid, unavailable } from '@agent-hub/domain';
 import type {
   AgentRuntime,
@@ -159,7 +160,7 @@ class CodexSession implements RuntimeSession {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly peer: JsonRpcPeer;
   private readonly gate: ReturnType<typeof createApprovalGate>;
-  private readonly queue = new EventQueue();
+  private readonly queue = new AsyncQueue<SessionEvent>();
   private readonly mapper = createCodexEventMapper();
   private readonly approvalBindings = new Map<string, ApprovalBinding>();
   private readonly exited: Promise<void>;
@@ -183,7 +184,7 @@ class CodexSession implements RuntimeSession {
     this.onAgentSessionRef = options.onAgentSessionRef;
     this.onOptions = options.onOptions;
     this.child = options.child;
-    this.child.stdout.setEncoding('utf8');
+    // stdout 不设编码：JSONL 切帧自己用流式 UTF-8 解码，跨 chunk 的多字节字符才不会被拆坏。
     this.child.stderr.setEncoding('utf8');
     this.child.stderr.on('data', (chunk: string) => {
       this.lastStderr = `${this.lastStderr}${chunk}`.slice(-2000);
@@ -199,7 +200,9 @@ class CodexSession implements RuntimeSession {
       input: this.child.stdout,
       output: this.child.stdin,
       onNotification: (method, params) => this.handleNotification(method, params),
-      onRequest: (method, params, respond, respondError) => this.handleServerRequest(method, params, respond, respondError)
+      onRequest: (method, params, respond, respondError) => this.handleServerRequest(method, params, respond, respondError),
+      onInvalidFrame: () =>
+        this.push({ kind: 'diagnostic', level: 'warn', text: 'Codex 发来一条无法解析的记录，已忽略' })
     });
     this.gate = createApprovalGate({
       push: (event) => this.push(event),
@@ -533,41 +536,6 @@ class CodexSession implements RuntimeSession {
 
   private withStderr(message: string): string {
     return this.lastStderr === '' ? message : `${message}：${this.lastStderr}`;
-  }
-}
-
-class EventQueue implements AsyncIterable<SessionEvent> {
-  private readonly values: SessionEvent[] = [];
-  private readonly waiters: ((result: IteratorResult<SessionEvent>) => void)[] = [];
-  private closed = false;
-
-  push(event: SessionEvent): void {
-    if (this.closed) return;
-    const waiter = this.waiters.shift();
-    if (waiter !== undefined) {
-      waiter({ value: event, done: false });
-      return;
-    }
-    this.values.push(event);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true });
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<SessionEvent> {
-    return {
-      next: (): Promise<IteratorResult<SessionEvent>> => {
-        const value = this.values.shift();
-        if (value !== undefined) return Promise.resolve({ value, done: false });
-        if (this.closed) return Promise.resolve({ value: undefined, done: true });
-        return new Promise<IteratorResult<SessionEvent>>((resolve) => {
-          this.waiters.push(resolve);
-        });
-      }
-    };
   }
 }
 

@@ -8,6 +8,7 @@ import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty } from './ad
 import { McpGuidePanel } from './mcp-guide.tsx';
 import { EXPIRY, SCOPES } from './tokens-dialog.tsx';
 import { maskToken, mcpGuide } from '../atoms/mcp-guide.ts';
+import { CopyButton, ManualCopy, useCopy } from '../atoms/copy.tsx';
 import { TOKEN_PRESETS, activityLabel, presetOf, testMcpConnection, type TokenPresetId } from '../atoms/token-presets.ts';
 
 /** 到期是将来的时间，相对时间（「刚刚」）只适合过去，这里写绝对日期。 */
@@ -64,8 +65,9 @@ function WritesSwitch() {
 
 function FreshToken({ token, onDone }: { token: string; onDone: () => void }) {
   const [shown, setShown] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [tested, setTested] = useState<{ ok: boolean; text: string } | null>(null);
+  // 剪贴板写不进去时也不绕开遮罩：先点「显示」，再手动选。
+  const copies = useCopy(token);
   const url = mcpGuide({ origin: window.location.origin }).url;
   return (
     <div data-testid="token-fresh" className="rounded-md border border-sage/50 bg-success-bg p-3">
@@ -74,9 +76,7 @@ function FreshToken({ token, onDone }: { token: string; onDone: () => void }) {
         {shown ? token : maskToken(token)}
       </code>
       <div className="mt-2 flex flex-wrap gap-2">
-        <button className={SMALL} onClick={() => void navigator.clipboard?.writeText(token).then(() => setCopied(true))}>
-          {copied ? '已复制' : '复制'}
-        </button>
+        <CopyButton action={copies} testId="token-copy" className={SMALL} />
         <button data-testid="token-reveal" className={SMALL} onClick={() => setShown((v) => !v)}>
           {shown ? '隐藏' : '显示'}
         </button>
@@ -96,6 +96,21 @@ function FreshToken({ token, onDone }: { token: string; onDone: () => void }) {
           我已保存
         </button>
       </div>
+      {copies.manual ? (
+        shown ? (
+          <ManualCopy
+            text={token}
+            attempt={copies.attempts}
+            testId="token-manual"
+            label="没法写入剪贴板，下面是同一段令牌；已选中，可直接复制"
+            className="mt-2"
+          />
+        ) : (
+          <p data-testid="token-manual-masked" className="mt-2 text-meta text-tertiary">
+            没法写入剪贴板；令牌还遮着，点「显示」后再手动复制。
+          </p>
+        )
+      ) : null}
       {tested ? (
         <p data-testid="token-test-result" className={`mt-2 text-meta ${tested.ok ? 'text-sage' : 'text-rust'}`}>
           {tested.text}

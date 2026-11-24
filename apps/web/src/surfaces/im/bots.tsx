@@ -10,6 +10,7 @@ import { BotConnectors } from './bot-connectors.tsx';
 import { ModelPicker } from '../../atoms/model-picker.tsx';
 import { modelsFor } from '../../shell/dialogs.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
+import { CopyButton, selectElementText, useCopy } from '../../atoms/copy.tsx';
 import { BOT_MODEL_DEFAULT_ITEM, BOT_MODEL_DEFAULT_LABEL, botModelChoices, offListModel } from './bot-models.ts';
 import { BOT_TRIGGERS_EMPTY, latestRun, nextRunView, runView, sourceText, triggerStateView } from './bot-triggers.ts';
 import { BOT_CREDENTIAL_ACTIVE_NOTE, botCredentialBody, botCredentialRevokeConfirm, botCredentialView } from './bot-credential.ts';
@@ -120,38 +121,23 @@ const CRED_BTN =
 
 /** 明文只露一次的弹窗：遮罩 / Esc / 「我已保存」都算关，关掉就把 bot 重新拉一遍。 */
 function CredentialSecret({ secret, onClose }: { secret: string; onClose: () => void }) {
-  const [copied, setCopied] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
   const code = useRef<HTMLElement | null>(null);
-  // navigator.clipboard 只在安全上下文里有（tailnet 上走 http 时没有）；写不进去就选中文本，让人自己按快捷键。
-  const copy = async () => {
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(secret);
-        setCopied(true);
-        return;
-      }
-    } catch {
-      // 落到下面：退回选中文本
+  // 剪贴板写不进去（tailnet 上走普通 HTTP 时 navigator.clipboard 直接没有）就选中页面上这段，
+  // 让人自己按快捷键；不装作复制成功。
+  const copies = useCopy(secret, {
+    onManual: () => {
+      selectElementText(code.current);
+      setHint('浏览器不让直接写剪贴板，已经帮你选中了：按 Ctrl+C（Mac 上 ⌘C）复制。');
     }
-    const node = code.current;
-    if (!node) return;
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    setHint('浏览器不让直接写剪贴板，已经帮你选中了：按 Ctrl+C（Mac 上 ⌘C）复制。');
-  };
+  });
   return (
     <DialogShell title="凭据" onClose={onClose} testId="bot-credential-dialog">
       <p className="text-body text-primary">凭据只显示这一次，现在复制保存好</p>
       <p className="mt-1 text-meta text-rust">关掉就再也看不到了；没存下只能重新生成一条。</p>
       <code data-testid="bot-credential-secret" ref={code} className="mt-3 block break-all rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-[12px] text-primary select-all">{secret}</code>
       <div className="mt-3 flex flex-wrap gap-2">
-        <button type="button" data-testid="bot-credential-copy" className={CRED_BTN} onClick={() => void copy()}>
-          {copied ? '已复制' : '复制'}
-        </button>
+        <CopyButton action={copies} testId="bot-credential-copy" className={CRED_BTN} />
         <button type="button" className={CRED_BTN} onClick={onClose}>我已保存</button>
       </div>
       {hint ? <p className="mt-2 text-meta text-tertiary">{hint}</p> : null}

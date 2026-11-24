@@ -1,4 +1,4 @@
-import { execFailureReason, execProbe } from '@agent-hub/adapter-acp';
+import { execFailureReason, execProbe } from '@agent-hub/node-kit';
 import type { HarnessProbe, HarnessReadiness } from '@agent-hub/domain';
 
 /** `grok models` 的输出：首行说登没登录，下面 `* id (default)` / `- id` 一行一个模型。 */

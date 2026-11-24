@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { mcpGuide, type McpClientKind } from '../atoms/mcp-guide.ts';
+import { CopyButton, ManualCopy, useCopy } from '../atoms/copy.tsx';
 
 const BTN = 'rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-strong hover:text-primary';
 
@@ -9,9 +10,9 @@ const BTN = 'rounded-sm border border-hair px-2 py-1 text-meta text-secondary ho
  */
 export function McpGuidePanel() {
   const [tab, setTab] = useState<McpClientKind>('claude');
-  const [copied, setCopied] = useState(false);
   const guide = mcpGuide({ origin: window.location.origin });
   const snippet = guide.snippets[tab];
+  const copies = useCopy(snippet);
   return (
     <section data-testid="mcp-guide" className="mt-4 rounded-sm border border-hair bg-card p-3">
       <p className="text-meta text-primary">外部智能体接入 MCP</p>
@@ -31,10 +32,7 @@ export function McpGuidePanel() {
             data-testid="mcp-guide-tab"
             data-tab={item.id}
             className={`rounded-sm border px-2 py-1 text-meta ${tab === item.id ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary hover:text-primary'}`}
-            onClick={() => {
-              setTab(item.id);
-              setCopied(false);
-            }}
+            onClick={() => setTab(item.id)}
           >
             {item.label}
           </button>
@@ -48,15 +46,7 @@ export function McpGuidePanel() {
         {snippet}
       </pre>
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button
-          data-testid="mcp-guide-copy"
-          className={BTN}
-          onClick={() => {
-            void navigator.clipboard?.writeText(snippet).then(() => setCopied(true));
-          }}
-        >
-          {copied ? '已复制' : '复制这段'}
-        </button>
+        <CopyButton action={copies} label="复制这段" testId="mcp-guide-copy" className={BTN} />
         <a
           data-testid="skill-download"
           className={BTN}
@@ -70,6 +60,9 @@ export function McpGuidePanel() {
         </span>
         {tab === 'prompt' && <span className="text-[11px] text-tertiary">把提示词贴到外部 agent 的系统提示或 AGENTS.md 里。</span>}
       </div>
+      {copies.manual ? (
+        <ManualCopy text={snippet} attempt={copies.attempts} testId="mcp-guide-manual" className="mt-2" />
+      ) : null}
     </section>
   );
 }

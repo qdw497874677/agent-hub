@@ -4,6 +4,7 @@ import { previewsApi, type PreviewLinkDto } from '../shell/api.ts';
 import { sessionKeys } from '../shell/query-keys.ts';
 import { InlineSheet, SMALL_BUTTON } from '../shell/dialog-shell.tsx';
 import { useNarrow } from '../shell/device.ts';
+import { copyText } from './clipboard.ts';
 import {
   PREVIEW_LABEL_LIMIT,
   previewAge,
@@ -190,31 +191,25 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
   const copy = async (link: PreviewLinkDto) => {
     const url = previewUrlFor(window.location, link.hubPort);
     setCopiedId(null);
-    try {
-      const write = navigator.clipboard?.writeText;
-      if (!write) throw new Error('no clipboard');
-      await write.call(navigator.clipboard, url);
+    if ((await copyText(url)) === 'copied') {
       setFallbackId(null);
       setCopiedId(link.id);
-    } catch {
-      setFallbackId(link.id);
+      return;
     }
+    setFallbackId(link.id);
   };
 
   const copyShare = async (url: string) => {
     setShareCopied(false);
-    try {
-      const write = navigator.clipboard?.writeText;
-      if (!write) throw new Error('no clipboard');
-      await write.call(navigator.clipboard, url);
+    if ((await copyText(url)) === 'copied') {
       setShareFallback(false);
       setShareCopied(true);
-    } catch {
-      // 复制不了就把输入框里的链接选中，至少能手动复制（iOS 有时就是不给你 clipboard）。
-      setShareFallback(true);
-      shareInputRef.current?.focus();
-      shareInputRef.current?.select();
+      return;
     }
+    // 复制不了就把输入框里的链接选中，至少能手动复制（iOS 有时就是不给你 clipboard）。
+    setShareFallback(true);
+    shareInputRef.current?.focus();
+    shareInputRef.current?.select();
   };
 
   const closeShare = (linkId: string) => {

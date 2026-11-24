@@ -1,4 +1,4 @@
-import { execFailureReason, execProbe } from '@agent-hub/adapter-acp';
+import { execFailureReason, execProbe } from '@agent-hub/node-kit';
 import type { HarnessProbe, HarnessReadiness } from '@agent-hub/domain';
 
 /** `hermes --version` 能跑就算装好了；模型来自 hub 提供商，这里不报模型。 */

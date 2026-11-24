@@ -1,7 +1,7 @@
-import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HarnessProbe, HarnessReadiness } from '@agent-hub/domain';
+import { execProbe } from '@agent-hub/node-kit';
 import {
   CODEX_FALLBACK_DEFAULT_MODEL,
   CODEX_FALLBACK_MODELS,
@@ -16,12 +16,6 @@ export interface CodexReadinessOptions {
   readonly defaultModel?: string;
 }
 
-type ProbeResult =
-  | { readonly kind: 'ok'; readonly stdout: string }
-  | { readonly kind: 'missing' }
-  | { readonly kind: 'timeout' }
-  | { readonly kind: 'failed'; readonly code: number | null };
-
 /**
  * Codex 的就绪条件：`codex --version` 能跑，且至少有 `OPENAI_API_KEY` 或
  * `~/.codex/auth.json`（`codex login` 的产物）。真实模型联调留给用户，这里只判「装没装、登没登」。
@@ -33,7 +27,7 @@ export function codexReadiness(command = 'codex', options: CodexReadinessOptions
     agentId: 'codex',
     async probe(): Promise<HarnessProbe> {
       const timeoutMs = options.timeoutMs ?? 15_000;
-      const version = await probe(command, ['--version'], timeoutMs);
+      const version = await execProbe(command, ['--version'], timeoutMs);
       if (version.kind === 'missing') {
         return unavailable('没装 codex（mise use -g codex@0.168.0）', '装好后重开 worker：mise use -g codex@0.168.0');
       }
@@ -70,27 +64,6 @@ function unavailable(reason: string, hint: string): HarnessProbe {
     models: [],
     defaultModel: ''
   };
-}
-
-function probe(command: string, args: readonly string[], timeoutMs: number): Promise<ProbeResult> {
-  return new Promise<ProbeResult>((resolve) => {
-    execFile(command, [...args], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
-      if (error === null) {
-        resolve({ kind: 'ok', stdout });
-        return;
-      }
-      const record = error as unknown as { readonly code?: unknown; readonly killed?: unknown };
-      if (record.code === 'ENOENT') {
-        resolve({ kind: 'missing' });
-        return;
-      }
-      if (record.code === 'ETIMEDOUT' || record.killed === true) {
-        resolve({ kind: 'timeout' });
-        return;
-      }
-      resolve({ kind: 'failed', code: typeof record.code === 'number' ? record.code : null });
-    });
-  });
 }
 
 export { CODEX_FALLBACK_MODELS };

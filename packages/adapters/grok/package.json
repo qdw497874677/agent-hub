@@ -9,6 +9,7 @@
   "dependencies": {
     "@agent-hub/adapter-acp": "*",
     "@agent-hub/contract": "*",
-    "@agent-hub/domain": "*"
+    "@agent-hub/domain": "*",
+    "@agent-hub/node-kit": "*"
   }
 }
