@@ -11,7 +11,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { createAssetReader } from '@agent-hub/adapter-assets';
-import { createSecretVault, createSqliteAgentObserve, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqliteWorkObserve, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createSecretVault, createSqliteAgentObserve, createSqliteApiTokens, createSqliteComponents, createSqliteMessageObserve, createSqliteProviders, createSqliteWorkObserve, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, ServiceGateway, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
 import { authenticateWorker, withToolAccess,
   createBotUseCase,
@@ -117,6 +117,7 @@ import { createApp } from './http.ts';
 import { setupProjectGitProbe } from './project-git-probe-activation.ts';
 import { createConnectorObserveReader } from './observe-connector.ts';
 import { createAgentObserveReader } from './observe-agent.ts';
+import { createMessageObserveReader } from './observe-message.ts';
 import { createWorkObserveReaders } from './observe-work.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createTurnFinisher, finishFromJournalTail, type TurnOutcome } from './turn-finish.ts';
@@ -1114,6 +1115,10 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
       ...createWorkObserveReaders({
         projects: deps.projects, sessions: deps.sessions, tasks: deps.tasks,
         records: createSqliteWorkObserve(store.db), policy: deps.access
+      }),
+      createMessageObserveReader({
+        projects: deps.projects, sessions: deps.sessions, tasks: deps.tasks,
+        records: createSqliteMessageObserve(store.db), policy: deps.access
       })
     ] : []
   },

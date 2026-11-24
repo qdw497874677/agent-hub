@@ -25,13 +25,14 @@ const spanText = (ms: number) => {
   return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
 };
 
-const SOURCE_LABEL: Record<string, string> = { connector: '连接器', agent: 'Agent 回合', dispatch: '调度', delegation: '派工' };
+const SOURCE_LABEL: Record<string, string> = { connector: '连接器', agent: 'Agent 回合', dispatch: '调度', delegation: '派工', message: '会话通信' };
 const SOURCE_OPTIONS: readonly { readonly value: string; readonly label: string }[] = [
   { value: '', label: '全部' },
   { value: 'agent', label: 'Agent 回合' },
   { value: 'connector', label: '连接器' },
   { value: 'dispatch', label: '调度' },
-  { value: 'delegation', label: '派工' }
+  { value: 'delegation', label: '派工' },
+  { value: 'message', label: '会话通信' }
 ];
 
 /** 原生状态只做兜底翻译：适配器给了中文 stateLabel 就用它的。 */
@@ -100,6 +101,7 @@ const emptyText = (source: string) => {
   if (source === 'connector') return '没有连接器记录。';
   if (source === 'dispatch') return '没有调度记录。';
   if (source === 'delegation') return '没有派工记录。';
+  if (source === 'message') return '没有会话通信记录。';
   return '没有记录。';
 };
 

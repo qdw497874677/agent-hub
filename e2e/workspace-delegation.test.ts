@@ -1249,6 +1249,17 @@ test('项目会话 MCP 阶段 2：同项目交接只进收件箱 → 候选通�
     body: 'handoff_body_v1',
     candidate: { repoId: w.repoId, sha: candidateSha }
   }]);
+  const communication = await json<{
+    trace: { id: string; nodes: readonly { state: string; stateLabel: string; attrs: readonly { key: string; value: string }[] }[] };
+  }>(await request(ctx, `/api/observe/message/${encodeURIComponent(handoff.messageId)}`), '读取交接的运行记录');
+  assert.equal(communication.trace.id, `message:${handoff.messageId}`);
+  assert.equal(communication.trace.nodes.length, 1, '没有持久关联的 Agent 回合或候选提交不应挂到通信记录上');
+  assert.equal(communication.trace.nodes[0]?.state, 'done');
+  assert.equal(communication.trace.nodes[0]?.stateLabel, '消息流程已结束', '只进收件箱不等于接收会话已处理');
+  assert.deepEqual(communication.trace.nodes[0]?.attrs.find((item) => item.key === '来源'), { key: '来源', value: '项目交接' });
+  const serializedCommunication = JSON.stringify(communication);
+  assert.ok(!serializedCommunication.includes('handoff_body_v1'), '运行记录不含正文');
+  assert.ok(!serializedCommunication.includes(candidateSha), '运行记录不含候选附件内容');
   assert.equal(await turnCount(ctx, receiver.id), receiverTurnsBeforeHandoff, 'wake=false 的交接不应唤醒接收会话');
   assert.equal(await git(receiverPath, 'for-each-ref', '--format=%(refname)', 'refs/agent-hub/imports'), '', '候选通知本身绝不能触发导入');
   assert.deepEqual(await snapshot(receiverPath), receiverBefore, '候选通知本身不应改变接收仓库');
