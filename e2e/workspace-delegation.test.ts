@@ -716,6 +716,12 @@ test('MCP 提案：workspace.delegate 只产生 pending，确认前没有 worktr
   assert.ok(pending, `应有 mcp-1 提案；实际：${listed.delegations.map((d) => d.requestKey).join(',')}`);
   assert.equal(pending.state, 'pending', 'MCP 提案应停在 pending');
   assert.equal(pending.canConfirm, true, 'pending 提案应可确认');
+  type WorkTrace = { trace: { id: string; nodes: { state: string | null; attrs: { key: string; value: string }[] }[] } };
+  const observed = () => request(ctx, `/api/observe/delegation/${pending.id}`).then((response) => json<WorkTrace>(response, '读取派工运行记录'));
+  const pendingTrace = (await observed()).trace;
+  assert.equal(pendingTrace.id, `delegation:${pending.id}`);
+  assert.ok(pendingTrace.nodes.some((node) => node.state === 'pending'));
+  assert.ok(!pendingTrace.nodes.some((node) => node.attrs.some((attr) => attr.key === '会话' && attr.value === pending.executionSessionId)), '只预留 ID 时不展示执行会话链接');
   // 提案记录里带的是**规划**：确认前 worktree 目录、本地/远端分支、执行会话都不存在。
   assert.ok(pending.worktreePath, 'pending 应带上规划的工作树路径');
   assert.equal(existsSync(pending.worktreePath!), false, '确认前 worktree 目录不应存在');
@@ -746,6 +752,15 @@ test('MCP 提案：workspace.delegate 只产生 pending，确认前没有 worktr
   assert.equal(prepared.worktreePath, pending.worktreePath, '确认应沿用提案里冻结的路径');
   assert.equal(prepared.branch, pending.branch, '确认应沿用提案里冻结的分支');
   assert.ok(prepared.executionSessionId, '确认后应有执行会话');
+  const preparedTrace = (await observed()).trace;
+  assert.ok(preparedTrace.nodes.some((node) => node.state === 'prepared'));
+  assert.ok(!preparedTrace.nodes.some((node) => node.state === 'done'), '派工准备好不等于回合结束');
+  assert.ok(preparedTrace.nodes.some((node) => node.attrs.some((attr) => attr.key === '会话' && attr.value === prepared.executionSessionId)), '只展示准确存在且可读的执行会话');
+  const observedList = await json<{ items: { id: string; nativeState: string }[] }>(
+    await request(ctx, `/api/observe?source=delegation&projectId=${w.projectId}`), '列派工运行记录'
+  );
+  assert.ok(observedList.items.some((item) => item.id === preparedTrace.id && item.nativeState === 'prepared'));
+  assert.equal((await request(ctx, `/api/observe/delegation/${pending.id}`, { anonymous: true })).status, 401);
   assert.match(String(prepared.branch), /^delegation\/[0-9a-f]{24}$/);
   assert.equal(existsSync(join(String(prepared.worktreePath), '.git')), true, '确认后 worktree 应真实存在');
   assert.equal((await git(w.source, 'rev-parse', '--verify', `refs/heads/${prepared.branch}`)).trim(), prepared.baseSha, '本地分支应从 baseSha 起');

@@ -56,7 +56,7 @@ test('默认把所有来源放在一起，状态说中文且不重复原生英�
   await page.route(LIST, (route) => route.fulfill({ json: listPayload([agentItem, connectorItem]) }));
   await openObserve(page);
 
-  await expect(page.getByTestId('observe-source').locator('option')).toHaveText(['全部', 'Agent 回合', '连接器']);
+  await expect(page.getByTestId('observe-source').locator('option')).toHaveText(['全部', 'Agent 回合', '连接器', '调度', '派工']);
   await expect(page.getByTestId('observe-source')).toHaveValue('');
   await expect(page.getByTestId('observe-row')).toHaveCount(2);
 
@@ -70,6 +70,58 @@ test('默认把所有来源放在一起，状态说中文且不重复原生英�
 
   await expect(page.getByTestId('observe-mixed')).toContainText('Agent 回合 1');
   await expect(page.getByTestId('observe-mixed')).toContainText('连接器 1');
+});
+
+test('调度与派工可按来源筛选，详情保留服务端的准备状态', async ({ page }) => {
+  const dispatch = item({ id: 'dispatch:d-1', source: 'dispatch', title: '一次调度', nativeState: 'queued', nativeStateLabel: '排队中' });
+  const delegation = item({ id: 'delegation:w-1', source: 'delegation', title: '一次派工', nativeState: 'prepared', nativeStateLabel: '工作区已准备，尚未运行' });
+  const records = [dispatch, delegation];
+  const requested: string[] = [];
+  await page.route(LIST, (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    const source = params.get('source');
+    requested.push(source ?? '');
+    return route.fulfill({ json: listPayload(params.has('needsLook') ? [] : records.filter((record) => !source || record.source === source)) });
+  });
+  await page.route(/\/api\/observe\/(dispatch|delegation)\/[^/?]+/, (route) => {
+    const source = new URL(route.request().url()).pathname.split('/')[3] ?? '';
+    const record = records.find((entry) => entry.source === source)!;
+    const entry = node({ id: 'root', name: record.title, kind: source, state: record.nativeState, stateLabel: record.nativeStateLabel });
+    return route.fulfill({ json: {
+      enabled: true,
+      trace: { id: record.id, source, headId: entry.id, title: record.title, projectId: null, externalUrl: null, nodes: [entry] },
+      tree: { roots: [{ node: entry, children: [], links: [] }], missingParent: [], unlinked: [], unrecorded: [] }
+    } });
+  });
+  await openObserve(page);
+  await expect(page.getByTestId('observe-mixed')).toContainText('调度 1');
+  await expect(page.getByTestId('observe-mixed')).toContainText('派工 1');
+  for (const [source, label, title, state] of [
+    ['dispatch', '调度', '一次调度', '排队中'],
+    ['delegation', '派工', '一次派工', '工作区已准备，尚未运行']
+  ]) {
+    await page.getByTestId('observe-source').selectOption(source!);
+    const row = page.getByTestId('observe-row');
+    await expect(row).toHaveCount(1);
+    await expect(row).toHaveAttribute('data-source', source!);
+    await expect(row).toContainText(label!);
+    await expect(row).toContainText(state!);
+    await row.getByRole('link', { name: '打开树' }).click();
+    await expect(page).toHaveURL(new RegExp(`#/observe/${source}/`));
+    await expect(page.getByTestId('observe-detail-source')).toHaveText(`${label} · 只读`);
+    await expect(page.getByTestId('observe-tree')).toContainText(state!);
+    await expect(page.getByTestId('observe-node-detail')).toContainText(title!);
+    await expect(page.getByTestId('observe-node-detail')).toContainText(state!);
+    if (source === 'delegation') await expect(page.getByTestId('observe-detail')).not.toContainText('完成');
+    await page.goto('/#/observe');
+    await page.getByTestId('observe-source').selectOption(source!);
+    await page.getByTestId('observe-needs-look').check();
+    await expect(page.getByTestId('observe-empty')).toHaveText(`没有${label}记录。`);
+    await expect(page.getByTestId('observe-empty').getByRole('link')).toHaveCount(0);
+    await page.getByTestId('observe-needs-look').uncheck();
+  }
+  expect(requested).toContain('dispatch');
+  expect(requested).toContain('delegation');
 });
 
 test('显式选 Agent 回合时把 source 传给接口，并只画 Agent 记录', async ({ page }) => {

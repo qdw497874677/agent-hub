@@ -69,6 +69,20 @@ test('可观测：列表和树（测试数据，1280×800）', async ({ page, ba
   await trigger.click();
   await expect(page.getByText('由这次唤醒建下')).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/observe-impl-tree-1280.png` });
+
+  const dispatch = await page.request.get(`/api/observe/dispatch/e2e-d-${tag}`);
+  expect(dispatch.ok(), await dispatch.text()).toBe(true);
+  const observed = (await dispatch.json()) as { trace: { nodes: { state: string; startedAt: number | null; attrs: { key: string; value: string }[] }[] } };
+  expect(observed.trace.nodes[0]?.state).toBe('failed');
+  expect(observed.trace.nodes[0]?.startedAt).toBeNull();
+  expect(observed.trace.nodes[0]?.attrs.find(({ key }) => key === '通知')?.value).toContain('不代表收到');
+  expect(JSON.stringify(observed)).not.toContain('测试挂了');
+  await page.goto('/#/observe');
+  await page.getByTestId('observe-source').selectOption('dispatch');
+  const row = page.getByTestId('observe-row').filter({ hasText: '任务调度' });
+  await expect(row).toHaveAttribute('data-state', 'failed');
+  await row.getByRole('link', { name: '打开树' }).click();
+  await expect(page.getByTestId('observe-node-detail')).toContainText('不代表收到');
 });
 
 test('未登录调用可观测接口被拒绝，不是空列表', async ({ browser, baseURL }) => {

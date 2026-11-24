@@ -10,7 +10,7 @@ import { AppShell, PageBody, PageHeader } from './page-shell.tsx';
  * 没有批准、取消、暂停。加载完成之前不说「还没有」。
  *
  * 来源由适配器决定，界面不替它们编名字。默认把所有已注册的来源放在一起；
- * 显式选一个来源时再把 source 传给接口。Agent 回合是第二个本地适配器（source = agent）。
+ * 显式选一个来源时再把 source 传给接口。
  */
 const time = (ms: number | null) => {
   if (ms === null) return '—';
@@ -25,11 +25,13 @@ const spanText = (ms: number) => {
   return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
 };
 
-const SOURCE_LABEL: Record<string, string> = { connector: '连接器', agent: 'Agent 回合' };
+const SOURCE_LABEL: Record<string, string> = { connector: '连接器', agent: 'Agent 回合', dispatch: '调度', delegation: '派工' };
 const SOURCE_OPTIONS: readonly { readonly value: string; readonly label: string }[] = [
   { value: '', label: '全部' },
   { value: 'agent', label: 'Agent 回合' },
-  { value: 'connector', label: '连接器' }
+  { value: 'connector', label: '连接器' },
+  { value: 'dispatch', label: '调度' },
+  { value: 'delegation', label: '派工' }
 ];
 
 /** 原生状态只做兜底翻译：适配器给了中文 stateLabel 就用它的。 */
@@ -63,6 +65,7 @@ const KIND_LABEL: Record<string, string> = {
   task_request: '任务请求',
   task: '任务',
   dispatch: '调度',
+  delegation: '派工',
   session: '会话',
   delivery: '送达',
   sink: '回写',
@@ -95,6 +98,8 @@ const listStateText = (item: { nativeState: string; nativeStateLabel: string }) 
 const emptyText = (source: string) => {
   if (source === 'agent') return '没有 Agent 回合记录。';
   if (source === 'connector') return '没有连接器记录。';
+  if (source === 'dispatch') return '没有调度记录。';
+  if (source === 'delegation') return '没有派工记录。';
   return '没有记录。';
 };
 

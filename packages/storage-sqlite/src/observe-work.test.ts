@@ -1,0 +1,58 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { createSqliteWorkObserve } from './observe-work.ts';
+import { createSqliteTaskDispatch } from './task-dispatch.ts';
+import { createSqliteWorkspaceDelegations } from './workspace-delegation.ts';
+
+test('owner, current task/project and time scope precede deterministic 501 bound; only safe columns leave SQL', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, deleted_at INTEGER);
+      CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id TEXT);
+      CREATE TABLE task_dispatch (id TEXT, account_id TEXT, project_id TEXT, task_id TEXT, session_id TEXT, state TEXT, created_at INTEGER, notified INTEGER, goal TEXT, result TEXT);
+      CREATE TABLE workspace_delegation (id TEXT, account_id TEXT, project_id TEXT, task_id TEXT, execution_session_id TEXT, state TEXT, created_at INTEGER, instructions TEXT);
+      INSERT INTO projects VALUES ('p',NULL),('other',NULL),('deleted',1);
+      INSERT INTO tasks VALUES ('t','p'),('o','other'),('gone','deleted');`);
+    const insert = db.prepare('INSERT INTO task_dispatch VALUES (?,?,?,?,?,?,?,?,?,?)');
+    for (let i = 0; i < 505; i++) insert.run(`d${String(i).padStart(3, '0')}`, 'u', 'p', 't', null, 'queued', 100, 0, 'secret', 'secret');
+    insert.run('other-owner', 'v', 'p', 't', null, 'running', 999, 1, 'secret', 'secret');
+    insert.run('mismatch', 'u', 'p', 'o', null, 'running', 999, 1, 'secret', 'secret');
+    insert.run('deleted', 'u', 'deleted', 'gone', null, 'running', 999, 1, 'secret', 'secret');
+    insert.run('bad-state', 'u', 'p', 't', null, 'secret', 999, 1, 'secret', 'secret');
+    db.exec("INSERT INTO workspace_delegation VALUES ('w','u','p','t','reserved','uncertain',101,'secret')");
+    const records = createSqliteWorkObserve(db);
+    const rows = records.list('dispatch', { accountId: 'u', projectIds: ['p'], since: 100, limit: 10000 });
+    assert.equal(rows.length, 501);
+    assert.equal(rows[0]?.id, 'd504');
+    assert.equal(rows[500]?.id, 'd004');
+    assert.equal(records.byId('dispatch', 'other-owner', 'u'), null);
+    assert.equal(records.byId('dispatch', 'mismatch', 'u'), null);
+    assert.equal(records.byId('dispatch', 'deleted', 'u'), null);
+    assert.equal(records.list('dispatch', { accountId: 'u', projectIds: ['other'], since: 0, limit: 501 }).length, 0);
+    assert.equal(records.list('dispatch', { accountId: 'u', projectIds: ['p'], since: 101, limit: 501 }).length, 0);
+    assert.equal(records.byId('delegation', 'w', 'u')?.state, 'uncertain');
+    assert.equal(JSON.stringify([rows, records.byId('delegation', 'w', 'u')]).includes('secret'), false);
+  } finally { db.close(); }
+});
+
+test('provisioned stores admit ordered owner/time indexes without a temporary sort', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('CREATE TABLE projects (id TEXT PRIMARY KEY, deleted_at INTEGER); CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id TEXT NOT NULL)');
+    createSqliteTaskDispatch(db);
+    createSqliteWorkspaceDelegations(db);
+    createSqliteWorkObserve(db);
+    createSqliteWorkObserve(db);
+    for (const [table, states] of [['task_dispatch', "'queued','running','done','failed','cancelled'"], ['workspace_delegation', "'pending','preparing','prepared','failed','uncertain','cancelled'"]] as const) {
+      const plan = db.prepare(`EXPLAIN QUERY PLAN SELECT w.id FROM ${table} w
+        JOIN tasks t ON t.id = w.task_id AND t.project_id = w.project_id
+        JOIN projects p ON p.id = w.project_id AND p.deleted_at IS NULL
+        WHERE w.account_id = ? AND w.state IN (${states}) AND w.created_at >= ?
+          AND w.project_id IN (SELECT value FROM json_each(?))
+        ORDER BY w.created_at DESC, w.id DESC LIMIT ?`).all('u', 0, '["p"]', 501) as { detail: string }[];
+      assert.ok(plan.some((entry) => entry.detail.includes(`${table}_observe_owner_time`)));
+      assert.ok(!plan.some((entry) => entry.detail.includes('TEMP B-TREE')));
+    }
+  } finally { db.close(); }
+});
