@@ -13681,6 +13681,15 @@
                                       "name"
                                     ]
                                   },
+                                  "promptActor": {
+                                    "type": "string",
+                                    "enum": [
+                                      "account",
+                                      "token",
+                                      "system",
+                                      "unknown"
+                                    ]
+                                  },
                                   "handoff": {
                                     "type": "object",
                                     "properties": {

@@ -140,7 +140,8 @@ export async function enrollWorker(
 }
 
 export type WorkerAuth =
-  | { readonly ok: true; readonly via: 'credential' | 'shared'; readonly capabilities?: readonly WorkerCapability[] }
+  | { readonly ok: true; readonly via: 'credential'; readonly capabilities?: readonly WorkerCapability[]; readonly enrollment: { readonly workerId: string; readonly enrolledBy: string; readonly createdAt: number } }
+  | { readonly ok: true; readonly via: 'shared'; readonly capabilities?: readonly WorkerCapability[] }
   | { readonly ok: false; readonly reason: string };
 
 /**
@@ -176,7 +177,7 @@ export async function authenticateWorker(
       if (!(await deps.enrollment.completeRotation(found.workerId, hash, now))) return { ok: false, reason: '机器凭据无效' };
     }
     await deps.enrollment.recordConnection(found.workerId, { at: deps.now(), address: hello.address ?? null, userAgent: hello.userAgent ?? null });
-    return { ok: true, via: 'credential', capabilities: normalizeCapabilities(found.capabilities ?? null) };
+    return { ok: true, via: 'credential', capabilities: normalizeCapabilities(found.capabilities ?? null), enrollment: { workerId: found.workerId, enrolledBy: found.enrolledBy, createdAt: found.createdAt } };
   }
   const bound = await deps.enrollment.credentialFor(hello.workerId);
   if (bound) return { ok: false, reason: bound.revokedAt !== null ? '这台机器已被吊销' : '这台机器需要用它的专属凭据连接' };

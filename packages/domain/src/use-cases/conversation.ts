@@ -2,7 +2,7 @@ import type { HandoffStats } from '../handoff.ts';
 import { locationOf } from './workspaces.ts';
 import { routeOf } from './machine-dirs.ts';
 import { markInterrupted, type Session } from '../session.ts';
-import type { JournalEntry, SessionEvent } from '../event.ts';
+import type { JournalEntry, PromptActor, SessionEvent } from '../event.ts';
 import type { RuntimeOption } from '../option.ts';
 import type { SessionId } from '../ids.ts';
 import { asSessionId } from '../ids.ts';
@@ -35,6 +35,8 @@ export interface PromptCommand {
   readonly briefing?: boolean;
   /** 发这句话的人（登录态下才有）。 */
   readonly author?: { readonly id: string; readonly name: string; readonly via?: string };
+  /** 可信 Hub 入口认证所得类别，不得从请求正文或 author 推导。 */
+  readonly promptActor?: PromptActor;
   /** 交接简报的统计（ADR 0029），存在 prompt 事件上给界面画提示条。 */
   readonly handoff?: HandoffStats;
   /** 客户端生成的幂等键：同一 (sessionId, clientMessageId) 重试只会落一条 prompt。 */
@@ -198,6 +200,7 @@ async function promptSessionAdmitted(
         text: command.text,
         ...(stored.length > 0 ? { attachments: stored } : {}),
         ...(command.author ? { author: { id: command.author.id, name: command.author.name, ...(command.author.via ? { via: command.author.via } : {}) } } : {}),
+        ...(command.promptActor === 'account' || command.promptActor === 'token' || command.promptActor === 'system' || command.promptActor === 'unknown' ? { promptActor: command.promptActor } : {}),
         ...(command.handoff ? { handoff: command.handoff } : {}),
         ...(command.clientMessageId !== undefined ? { clientMessageId: command.clientMessageId } : {})
       } })
@@ -406,9 +409,11 @@ export function ingestWorkerEvent(
 
     // 注意：这里不调用 finishSending。ended 落盘后先让 hooks 跑，显式 releaseAfterTurn
     // 才精确收掉 sending 并放行下一句；否则 1s 泵可能在钩子完成前就送出 B。
+    // Worker 事件不可信：不能让它写入 Hub 的发起类别。
+    const safeEvent = event.kind === 'prompt' ? (({ promptActor: _ignored, ...rest }) => rest)(event) : event;
     return recordEvent(deps, {
       sessionId,
-      event: await withBytes(deps, sessionId, event)
+      event: await withBytes(deps, sessionId, safeEvent)
     });
   });
 }

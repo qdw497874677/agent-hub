@@ -81,6 +81,7 @@ const query = (over: Partial<{ since: number; source: string | null; projectId: 
 interface WorldSeed {
   readonly records?: readonly AgentTurnRecord[];
   readonly ends?: Readonly<Record<string, AgentTurnEnd>>;
+  readonly actors?: Readonly<Record<string, unknown>>;
   readonly projects?: readonly Project[];
   readonly sessions?: readonly Session[];
   readonly tasks?: readonly { readonly id: string; readonly projectId: string }[];
@@ -123,7 +124,8 @@ function world(seed: WorldSeed = {}) {
       ended: async (sessionId, deliveryId, afterSeq) => {
         calls.ended.push({ sessionId, deliveryId, afterSeq });
         return ends[deliveryId] ?? null;
-      }
+      },
+      promptActor: async (sessionId, seq) => (seed.actors?.[`${sessionId}:${seq}`] ?? null) as never
     },
     policy
   });
@@ -133,6 +135,18 @@ function world(seed: WorldSeed = {}) {
 const endNode = (trace: ObserveTrace | null) => trace?.nodes.find((node) => node.id.startsWith('end:'));
 const sinkNode = (trace: ObserveTrace | null) => trace?.nodes.find((node) => node.id.startsWith('sink:'));
 const headNode = (trace: ObserveTrace | null) => trace?.nodes.find((node) => node.id.startsWith('turn:'));
+
+test('发起类别只显示受限标签；损坏和旧记录不暴露任何原始值', async () => {
+  const { reader } = world({
+    records: [record({ id: 'a', seq: 1 }), record({ id: 'b', seq: 2 }), record({ id: 'c', seq: 3 }), record({ id: 'd', seq: 4 }), record({ id: 'e', seq: 5 }), record({ id: 'legacy', seq: 6 }), record({ id: 'held', seq: 0 })],
+    actors: { 's1:1': 'account', 's1:2': 'token', 's1:3': 'system', 's1:4': 'unknown', 's1:5': 'secret-token-name', 's1:0': 'account' }
+  });
+  for (const [id, expected] of [['a', '账号'], ['b', '令牌'], ['c', '系统'], ['d', '未知'], ['e', '未记录'], ['legacy', '未记录'], ['held', '未记录']]) {
+    const trace = await reader.get(id!, subject());
+    assert.equal(headNode(trace)?.attrs.find((attr) => attr.key === '发起类别')?.value, expected);
+    assert.doesNotMatch(JSON.stringify(trace), /secret-token-name/);
+  }
+});
 
 test('exact ended 只通过 deliveryId 关联，并给出准确结束时间', async () => {
   const { reader, calls } = world({

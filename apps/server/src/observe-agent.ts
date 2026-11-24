@@ -6,6 +6,7 @@ import {
   type Deps,
   type Project,
   type ProjectId,
+  type PromptActor,
   type Session,
   type SessionId,
   type Subject
@@ -60,6 +61,8 @@ export interface AgentTurnRecords {
   byId(id: string): Awaitable<AgentTurnRecord | null>;
   /** 只返回 deliveryId 精确对得上、且在 afterSeq 之后的第一条 ended。 */
   ended(sessionId: string, deliveryId: string, afterSeq: number): Awaitable<AgentTurnEnd | null>;
+  /** 精确读取对应 prompt 的受限类别；缺失 / 损坏一律 null。 */
+  promptActor(sessionId: string, seq: number): Awaitable<PromptActor | null>;
 }
 
 export interface AgentObserveDeps {
@@ -109,6 +112,16 @@ const isDeliveryState = (value: unknown): value is DeliveryState => typeof value
 
 const isOutcome = (value: unknown): value is AgentTurnEnd['outcome'] =>
   value === 'done' || value === 'stopped' || value === 'interrupted' || value === 'failed';
+
+const actorLabel = (value: unknown): string => {
+  switch (value) {
+    case 'account': return '账号';
+    case 'token': return '令牌';
+    case 'system': return '系统';
+    case 'unknown': return '未知';
+    default: return '未记录';
+  }
+};
 
 /**
  * 存储可能把原始列直接递过来；标签之前先验一遍。
@@ -240,12 +253,13 @@ export function createAgentObserveReader(deps: AgentObserveDeps): ObserveReader 
       if (!access) return null;
       // held（seq 0）不是一轮 prompt，不能拿第一条 ended 冒充它的结果。
       const ended = await exactEnd(row);
-      return traceFor(row, access.project, ended);
+      const promptActor = row.seq > 0 ? await deps.records.promptActor(row.sessionId, row.seq) : null;
+      return traceFor(row, access.project, ended, promptActor);
     }
   };
 }
 
-function traceFor(row: ValidTurnRecord, project: Project, ended: AgentTurnEnd | null): ObserveTrace {
+function traceFor(row: ValidTurnRecord, project: Project, ended: AgentTurnEnd | null, promptActor: unknown): ObserveTrace {
   const headId = `turn:${row.id}`;
   const endId = `end:${row.id}`;
   const links: ObserveLink[] = ended ? [{ to: endId, label: 'deliveryId 对得上的结束' }] : [];
@@ -267,6 +281,7 @@ function traceFor(row: ValidTurnRecord, project: Project, ended: AgentTurnEnd | 
       { key: '序号', value: String(row.seq) },
       { key: '尝试', value: String(row.attempt) },
       { key: '当前状态', value: DELIVERY_LABEL[row.state] },
+      { key: '发起类别', value: actorLabel(promptActor) },
       ...(!ended && row.state !== 'delivered' ? [{ key: '结果', value: pendingNote(row.state) }] : []),
       // 过了 ACL 才给会话跳转所需的字段；没权限时整条 trace 都不会返回。
       { key: '会话', value: row.sessionId },

@@ -1,6 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deriveSessionRequest } from './http.ts';
+import { journalEntrySchema } from './entities.ts';
+
+test('prompt journal wire 保留可选受限 actor，旧事件兼容', () => {
+  for (const promptActor of ['account', 'token', 'system', 'unknown']) {
+    const parsed = journalEntrySchema.parse({ seq: 1, at: 1, event: { kind: 'prompt', text: 'x', promptActor } });
+    assert.equal(parsed.event.kind === 'prompt' && parsed.event.promptActor, promptActor);
+  }
+  const old = journalEntrySchema.parse({ seq: 1, at: 1, event: { kind: 'prompt', text: 'x' } });
+  assert.equal(old.event.kind === 'prompt' && old.event.promptActor, undefined);
+  assert.equal(journalEntrySchema.safeParse({ seq: 1, at: 1, event: { kind: 'prompt', text: 'x', promptActor: 'secret' } }).success, false);
+});
 
 test('deriveSessionRequest：model 可省略（外部 MCP 按默认 Agent 层级解析），空串也合法', () => {
   // 完全体：显式 model 照常通过

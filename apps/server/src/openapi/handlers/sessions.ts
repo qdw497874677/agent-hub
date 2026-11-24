@@ -175,6 +175,7 @@ export function installSessions(app: OpenAPIHono<Env>, rt: V1Runtime): void {
       sessionId: c.req.param('sessionId') ?? '',
       text: input.text,
       attachments: input.attachments,
+      promptActor: actor.via ? 'token' : 'account',
       ...(input.clientMessageId === undefined ? {} : { clientMessageId: input.clientMessageId }),
       author: { id: actor.user.id, name: actor.user.displayName, via: actor.via?.name }
     });

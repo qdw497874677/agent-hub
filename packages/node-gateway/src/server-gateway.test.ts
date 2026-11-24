@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
 import type { RpcChannel, ServerToWorker } from '@agent-hub/contract';
 import { PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, createRpcChannel, wsImportProjectGitBundle } from '@agent-hub/contract';
-import { createServerGateway, type GatewayHooks, type GatewayOptions } from './server-gateway.ts';
+import { createServerGateway, type GatewayHooks, type GatewayOptions, type WorkerConnectionObservation } from './server-gateway.ts';
 import { serveProjectGitBundleImport } from './worker-fs-rpc.ts';
 import type { ProjectGitBundleImportInput, ProjectGitBundleImporter } from './project-git-bundle-import.ts';
 
@@ -22,6 +22,10 @@ interface Wire {
 
 interface HarnessOptions {
   readonly authenticate?: GatewayHooks['authenticate'];
+  readonly localSecret?: string;
+  readonly token?: string;
+  readonly onConnectionObservation?: GatewayHooks['onConnectionObservation'];
+  readonly agentConfig?: GatewayHooks['agentConfig'];
   readonly onTerminalData?: GatewayHooks['onTerminalData'];
   readonly onTerminalExit?: GatewayHooks['onTerminalExit'];
   readonly knownTerminals?: GatewayHooks['knownTerminals'];
@@ -35,8 +39,11 @@ interface HarnessOptions {
 async function harness(options: HarnessOptions = {}) {
   let helloSeen = false;
   const gateway = createServerGateway({
-    token: null,
+    token: options.token ?? null,
+    ...(options.localSecret ? { localSecret: options.localSecret } : {}),
     ...(options.authenticate ? { authenticate: options.authenticate } : {}),
+    ...(options.onConnectionObservation ? { onConnectionObservation: options.onConnectionObservation } : {}),
+    ...(options.agentConfig ? { agentConfig: options.agentConfig } : {}),
     onHello: () => {
       helloSeen = true;
     },
@@ -90,7 +97,7 @@ async function harness(options: HarnessOptions = {}) {
       ws.once('error', reject);
     });
     ws.send(JSON.stringify({ type: 'hello', workerId, label: workerId, origin: 'remote', agents: [], roots: [], sessions: [], ...hello }));
-    await until(() => helloSeen);
+    await until(() => helloSeen && frames.some((frame) => frame.kind === 'welcome'));
     return { ws, calls, frames };
   }
 
@@ -102,6 +109,134 @@ async function harness(options: HarnessOptions = {}) {
   };
   return { gateway, url, connect, stop };
 }
+
+test('connection observations bind authenticated identities and close replacement before new connection', async () => {
+  const observations: WorkerConnectionObservation[] = [];
+  let repeatedProcessed = false;
+  const { connect, stop, gateway } = await harness({
+    authenticate: async ({ workerId, credential }) => credential === 'synthetic-credential'
+      ? { ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'synthetic-user', createdAt: 123 } }
+      : { ok: false, reason: 'rejected' },
+    onConnectionObservation: (observation) => observations.push(observation),
+    onTerminalData: () => { repeatedProcessed = true; },
+    gateway: { now: () => 456, echoMs: 0 }
+  });
+  const first = await connect('remote-test', { credential: 'synthetic-credential' });
+  first.ws.send(JSON.stringify({ type: 'hello', workerId: 'remote-test', label: 'repeat', origin: 'remote', agents: [], roots: [], sessions: [], credential: 'synthetic-credential' }));
+  first.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' }));
+  await until(() => repeatedProcessed);
+  assert.equal(first.frames.filter((frame) => frame.kind === 'welcome').length, 1);
+  assert.equal(observations.length, 1);
+  const second = await connect('remote-test', { credential: 'synthetic-credential' });
+  await until(() => observations.length === 3);
+  assert.deepEqual(observations.map((o) => o.kind), ['connected', 'disconnected', 'connected']);
+  assert.deepEqual(observations[0], { connectionId: observations[0]!.connectionId, workerId: 'remote-test', origin: 'remote', enrollment: { enrolledBy: 'synthetic-user', createdAt: 123 }, kind: 'connected', at: 456 });
+  assert.equal(observations[0]!.connectionId, observations[1]!.connectionId);
+  assert.notEqual(observations[0]!.connectionId, observations[2]!.connectionId);
+  assert.equal(gateway.workers().find((worker) => worker.workerId === 'remote-test')?.state, 'online');
+  second.ws.close();
+  await until(() => observations.length === 4);
+  assert.equal(observations[3]!.connectionId, observations[2]!.connectionId);
+  assert.equal(observations[3]!.kind, 'disconnected');
+  await stop(first, second);
+});
+
+test('a socket keeps its first authenticated identity and observation snapshot across queued hellos', async () => {
+  const observations: WorkerConnectionObservation[] = [];
+  const authCalls: string[] = [];
+  let authenticated!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { authenticated = resolve; });
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  let marker = false;
+  const h = await harness({
+    authenticate: async ({ workerId, credential }) => {
+      authCalls.push(workerId);
+      authenticated();
+      await waiting;
+      return credential === 'synthetic-one'
+        ? { ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'synthetic-owner', createdAt: 7 } }
+        : { ok: false, reason: 'rejected' };
+    },
+    onConnectionObservation: (o) => {
+      observations.push(structuredClone(o));
+      // Even a misbehaving observer cannot mutate the captured binding.
+      if (o.enrollment) (o.enrollment as { enrolledBy: string }).enrolledBy = 'changed';
+    },
+    onTerminalData: () => { marker = true; },
+    gateway: { echoMs: 0, now: () => 99 }
+  });
+  const ws = new WebSocket(h.url);
+  await new Promise<void>((resolve) => ws.once('open', resolve));
+  const hello = { type: 'hello', workerId: 'synthetic-first', label: 'first', origin: 'remote', agents: [], roots: [], sessions: [], credential: 'synthetic-one' };
+  ws.send(JSON.stringify(hello));
+  await entered;
+  ws.send(JSON.stringify(hello));
+  ws.send(JSON.stringify({ ...hello, workerId: 'synthetic-second', origin: 'local', credential: 'synthetic-two' }));
+  ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' }));
+  release();
+  await until(() => marker);
+  assert.deepEqual(authCalls, ['synthetic-first']);
+  assert.deepEqual(h.gateway.workers().map(({ workerId, origin, state }) => ({ workerId, origin, state })), [{ workerId: 'synthetic-first', origin: 'remote', state: 'online' }]);
+  assert.equal(observations.length, 1);
+  const first = observations[0]!;
+  assert.deepEqual(first, { connectionId: first.connectionId, workerId: 'synthetic-first', origin: 'remote', enrollment: { enrolledBy: 'synthetic-owner', createdAt: 7 }, kind: 'connected', at: 99 });
+  ws.close();
+  await until(() => observations.length === 2);
+  assert.deepEqual(observations[1], { ...first, kind: 'disconnected' });
+  await h.stop();
+  assert.equal(observations.length, 2);
+});
+
+test('connection observations exclude shared, unauthenticated, mismatched and rejected workers', async () => {
+  const observations: WorkerConnectionObservation[] = [];
+  const h = await harness({
+    token: 'synthetic-token',
+    authenticate: async ({ workerId }) => workerId === 'rejected'
+      ? { ok: false, reason: 'rejected' }
+      : workerId === 'mismatch'
+        ? { ok: true, via: 'credential', enrollment: { workerId: 'different', enrolledBy: 'u', createdAt: 1 } }
+        : { ok: true, via: 'shared' },
+    onConnectionObservation: (o) => observations.push(o)
+  });
+  const shared = await h.connect('shared', { token: 'synthetic-token' });
+  const mismatch = await h.connect('mismatch', { credential: 'synthetic-credential' });
+  const rejected = new WebSocket(h.url);
+  await new Promise<void>((resolve) => rejected.once('open', resolve));
+  const closed = new Promise<void>((resolve) => rejected.once('close', () => resolve()));
+  rejected.send(JSON.stringify({ type: 'hello', workerId: 'rejected', label: 'rejected', origin: 'remote', agents: [], roots: [], sessions: [] }));
+  await closed;
+  shared.ws.close();
+  mismatch.ws.close();
+  await h.stop(shared, mismatch);
+  assert.equal(observations.length, 0);
+  const bare = await harness({ onConnectionObservation: (o) => observations.push(o) });
+  const unauthenticated = await bare.connect('bare');
+  await bare.stop(unauthenticated);
+  assert.equal(observations.length, 0);
+});
+
+test('local observation precedes asynchronous aliases and observer exceptions do not affect connection', async () => {
+  const observations: WorkerConnectionObservation[] = [];
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  const h = await harness({
+    localSecret: 'synthetic-local-secret',
+    agentConfig: async () => { await waiting; return null; },
+    onConnectionObservation: (o) => { observations.push(o); throw new Error('synthetic observer failure'); }
+  });
+  const connecting = h.connect('local-test', { origin: 'local', localSecret: 'synthetic-local-secret' });
+  await until(() => observations.length === 1);
+  assert.equal(observations[0]!.origin, 'local');
+  assert.equal(observations[0]!.enrollment, null);
+  release();
+  const wire = await connecting;
+  assert.equal(h.gateway.workers()[0]?.state, 'online');
+  wire.ws.close();
+  await until(() => observations.length === 2);
+  assert.equal(observations[1]!.connectionId, observations[0]!.connectionId);
+  await h.stop(wire);
+});
 
 async function until(predicate: () => boolean, message = '等待超时'): Promise<void> {
   const deadline = Date.now() + 3000;

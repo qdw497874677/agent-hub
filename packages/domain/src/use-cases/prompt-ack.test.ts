@@ -11,7 +11,7 @@ import type { WorkerCommand } from '../ports/node-gateway.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
-import { promptSessionUseCase } from './conversation.ts';
+import { ingestWorkerEvent, promptSessionUseCase } from './conversation.ts';
 
 /**
  * 发送回执 + clientMessageId 幂等（design/message-send-feedback.md §5.1 / §5.3），
@@ -60,6 +60,25 @@ const isPrompt = (entry: JournalEntry): entry is PromptEntry => entry.event.kind
 
 const prompts = async (deps: Pick<Deps, 'sessions'>, sid: string): Promise<PromptEntry[]> =>
   (await deps.sessions.eventsAfter(asSessionId(sid), 0 as never)).filter(isPrompt);
+
+test('prompt actor 只记录可信命令的有界类别，不从 author 或 via 猜测', async () => {
+  const w = await world();
+  for (const promptActor of ['account', 'token', 'system', 'unknown'] as const) {
+    assert.ok((await promptSessionUseCase(w.deps, { sessionId: w.sid, text: promptActor, promptActor })).ok);
+  }
+  assert.ok((await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'legacy', author: { id: 'u', name: 'n', via: 'token' } })).ok);
+  assert.ok((await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'invalid', promptActor: 'secret' as never })).ok);
+  assert.deepEqual((await prompts(w.deps, w.sid)).map((entry) => entry.event.promptActor), ['account', 'token', 'system', 'unknown', undefined, undefined]);
+  const deliveries = await w.deliveries.recent(w.sid, 10);
+  const events = await prompts(w.deps, w.sid);
+  for (const entry of events) assert.ok(deliveries.some((delivery) => delivery.seq === entry.seq));
+});
+
+test('worker 不能伪造 prompt actor', async () => {
+  const w = await world();
+  assert.ok((await ingestWorkerEvent(w.deps, w.sid, { kind: 'prompt', text: 'spoof', promptActor: 'system' })).ok);
+  assert.equal((await prompts(w.deps, w.sid))[0]?.event.promptActor, undefined);
+});
 
 test('prompt 返回 ack：seq 是 journal 里这条 prompt 的 seq，state 合法', async () => {
   const w = await world();

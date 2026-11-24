@@ -2,6 +2,7 @@ export { openSqliteStore } from './store.ts';
 export type { SqliteStore } from './store.ts';
 export { createMetadataSearch } from './metadata-search.ts';
 export { createSqliteAgentObserve } from './observe-agent.ts';
+export { createSqliteMachineObserve } from './observe-machine.ts';
 export { createSqliteMessageObserve } from './observe-message.ts';
 export { createSqliteWorkObserve } from './observe-work.ts';
 export { SCHEMA } from './schema.ts';

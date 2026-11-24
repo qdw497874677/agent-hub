@@ -329,7 +329,7 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
       await recordProvenance({ provenance: store.provenance, audit: store.audit, now: deps.now }, { session: created.value, subject: actor, via: 'bot' }).catch(() => undefined);
       const text = [`你是被调度器派来推进这个任务的任务智能体。任务：「${d.title}」`, d.goal ? `目标：\n${d.goal}` : '',
         '直接动手完成它；做完后用一段简短的文字总结结果（做了什么、产出在哪、有没有没做完的）。这段总结会转给建这个任务的 bot。'].filter(Boolean).join('\n\n');
-      const sent = await promptSessionUseCase(deps, { sessionId: created.value.id, text, author: { id: d.accountId, name: '调度器', via: 'dispatch' } });
+      const sent = await promptSessionUseCase(deps, { sessionId: created.value.id, text, promptActor: 'system', author: { id: d.accountId, name: '调度器', via: 'dispatch' } });
       if (!sent.ok) return sent;
       return ok({ sessionId: created.value.id as string, workerId: created.value.workerId ?? null });
     },
@@ -349,7 +349,7 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
       // 群 / P2P 已经写成 delivered 的投递，调度不能再往同一条会话插一句。
       return (s ? isBusy(s) : false) || (await inbox.occupied(asSessionId(sid)));
     },
-    notify: (sid, text) => promptSessionUseCase(deps, { sessionId: sid, text, author: { id: 'dispatch', name: '调度器', via: 'dispatch' } }),
+    notify: (sid, text) => promptSessionUseCase(deps, { sessionId: sid, text, promptActor: 'system', author: { id: 'dispatch', name: '调度器', via: 'dispatch' } }),
     abandonTask: async (taskId, reason) => { await setTaskStatusUseCase(deps, taskId as TaskId, 'abandoned', 'system', reason).catch(() => undefined); },
     sinks: [createGithubSink({ outbox: store.outbox, now: () => Date.now(), client: githubClient, tokenFor: teamTokenOf, boundRepos: githubReposFor, prLinks: async (taskId) => (await pullRequestRepo.byTask(taskId)).map((l) => l.url), log })],
     log

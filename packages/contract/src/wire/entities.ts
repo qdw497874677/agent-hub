@@ -429,6 +429,8 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
     attachments: z.array(storedAttachmentSchema).optional(),
     /** 谁说的（登录态下才有；老事件没有 = 不知道）。name 读出时按当前账号刷新，删掉的用户显示匿名名。 */
     author: z.object({ id: z.string(), name: z.string(), via: z.string().optional() }).optional(),
+    /** Hub 记录的有限发起类别；旧 journal 无此字段。 */
+    promptActor: z.enum(['account', 'token', 'system', 'unknown']).optional(),
     /** 平台写的交接简报：带了多少、省略多少（ADR 0029）。 */
     handoff: z
       .object({

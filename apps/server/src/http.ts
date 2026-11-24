@@ -1065,11 +1065,13 @@ export function createApp(options: AppOptions): Hono {
     async (c) => {
     const input = await body(c, promptRequest);
     if (!input.ok) return input.response;
+    const sender = senders.get(c) ?? null;
     const result = await promptSessionUseCase(deps, {
       sessionId: c.req.param('sessionId'),
       text: input.value.text,
       attachments: input.value.attachments,
-      ...authorOf(senders.get(c) ?? null),
+      ...authorOf(sender),
+      ...(sender === null ? {} : { promptActor: sender.via ? 'token' : 'account' }),
       ...(input.value.clientMessageId !== undefined ? { clientMessageId: input.value.clientMessageId } : {})
     });
     // 202 = 已接收（journal + delivery 已落库），不代表 agent 已经跑完；送达状态看 /deliveries。

@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { ProcessInfo, WorkspaceBrowser } from '@agent-hub/domain';
 import { createRemoteBrowsers } from './remote-workspace-browser.ts';
@@ -85,6 +85,15 @@ import { assessPressure, detectDrift, conflict, debouncePressure, initialDebounc
 /** hub 留给每台机器的安装日志上限（字符，取末尾）。 */
 const RUNTIME_LOG_LIMIT = 16_000;
 
+export interface WorkerConnectionObservation {
+  readonly connectionId: string;
+  readonly workerId: string;
+  readonly origin: 'local' | 'remote';
+  readonly enrollment: { readonly enrolledBy: string; readonly createdAt: number } | null;
+  readonly kind: 'connected' | 'disconnected';
+  readonly at: number;
+}
+
 export interface GatewayHooks {
   readonly token: string | null;
   /**
@@ -108,7 +117,9 @@ export interface GatewayHooks {
     /** 来源地址 / 报的版本：认过就记到凭据上（ADR 0030 D3）。 */
     readonly address?: string | null;
     readonly userAgent?: string | null;
-  }): Promise<{ readonly ok: true; readonly capabilities?: readonly string[] } | { readonly ok: false; readonly reason: string }>;
+  }): Promise<{ readonly ok: true; readonly capabilities?: readonly string[]; readonly via?: 'credential' | 'shared'; readonly enrollment?: { readonly workerId: string; readonly enrolledBy: string; readonly createdAt: number } } | { readonly ok: false; readonly reason: string }>;
+  /** Best-effort observation of locally proven or credential-authenticated connections. */
+  onConnectionObservation?(observation: WorkerConnectionObservation): void;
   /** 经反向代理进来时，来源地址取 X-Forwarded-For 最后一跳（HUB_TRUST_PROXY=1）。默认只信 socket 地址。 */
   readonly trustProxy?: boolean;
   onHello(worker: WorkerStatus, agents: AgentDto[], sessions: readonly string[]): void;
@@ -225,6 +236,7 @@ export function clientAddressOf(request: IncomingMessage | undefined, trustProxy
 
 interface Registered {
   readonly workerId: string;
+  readonly closeObservation: () => void;
   label: string;
   origin: WorkerStatus['origin'];
   /** null = 离线。离线的 Worker 留在登记表里：管理视图要能显示「上次见到是什么时候」。 */
@@ -702,6 +714,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     const address = request?.socket.remoteAddress;
     const clientAddress = clientAddressOf(request, hooks.trustProxy === true) ?? null;
     let entry: Registered | null = null;
+    let accepted = false;
+    // The first hello owns this socket, even while authentication is pending.
+    let helloStarted = false;
+    let closeObservation = (): void => {};
     let closeReason = '连接断开';
     const helloTimer = setTimeout(() => {
       if (!entry) socket.close(4408, '没有及时 hello');
@@ -760,6 +776,9 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       }
 
       if (frame.type === 'hello') {
+        // Repeated hellos are harmlessly ignored: they must never re-register this socket.
+        if (helloStarted) return;
+        helloStarted = true;
         // 本机子进程的口令：hub 每次启动换一个，只有它自己知道（不落盘、不外传），用来证明 origin: 'local' 不是自封的。
         const secret = hooks.localSecret ?? null;
         const provenLocal = secret !== null && sameSecret(frame.localSecret, secret);
@@ -805,6 +824,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
             return;
           }
           const stale = previous.socket;
+          previous.closeObservation();
           previous.socket = null;
           stale.terminate();
         }
@@ -818,6 +838,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
             : (previous?.update ?? null);
         entry = {
           workerId: frame.workerId,
+          closeObservation: () => closeObservation(),
           label: frame.label,
           origin: frame.origin === 'local' && provenLocal ? 'local' : 'remote',
           socket,
@@ -884,6 +905,26 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
             ...(entry.capabilities ? { capabilities: [...entry.capabilities] } : {})
           } satisfies ServerToWorker)
         );
+        if (!accepted) {
+          accepted = true;
+          const binding = 'enrollment' in verdict && verdict.via === 'credential' && verdict.enrollment?.workerId === frame.workerId
+            ? { enrolledBy: verdict.enrollment.enrolledBy, createdAt: verdict.enrollment.createdAt }
+            : null;
+          const origin = entry.origin;
+          if (origin === 'local' || binding !== null) {
+            const observation = { connectionId: randomUUID(), workerId: frame.workerId, origin, enrollment: origin === 'local' ? null : binding };
+            const emit = (kind: WorkerConnectionObservation['kind']): void => {
+              try { hooks.onConnectionObservation?.({ ...observation, enrollment: observation.enrollment ? { ...observation.enrollment } : null, kind, at: now() }); } catch { /* Observers cannot affect the connection. */ }
+            };
+            let closed = false;
+            closeObservation = () => {
+              if (closed) return;
+              closed = true;
+              emit('disconnected');
+            };
+            emit('connected');
+          }
+        }
         if (frame.dropped) hooks.onLog?.(`Worker「${frame.label}」上次断线期间丢了 ${frame.dropped} 帧输出`);
         // 自定义运行时别名（CAP-1）：这台机器存过就推一帧，worker 自己热应用（新建会话生效）。
         // 老 hub 没有这个钩子 = 不发；老 worker 不认 = 记一行日志，连接照旧。
@@ -989,6 +1030,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
 
     socket.on('close', () => {
       clearTimeout(helloTimer);
+      closeObservation();
       if (entry) markOffline(entry, socket, closeReason);
       // 任务跑到一半断了：先记成失败，别让它永远「安装中」挡住下一个任务；同一个任务的进度帧之后若还能回来，照样认
       if (entry?.runtimeJob?.state === 'running' && entry.socket === null) {

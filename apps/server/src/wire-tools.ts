@@ -221,6 +221,7 @@ export async function spawnAgentAction(
     const sent = await promptSessionUseCase(deps, {
       sessionId: session.id,
       text: input.prompt,
+      promptActor: 'system',
       author: { id: 'agent-orchestrator', name: '编排 Agent', via: 'agent' }
     });
     if (!sent.ok) return sent;

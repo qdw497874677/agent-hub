@@ -554,6 +554,7 @@ function createBridges(
           const prompted = await promptSessionUseCase(deps, {
             sessionId: session.id,
             text: input.record.instructions,
+            promptActor: 'system',
             clientMessageId: `delegation:${input.record.id}`,
             ...(principal ? { author: { id: principal.user.id, name: principal.user.displayName } } : {})
           });

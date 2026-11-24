@@ -34,6 +34,9 @@ export interface SessionCommand {
   readonly hint?: string;
 }
 
+/** Hub 已认证的发起类别；不含身份、令牌名称或客户端提供的标签。 */
+export type PromptActor = 'account' | 'token' | 'system' | 'unknown';
+
 export type SessionEvent =
   | {
       readonly kind: 'prompt';
@@ -42,6 +45,8 @@ export type SessionEvent =
       readonly attachments?: readonly StoredAttachment[];
       /** 谁说的（登录态下才有；老事件没有 = 不知道）。 */
       readonly author?: { readonly id: string; readonly name: string; /** 经开放 API 令牌发的：令牌名（ADR 0015）。 */ readonly via?: string };
+      /** 仅由可信 Hub 调用方填写；老事件缺省为未记录。 */
+      readonly promptActor?: PromptActor;
       /** 这句是平台写的交接简报时：带了多少、省略多少（ADR 0029）。 */
       readonly handoff?: HandoffStats;
       /**

@@ -90,7 +90,7 @@ test('hello 认证：凭据要对得上 workerId；有凭据记录的机器不�
   assert.ok(enrolled.ok);
   const { workerId, credential } = enrolled.value;
 
-  assert.deepEqual(await authenticateWorker(deps, { workerId, credential, sharedTokenOk: false }), { ok: true, via: 'credential', capabilities: WORKER_CAPABILITIES });
+  assert.deepEqual(await authenticateWorker(deps, { workerId, credential, sharedTokenOk: false }), { ok: true, via: 'credential', capabilities: WORKER_CAPABILITIES, enrollment: { workerId, enrolledBy: member.user.id, createdAt: 1000 } });
   assert.equal((await authenticateWorker(deps, { workerId: 'other', credential, sharedTokenOk: true })).ok, false);
   assert.equal((await authenticateWorker(deps, { workerId, sharedTokenOk: true })).ok, false);
   // 老机器：没有凭据记录，凭共享令牌照旧
@@ -162,12 +162,14 @@ test('P4 轮换：新凭据宽限期内连上就转正、旧的作废；离线�
   assert.ok(rotated.ok);
   assert.ok(sent);
   // 宽限期内旧的还认
-  assert.ok((await authenticateWorker(deps, { workerId, credential: enrolled.value.credential, sharedTokenOk: false })).ok);
+  const original = await authenticateWorker(deps, { workerId, credential: enrolled.value.credential, sharedTokenOk: false });
+  assert.ok(original.ok && original.via === 'credential');
   const again = await rotateWorkerCredential(live, member, workerId);
   assert.ok(!again.ok, '进行中不能再轮换');
   tick(1000);
   const fresh = await authenticateWorker(deps, { workerId, credential: sent!, sharedTokenOk: false });
-  assert.ok(fresh.ok);
+  assert.ok(fresh.ok && fresh.via === 'credential');
+  assert.deepEqual(fresh.enrollment, original.enrollment);
   assert.ok(!(await authenticateWorker(deps, { workerId, credential: enrolled.value.credential, sharedTokenOk: false })).ok, '旧凭据作废');
   const status = await credentialStatus(deps, member, workerId);
   assert.ok(status.ok);
@@ -190,4 +192,24 @@ test('P4 轮换：5 分钟内没换上就作废新的、留旧的', async () => 
   const status = await credentialStatus(deps, member, workerId);
   assert.ok(status.ok);
   assert.equal(status.value.rotation, 'failed');
+});
+
+test('重新配对得到新的 workerId 和新的认证绑定', async () => {
+  const { deps, member, tick } = await setup();
+  const firstCode = await issuePairingCode(deps, member);
+  assert.ok(firstCode.ok);
+  const first = await enrollWorker(deps, { code: firstCode.value.code });
+  assert.ok(first.ok);
+  const firstAuth = await authenticateWorker(deps, { workerId: first.value.workerId, credential: first.value.credential, sharedTokenOk: false });
+  assert.ok(firstAuth.ok && firstAuth.via === 'credential');
+  tick(100);
+  const nextCode = await issuePairingCode(deps, member);
+  assert.ok(nextCode.ok);
+  const next = await enrollWorker(deps, { code: nextCode.value.code });
+  assert.ok(next.ok);
+  const nextAuth = await authenticateWorker(deps, { workerId: next.value.workerId, credential: next.value.credential, sharedTokenOk: false });
+  assert.ok(nextAuth.ok && nextAuth.via === 'credential');
+  assert.notEqual(next.value.workerId, first.value.workerId);
+  assert.deepEqual(nextAuth.enrollment, { workerId: next.value.workerId, enrolledBy: member.user.id, createdAt: 1100 });
+  assert.notDeepEqual(nextAuth.enrollment, firstAuth.enrollment);
 });

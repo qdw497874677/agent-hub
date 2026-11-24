@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { ChildProcess } from 'node:child_process';
 import type { SessionEvent, SessionId } from '@agent-hub/domain';
 import { HermesSession, PENDING_FILE, UNKNOWN_OUTCOME_REASON, readPending } from './hermes-runtime.ts';
@@ -59,8 +60,11 @@ test('幂等键：没确认收到就断了，重发同一条沿用同一个键�
     assert.equal((await second.prompt({ text: 'hi', parts: [] })).ok, true);
     assert.equal(keys[1], keys[0]);
     await take(second.events(), (e) => e.kind === 'ended');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(await exists(join(home, PENDING_FILE)), false, '有了结局就清掉');
+    // 结束事件先发出，清理持久文件随后异步完成；等待真正的文件状态而不是固定延时。
+    const deadline = performance.now() + 5_000;
+    const pendingPath = join(home, PENDING_FILE);
+    while (await exists(pendingPath) && performance.now() < deadline) await delay(25);
+    assert.equal(await exists(pendingPath), false, '有了结局就清掉');
     // 换一条输入 → 新键
     fail = true;
     await session(hermes.baseUrl, home).prompt({ text: 'other', parts: [] });

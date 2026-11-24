@@ -34,6 +34,28 @@ test('Agent 运行记录：同一会话的两条消息只认各自的结束证�
     expect(derived.ok(), await derived.text()).toBe(true);
     const session = (await derived.json()) as { id: string };
 
+    const machineTrace = async (id: string) => {
+      const response = await page.request.get(`/api/observe/machine/${encodeURIComponent(id)}`);
+      expect(response.ok(), await response.text()).toBe(true);
+      return ((await response.json()) as {
+        trace: { projectId: string | null; nodes: { state: string; endedAt: number | null; attrs: { key: string; value: string }[] }[] };
+      }).trace;
+    };
+    const machines = await page.request.get('/api/observe?source=machine');
+    expect(machines.ok(), await machines.text()).toBe(true);
+    const machineList = ((await machines.json()) as { items: { id: string; projectId: string | null }[] }).items;
+    let connectionId: string | undefined;
+    for (const row of machineList) {
+      const id = row.id.slice('machine:'.length);
+      const trace = await machineTrace(id);
+      if (!trace.nodes.some((node) => node.attrs.some((attr) => attr.key === 'Worker' && attr.value === workerId))) continue;
+      expect(trace.projectId).toBeNull();
+      expect(trace.nodes[0]).toMatchObject({ state: 'connected', endedAt: null });
+      connectionId = id;
+      break;
+    }
+    if (!connectionId) throw new Error('没有找到已配对 Worker 的连接记录');
+
     const prompt = async (key: string) => {
       const response = await page.request.post(`/api/sessions/${session.id}/prompt`, {
         headers, data: { text: promptText(key) }
@@ -63,7 +85,9 @@ test('Agent 运行记录：同一会话的两条消息只认各自的结束证�
     expect(b.state).toBe('queued');
     expect(b.seq).toBeGreaterThan(a.seq);
     expect((await deliveries()).map((item) => item.id)).toEqual([`agent:${b.deliveryId}`, `agent:${a.deliveryId}`]);
-    expect((await trace(b.deliveryId)).id).toBe(`agent:${b.deliveryId}`);
+    const queued = await trace(b.deliveryId);
+    expect(queued.id).toBe(`agent:${b.deliveryId}`);
+    expect(queued.nodes.flatMap((node) => node.attrs)).toContainEqual({ key: '发起类别', value: '账号' });
     expect(existsSync(marker(bKey, 'started'))).toBe(false);
 
     await page.setViewportSize({ width: 390, height: 844 });
@@ -95,6 +119,10 @@ test('Agent 运行记录：同一会话的两条消息只认各自的结束证�
     writeFileSync(marker(bKey, 'go'), 'go\n');
     await expect.poll(keys, { timeout: 30_000 }).toContain(b.deliveryId);
     await expect.poll(async () => (await trace(b.deliveryId)).nodes.filter((node) => node.state === 'done').length).toBe(1);
+    stopFakeWorker();
+    const closedConnection = connectionId;
+    await expect.poll(async () => (await machineTrace(closedConnection)).nodes[0]?.state, { timeout: 30_000 }).toBe('disconnected');
+    expect((await machineTrace(closedConnection)).nodes[0]?.endedAt).not.toBeNull();
   } finally {
     stopFakeWorker();
     rmSync(dir, { recursive: true, force: true });

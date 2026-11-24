@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { loginByApi } from './login.ts';
 
 /**
@@ -56,7 +57,7 @@ test('默认把所有来源放在一起，状态说中文且不重复原生英�
   await page.route(LIST, (route) => route.fulfill({ json: listPayload([agentItem, connectorItem]) }));
   await openObserve(page);
 
-  await expect(page.getByTestId('observe-source').locator('option')).toHaveText(['全部', 'Agent 回合', '连接器', '调度', '派工', '会话通信']);
+  await expect(page.getByTestId('observe-source').locator('option')).toHaveText(['全部', 'Agent 回合', '连接器', '调度', '派工', '会话通信', '机器连接']);
   await expect(page.getByTestId('observe-source')).toHaveValue('');
   await expect(page.getByTestId('observe-row')).toHaveCount(2);
 
@@ -70,6 +71,56 @@ test('默认把所有来源放在一起，状态说中文且不重复原生英�
 
   await expect(page.getByTestId('observe-mixed')).toContainText('Agent 回合 1');
   await expect(page.getByTestId('observe-mixed')).toContainText('连接器 1');
+});
+
+test('机器连接按来源显示历史连接证据，项目筛选说明不属于项目', async ({ page, baseURL }) => {
+  const record = item({ id: 'machine:connection-1', source: 'machine', title: '机器连接记录', projectId: null, nativeState: 'connected', nativeStateLabel: '已连接（未记录断开）' });
+  const connection = node({ id: 'connection-1', name: '连接记录', kind: 'machine_connection', state: 'connected', stateLabel: '已连接（未记录断开）' });
+  const requested: string[] = [];
+  await page.route(LIST, (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requested.push(route.request().url());
+    return route.fulfill({ json: listPayload(!params.has('projectId') && (!params.has('source') || params.get('source') === 'machine') ? [record] : []) });
+  });
+  await page.route(/\/api\/observe\/machine\/[^/?]+/, (route) => route.fulfill({ json: {
+    enabled: true,
+    trace: { id: record.id, source: 'machine', headId: connection.id, title: record.title, projectId: null, externalUrl: null, nodes: [connection] },
+    tree: { roots: [{ node: connection, children: [], links: [] }], missingParent: [], unlinked: [], unrecorded: [] }
+  } }));
+  const dir = mkdtempSync('/tmp/opencode/observe-machine-project-');
+  try {
+    await loginByApi(page);
+    const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
+    const created = await page.request.post('/api/projects', { headers: { origin: baseURL!, 'x-hub-csrf': csrf }, data: { name: '机器连接筛选测试', rootPath: dir } });
+    expect(created.ok(), await created.text()).toBe(true);
+    const project = (await created.json()) as { id: string };
+    await page.goto('/#/observe');
+    await page.getByTestId('observe-source').selectOption('machine');
+    const row = page.getByTestId('observe-row');
+    await expect(row).toHaveAttribute('data-source', 'machine');
+    await expect(row).toContainText('机器连接');
+    await expect(row).toContainText('已连接（未记录断开）');
+    await expect(row).not.toContainText('在线');
+    await row.getByRole('link', { name: '打开树' }).click();
+    await expect(page.getByTestId('observe-detail-source')).toHaveText('机器连接 · 只读');
+    await expect(page.getByTestId('observe-tree')).toContainText('已连接（未记录断开）');
+    await expect(page.getByTestId('observe-node-detail')).toContainText('机器连接');
+    await expect(page.getByTestId('observe-detail')).not.toContainText('在线');
+    await page.goto('/#/observe');
+    await page.getByTestId('observe-source').selectOption('machine');
+    await page.getByTestId('observe-project').selectOption(project.id);
+    await expect(page.getByTestId('observe-row')).toHaveCount(0);
+    await expect(page.getByTestId('observe-empty')).toHaveText('没有机器连接记录。');
+    await expect(page.getByTestId('observe-machine-project-note')).toContainText('机器连接记录不属于项目；选择项目时不会显示。清除项目筛选后可按其他条件查看。');
+    await page.getByTestId('observe-source').selectOption('');
+    await expect(page.getByTestId('observe-machine-project-note')).toBeVisible();
+    await page.getByTestId('observe-project').selectOption('');
+    await expect(page.getByTestId('observe-machine-project-note')).toHaveCount(0);
+    await expect(page.getByTestId('observe-row')).toHaveCount(1);
+    expect(requested.some((url) => new URL(url).searchParams.get('source') === 'machine' && new URL(url).searchParams.get('projectId') === project.id)).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('调度、派工与会话通信可按来源筛选，详情保留服务端状态', async ({ page }) => {

@@ -185,6 +185,30 @@ test('ended：同会话 + 精确 deliveryId + seq > 来源，取最早一条；�
   }
 });
 
+test('promptActor：同会话和 delivery seq 精确关联，脏数据及旧数据不猜', () => {
+  const f = openFixture();
+  f.project('p1'); f.task('t1', 'p1'); f.session('s1', 't1'); f.session('s2', 't1');
+  f.delivery({ id: 'a', sessionId: 's1', seq: 1, createdAt: 1 });
+  f.delivery({ id: 'b', sessionId: 's1', seq: 2, createdAt: 2 });
+  f.journal('s1', 1, 'prompt', JSON.stringify({ kind: 'prompt', promptActor: 'account', text: 'private text', author: { name: 'private name', via: 'private token' } }), 1);
+  f.journal('s1', 2, 'prompt', JSON.stringify({ kind: 'prompt', promptActor: 'token' }), 2);
+  f.journal('s2', 1, 'prompt', JSON.stringify({ kind: 'prompt', promptActor: 'system' }), 1);
+  f.journal('s1', 3, 'prompt', '{broken', 3);
+  f.journal('s1', 4, 'prompt', JSON.stringify({ kind: 'prompt', author: { via: 'token' } }), 4);
+  f.journal('s1', 5, 'prompt', JSON.stringify({ kind: 'prompt', promptActor: 'private token' }), 5);
+  f.journal('s1', 6, 'prompt', JSON.stringify({ kind: 'text', promptActor: 'account' }), 6);
+  f.journal('s1', 7, 'text', JSON.stringify({ kind: 'prompt', promptActor: 'account' }), 7);
+  f.journal('s1', 8, 'prompt', JSON.stringify({ kind: 'prompt', promptActor: 'unknown' }), 8);
+  for (const [id, expected] of [['a', 'account'], ['b', 'token']]) {
+    const row = f.observe.byId(id!)!;
+    assert.equal(f.observe.promptActor(row.sessionId, row.seq), expected);
+    assert.doesNotMatch(JSON.stringify(row), /private/);
+  }
+  assert.equal(f.observe.promptActor('s2', 1), 'system');
+  assert.equal(f.observe.promptActor('s1', 8), 'unknown');
+  for (const seq of [0, 3, 4, 5, 6, 7, 9, -1, 1.5, NaN]) assert.equal(f.observe.promptActor('s1', seq), null);
+});
+
 test('查询计划：prompt 列表走新增索引，不在内存里重排', () => {
   const f = openFixture();
   const plan = f.db

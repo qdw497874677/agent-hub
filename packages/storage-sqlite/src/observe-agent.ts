@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { UNKNOWN_OUTCOME_MARKER } from '@agent-hub/domain';
+import { UNKNOWN_OUTCOME_MARKER, type PromptActor } from '@agent-hub/domain';
 
 /**
  * Agent 运行记录（只读）：一条 prompt 送达 = 一条可观察记录。
@@ -125,6 +125,14 @@ export function createSqliteAgentObserve(db: DatabaseSync) {
   // 不从 prompt 的 seq 窗口或会话状态反推「这一轮结束了没有」。
   // outcome 与结果未知标记都在 SQL 里按固定规则算，不把 payload / reason 原文取出来。
   const ended = db.prepare(AGENT_OBSERVE_ENDED_SQL);
+  // 只取精确会话 + seq 的 prompt，且只让固定类别离开 SQLite。
+  const promptActor = db.prepare(`SELECT CASE WHEN json_valid(payload) THEN
+      CASE WHEN json_extract(payload, '$.kind') = 'prompt'
+        AND json_type(payload, '$.promptActor') = 'text'
+        AND json_extract(payload, '$.promptActor') IN ('account', 'token', 'system', 'unknown')
+        THEN json_extract(payload, '$.promptActor') END
+      END AS actor
+    FROM journal WHERE session_id = ? AND seq = ? AND type = 'prompt'`);
 
   return {
     list(input: { projectIds: readonly string[]; since: number; limit: number }): readonly AgentObserveDelivery[] {
@@ -138,6 +146,12 @@ export function createSqliteAgentObserve(db: DatabaseSync) {
     byId(id: string): AgentObserveDelivery | null {
       const row = byId.get(id) as DeliveryRow | undefined;
       return row ? toDelivery(row) : null;
+    },
+
+    promptActor(sessionId: string, seq: number): PromptActor | null {
+      if (!Number.isSafeInteger(seq) || seq <= 0) return null;
+      const row = promptActor.get(sessionId, seq) as { actor: PromptActor | null } | undefined;
+      return row?.actor ?? null;
     },
 
     ended(sessionId: string, deliveryId: string, afterSeq: number): AgentObserveEnded | null {

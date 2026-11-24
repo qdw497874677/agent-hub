@@ -11,7 +11,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { createAssetReader } from '@agent-hub/adapter-assets';
-import { createSecretVault, createSqliteAgentObserve, createSqliteApiTokens, createSqliteComponents, createSqliteMessageObserve, createSqliteProviders, createSqliteWorkObserve, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createSecretVault, createSqliteAgentObserve, createSqliteApiTokens, createSqliteComponents, createSqliteMachineObserve, createSqliteMessageObserve, createSqliteProviders, createSqliteWorkObserve, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, ServiceGateway, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
 import { authenticateWorker, withToolAccess,
   createBotUseCase,
@@ -117,6 +117,7 @@ import { createApp } from './http.ts';
 import { setupProjectGitProbe } from './project-git-probe-activation.ts';
 import { createConnectorObserveReader } from './observe-connector.ts';
 import { createAgentObserveReader } from './observe-agent.ts';
+import { createMachineObserveReader } from './observe-machine.ts';
 import { createMessageObserveReader } from './observe-message.ts';
 import { createWorkObserveReaders } from './observe-work.ts';
 import { createStreamHub } from './stream-hub.ts';
@@ -167,6 +168,8 @@ await mkdir(dataDir, { recursive: true });
 console.log(`[hub] 数据目录：${dataDir}`);
 
 const store = openSqliteStore(join(dataDir, 'hub.db'));
+const observeEnabled = readEnv('OBSERVE') !== '0';
+const machineObserve = observeEnabled ? createSqliteMachineObserve(store.db) : null;
 // 运行时套件 P2（ADR 0021）：组件目录 + 每台机器钉住的组件（漂移检测的期望状态）
 const componentStore = createSqliteComponents(store.db);
 const hub = createStreamHub();
@@ -825,6 +828,7 @@ const syncAssets = (workerId: string) =>
 serverGateway = createServerGateway({
   token,
   authenticate: (hello) => authenticateWorker(enrollmentDeps, hello),
+  ...(machineObserve ? { onConnectionObservation: (observation) => machineObserve.append(observation) } : {}),
   trustProxy: process.env['HUB_TRUST_PROXY'] === '1',
   localSecret: spawnWorker === '1' ? localSecret : null,
   onAgents(worker, agents) {
@@ -1079,7 +1083,6 @@ const envNumber = (name: string): number | undefined => {
   return value === null || value === undefined ? undefined : Number(value);
 };
 
-const observeEnabled = readEnv('OBSERVE') !== '0';
 const botDeps = {
   ...deps,
   messages: store.messages,
@@ -1119,7 +1122,10 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
       createMessageObserveReader({
         projects: deps.projects, sessions: deps.sessions, tasks: deps.tasks,
         records: createSqliteMessageObserve(store.db), policy: deps.access
-      })
+      }),
+      ...(machineObserve && deps.access ? [createMachineObserveReader({
+        records: machineObserve, enrollment: store.enrollment, users: store.users, policy: deps.access
+      })] : [])
     ] : []
   },
   auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles, agentDefaults: store.agentDefaults }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },

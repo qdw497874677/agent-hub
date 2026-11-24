@@ -25,14 +25,15 @@ const spanText = (ms: number) => {
   return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
 };
 
-const SOURCE_LABEL: Record<string, string> = { connector: '连接器', agent: 'Agent 回合', dispatch: '调度', delegation: '派工', message: '会话通信' };
+const SOURCE_LABEL: Record<string, string> = { connector: '连接器', agent: 'Agent 回合', dispatch: '调度', delegation: '派工', message: '会话通信', machine: '机器连接' };
 const SOURCE_OPTIONS: readonly { readonly value: string; readonly label: string }[] = [
   { value: '', label: '全部' },
   { value: 'agent', label: 'Agent 回合' },
   { value: 'connector', label: '连接器' },
   { value: 'dispatch', label: '调度' },
   { value: 'delegation', label: '派工' },
-  { value: 'message', label: '会话通信' }
+  { value: 'message', label: '会话通信' },
+  { value: 'machine', label: '机器连接' }
 ];
 
 /** 原生状态只做兜底翻译：适配器给了中文 stateLabel 就用它的。 */
@@ -67,6 +68,7 @@ const KIND_LABEL: Record<string, string> = {
   task: '任务',
   dispatch: '调度',
   delegation: '派工',
+  machine_connection: '机器连接',
   session: '会话',
   delivery: '送达',
   sink: '回写',
@@ -102,6 +104,7 @@ const emptyText = (source: string) => {
   if (source === 'dispatch') return '没有调度记录。';
   if (source === 'delegation') return '没有派工记录。';
   if (source === 'message') return '没有会话通信记录。';
+  if (source === 'machine') return '没有机器连接记录。';
   return '没有记录。';
 };
 
@@ -179,6 +182,7 @@ function ObserveList() {
           只看失败或缺环
         </label>
       </div>
+      {projectId && (source === '' || source === 'machine') ? <p data-testid="observe-machine-project-note" className="mb-2 text-meta text-tertiary">机器连接记录不属于项目；选择项目时不会显示。清除项目筛选后可按其他条件查看。</p> : null}
       {list.isError && !list.isFetching ? (
         <p className="mb-2 text-meta text-rust" data-testid="observe-error">{accessLost ? '无法查看运行记录，请检查登录状态或访问权限。' : '刷新失败'} <button className="underline" onClick={() => void list.refetch()}>重试</button></p>
       ) : null}
