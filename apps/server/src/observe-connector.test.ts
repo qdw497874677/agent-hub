@@ -201,9 +201,13 @@ test('路由：关闭时不装成空数据；读取失败不挡住健康检查',
     deps: world.deps, hub: createStreamHub(), token: null,
     observe: { enabled: true, readers: [{ id: 'connector', list: async () => { throw new Error('读坏了'); }, get: async () => { throw new Error('读坏了'); } }] }
   });
-  assert.equal((await boom.request('/api/observe')).status, 503);
+  for (const path of ['/api/observe', '/api/observe/connector/missing']) {
+    const response = await boom.request(path);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), { error: { code: 'unavailable', message: '运行记录暂时无法读取' } });
+  }
   assert.equal((await boom.request('/api/health')).status, 200);
-  assert.equal((await boom.request('/api/observe/connector/missing')).status, 503);
 });
 
 test('两个团队：别人的触发不进我的列表', async () => {

@@ -1,18 +1,101 @@
 import { useMemo, useState } from 'react';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { api, observeApi, type ObserveBranchDto, type ObserveNodeDto } from './api.ts';
+import { RequestFailed } from './api/http.ts';
 import { formatRoute } from './route.ts';
 import { AppShell, PageBody, PageHeader } from './page-shell.tsx';
 
 /**
  * 可观测（ADR 0033）。只渲染接口契约：实线是父子，虚线是链接。
  * 没有批准、取消、暂停。加载完成之前不说「还没有」。
+ *
+ * 来源由适配器决定，界面不替它们编名字。默认把所有已注册的来源放在一起；
+ * 显式选一个来源时再把 source 传给接口。Agent 回合是第二个本地适配器（source = agent）。
  */
-const time = (ms: number | null) => (ms === null ? '—' : new Date(ms).toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
+const time = (ms: number | null) => {
+  if (ms === null) return '—';
+  const at = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  // 固定 24 小时、不带 AM/PM：手机上时间列不至于折成三行。
+  return `${at.getMonth() + 1}/${at.getDate()} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+};
 const spanText = (ms: number) => {
   const sec = Math.round(ms / 1000);
   if (sec < 60) return `${sec} 秒`;
   return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
+};
+
+const SOURCE_LABEL: Record<string, string> = { connector: '连接器', agent: 'Agent 回合' };
+const SOURCE_OPTIONS: readonly { readonly value: string; readonly label: string }[] = [
+  { value: '', label: '全部' },
+  { value: 'agent', label: 'Agent 回合' },
+  { value: 'connector', label: '连接器' }
+];
+
+/** 原生状态只做兜底翻译：适配器给了中文 stateLabel 就用它的。 */
+const STATE_LABEL: Record<string, string> = {
+  queued: '排队中',
+  sending: '发送中',
+  delivered: '已送达',
+  undelivered: '未送达',
+  cancelled: '已撤回',
+  held: '挂起',
+  waiting: '等待中',
+  posted: '已入群',
+  posting: '入群中',
+  prepared: '已准备',
+  done: '完成',
+  failed: '失败',
+  timeout: '超时',
+  skipped: '跳过',
+  running: '运行中',
+  stopped: '已停止',
+  interrupted: '中断',
+  ready: '就绪',
+  pending: '等待中',
+  approved: '已批准',
+  denied: '已拒绝',
+  none: '无'
+};
+
+const KIND_LABEL: Record<string, string> = {
+  trigger: '触发',
+  task_request: '任务请求',
+  task: '任务',
+  dispatch: '调度',
+  session: '会话',
+  delivery: '送达',
+  sink: '回写',
+  turn: 'Agent 回合',
+  turn_end: '回合结束',
+  message: '消息',
+  reply: '回复',
+  tool: '工具调用',
+  model: '模型调用',
+  error: '错误'
+};
+
+const sourceLabel = (source: string) => SOURCE_LABEL[source] ?? source;
+const kindLabel = (kind: string, source: string) => source === 'agent' && kind === 'sink' ? '回合结果' : KIND_LABEL[kind] ?? kind;
+
+/** 状态文案：中文 stateLabel 优先，其次翻译原生状态；都没有就返回 null（由调用方决定怎么诚实表达）。 */
+function stateText(state: string | null, label: string | null): string | null {
+  if (label && STATE_LABEL[label]) return STATE_LABEL[label];
+  if (label) return label;
+  if (state && STATE_LABEL[state]) return STATE_LABEL[state];
+  return state || null;
+}
+
+const unavailable = (error: unknown, includeNotFound = false) => error instanceof RequestFailed
+  && (error.status === 401 || error.status === 403 || (includeNotFound && error.status === 404));
+
+/** 列表主列：只说状态，不再重复贴原生英文。 */
+const listStateText = (item: { nativeState: string; nativeStateLabel: string }) => stateText(item.nativeState, item.nativeStateLabel) ?? '—';
+
+const emptyText = (source: string) => {
+  if (source === 'agent') return '没有 Agent 回合记录。';
+  if (source === 'connector') return '没有连接器记录。';
+  return '没有记录。';
 };
 
 function attr(node: ObserveNodeDto, key: string) {
@@ -34,7 +117,7 @@ export function ObservePage({ source, id }: { source: string | null; id: string 
         parent={source && id ? { label: '运行记录', href: '#/observe' } : undefined}
       />
       <PageBody wide>
-        {source && id ? <ObserveDetail source={source} id={id} /> : <ObserveList />}
+        {source && id ? <ObserveDetail key={`${source}:${id}`} source={source} id={id} /> : <ObserveList />}
       </PageBody>
     </AppShell>
   );
@@ -43,18 +126,35 @@ export function ObservePage({ source, id }: { source: string | null; id: string 
 function ObserveList() {
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
   const [hours, setHours] = useState(24);
+  const [source, setSource] = useState('');
   const [projectId, setProjectId] = useState('');
   const [needsLook, setNeedsLook] = useState(false);
   const since = useMemo(() => Date.now() - hours * 60 * 60_000, [hours]);
   const list = useQuery({
-    queryKey: ['observe', since, projectId, needsLook],
-    queryFn: () => observeApi.list({ since, projectId: projectId || undefined, needsLook, source: 'connector', limit: 50 }),
-    placeholderData: keepPreviousData,
+    queryKey: ['observe', since, source, projectId, needsLook],
+    queryFn: () => observeApi.list({ since, projectId: projectId || undefined, needsLook, source: source || undefined, limit: 50 }),
+    gcTime: 0,
+    refetchOnMount: 'always',
+    retry: false,
     refetchInterval: 10_000
   });
+  // 每次刷新都等新的响应；错误、换筛选或重新挂载时不展示缓存，避免权限变化后旧数据复现。
+  const accessLost = unavailable(list.error);
+  const data = list.isError || list.isFetching ? undefined : list.data;
+  const items = data?.items ?? [];
+  const mixed = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of items) counts.set(item.source, (counts.get(item.source) ?? 0) + 1);
+    return counts.size > 1 ? [...counts.entries()].map(([key, count]) => `${sourceLabel(key)} ${count}`).join(' · ') : null;
+  }, [items]);
   return (
-    <div data-testid="observe-page">
+    <div data-testid="observe-page" className="min-w-0">
       <div className="mb-3 flex flex-wrap items-center gap-2 text-meta">
+        <label className="text-tertiary">来源
+          <select className="ml-1 bg-transparent text-primary" data-testid="observe-source" value={source} onChange={(e) => setSource(e.target.value)}>
+            {SOURCE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
         <label className="text-tertiary">时间
           <select className="ml-1 bg-transparent text-primary" data-testid="observe-window" value={hours} onChange={(e) => setHours(Number(e.target.value))}>
             <option value={24}>近 24 小时</option>
@@ -72,51 +172,65 @@ function ObserveList() {
           只看失败或缺环
         </label>
       </div>
-      {list.isError ? (
-        <p className="mb-2 text-meta text-rust" data-testid="observe-error">刷新失败 <button className="underline" onClick={() => void list.refetch()}>重试</button></p>
+      {list.isError && !list.isFetching ? (
+        <p className="mb-2 text-meta text-rust" data-testid="observe-error">{accessLost ? '无法查看运行记录，请检查登录状态或访问权限。' : '刷新失败'} <button className="underline" onClick={() => void list.refetch()}>重试</button></p>
       ) : null}
-      {list.isPending ? <div data-testid="observe-loading" className="h-24 rounded-md bg-card" /> : null}
-      {list.data && !list.data.enabled ? <p data-testid="observe-disabled" className="text-meta text-tertiary">运行记录未启用。触发和调度照常进行。</p> : null}
-      {list.data?.viewer === 'anonymous' ? (
+      {list.isFetching ? <div data-testid="observe-loading" role="status" aria-label="正在加载运行记录" className="h-24 rounded-md bg-card" /> : null}
+      {data && !data.enabled ? <p data-testid="observe-disabled" className="text-meta text-tertiary">运行记录未启用。触发和调度照常进行。</p> : null}
+      {data?.viewer === 'anonymous' ? (
         <p data-testid="observe-anonymous" className="mb-2 text-meta text-rust">没有登录。开了账号权限时这里不列出记录，这不是「没有数据」。</p>
       ) : null}
-      {list.data?.enabled && list.data.viewer !== 'anonymous' && list.data.items.length === 0 ? (
-        <p data-testid="observe-empty" className="text-meta text-tertiary">没有记录。<a className="text-link" href="#/bots">查看 Bot</a></p>
+      {mixed ? <p className="mb-2 text-meta text-tertiary" data-testid="observe-mixed">本页混合来源：{mixed}</p> : null}
+      {data?.enabled && data.viewer !== 'anonymous' && items.length === 0 ? (
+        <p data-testid="observe-empty" className="text-meta text-tertiary">{data.truncated ? '已扫描的范围内没有匹配记录。' : emptyText(source)}{!data.truncated && source === 'connector' ? <a className="text-link" href="#/bots">查看 Bot</a> : null}</p>
       ) : null}
-      {list.data?.enabled && list.data.items.length > 0 ? (
-        <table className="w-full border-collapse overflow-hidden rounded-md border border-hair bg-card" data-testid="observe-list">
-          <thead>
-            <tr className="border-b border-hair text-left text-meta text-tertiary">
-              <th className="px-3 py-2 font-normal">时间</th>
-              <th className="px-3 py-2 font-normal">来源</th>
-              <th className="px-3 py-2 font-normal">标题</th>
-              <th className="px-3 py-2 font-normal">状态</th>
-              <th className="px-3 py-2 font-normal">缺口</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {list.data.items.map((item) => (
-              <tr key={item.id} className="border-b border-hair last:border-b-0" data-testid="observe-row" data-state={item.nativeState}>
-                <td className="px-3 py-2 text-meta text-tertiary">{time(item.at)}</td>
-                <td className="px-3 py-2 text-body">{item.source === 'connector' ? '连接器' : item.source}</td>
-                <td className="px-3 py-2 text-body">{item.title}</td>
-                <td className="px-3 py-2 text-meta">{item.nativeStateLabel} <span className="text-tertiary">{item.nativeState}</span></td>
-                <td className="px-3 py-2 text-meta text-secondary">{item.gap ?? '—'}</td>
-                <td className="px-3 py-2 text-right"><a className="text-meta text-link" href={formatRoute({ page: 'observe', source: item.source, id: item.id.slice(item.source.length + 1) })}>打开树</a></td>
+      {data?.enabled && data.viewer !== 'anonymous' && items.length > 0 ? (
+        <div className="overflow-hidden rounded-md border border-hair bg-card">
+          <table className="w-full table-fixed border-collapse" data-testid="observe-list" aria-busy={list.isFetching}>
+            <thead>
+              <tr className="border-b border-hair text-left text-meta text-tertiary">
+                <th className="w-[88px] px-2 py-2 font-normal sm:w-[112px] sm:px-3">时间</th>
+                <th className="hidden px-3 py-2 font-normal sm:table-cell sm:w-[88px]">来源</th>
+                <th className="px-2 py-2 font-normal sm:px-3">标题</th>
+                <th className="w-[72px] px-2 py-2 font-normal sm:w-[104px] sm:px-3">状态</th>
+                <th className="hidden px-3 py-2 font-normal sm:table-cell sm:w-[128px]">缺口</th>
+                <th className="w-[56px] px-2 py-2 font-normal sm:w-[76px] sm:px-3"><span className="sr-only">详情</span></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.id} className="border-b border-hair align-top last:border-b-0" data-testid="observe-row" data-source={item.source} data-state={item.nativeState}>
+                  <td className="px-2 py-2 text-meta leading-tight text-tertiary sm:px-3">{time(item.at)}</td>
+                  <td className="hidden px-3 py-2 text-body sm:table-cell">{sourceLabel(item.source)}</td>
+                  <td className="min-w-0 px-2 py-2 sm:px-3">
+                    <div className="truncate text-body text-primary" title={item.title}>{item.title}</div>
+                    <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-meta text-tertiary sm:hidden">
+                      <span className="shrink-0">{sourceLabel(item.source)}</span>
+                      {item.gap ? <span className="min-w-0 text-warning">缺口：{item.gap}</span> : null}
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 text-meta sm:px-3">
+                    <span className={item.gap ? 'text-warning' : 'text-secondary'}>{listStateText(item)}</span>
+                  </td>
+                  <td className="hidden px-3 py-2 text-meta sm:table-cell">
+                    <span className={item.gap ? 'text-warning' : 'text-secondary'}>{item.gap ?? '—'}</span>
+                  </td>
+                  <td className="px-2 py-2 text-right sm:px-3">
+                    <a className="text-meta text-link" href={formatRoute({ page: 'observe', source: item.source, id: item.id.slice(item.source.length + 1) })}>打开树</a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : null}
-      {list.data?.enabled && list.data.viewer !== 'anonymous' && list.data.truncated ? (
+      {data?.enabled && data.viewer !== 'anonymous' && data.truncated ? (
         <p
           className="mt-2 text-meta text-warning"
           data-testid="observe-scan"
           data-truncated="1"
-          title={`时间窗里先取最近 ${list.data.scanLimit ?? 500} 条，再按「失败或缺环」筛选；更早的失败可能不在这里`}
         >
-          只显示最近 50 条
+          当前时间范围内的结果可能不完整：部分记录未被扫描或未显示。
         </p>
       ) : null}
     </div>
@@ -129,22 +243,28 @@ function ObserveDetail({ source, id }: { source: string; id: string }) {
   const detail = useQuery({
     queryKey: ['observe', source, id],
     queryFn: () => observeApi.get(source, id),
-    placeholderData: keepPreviousData,
-    refetchInterval: 10_000
+    // 不保留上一条记录的树：换了记录就先给加载态，别把另一条链路当成本条。
+    refetchInterval: 10_000,
+    gcTime: 0,
+    refetchOnMount: 'always',
+    retry: false
   });
-  const tree = detail.data?.tree ?? null;
-  const trace = detail.data?.trace ?? null;
+  const accessLost = unavailable(detail.error, true);
+  const data = detail.isError || detail.isFetching ? undefined : detail.data;
+  const tree = data?.tree ?? null;
+  const trace = data?.trace ?? null;
   const picked = selected ?? trace?.headId ?? null;
   const node = trace?.nodes.find((item) => item.id === picked) ?? null;
   return (
-    <div data-testid="observe-detail">
+    <div data-testid="observe-detail" className="min-w-0" aria-busy={detail.isFetching}>
+      <p className="text-meta text-tertiary" data-testid="observe-detail-source">{sourceLabel(source)} · 只读</p>
       <h2 className="text-head text-primary">{trace?.title ?? '链路'}</h2>
-      {detail.isError ? <p className="mt-2 text-meta text-rust" data-testid="observe-error">刷新失败 <button className="underline" onClick={() => void detail.refetch()}>重试</button></p> : null}
-      {detail.isPending ? <div data-testid="observe-loading" className="mt-3 h-24 rounded-md bg-card" /> : null}
-      {detail.data && !detail.data.enabled ? <p data-testid="observe-disabled" className="mt-3 text-meta text-tertiary">运行记录未启用。</p> : null}
+      {detail.isError && !detail.isFetching ? <p className="mt-2 text-meta text-rust" data-testid="observe-error">{accessLost ? '没有可查看的这条记录。' : '加载失败。'} <button className="underline" onClick={() => void detail.refetch()}>重试</button></p> : null}
+      {detail.isFetching ? <div data-testid="observe-loading" role="status" aria-label="正在加载链路" className="mt-3 h-24 rounded-md bg-card" /> : null}
+      {data && !data.enabled ? <p data-testid="observe-disabled" className="mt-3 text-meta text-tertiary">运行记录未启用。</p> : null}
       {tree && trace ? (
         <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <div className="rounded-md border border-hair bg-card p-2" data-testid="observe-tree">
+          <div className="min-w-0 rounded-md border border-hair bg-card p-2" data-testid="observe-tree">
             <p className="px-2 py-1 text-meta text-tertiary">实线是父子。虚线是链接，不是子调用。</p>
             {tree.roots.map((branch) => (
               <Branch key={branch.node.id} branch={branch} depth={0} selected={picked} closed={closed} onSelect={setSelected} onToggle={(nodeId) => setClosed((prev) => {
@@ -160,7 +280,7 @@ function ObserveDetail({ source, id }: { source: string; id: string }) {
             {tree.unrecorded.length ? <p className="mt-2 px-2 text-meta text-tertiary">未记录</p> : null}
             {tree.unrecorded.map((item) => <NodeButton key={item.id} node={item} depth={0} selected={picked === item.id} edge="none" onSelect={setSelected} />)}
           </div>
-          <NodeDetail node={node} externalUrl={trace.externalUrl} />
+          <NodeDetail node={node} externalUrl={trace.externalUrl} source={source} />
         </div>
       ) : null}
     </div>
@@ -191,6 +311,9 @@ function Branch({ branch, depth, selected, closed, onSelect, onToggle }: {
   );
 }
 
+/** 节点状态：有中文标签用中文；没有证据就写「未记录」，不把排队说成缺失。 */
+const nodeStateText = (node: ObserveNodeDto) => stateText(node.state, node.stateLabel) ?? '未记录';
+
 function NodeButton({ node, depth, selected, edge, caret, onSelect, onToggle }: {
   node: ObserveNodeDto; depth: number; selected: boolean; edge: 'parent' | 'link' | 'missing' | 'none';
   caret?: string; onSelect(id: string): void; onToggle?: () => void;
@@ -208,20 +331,21 @@ function NodeButton({ node, depth, selected, edge, caret, onSelect, onToggle }: 
     >
       <span className="w-3 text-meta text-tertiary">{caret || (edge === 'link' ? '┄' : '')}</span>
       <span className="min-w-0 flex-1 truncate text-body">{node.name}</span>
-      <span className="shrink-0 text-meta text-secondary">{node.stateLabel ?? (node.kind === 'sink' ? '未记录' : node.state ?? '')}</span>
+      <span className="shrink-0 text-meta text-secondary">{nodeStateText(node)}</span>
       {node.durationLabel && node.durationMs !== null ? <span className="shrink-0 text-meta text-tertiary">{node.durationLabel} {spanText(node.durationMs)}</span> : null}
     </button>
   );
 }
 
-function NodeDetail({ node, externalUrl }: { node: ObserveNodeDto | null; externalUrl: string | null }) {
-  if (!node) return <aside className="rounded-md border border-hair bg-card p-3 text-meta text-tertiary" data-testid="observe-detail-empty">选一个节点</aside>;
+function NodeDetail({ node, externalUrl, source }: { node: ObserveNodeDto | null; externalUrl: string | null; source: string }) {
+  if (!node) return <aside className="min-w-0 rounded-md border border-hair bg-card p-3 text-meta text-tertiary" data-testid="observe-detail-empty">选一个节点</aside>;
   const href = sessionHref(node);
   const projectId = attr(node, '定义项目');
+  const state = stateText(node.state, node.stateLabel);
   return (
-    <aside className="rounded-md border border-hair bg-card p-3" data-testid="observe-node-detail">
+    <aside className="min-w-0 rounded-md border border-hair bg-card p-3" data-testid="observe-node-detail">
       <h2 className="text-head text-primary">{node.name}</h2>
-      <p className="text-meta text-tertiary">{node.kind}{node.state ? ` · ${node.state}` : ''}</p>
+      <p className="text-meta text-tertiary">{kindLabel(node.kind, source)}{state ? ` · ${state}` : ''}</p>
       <dl className="mt-2 space-y-2">
         <div><dt className="text-meta text-tertiary">开始 / 结束</dt><dd className="text-body">{time(node.startedAt)} → {time(node.endedAt)}</dd></div>
         <div><dt className="text-meta text-tertiary">耗时</dt><dd className="text-body">{node.durationLabel && node.durationMs !== null ? `${node.durationLabel} ${spanText(node.durationMs)}` : '无耗时'}</dd></div>

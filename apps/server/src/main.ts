@@ -11,7 +11,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { createAssetReader } from '@agent-hub/adapter-assets';
-import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createSecretVault, createSqliteAgentObserve, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, ServiceGateway, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
 import { authenticateWorker, withToolAccess,
   createBotUseCase,
@@ -116,6 +116,7 @@ import { createModelDistiller } from './model-distiller.ts';
 import { createApp } from './http.ts';
 import { setupProjectGitProbe } from './project-git-probe-activation.ts';
 import { createConnectorObserveReader } from './observe-connector.ts';
+import { createAgentObserveReader } from './observe-agent.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createTurnFinisher, finishFromJournalTail, type TurnOutcome } from './turn-finish.ts';
 import { wireTools } from './wire-tools.ts';
@@ -1100,11 +1101,17 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   taskArchiveBlockers: createTaskArchiveBlockers(store.db),
   observe: {
     enabled: observeEnabled,
-    readers: observeEnabled ? [createConnectorObserveReader({
-      now: deps.now, projects: deps.projects, sessions: deps.sessions, tasks: deps.tasks,
-      deliveries: store.deliveries, store: store.connectors, requests: store.agentTasks, dispatches: store.dispatches, policy: deps.access
-    })] : []
-  }, 
+    readers: observeEnabled ? [
+      createConnectorObserveReader({
+        now: deps.now, projects: deps.projects, sessions: deps.sessions, tasks: deps.tasks,
+        deliveries: store.deliveries, store: store.connectors, requests: store.agentTasks, dispatches: store.dispatches, policy: deps.access
+      }),
+      createAgentObserveReader({
+        projects: deps.projects, sessions: deps.sessions, tasks: deps.tasks,
+        records: createSqliteAgentObserve(store.db), policy: deps.access
+      })
+    ] : []
+  },
   auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles, agentDefaults: store.agentDefaults }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
   admin: {
     deps: {

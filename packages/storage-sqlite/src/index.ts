@@ -1,6 +1,7 @@
 export { openSqliteStore } from './store.ts';
 export type { SqliteStore } from './store.ts';
 export { createMetadataSearch } from './metadata-search.ts';
+export { createSqliteAgentObserve } from './observe-agent.ts';
 export { SCHEMA } from './schema.ts';
 export { createSecretVault, loadSecretKey, SECRET_SCHEMA } from './secrets.ts';
 export { createSqliteProviders, PROVIDER_SCHEMA } from './providers.ts';

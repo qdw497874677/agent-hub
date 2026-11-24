@@ -25,6 +25,7 @@ function viewerOf(subject: Subject | null): 'anonymous' | 'user' | 'system' {
 export function installObserveRoutes(app: Hono<any>, options: ObserveRouteOptions, subjectOf: SubjectOf): void {
   const subject = (c: Context): Subject | null => subjectOf(c);
   app.get('/api/observe', async (c) => {
+    c.header('Cache-Control', 'no-store');
     if (!options.enabled) return c.json({ enabled: false, truncated: false, items: [] });
     const since = Number(c.req.query('since') ?? Date.now() - DAY);
     if (!Number.isFinite(since)) return fail(c, { code: 'invalid', message: 'since 要是毫秒时间' });
@@ -49,11 +50,12 @@ export function installObserveRoutes(app: Hono<any>, options: ObserveRouteOption
       const truncated = parts.some((part) => part.truncated) || parts.reduce((n, part) => n + part.items.length, 0) > limit;
       const scanLimit = parts.reduce((max, part) => Math.max(max, part.scanLimit ?? 0), 0);
       return c.json({ enabled: true, truncated, viewer, scanLimit: scanLimit || null, items });
-    } catch (error) {
-      return fail(c, { code: 'unavailable', message: error instanceof Error ? error.message : '可观测暂时读不了' });
+    } catch {
+      return fail(c, { code: 'unavailable', message: '运行记录暂时无法读取' });
     }
   });
   app.get('/api/observe/:source/:id', async (c) => {
+    c.header('Cache-Control', 'no-store');
     if (!options.enabled) return c.json({ enabled: false, trace: null, tree: null });
     if (viewerOf(subject(c)) === 'anonymous') return fail(c, { code: 'forbidden', message: '请先登录' });
     const reader = options.readers.find((item) => item.id === c.req.param('source'));
@@ -62,8 +64,8 @@ export function installObserveRoutes(app: Hono<any>, options: ObserveRouteOption
       const trace = await reader.get(c.req.param('id'), subject(c));
       if (!trace) return fail(c, { code: 'not_found', message: '没有这条记录' });
       return c.json({ enabled: true, trace, tree: buildTree(trace) });
-    } catch (error) {
-      return fail(c, { code: 'unavailable', message: error instanceof Error ? error.message : '可观测暂时读不了' });
+    } catch {
+      return fail(c, { code: 'unavailable', message: '运行记录暂时无法读取' });
     }
   });
 }
