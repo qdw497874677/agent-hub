@@ -25,6 +25,15 @@ const spanText = (ms: number) => {
   return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
 };
 
+// 证据的记录时间是一个时间点，不是执行的起止或耗时。
+const recordedTime = (value: string) => {
+  if (!/^\d+$/.test(value)) return '未记录';
+  const at = new Date(Number(value));
+  if (Number.isNaN(at.getTime())) return '未记录';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+};
+
 const SOURCE_LABEL: Record<string, string> = { connector: '连接器', agent: 'Agent 回合', dispatch: '调度', delegation: '派工', message: '会话通信', machine: '机器连接' };
 const SOURCE_OPTIONS: readonly { readonly value: string; readonly label: string }[] = [
   { value: '', label: '全部' },
@@ -68,6 +77,8 @@ const KIND_LABEL: Record<string, string> = {
   task: '任务',
   dispatch: '调度',
   delegation: '派工',
+  'delegation-acceptance': '验收记录',
+  'delegation-publish-attempt': '发布尝试',
   machine_connection: '机器连接',
   machine_install_report: '安装报告',
   session: '会话',
@@ -355,15 +366,16 @@ function NodeDetail({ node, externalUrl, source }: { node: ObserveNodeDto | null
   const href = sessionHref(node);
   const projectId = attr(node, '定义项目');
   const state = stateText(node.state, node.stateLabel);
+  const evidence = node.kind === 'delegation-acceptance' || node.kind === 'delegation-publish-attempt';
   return (
     <aside className="min-w-0 rounded-md border border-hair bg-card p-3" data-testid="observe-node-detail">
       <h2 className="text-head text-primary">{node.name}</h2>
       <p className="text-meta text-tertiary">{kindLabel(node.kind, source)}{state ? ` · ${state}` : ''}</p>
       <dl className="mt-2 space-y-2">
-        <div><dt className="text-meta text-tertiary">开始 / 结束</dt><dd className="text-body">{time(node.startedAt)} → {time(node.endedAt)}</dd></div>
-        <div><dt className="text-meta text-tertiary">耗时</dt><dd className="text-body">{node.durationLabel && node.durationMs !== null ? `${node.durationLabel} ${spanText(node.durationMs)}` : '无耗时'}</dd></div>
+        {!evidence ? <><div><dt className="text-meta text-tertiary">开始 / 结束</dt><dd className="text-body">{time(node.startedAt)} → {time(node.endedAt)}</dd></div>
+        <div><dt className="text-meta text-tertiary">耗时</dt><dd className="text-body">{node.durationLabel && node.durationMs !== null ? `${node.durationLabel} ${spanText(node.durationMs)}` : '无耗时'}</dd></div></> : null}
         {node.attrs.map((item) => (
-          <div key={item.key}><dt className="text-meta text-tertiary">{item.key}</dt><dd className="break-all text-body">{item.value}</dd></div>
+          <div key={item.key}><dt className="text-meta text-tertiary">{item.key}</dt><dd className="break-all text-body">{evidence && item.key === '记录时间' ? recordedTime(item.value) : item.value}</dd></div>
         ))}
       </dl>
       {href ? <a className="mt-3 inline-block text-meta text-link" href={href}>打开会话</a> : null}

@@ -5,10 +5,66 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSqliteDelegationPublishAttempts } from './workspace-delegation-publish.ts';
+import { createSqliteWorkObserve } from './observe-work.ts';
+import { createSqliteTaskDispatch } from './task-dispatch.ts';
+import { createSqliteWorkspaceDelegations } from './workspace-delegation.ts';
+import { createSqliteDelegationAcceptances } from './delegation-acceptance.ts';
 
 const SHA = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
 const OTHER = 'c'.repeat(40);
+
+test('legacy migration persists private random observation identities across CAS and rowid-changing rebuild', async () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, deleted_at INTEGER);
+      CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id TEXT);
+      CREATE TABLE delegation_publish_attempt (
+        delegation_id TEXT NOT NULL, approval_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        head_sha TEXT NOT NULL, state TEXT NOT NULL, claim_owner TEXT, claim_token TEXT,
+        claim_at INTEGER, claim_expires_at INTEGER, failure_kind TEXT, failure_message TEXT,
+        failure_at INTEGER, remote_json TEXT, pull_request_json TEXT, created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL, PRIMARY KEY (delegation_id, approval_key));`);
+    createSqliteTaskDispatch(db);
+    createSqliteWorkspaceDelegations(db);
+    createSqliteDelegationAcceptances(db);
+    const insert = db.prepare(`INSERT INTO delegation_publish_attempt
+      (delegation_id, approval_key, fingerprint, head_sha, state, created_at, updated_at)
+      VALUES (?, ?, 'secret-fingerprint', ?, 'failed', 1, 1)`);
+    insert.run('discard', 'secret-discard', SHA);
+    insert.run('d1', 'secret-first', SHA);
+    insert.run('d1', 'secret-second', SHA);
+    db.exec("DELETE FROM delegation_publish_attempt WHERE delegation_id = 'discard'");
+    const store = createSqliteDelegationPublishAttempts(db);
+    createSqliteDelegationPublishAttempts(db); // idempotent migration
+    const observe = createSqliteWorkObserve(db);
+    const before = observe.evidence('d1').attempts;
+    assert.equal(before.length, 2);
+    assert.equal(new Set(before.map((r) => r.nodeIdentity)).size, 2);
+    assert.ok(before.every((r) => /^[0-9a-f]{32}$/.test(r.nodeIdentity) && r.sha === SHA));
+    assert.doesNotMatch(JSON.stringify(before), /secret/);
+    const rowsBefore = db.prepare('SELECT rowid, observe_id FROM delegation_publish_attempt ORDER BY rowid').all() as { rowid: number; observe_id: string }[];
+    const change = await store.compareAndSet({ delegationId: 'd1', approvalKey: 'secret-first', expect: { state: 'failed', claimToken: null }, state: 'uncertain', at: 20 });
+    assert.equal(change.ok, true);
+    const schema = (db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'delegation_publish_attempt'").get() as { sql: string }).sql;
+    db.exec(`${schema.replace('CREATE TABLE delegation_publish_attempt', 'CREATE TABLE publish_rebuilt')};
+      INSERT INTO publish_rebuilt SELECT * FROM delegation_publish_attempt ORDER BY rowid;
+      DROP TABLE delegation_publish_attempt;
+      ALTER TABLE publish_rebuilt RENAME TO delegation_publish_attempt`);
+    createSqliteDelegationPublishAttempts(db);
+    const rowsAfter = db.prepare('SELECT rowid, observe_id FROM delegation_publish_attempt ORDER BY rowid').all() as { rowid: number; observe_id: string }[];
+    assert.notDeepEqual(rowsAfter.map((r) => r.rowid), rowsBefore.map((r) => r.rowid));
+    assert.deepEqual(rowsAfter.map((r) => r.observe_id), rowsBefore.map((r) => r.observe_id));
+    assert.deepEqual(new Set(observe.evidence('d1').attempts.map((r) => r.nodeIdentity)), new Set(before.map((r) => r.nodeIdentity)));
+    assert.throws(() => db.prepare("UPDATE delegation_publish_attempt SET observe_id = ? WHERE approval_key = 'secret-second'").run(rowsBefore[0]!.observe_id), /UNIQUE/);
+    const created = await store.insert(attempt({ delegationId: 'new', approvalKey: 'secret-new' }));
+    assert.equal(created.outcome, 'created');
+    const newId = (db.prepare("SELECT observe_id FROM delegation_publish_attempt WHERE delegation_id = 'new'").get() as { observe_id: string }).observe_id;
+    assert.match(newId, /^[0-9a-f]{32}$/);
+    assert.ok(!rowsBefore.some((r) => r.observe_id === newId));
+    assert.equal(Object.hasOwn(created.attempt, 'observeId'), false);
+  } finally { db.close(); }
+});
 
 const claim = (token: string, at: number, ttlMs = 300) => ({ owner: 'u1', token, at, expiresAt: at + ttlMs });
 

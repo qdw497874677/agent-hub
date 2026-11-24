@@ -2,14 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { asLoginId, asProjectId, asSessionId, asTaskId, asTeamId, asUserId, authorizeProject, type AccessPolicy, type BotId, type Principal, type Project, type Session, type Subject } from '@agent-hub/domain';
 import type { ObserveTrace } from '@agent-hub/observe';
-import { createWorkObserveReaders, type WorkObserveRecord } from './observe-work.ts';
+import { createWorkObserveReaders, type WorkObserveEvidence, type WorkObserveRecord } from './observe-work.ts';
 
 const subject = { user: { id: 'u' } } as Subject;
 const project = { id: 'p', deletedAt: null } as Project;
 const base: WorkObserveRecord = { id: 'd', accountId: 'u', projectId: 'p', taskId: 't', sessionId: 's', state: 'running', createdAt: 100, notified: true };
 const query = { since: 0, source: null, projectId: null, needsLook: false, limit: 10 };
 
-function world(row: WorkObserveRecord = base, options: { taskProject?: string; session?: Partial<Session> | null; sessionError?: boolean; deleted?: boolean; policy?: AccessPolicy } = {}) {
+function world(row: WorkObserveRecord = base, options: { taskProject?: string; session?: Partial<Session> | null; sessionError?: boolean; deleted?: boolean; policy?: AccessPolicy; evidence?: { acceptances: WorkObserveEvidence[]; attempts: WorkObserveEvidence[] } } = {}) {
   const p = { ...project, teamId: 'team', createdBy: 'u', members: [], deletedAt: options.deleted ? 1 : null } as Project;
   const session = options.session === null ? null : { id: 's', taskId: 't', originProjectId: 'p', createdBy: 'u', ...options.session } as Session;
   const calls: unknown[] = [];
@@ -17,7 +17,7 @@ function world(row: WorkObserveRecord = base, options: { taskProject?: string; s
     projects: { list: async () => [p], byId: async (id) => id === p.id ? p : null },
     tasks: { byId: async () => ({ id: 't', projectId: options.taskProject ?? 'p' }) as never },
     sessions: { byId: async () => { if (options.sessionError) throw new Error('private lookup error'); return session; } },
-    records: { list: (_kind, input) => { calls.push(input); return [row]; }, byId: (_kind, _id, owner) => { calls.push(owner); return row; } },
+    records: { list: (_kind, input) => { calls.push(input); return [row]; }, byId: (_kind, _id, owner) => { calls.push(owner); return row; }, evidence: (id) => { calls.push(`evidence:${id}`); return options.evidence ?? { acceptances: [], attempts: [] }; } },
     policy: options.policy
   });
   return { dispatch: readers[0]!, delegation: readers[1]!, calls };
@@ -130,4 +130,46 @@ test('delegation prepared is not completion, uncertain is distinct and actionabl
   const uncertain = world({ ...prepared, state: 'uncertain' }).delegation;
   assert.equal((await uncertain.list({ ...query, needsLook: true }, subject)).items[0]?.gap, '结果不确定');
   assert.equal(await world({ ...prepared, state: 'secret' }).delegation.get('d', subject), null);
+});
+
+test('detail evidence is bounded, exact, independently validated, and gated by native execution authorization', async () => {
+  const row = { ...base, state: 'prepared', notified: null };
+  const policy: AccessPolicy = { context: async () => ({ hubTeamId: 'team', settings: { membersCanAddMachines: true } }), worker: async () => ({ teamId: 'team' }) };
+  const human: Principal = { loginId: asLoginId('login'), user: { id: asUserId('u'), email: 'u@example.test', displayName: 'u', role: 'member', teamId: asTeamId('team'), clusterAdmin: false, disabledAt: null, deletedAt: null, emailVerifiedAt: 0, passwordHash: null, createdAt: 0 } };
+  const sha = 'a'.repeat(40);
+  const id = (n: number) => n.toString(16).padStart(32, '0');
+  const evidence = { acceptances: Array.from({ length: 21 }, (_, i) => ({ nodeIdentity: String(i + 1), delegationId: 'd', sha, state: 'accepted', recordedAt: 100 })), attempts: [
+    { nodeIdentity: id(1), delegationId: 'd', sha, state: 'uncertain', recordedAt: 101 },
+    { nodeIdentity: id(2), delegationId: 'd', sha, state: 'failed', recordedAt: 102 },
+    { nodeIdentity: id(3), delegationId: 'other', sha, state: 'published', recordedAt: 103 },
+    { nodeIdentity: id(4), delegationId: 'd', sha: 'bad', state: 'published', recordedAt: 103 },
+    { nodeIdentity: 'secret-approval-key', delegationId: 'd', sha, state: 'published', recordedAt: 103 },
+    { nodeIdentity: id(5), delegationId: 'd', sha, state: 'secret', recordedAt: 103 },
+    { nodeIdentity: id(6), delegationId: 'd', sha, state: 'published', recordedAt: -1 },
+    { nodeIdentity: null as unknown as string, delegationId: 'd', sha, state: 'published', recordedAt: 103 }
+  ] };
+  const w = world(row, { policy, evidence });
+  await w.delegation.list(query, human);
+  assert.ok(!w.calls.includes('evidence:d'));
+  const trace = await w.delegation.get('d', human);
+  assert.equal(trace?.nodes.length, 23);
+  assert.ok(trace?.nodes[0]?.attrs.some((a) => a.key === '验收记录' && a.value === '已截断'));
+  assert.equal(trace?.nodes.filter((n) => n.kind === 'delegation-publish-attempt').length, 2);
+  assert.equal(trace?.nodes.find((n) => n.state === 'uncertain')?.stateLabel, '结果不确定');
+  assert.ok(trace?.nodes.slice(1).every((n) => n.parentId === 'delegation:d' && n.links.length === 0));
+  assert.doesNotMatch(JSON.stringify(trace), /secret|other/);
+  for (const options of [{ session: null }, { session: { taskId: asTaskId('other') } }, { session: { createdBy: asUserId('other') } }, { session: { botId: 'bot' as BotId } }, { session: { kind: 'side' as const } }, { session: { parentSessionId: asSessionId('parent') } }, { session: { originProjectId: asProjectId('other') } }, { sessionError: true }, { deleted: true }, { taskProject: 'other' }]) {
+    const denied = world(row, { policy, evidence, ...options });
+    await denied.delegation.get('d', human);
+    assert.ok(!denied.calls.includes('evidence:d'));
+  }
+  const token: Principal = { ...human, via: { tokenId: 'token', name: 'token', kind: 'personal', permissions: ['project.read', 'task.read', 'session.read'] } };
+  const denied = world(row, { policy, evidence });
+  await denied.delegation.get('d', token);
+  assert.ok(!denied.calls.includes('evidence:d'));
+  let contextCalls = 0;
+  const sessionDenied: AccessPolicy = { ...policy, context: async () => { if (++contextCalls > 1) throw Error('private'); return policy.context(); } };
+  const failed = world(row, { policy: sessionDenied, evidence });
+  await failed.delegation.get('d', human);
+  assert.ok(!failed.calls.includes('evidence:d'));
 });

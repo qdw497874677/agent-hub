@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { randomBytes } from 'node:crypto';
 import type {
   DelegationPublishStore,
   PublishAttempt,
@@ -37,8 +38,25 @@ export function createSqliteDelegationPublishAttempts(db: DatabaseSync): Delegat
     pull_request_json TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    observe_id TEXT,
     PRIMARY KEY (delegation_id, approval_key))`);
   db.exec('CREATE INDEX IF NOT EXISTS delegation_publish_attempt_delegation ON delegation_publish_attempt(delegation_id, updated_at)');
+
+  // Serialize schema change, uniqueness enforcement and backfill as one unit. SAVEPOINT
+  // also works when store initialization is invoked inside an existing transaction.
+  db.exec('SAVEPOINT publish_observe_id_migration');
+  try {
+    const columns = db.prepare('PRAGMA table_info(delegation_publish_attempt)').all() as { name: string }[];
+    if (!columns.some((column) => column.name === 'observe_id')) {
+      db.exec('ALTER TABLE delegation_publish_attempt ADD COLUMN observe_id TEXT');
+    }
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS delegation_publish_attempt_observe_id ON delegation_publish_attempt(observe_id);
+      UPDATE delegation_publish_attempt SET observe_id = lower(hex(randomblob(16))) WHERE observe_id IS NULL`);
+    db.exec('RELEASE publish_observe_id_migration');
+  } catch (error) {
+    db.exec('ROLLBACK TO publish_observe_id_migration; RELEASE publish_observe_id_migration');
+    throw error;
+  }
 
   type Row = {
     delegation_id: string;
@@ -109,8 +127,8 @@ export function createSqliteDelegationPublishAttempts(db: DatabaseSync): Delegat
       delegation_id, approval_key, fingerprint, head_sha, state,
       claim_owner, claim_token, claim_at, claim_expires_at,
       failure_kind, failure_message, failure_at, remote_json, pull_request_json,
-      created_at, updated_at)
-    SELECT ?, ?, ?, ?, 'publishing', ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?
+      created_at, updated_at, observe_id)
+    SELECT ?, ?, ?, ?, 'publishing', ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?
     WHERE NOT EXISTS (
       SELECT 1 FROM delegation_publish_attempt WHERE delegation_id = ? AND approval_key = ?)
       AND NOT EXISTS (
@@ -137,6 +155,7 @@ export function createSqliteDelegationPublishAttempts(db: DatabaseSync): Delegat
         input.claim.expiresAt,
         input.at,
         input.at,
+        randomBytes(16).toString('hex'),
         input.delegationId,
         input.approvalKey,
         input.delegationId

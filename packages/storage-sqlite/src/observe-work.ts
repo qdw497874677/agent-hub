@@ -19,6 +19,14 @@ export interface WorkObserveListInput {
   readonly limit: number;
 }
 
+export interface WorkObserveEvidence {
+  readonly nodeIdentity: string;
+  readonly delegationId: string;
+  readonly sha: string;
+  readonly state: string;
+  readonly recordedAt: number;
+}
+
 type Row = { id: string; account_id: string; project_id: string; task_id: string; session_id: string | null; state: string; created_at: number; notified: number | null };
 const mapRow = (r: Row): WorkObserveRecord => ({ id: r.id, accountId: r.account_id, projectId: r.project_id, taskId: r.task_id, sessionId: r.session_id, state: r.state, createdAt: r.created_at, notified: r.notified === null ? null : r.notified === 1 });
 
@@ -43,6 +51,18 @@ export function createSqliteWorkObserve(db: DatabaseSync) {
     byId: db.prepare(`${select(kind)} AND w.id = ?`)
   }])) as Record<WorkObserveKind, { list: ReturnType<DatabaseSync['prepare']>; byId: ReturnType<DatabaseSync['prepare']> }>;
   return {
+    evidence(delegationId: string): { readonly acceptances: readonly WorkObserveEvidence[]; readonly attempts: readonly WorkObserveEvidence[] } {
+      // seq is a declared INTEGER PRIMARY KEY, unlike the publish table's hidden rowid.
+      // Both scans use existing history indexes; never select a request/approval key.
+      const acceptanceRows = db.prepare(`SELECT seq, delegation_id AS delegationId, sha,
+          'accepted' AS state, created_at AS recordedAt FROM delegation_acceptance
+        WHERE delegation_id = ? ORDER BY seq DESC LIMIT 21`).all(delegationId) as unknown as (Omit<WorkObserveEvidence, 'nodeIdentity'> & { seq: number })[];
+      const acceptances = acceptanceRows.map(({ seq, ...row }) => ({ ...row, nodeIdentity: Number.isSafeInteger(seq) && seq > 0 ? String(seq) : '' }));
+      const attempts = db.prepare(`SELECT observe_id AS nodeIdentity, delegation_id AS delegationId, head_sha AS sha,
+          state, updated_at AS recordedAt FROM delegation_publish_attempt
+        WHERE delegation_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 21`).all(delegationId) as unknown as WorkObserveEvidence[];
+      return { acceptances, attempts };
+    },
     list(kind: WorkObserveKind, input: WorkObserveListInput): readonly WorkObserveRecord[] {
       if (!input.accountId || !input.projectIds.length) return [];
       const since = Number.isFinite(input.since) ? Math.trunc(input.since) : 0;

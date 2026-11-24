@@ -17,7 +17,23 @@ type Awaitable<T> = T | Promise<T>;
 export interface WorkObserveRecords {
   list(kind: WorkObserveKind, input: { readonly accountId: string; readonly projectIds: readonly string[]; readonly since: number; readonly limit: number }): Awaitable<readonly WorkObserveRecord[]>;
   byId(kind: WorkObserveKind, id: string, accountId: string): Awaitable<WorkObserveRecord | null>;
+  evidence?(delegationId: string): Awaitable<{ readonly acceptances: readonly WorkObserveEvidence[]; readonly attempts: readonly WorkObserveEvidence[] }>;
 }
+export interface WorkObserveEvidence {
+  readonly nodeIdentity: string;
+  readonly delegationId: string;
+  readonly sha: string;
+  readonly state: string;
+  readonly recordedAt: number;
+}
+const EVIDENCE_LIMIT = 20;
+const publishLabels: Readonly<Record<string, string>> = { publishing: '发布中', published: '已发布', failed: '失败', uncertain: '结果不确定' };
+const validEvidence = (row: WorkObserveEvidence, delegationId: string, acceptance: boolean): boolean =>
+  !!row && row.delegationId === delegationId && typeof row.nodeIdentity === 'string' &&
+  (acceptance ? /^[1-9][0-9]*$/.test(row.nodeIdentity) && Number.isSafeInteger(Number(row.nodeIdentity)) : /^[0-9a-f]{32}$/.test(row.nodeIdentity)) &&
+  typeof row.sha === 'string' && /^[0-9a-f]{40}$/.test(row.sha) &&
+  Number.isSafeInteger(row.recordedAt) && row.recordedAt >= 0 && row.recordedAt <= 8_640_000_000_000_000 &&
+  (acceptance ? row.state === 'accepted' : typeof row.state === 'string' && Object.hasOwn(publishLabels, row.state));
 export interface WorkObserveDeps {
   readonly records: WorkObserveRecords;
   readonly projects: Pick<Deps['projects'], 'list' | 'byId'>;
@@ -73,15 +89,31 @@ export function createWorkObserveReaders(deps: WorkObserveDeps): readonly Observ
         }
       }
       const headId = `${kind}:${row.id}`;
+      const evidence = kind === 'delegation' && sessionId && deps.records.evidence ? await deps.records.evidence(row.id) : null;
+      const children: ObserveTrace['nodes'][number][] = [];
+      if (evidence) {
+        for (const [acceptance, rows] of [[true, evidence.acceptances], [false, evidence.attempts]] as const) {
+          for (const item of rows.slice(0, EVIDENCE_LIMIT)) {
+            if (!validEvidence(item, row.id, acceptance)) continue;
+            const childKind = acceptance ? 'delegation-acceptance' : 'delegation-publish-attempt';
+            children.push({ id: `${childKind}:${item.nodeIdentity}`, name: acceptance ? '验收记录' : '发布尝试', kind: childKind,
+              state: item.state, stateLabel: acceptance ? '已验收' : publishLabels[item.state]!,
+              startedAt: null, endedAt: null, durationMs: null, durationLabel: null, parentId: headId, links: [],
+              attrs: [{ key: 'SHA', value: item.sha }, { key: '记录时间', value: String(item.recordedAt) }] });
+          }
+        }
+      }
       return { id: headId, source: kind, headId, title, projectId: project.id, externalUrl: null, nodes: [{
         id: headId, name: title, kind, state: row.state, stateLabel: labels[kind][row.state]!,
         startedAt: null, endedAt: null, durationMs: null, durationLabel: null, parentId: null, links: [],
         attrs: [
           { key: '项目', value: project.id },
           ...(sessionId ? [{ key: '会话', value: sessionId }] : []),
-          ...(kind === 'dispatch' ? [{ key: '通知', value: row.notified ? '通知标记已置位（不代表收到或已发送）' : '通知标记未置位' }] : [{ key: '说明', value: row.state === 'uncertain' ? '结果不确定' : '准备状态不代表 Agent 已完成' }])
+          ...(kind === 'dispatch' ? [{ key: '通知', value: row.notified ? '通知标记已置位（不代表收到或已发送）' : '通知标记未置位' }] : [{ key: '说明', value: row.state === 'uncertain' ? '结果不确定' : '准备状态不代表 Agent 已完成' }]),
+          ...(evidence && evidence.acceptances.length > EVIDENCE_LIMIT ? [{ key: '验收记录', value: '已截断' }] : []),
+          ...(evidence && evidence.attempts.length > EVIDENCE_LIMIT ? [{ key: '发布尝试', value: '已截断' }] : [])
         ]
-      }] };
+      }, ...children] };
     };
     return {
       id: kind,

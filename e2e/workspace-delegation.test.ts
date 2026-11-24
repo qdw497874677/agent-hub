@@ -687,6 +687,26 @@ test('人走 HTTP：派工 → 真提交 → 批准 exact SHA → 真 push + 草
   });
   assert.equal(staleAcceptance.status, 409, '旧 SHA 不得新增验收');
 
+  // 运行记录只读已落库的事实：HEAD 已前移，两个证据仍指向原批准提交；读详情不触发远端操作。
+  const remoteRequests = w.origin.requests.length;
+  const evidence = await json<{ trace: { nodes: { id: string; state: string | null; parentId: string | null; links: { to: string }[]; attrs: { value: string }[] }[] } }>(
+    await request(ctx, `/api/observe/delegation/${view.id}`), '读取验收与发布的运行记录'
+  );
+  const revisionNodes = evidence.trace.nodes.filter((node) => node.attrs.some((attr) => attr.value === committed.sha));
+  assert.equal(revisionNodes.length, 2, '验收与发布应是两条独立的同版本记录');
+  assert.equal(revisionNodes.filter((node) => node.state === 'published').length, 1);
+  for (const node of revisionNodes) {
+    const sibling = revisionNodes.find((other) => other.id !== node.id)!;
+    assert.notEqual(node.parentId, sibling.id, '同一 SHA 不代表验收触发了发布');
+    assert.ok(node.links.every((link) => link.to !== sibling.id), '不能推测二者的因果关联');
+  }
+  const evidenceText = JSON.stringify(evidence);
+  for (const omitted of [newerHead, acceptanceBody.requestKey, acceptanceBody.note, 'approve-1']) {
+    assert.ok(!evidenceText.includes(omitted), '运行记录不应暴露实时 HEAD、人工备注或请求键');
+  }
+  assert.equal(w.origin.requests.length, remoteRequests, '看历史不应再访问 Git 远端');
+  assert.equal(w.github.created.length, 1, '看历史不应触发发布');
+
   // 源仓库完全没被派工碰过
   assert.deepEqual(await snapshot(w.source), sourceBefore, '源仓库的 HEAD / 分支 / 工作区应保持不变');
   assert.equal((await branchesOf(w.bare)).includes('main'), true);

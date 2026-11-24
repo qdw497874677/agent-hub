@@ -190,6 +190,58 @@ test('调度、派工与会话通信可按来源筛选，详情保留服务端�
   expect(requested).toContain('message');
 });
 
+test('派工证据分别显示验收和发布尝试，不推断关联', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  const otherSha = 'abcdef0123456789abcdef0123456789abcdef01';
+  const recordedAt = 1715358896000;
+  const root = node({ id: 'delegation:w-1', name: '工作空间派工', kind: 'delegation', state: 'prepared', stateLabel: '已准备', attrs: [{ key: '发布尝试', value: '已截断' }] });
+  const acceptance = node({ id: 'acceptance-1', name: '验收记录', kind: 'delegation-acceptance', state: 'accepted', stateLabel: '已验收', parentId: root.id, attrs: [{ key: 'SHA', value: sha }, { key: '记录时间', value: String(recordedAt) }] });
+  const uncertain = node({ id: 'attempt-1', name: '发布尝试', kind: 'delegation-publish-attempt', state: 'uncertain', stateLabel: '结果不确定', parentId: root.id, attrs: [{ key: 'SHA', value: sha }, { key: '记录时间', value: String(recordedAt + 1000) }] });
+  const failed = node({ id: 'attempt-2', name: '发布尝试', kind: 'delegation-publish-attempt', state: 'failed', stateLabel: '失败', parentId: root.id, attrs: [{ key: 'SHA', value: otherSha }, { key: '记录时间', value: String(recordedAt + 2000) }] });
+  await page.route(/\/api\/observe\/delegation\/[^/?]+/, (route) => route.fulfill({ json: {
+    enabled: true,
+    trace: { id: root.id, source: 'delegation', headId: root.id, title: root.name, projectId: null, externalUrl: null, nodes: [root, acceptance, uncertain, failed] },
+    tree: { roots: [{ node: root, children: [acceptance, uncertain, failed].map((entry) => ({ node: entry, children: [], links: [] })), links: [] }], missingParent: [], unlinked: [], unrecorded: [] }
+  } }));
+  await loginByApi(page);
+  await page.goto('/#/observe/delegation/w-1');
+  const tree = page.getByTestId('observe-tree');
+  const detail = page.getByTestId('observe-node-detail');
+  await expect(detail).toContainText('已截断');
+  await expect(tree.getByTestId('observe-link')).toHaveCount(0);
+  await expect(tree.getByTestId('observe-node')).toHaveCount(4);
+  const attempts = tree.locator('[data-kind="delegation-publish-attempt"]');
+  await expect(attempts.nth(0)).toContainText('结果不确定');
+  await expect(attempts.nth(0)).not.toContainText('失败');
+  await expect(attempts.nth(1)).toContainText('失败');
+  for (const [expectedKind, expectedState, expectedSha, millis] of [
+    ['验收记录', '已验收', sha, recordedAt],
+    ['发布尝试', '结果不确定', sha, recordedAt + 1000]
+  ] as const) {
+    // 选取证据节点，不把同 SHA 当作节点之间的链接。
+    if (expectedKind === '验收记录') await tree.locator('[data-kind="delegation-acceptance"]').click();
+    else await attempts.nth(0).click();
+    await expect(detail.locator('p').first()).toHaveText(`${expectedKind} · ${expectedState}`);
+    await expect(detail.locator('div').filter({ has: page.getByText('SHA', { exact: true }) }).locator('dd')).toHaveText(expectedSha);
+    const expectedTime = await page.evaluate((ms) => {
+      const date = new Date(ms);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+    }, millis);
+    const timeRow = detail.locator('div').filter({ has: page.getByText('记录时间', { exact: true }) });
+    await expect(timeRow.locator('dd')).toHaveText(expectedTime);
+    await expect(detail).not.toContainText(String(millis));
+    await expect(detail).not.toContainText(/开始|结束|耗时/);
+    await expect(detail.getByRole('button')).toHaveCount(0);
+    await expect(detail.getByRole('link')).toHaveCount(0);
+  }
+  await attempts.nth(1).click();
+  await expect(detail.locator('p').first()).toHaveText('发布尝试 · 失败');
+  await expect(detail).toContainText(otherSha);
+  await expect(tree.getByTestId('observe-link')).toHaveCount(0);
+});
+
 test('显式选 Agent 回合时把 source 传给接口，并只画 Agent 记录', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const requested: string[] = [];
