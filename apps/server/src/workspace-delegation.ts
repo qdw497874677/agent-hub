@@ -30,6 +30,7 @@ import {
   type DelegationCoordinator,
   type DelegationDirectAuthorizer,
   type DelegationDirectSource,
+  type DelegationDirectSourceRejection,
   type DelegationEffectResult,
   type DelegationLinkInput,
   type DelegationLinked,
@@ -86,6 +87,19 @@ function humanOf(subject: Subject | null): Principal | null {
   const principal = principalOfSubject(subject);
   if (!principal || principal.via) return null;
   return principal;
+}
+
+/**
+ * SSH 传输的两种注册形式：`ssh://...` 与 scp 形式 `user@host:path`。
+ *
+ * 这里只做「这是不是 SSH 传输」的粗判，具体文法 / 规范化由严格 Worker 的解析器负责；
+ * 缓存 origin 的比对则保守地要求原文一致，不做 scheme / 端口 / userinfo 改写。
+ */
+function isSshRepoUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (trimmed === '' || /\s/.test(trimmed)) return false;
+  if (/^ssh:\/\//i.test(trimmed)) return true;
+  return /^[^@/\s]+@[^:/\s]+:/.test(trimmed);
 }
 
 /** 两条车道共享的来源上下文：源会话、它所在的长期工作空间、以及服务端绑定的项目。 */
@@ -149,36 +163,64 @@ async function coordinatorContext(
  *
  * 仍然要求来源会话的长期工作空间可用、属于同一项目、Worker 一致；但不要求登记为主会话。
  */
-async function directContext(deps: DelegationDeps, sessionId: string): Promise<DelegationSourceContext | null> {
+interface DirectContextResult {
+  readonly context: DelegationSourceContext | null;
+  /** 只有明确按「当前主人」询问、且会话归属确实匹配时才有值。 */
+  readonly rejection: DelegationDirectSourceRejection | null;
+}
+
+const NEUTRAL_DIRECT_CONTEXT: DirectContextResult = { context: null, rejection: null };
+
+async function directContext(
+  deps: DelegationDeps,
+  sessionId: string,
+  explainToAccountId: string | null = null
+): Promise<DirectContextResult> {
   const session = await deps.sessions.byId(asSessionId(sessionId));
-  if (!session) return null;
-  if ((session.createdBy ?? '').trim() === '') return null;
-  if ((session.botId ?? null) !== null) return null;
-  if ((session.parentSessionId ?? null) !== null || session.kind === 'side') return null;
+  if (!session) return NEUTRAL_DIRECT_CONTEXT;
+  const owner = (session.createdBy ?? '').trim();
+  if (owner === '') return NEUTRAL_DIRECT_CONTEXT;
+
+  // 归类只对「这条会话现在的主人」开放；其他调用方看到的仍是中性 notFound。
+  const reject = (reason: DelegationDirectSourceRejection): DirectContextResult =>
+    explainToAccountId !== null && owner === explainToAccountId
+      ? { context: null, rejection: reason }
+      : NEUTRAL_DIRECT_CONTEXT;
+
+  if ((session.botId ?? null) !== null) return NEUTRAL_DIRECT_CONTEXT;
+  if ((session.parentSessionId ?? null) !== null || session.kind === 'side') return NEUTRAL_DIRECT_CONTEXT;
 
   let projectId = session.originProjectId ?? null;
   if (session.taskId !== null) {
     const task = await deps.tasks.byId(session.taskId);
-    if (!task) return null;
-    if (projectId !== null && projectId !== task.projectId) return null;
+    if (!task) return NEUTRAL_DIRECT_CONTEXT;
+    if (projectId !== null && projectId !== task.projectId) return NEUTRAL_DIRECT_CONTEXT;
     projectId = task.projectId;
   }
-  if (projectId === null || session.workspaceId === null) return null;
+  // 聊天 / 无项目 / 没有持久工作空间的会话：属于「不可直接复用」而不是「不存在」。
+  if (projectId === null || session.workspaceId === null) return reject('chat_only');
 
   const project = await deps.projects.byId(projectId);
-  if (!project || project.deletedAt !== null) return null;
+  if (!project || project.deletedAt !== null) return NEUTRAL_DIRECT_CONTEXT;
   const workspace = await deps.workspaces.byId(session.workspaceId);
-  if (!workspace || workspace.kind !== 'long_lived' || !isUsable(workspace)) return null;
-  if (!(await usableByProject(deps, workspace, project.id))) return null;
-  if (setupNotReady(workspace, project.worktree?.setup?.waitForSetup ?? true) !== null) return null;
+  if (!workspace) return reject('workspace_missing');
+  // 临时 / 非长期工作空间不能作为直接来源。
+  if (workspace.kind !== 'long_lived') return reject('chat_only');
+  if (!isUsable(workspace)) {
+    return reject(workspace.state === 'removed' ? 'workspace_missing' : 'workspace_not_ready');
+  }
+  if (setupNotReady(workspace, project.worktree?.setup?.waitForSetup ?? true) !== null) {
+    return reject('workspace_not_ready');
+  }
+  if (!(await usableByProject(deps, workspace, project.id))) return reject('workspace_unlinked');
   if (
     workspace.workerId !== null &&
     session.workerId !== null &&
     workspace.workerId !== session.workerId
   ) {
-    return null;
+    return reject('worker_mismatch');
   }
-  return { session, workspace, project };
+  return { context: { session, workspace, project }, rejection: null };
 }
 
 /**
@@ -191,7 +233,7 @@ async function sourceContext(
   sessionId: string,
   mode: DelegationMode
 ): Promise<DelegationSourceContext | null> {
-  if (mode === 'direct') return directContext(deps, sessionId);
+  if (mode === 'direct') return (await directContext(deps, sessionId)).context;
   if (!registry) return null;
   const context = await coordinatorContext(deps, registry, sessionId);
   return context;
@@ -236,15 +278,25 @@ function planOf(
 }
 
 /**
- * 让主会话的工作空间必须真的是选中项目的那个 HTTPS 仓库。
+ * 让主会话的工作空间必须真的是选中项目的那个仓库（HTTPS 或 SSH）。
  * `workspace.repoUrl === null` 只是「没有缓存 origin 元数据」，不是通过：后续严格 Worker 仍会用
  * `expectedUrl` 对实际 origin 做决定性校验（在创建目录 / 分支和联网之前）。非 null 的缓存必须一致。
+ *
+ * HTTPS 按既有 canonical host/path 匹配；SSH 的语法由 Worker 统一解析，这里只接受同一条原始地址，
+ * 避免在 server 里做 port / userinfo / scp 形式的危险改写。
  */
 function requireSameRepo(workspace: Workspace, repo: { readonly url: string }): void {
-  if (!isHttpsRepoUrl(repo.url)) throw new Error('委派只支持 HTTPS 仓库地址');
+  const ssh = isSshRepoUrl(repo.url);
+  if (!isHttpsRepoUrl(repo.url) && !ssh) throw new Error('委派只支持 HTTPS 或 SSH 仓库地址');
   const origin = workspace.repoUrl;
-  if (origin !== null && (!isHttpsRepoUrl(origin) || !sameRepoUrl(origin, repo.url))) {
-    throw new Error('主会话的工作空间不是这个项目仓库（HTTPS origin 不一致）');
+  if (origin !== null) {
+    if (ssh) {
+      if (origin.trim() !== repo.url.trim()) {
+        throw new Error('主会话的工作空间不是这个项目仓库（SSH origin 不一致）');
+      }
+    } else if (!isHttpsRepoUrl(origin) || !sameRepoUrl(origin, repo.url)) {
+      throw new Error('主会话的工作空间不是这个项目仓库（HTTPS origin 不一致）');
+    }
   }
   if (workspace.isGit === false) throw new Error('主会话的工作空间不是 Git 仓库');
 }
@@ -262,9 +314,12 @@ async function configuredRepoAuth(
   repo: { readonly id: string; readonly url: string }
 ): Promise<DelegationEffectResult<GitAuth | null>> {
   const exact = project.repos.find((candidate) => candidate.id === repo.id);
-  if (!exact || exact.url !== repo.url || !isHttpsRepoUrl(exact.url)) {
+  const ssh = exact !== undefined && isSshRepoUrl(exact.url);
+  if (!exact || exact.url !== repo.url || (!isHttpsRepoUrl(exact.url) && !ssh)) {
     return { ok: false, kind: 'fatal', message: '派工仓库与项目里的仓库登记不一致' };
   }
+  // SSH 只使用这台 Worker 已有的信任身份；即使登记了 tokenSecret 也绝不读取 / 转发 HTTPS 凭据。
+  if (ssh) return { ok: true, value: null };
   const key = repoTokenKey(project.id, exact.id);
   if (exact.tokenSecret !== key) return { ok: true, value: null };
   try {
@@ -529,15 +584,21 @@ export function createWorkspaceDelegationBridges(
   return createBridges(deps, registry, command);
 }
 
-/** 直接车道的生产 bridge：来源只来自普通会话的不可变项目绑定，不查主会话登记簿。 */
+/**
+ * 直接车道的生产 bridge：来源只来自普通会话的不可变项目绑定，不查主会话登记簿。
+ *
+ * `actorAccountId` 是本次调用的人类主人；只有它与会话归属一致时，才允许把具体拒绝原因带回。
+ * 默认 null = 只做来源解析，不提供诊断（保持旧调用方行为）。
+ */
 export function createWorkspaceDelegationDirectBridges(
   deps: DelegationDeps,
-  command: DelegationBridgeContext
+  command: DelegationBridgeContext,
+  actorAccountId: string | null = null
 ): WorkspaceDelegationDirectBridges {
   return {
     ...createBridges(deps, null, command),
     async resolveDirectSource(sessionId): Promise<DelegationDirectSource | null> {
-      const context = await directContext(deps, sessionId);
+      const { context } = await directContext(deps, sessionId);
       if (!context) return null;
       return {
         sessionId: asSessionId(sessionId),
@@ -545,6 +606,10 @@ export function createWorkspaceDelegationDirectBridges(
         taskId: context.session.taskId,
         accountId: context.session.createdBy as string
       };
+    },
+    async explainDirectSourceRejection(sessionId, accountId) {
+      if (accountId === null || accountId !== actorAccountId) return null;
+      return (await directContext(deps, sessionId, accountId)).rejection;
     }
   };
 }
@@ -559,13 +624,17 @@ export async function runWorkspaceDelegationDirect(
   authorize: DelegationDirectAuthorizer,
   command: DirectDelegateWorkspaceCommand
 ): Promise<Result<DelegationRun, DomainError>> {
-  const bridges = createWorkspaceDelegationDirectBridges(deps, {
-    baseBranch: command.baseBranch,
-    agentId: command.agentId,
-    model: command.model ?? null,
-    profileId: command.profileId ?? null,
-    options: command.options
-  });
+  const bridges = createWorkspaceDelegationDirectBridges(
+    deps,
+    {
+      baseBranch: command.baseBranch,
+      agentId: command.agentId,
+      model: command.model ?? null,
+      profileId: command.profileId ?? null,
+      options: command.options
+    },
+    humanOf(command.actor)?.user.id ?? null
+  );
   return delegateWorkspaceDirectUseCase(deps, delegations, bridges, authorize, command);
 }
 

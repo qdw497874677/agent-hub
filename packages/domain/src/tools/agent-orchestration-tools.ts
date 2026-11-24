@@ -150,9 +150,18 @@ export const AGENT_ORCHESTRATION_TOOLS: readonly ToolDescriptor[] = [
         agent_id: { type: 'string', minLength: 1, maxLength: 120 },
         model: { type: 'string', maxLength: 2000 },
         options: { type: 'object', additionalProperties: { type: ['string', 'boolean'] } },
-        workspace_mode: { type: 'string', enum: ['shared', 'isolated'] },
+        workspace_mode: {
+          type: 'string',
+          enum: ['shared', 'isolated'],
+          description: 'Workspace preparation mode. Preparation defaults to the caller session\'s recorded worker; if none is recorded, pass worker_id explicitly.'
+        },
         repo_id: { type: 'string', minLength: 1, maxLength: 80, description: 'Project repo id or name: open a dedicated worktree of just this repo.' },
-        worker_id: { type: 'string', minLength: 1, maxLength: 120, description: 'Machine to run on (must be usable by the session owner).' },
+        worker_id: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 120,
+          description: 'Machine to run on (must be usable by the session owner). For workspace_mode/repo_id preparation it defaults to the caller session\'s recorded worker (or its validated workspace binding); when that is unset/unknown it is required — the Hub machine is never assumed.'
+        },
         handle: { type: 'string', minLength: 2, maxLength: 32, description: 'Short name in this task; others address it as peer:<handle>.' },
         prompt: { type: 'string', minLength: 1, maxLength: 32768 }
       },

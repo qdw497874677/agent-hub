@@ -63,6 +63,27 @@ export interface DelegationDirectSource {
   readonly accountId: string;
 }
 
+/**
+ * 来源会话不可直接执行时，允许回给会话主人的安全原因类别。
+ *
+ * 只描述可行动的类别，不包含路径、会话 / 工作空间 id、仓库地址或底层异常文本。
+ * 非主人 / 不存在的来源仍必须走中性的 `notFound`，不能借这个通道探测别人的会话。
+ */
+export type DelegationDirectSourceRejection =
+  | 'chat_only'
+  | 'workspace_missing'
+  | 'workspace_not_ready'
+  | 'workspace_unlinked'
+  | 'worker_mismatch';
+
+const DIRECT_SOURCE_REJECTION_MESSAGES: Record<DelegationDirectSourceRejection, string> = {
+  chat_only: '直接执行的来源会话没有可复用的长期工作空间（聊天 / 临时工作空间不能作为来源）；请从项目工作空间的会话重试',
+  workspace_missing: '直接执行的来源会话工作空间已不存在；请重新打开项目工作空间后重试',
+  workspace_not_ready: '直接执行的来源会话工作空间尚未就绪（准备中或已失败）；请等待准备完成或在工作台修复后重试',
+  workspace_unlinked: '直接执行的来源会话工作空间未关联到当前项目；请把该工作空间关联到项目后重试',
+  worker_mismatch: '直接执行的来源会话与工作空间记录在不同的 Worker 上；请在对应机器上重新打开会话后重试'
+};
+
 /** 一次派工里由路由 / 服务端冻结的请求上下文，交给各个桥。 */
 export interface DelegationRequest {
   readonly actor: Subject;
@@ -153,6 +174,17 @@ export type WorkspaceDelegationProposalBridges = Pick<
 /** 直接车道额外需要从普通会话解析不可变项目来源。 */
 export interface WorkspaceDelegationDirectBridges extends WorkspaceDelegationBridges {
   readonly resolveDirectSource: (sessionId: SessionId) => Promise<DelegationDirectSource | null>;
+  /**
+   * 可选：来源不可用时给出安全、可行动的原因类别。
+   *
+   * 实现方**必须**先确认 `accountId` 就是这条会话当前的主人；不是主人、会话不存在、
+   * 或无法安全归类时返回 null，让用例继续使用中性的 notFound。返回的原因不得包含
+   * 路径、id、仓库地址或底层异常文本。
+   */
+  readonly explainDirectSourceRejection?: (
+    sessionId: SessionId,
+    accountId: string | null
+  ) => Promise<DelegationDirectSourceRejection | null>;
 }
 
 /**
@@ -289,7 +321,21 @@ export async function delegateWorkspaceDirectUseCase(
   command: DirectDelegateWorkspaceCommand
 ): Promise<Result<DelegationRun, DomainError>> {
   const source = await bridges.resolveDirectSource(command.sourceSessionId);
-  if (!source) return err(notFound('直接执行的来源会话不存在或不可用'));
+  if (!source) {
+    // 只有当前主人能拿到具体原因；其余情况（含身份无法解析）保持中性 notFound。
+    const accountId = principalOfSubject(command.actor)?.user.id ?? null;
+    let rejection: DelegationDirectSourceRejection | null = null;
+    if (accountId !== null && bridges.explainDirectSourceRejection) {
+      try {
+        rejection = await bridges.explainDirectSourceRejection(command.sourceSessionId, accountId);
+      } catch {
+        // 诊断失败不能改变原有的 notFound 行为，也不能把内部错误透给调用方。
+        rejection = null;
+      }
+    }
+    const message = rejection === null ? null : DIRECT_SOURCE_REJECTION_MESSAGES[rejection];
+    return err(notFound(message ?? '直接执行的来源会话不存在或不可用'));
+  }
   const { sourceSessionId, ...rest } = command;
   const normalized: DelegateWorkspaceCommand = { ...rest, coordinatorSessionId: sourceSessionId };
   return runWorkspaceDelegation(deps, store, bridges, bridges, normalized, 'direct', {

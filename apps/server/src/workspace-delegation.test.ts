@@ -741,6 +741,157 @@ test('直接执行：任务来源会话按任务项目直接建链', async () =>
   assert.equal(w.prepareCalls.length, 1);
 });
 
+async function directFailure(
+  w: Awaited<ReturnType<typeof world>>,
+  extra: Partial<DirectDelegateWorkspaceCommand> = {}
+) {
+  const result = await runWorkspaceDelegationDirect(
+    w.deps,
+    w.delegations,
+    directAuthorizer(),
+    directCommand(w, extra)
+  );
+  assert.equal(result.ok, false, JSON.stringify(result));
+  return result.ok ? null : result.error;
+}
+
+test('直接执行：聊天 / 临时工作空间只对主人给出可行动原因', async () => {
+  const w = await world();
+  const session = await w.deps.sessions.byId(w.coordinatorSessionId);
+  assert.ok(session);
+  await w.deps.sessions.save({ ...session, workspaceId: null });
+  const chat = await directFailure(w);
+  assert.equal(chat?.code, 'not_found');
+  assert.match(chat?.message ?? '', /没有可复用的长期工作空间/);
+  assert.equal(w.prepareCalls.length, 0);
+
+  await w.deps.sessions.save(session);
+  const temporary = await w.deps.workspaces.save({ ...w.coordinatorWorkspace, kind: 'temporary' });
+  assert.equal(temporary.status, 'saved');
+  const temp = await directFailure(w, { requestKey: 'direct-temp' });
+  assert.equal(temp?.code, 'not_found');
+  assert.match(temp?.message ?? '', /没有可复用的长期工作空间/);
+  assert.equal(w.prepareCalls.length, 0);
+});
+
+test('直接执行：工作空间缺失 / 未就绪 / 未关联分别给出安全原因', async () => {
+  const w = await world();
+  const original = w.deps.workspaces.byId;
+  w.deps.workspaces.byId = async (id) =>
+    id === w.coordinatorWorkspace.id ? null : original(id);
+  try {
+    const missing = await directFailure(w);
+    assert.equal(missing?.code, 'not_found');
+    assert.match(missing?.message ?? '', /工作空间已不存在/);
+  } finally {
+    w.deps.workspaces.byId = original;
+  }
+
+  const failed = await w.deps.workspaces.save({ ...w.coordinatorWorkspace, state: 'failed' });
+  assert.equal(failed.status, 'saved');
+  const notReady = await directFailure(w, { requestKey: 'direct-not-ready' });
+  assert.equal(notReady?.code, 'not_found');
+  assert.match(notReady?.message ?? '', /尚未就绪/);
+
+  const restored = await w.deps.workspaces.save({ ...w.coordinatorWorkspace, state: 'ready' });
+  assert.equal(restored.status, 'saved');
+  await w.deps.workspaces.unlink(w.project.id, w.coordinatorWorkspace.id);
+  const unlinked = await directFailure(w, { requestKey: 'direct-unlinked' });
+  assert.equal(unlinked?.code, 'not_found');
+  assert.match(unlinked?.message ?? '', /未关联到当前项目/);
+  assert.equal(w.prepareCalls.length, 0);
+});
+
+test('直接执行：来源会话与工作空间 Worker 不一致时给出可行动原因', async () => {
+  const w = await world();
+  const session = await w.deps.sessions.byId(w.coordinatorSessionId);
+  assert.ok(session);
+  await w.deps.sessions.save({ ...session, workerId: 'remote-other' });
+  const error = await directFailure(w);
+  assert.equal(error?.code, 'not_found');
+  assert.match(error?.message ?? '', /不同的 Worker/);
+  assert.equal(w.prepareCalls.length, 0);
+});
+
+test('直接执行：非主人只看到中性 notFound，不能探测来源状态', async () => {
+  const w = await world();
+  const session = await w.deps.sessions.byId(w.coordinatorSessionId);
+  assert.ok(session);
+  await w.deps.sessions.save({ ...session, workspaceId: null });
+  const stranger: Principal = {
+    ...w.owner,
+    user: { ...w.owner.user, id: asUserId('u-stranger') }
+  };
+  const error = await directFailure(w, { actor: stranger });
+  assert.equal(error?.code, 'not_found');
+  assert.equal(error?.message, '直接执行的来源会话不存在或不可用');
+  assert.equal(w.prepareCalls.length, 0);
+});
+
+async function sshWorld(url: string) {
+  const w = await world();
+  const repo = w.project.repos[0]!;
+  await w.deps.projects.save({ ...w.project, repos: [{ ...repo, url }] });
+  const workspace = await w.deps.workspaces.save({ ...w.coordinatorWorkspace, repoUrl: url, isGit: true });
+  assert.equal(workspace.status, 'saved');
+  return { w, repo };
+}
+
+test('直接执行：已登记的 SSH 仓库交给严格 Worker，且绝不读取 / 转发 HTTPS 凭据', async () => {
+  const url = 'git@github.com:acme/app.git';
+  const { w, repo } = await sshWorld(url);
+  let reveals = 0;
+  const originalReveal = w.deps.secrets.reveal.bind(w.deps.secrets);
+  const deps: DelegationDeps = {
+    ...w.deps,
+    secrets: {
+      ...w.deps.secrets,
+      reveal: async (keys: Parameters<typeof originalReveal>[0]) => {
+        reveals += 1;
+        return originalReveal(keys);
+      }
+    }
+  };
+  // 用规范键登记 tokenSecret 也不该被读取：SSH 只使用 Worker 机器身份。
+  await deps.projects.save({
+    ...w.project,
+    repos: [{ ...w.project.repos[0]!, id: repo.id, url, tokenSecret: repoTokenKey(w.project.id, repo.id) }]
+  });
+
+  const result = await runWorkspaceDelegationDirect(
+    deps,
+    w.delegations,
+    directAuthorizer(),
+    directCommand(w)
+  );
+  assert.ok(result.ok, JSON.stringify(result));
+  assert.equal(w.prepareCalls.length, 1);
+  assert.equal(w.prepareCalls[0]?.expectedUrl, url);
+  assert.equal(w.prepareCalls[0]?.auth, undefined);
+  assert.equal(reveals, 0);
+});
+
+test('直接执行：缓存 SSH origin 与登记原文不一致时在 Git 副作用之前失败', async () => {
+  const url = 'git@github.com:acme/app.git';
+  const { w } = await sshWorld(url);
+  const workspace = await w.deps.workspaces.save({
+    ...w.coordinatorWorkspace,
+    repoUrl: 'git@github.com:acme/other.git',
+    isGit: true
+  });
+  assert.equal(workspace.status, 'saved');
+  const result = await runWorkspaceDelegationDirect(
+    w.deps,
+    w.delegations,
+    directAuthorizer(),
+    directCommand(w)
+  );
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.error.code, 'unavailable');
+  assert.match(!result.ok ? result.error.message : '', /SSH origin 不一致/);
+  assert.equal(w.prepareCalls.length, 0);
+});
+
 test('直接执行：准备前撤销授权 → failed/fatal 且不准备；同键可安全重试', async () => {
   const w = await world();
   const denied = await runWorkspaceDelegationDirect(

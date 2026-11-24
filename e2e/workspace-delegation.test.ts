@@ -867,6 +867,40 @@ test('项目会话 MCP：普通任务会话授权 → 子任务 + 独立 worktre
   assert.equal(afterTaskReplay.tasks.filter((entry) => entry.title === childTitle).length, 1);
   assert.equal(afterTaskReplay.sessions.length, sessionCountBefore);
 
+  // Agent 纯聊天可以建任务，但不能把临时目录当成严格派工的长期 Git 来源。
+  const emptyWorkspace = await json<{ id: string }>(
+    await request(ctx, `/api/projects/${w.projectId}/workspaces`, {
+      method: 'POST',
+      json: { kind: 'temporary', taskId: w.taskId, mode: 'empty', workerId: w.workerId }
+    }),
+    '准备纯聊天目录'
+  );
+  const chatOnly = await json<{ id: string }>(
+    await request(ctx, '/api/sessions/derive', {
+      method: 'POST',
+      json: { taskId: w.taskId, agentId: 'fakeacp', workspaceId: emptyWorkspace.id, workerId: w.workerId }
+    }),
+    '启动纯聊天任务会话'
+  );
+  await must(await request(ctx, `/api/sessions/${chatOnly.id}/project-tool-grant`, {
+    method: 'PUT', json: { scopes: ['task:write'] }
+  }), '给纯聊天会话初始授权');
+  await must(await request(ctx, `/api/sessions/${chatOnly.id}/project-tool-grant`, {
+    method: 'PUT', json: { scopes: ['task:write', 'worktree:open'] }
+  }), '扩大授权并刷新工具令牌（不改变目录来源）');
+  const beforeDenied = await canvas(ctx, w.projectId);
+  await must(await request(ctx, `/api/sessions/${chatOnly.id}/prompt`, {
+    method: 'POST',
+    json: { text: `please-project-worktree key=chat-${worktreeKey} task=${created.id} repo=${w.repoId} base=main agent=fakeacp instructions=${instructions}` }
+  }), '从纯聊天会话请求开 worktree');
+  const unavailableSource = await waitObservation(ctx, chatOnly.id, 'worktree.start', 1);
+  assert.equal(unavailableSource.isError, true);
+  assert.match(unavailableSource.text, /长期工作空间/);
+  const afterChatDenied = await canvas(ctx, w.projectId);
+  assert.equal(afterChatDenied.sessions.length, beforeDenied.sessions.length, '拒绝后不应新建执行会话');
+  assert.equal(afterChatDenied.workspaces.length, beforeDenied.workspaces.length, '拒绝后不应新建工作区');
+  assert.equal(await git(w.source, 'worktree', 'list', '--porcelain'), sourceWorktreesBefore);
+
   // ── project.worktree.start：为子任务开严格 Git worktree + 执行会话 ──
   await must(
     await request(ctx, `/api/sessions/${ordinary.id}/prompt`, {

@@ -5,7 +5,7 @@ import { mkdtemp, writeFile, mkdir, readdir, readFile, rm } from 'node:fs/promis
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { authScopeUrl, createGitWorkspace, mainWorktreeDir, networkEnv, parseTrackedDiffPlan, protectedDiff, pushDestination, resolveRemoteBase } from './git-workspace.ts';
+import { authScopeUrl, createGitWorkspace, mainWorktreeDir, networkEnv, parseTrackedDiffPlan, protectedDiff, publishEnv, pushDestination, readOriginDestination, resolveRemoteBase, sshFailureReason, sshPrepareEnv, sshScopeUrl } from './git-workspace.ts';
 
 test('git-common-dir 的相对路径按 worktree 解析，不按进程 cwd', () => {
   const worktree = '/tmp/ws/agent-hub/.worktrees/demo-fix';
@@ -1299,4 +1299,514 @@ test('importCommit：分支 / 提交 / ref / 仓库不一致都失败关闭，�
 
   assert.deepEqual(state(target), before);
   assert.equal(remoteRefs(), remoteBefore);
+});
+
+// ── SSH 只读（prepareDelegationWorktree）：合成 SSH 传输，不连任何真实端点 ──
+
+const delegationState = (repo: string) => ({
+  head: sh(repo, 'rev-parse', 'HEAD').trim(),
+  branch: sh(repo, 'branch', '--show-current').trim(),
+  status: sh(repo, 'status', '--porcelain').trim(),
+  index: sh(repo, 'ls-files', '-s').trim()
+});
+
+type SshMode = 'ok' | 'hostkey' | 'identity';
+
+/**
+ * 本机 fake ssh：把 git 生成的远端命令（`git-upload-pack '<path>'`）直接放回 shell 执行，
+ * 从而用本地 git 数据完成一次真正的 transport 往返；同时记录 ssh 的 argv 供断言。
+ */
+async function fakeSsh(root: string, options: { mode?: SshMode; cwd?: string } = {}) {
+  const dir = join(root, `ssh-bin-${options.mode ?? 'ok'}-${Math.random().toString(16).slice(2)}`);
+  await mkdir(dir, { recursive: true });
+  const log = join(dir, 'args.log');
+  const mode = options.mode ?? 'ok';
+  const tail =
+    mode === 'hostkey'
+      ? `echo 'Host key verification failed.' >&2\nexit 255`
+      : mode === 'identity'
+        ? `echo 'git@example.test: Permission denied (publickey).' >&2\nexit 255`
+        : `for last; do :; done\nexec sh -c "$last"`;
+  const cd = options.cwd === undefined ? '' : `cd '${options.cwd}' || exit 128\nexport HOME='${options.cwd}'\n`;
+  await writeFile(join(dir, 'ssh'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${log}'\n${cd}${tail}\n`, { mode: 0o755 });
+  return { dir, log };
+}
+
+async function withPath<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  const old = process.env.PATH;
+  process.env.PATH = `${dir}:${old ?? ''}`;
+  try {
+    return await fn();
+  } finally {
+    if (old === undefined) delete process.env.PATH;
+    else process.env.PATH = old;
+  }
+}
+
+async function sshFixture() {
+  const { root, url } = await origin();
+  const repo = join(root, 'source');
+  sh(root, 'clone', '-q', url, 'source');
+  sh(repo, 'config', 'user.name', 't');
+  sh(repo, 'config', 'user.email', 't@t');
+  const before = delegationState(repo);
+  await mkdir(join(root, 'trees'), { recursive: true });
+  const git = createGitWorkspace();
+  return { root, bare: url, repo, before, baseSha: before.head, git };
+}
+
+test('sshScopeUrl：小闭集文法，保留 user / port / 相对与绝对路径语义', () => {
+  assert.equal(sshScopeUrl('ssh://git@Example.COM:2222/srv/repo.git'), 'ssh://git@example.com:2222/srv/repo.git');
+  assert.equal(sshScopeUrl('ssh://git@example.com/srv/repo.git/'), 'ssh://git@example.com/srv/repo.git');
+  assert.equal(sshScopeUrl('git@example.com:repo.git'), 'ssh://git@example.com/~/repo.git');
+  assert.equal(sshScopeUrl('git@example.com:~/repo.git'), 'ssh://git@example.com/~/repo.git');
+  assert.equal(sshScopeUrl('git@example.com:/srv/repo.git'), 'ssh://git@example.com/srv/repo.git');
+  assert.equal(sshScopeUrl('ssh://example.com/~/repo.git'), 'ssh://example.com/~/repo.git');
+  assert.equal(sshScopeUrl('ssh://example.com:22/repo.git'), 'ssh://example.com/repo.git');
+  assert.notEqual(sshScopeUrl('git@example.com:repo.git'), sshScopeUrl('git@example.com:/repo.git'));
+  assert.notEqual(sshScopeUrl('git@example.com:repo.git'), sshScopeUrl('other@example.com:repo.git'));
+  assert.notEqual(sshScopeUrl('ssh://example.com:2222/repo.git'), sshScopeUrl('ssh://example.com:2223/repo.git'));
+
+  for (const bad of [
+    '',
+    'https://example.com/repo.git',
+    'file:///srv/repo.git',
+    '/srv/repo.git',
+    'ssh://example.com',
+    'ssh://example.com/',
+    'ssh://example.com:0/repo.git',
+    'ssh://example.com:65536/repo.git',
+    'ssh://example.com:22x/repo.git',
+    'ssh://user:pw@example.com/repo.git',
+    'ssh://user@@example.com/repo.git',
+    'ssh://-oProxyCommand=evil/repo.git',
+    'ssh://[::1]/repo.git',
+    'ssh://example.com/../etc/passwd',
+    'ssh://example.com/a/./b',
+    'ssh://example.com/a//b',
+    'ssh://example.com/%2e%2e/x',
+    'ssh://example.com/repo.git?x=1',
+    'ssh://example.com/repo.git#frag',
+    'ssh://example.com/repo.git\nInjected',
+    'git@example.com:',
+    'git@example.com:~',
+    'git@example.com:~user/repo.git',
+    'git@example.com:/~/repo.git',
+    'git@example.com:repo.git --upload-pack=evil',
+    'C:\\repo.git'
+  ]) {
+    assert.equal(sshScopeUrl(bad), null, `input=${JSON.stringify(bad)}`);
+  }
+});
+
+test('sshFailureReason：区分主机信任 / 身份，且不回显路径与原始 stderr', () => {
+  assert.match(sshFailureReason('Host key verification failed.'), /主机密钥|known_hosts/);
+  assert.match(sshFailureReason('WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!'), /主机密钥|known_hosts/);
+  const identity = sshFailureReason('git@example.com: Permission denied (publickey).\nno such identity: /home/u/.ssh/id_ed25519');
+  // 不能断言「没有密钥」：也可能是密钥存在但远端未授权 / 账号权限不足
+  assert.match(identity, /身份认证|授权/);
+  assert.equal(identity.includes('/home/u'), false);
+  assert.equal(identity.includes('Permission denied'), false);
+  assert.match(sshFailureReason('kex_exchange_identification: Connection closed'), /SSH 连接失败/);
+});
+
+test('sshPrepareEnv：固定 -F /dev/null + 只读 host key 校验，不继承 ambient ssh 入口；publishEnv 不碰 SSH', () => {
+  const source = {
+    PATH: '/usr/bin',
+    HOME: '/home/u',
+    SSH_AUTH_SOCK: '/run/agent.sock',
+    GIT_SSH: '/tmp/evil-ssh',
+    GIT_SSH_COMMAND: '/tmp/evil-ssh -o StrictHostKeyChecking=no',
+    GIT_ASKPASS: '/tmp/evil-askpass',
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'core.sshCommand',
+    GIT_CONFIG_VALUE_0: '/tmp/evil-ssh'
+  };
+  const env = sshPrepareEnv(source);
+  const command = env.GIT_SSH_COMMAND ?? '';
+  // 不读用户 / 系统 ssh 配置，因此 HostName / Port / Proxy* 都不能重定向目的地
+  assert.match(command, /^ssh -F \/dev\/null /);
+  assert.match(command, /-o BatchMode=yes/);
+  assert.match(command, /-o StrictHostKeyChecking=yes/);
+  assert.match(command, /-o UpdateHostKeys=no/);
+  assert.match(command, /-o ForwardAgent=no/);
+  assert.match(command, /-o ClearAllForwardings=yes/);
+  assert.match(command, /-o ProxyCommand=none/);
+  assert.match(command, /-o ProxyJump=none/);
+  assert.equal(env.GIT_SSH_VARIANT, 'ssh');
+  assert.equal(env.GIT_ALLOW_PROTOCOL, 'ssh');
+  // 机器 ambient 的 ssh 入口不能替换固定命令；默认身份 / known_hosts / agent 仍可用
+  assert.equal(env.GIT_SSH, undefined);
+  assert.equal(env.GIT_ASKPASS, undefined);
+  assert.equal(env.HOME, '/home/u');
+  assert.equal(env.SSH_AUTH_SOCK, '/run/agent.sock');
+  assert.equal(env.GIT_CONFIG_COUNT, '1');
+  assert.equal(env.GIT_CONFIG_KEY_0, 'core.sshCommand');
+  assert.equal(env.GIT_CONFIG_VALUE_0, env.GIT_SSH_COMMAND);
+  assert.notEqual(env.GIT_CONFIG_VALUE_0, '/tmp/evil-ssh');
+
+  // publishEnv 仍是 HTTPS 发布语义：不替 SSH 注入命令（publishRef 也不接受 SSH）
+  const sshEnv = publishEnv(undefined, 'ssh://git@example.test:2222/srv/repo.git', {});
+  assert.equal(sshEnv.GIT_SSH_COMMAND, undefined);
+  const count = Number(sshEnv.GIT_CONFIG_COUNT ?? '0');
+  for (let index = 0; index < count; index += 1) {
+    assert.notEqual(sshEnv[`GIT_CONFIG_KEY_${index}`], 'core.sshCommand');
+  }
+  const httpsEnv = publishEnv(undefined, 'https://example.test/repo.git', {});
+  assert.equal(httpsEnv.GIT_SSH_COMMAND, undefined);
+  assert.equal(httpsEnv.GIT_SSH_VARIANT, undefined);
+  const localEnv = publishEnv(undefined, null, {});
+  assert.equal(localEnv.GIT_SSH_COMMAND, undefined);
+});
+
+test('readOriginDestination：只有显式 allowSsh 才解析 SSH，insteadOf 改写仍然拒绝', async () => {
+  const { root, bare, repo } = await sshFixture();
+  const sshUrl = `ssh://git@example.test:2222${bare}`;
+  sh(repo, 'remote', 'set-url', 'origin', sshUrl);
+
+  const httpsOnly = await readOriginDestination(repo);
+  assert.equal(httpsOnly.ok, false);
+  assert.match(httpsOnly.ok ? '' : httpsOnly.error.message, /HTTPS/);
+
+  const read = await readOriginDestination(repo, { allowSsh: true });
+  assert.ok(read.ok, read.ok ? '' : read.error.message);
+  assert.equal(read.value.sshFetch, sshScopeUrl(sshUrl));
+  assert.equal(read.value.canonicalFetch, null);
+
+  sh(repo, 'config', `url.ssh://evil.test/repo.git.insteadOf`, sshUrl);
+  const rewritten = await readOriginDestination(repo, { allowSsh: true });
+  assert.equal(rewritten.ok, false);
+  assert.match(rewritten.ok ? '' : rewritten.error.message, /改写|insteadOf/);
+
+  // 规范化后相同（:22 vs 省略）也必须是逐字节相同的展开结果：不做「等价即放行」的猜测
+  const explicitPort = `ssh://git@example.test:22${bare}`;
+  sh(repo, 'remote', 'set-url', 'origin', explicitPort);
+  sh(repo, 'config', `url.ssh://git@example.test${bare}.insteadOf`, explicitPort);
+  const sameCanonical = await readOriginDestination(repo, { allowSsh: true });
+  assert.equal(sameCanonical.ok, false);
+  assert.match(sameCanonical.ok ? '' : sameCanonical.error.message, /改写|insteadOf/);
+
+  // 改写后落到另一个协议（本地路径 / https）同样拒绝：实际 fetch 不能换协议
+  sh(repo, 'config', '--unset-all', `url.ssh://git@example.test${bare}.insteadOf`);
+  sh(repo, 'config', `url.file:///tmp/evil.insteadOf`, explicitPort);
+  const otherProtocol = await readOriginDestination(repo, { allowSsh: true });
+  assert.equal(otherProtocol.ok, false);
+  assert.match(otherProtocol.ok ? '' : otherProtocol.error.message, /改写|insteadOf/);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('prepareDelegationWorktree：canonical SSH URI（user + port + 绝对路径）只读准备，严格 SHA 且源仓库不变', async () => {
+  const { root, bare, repo, before, baseSha, git } = await sshFixture();
+  const sshUrl = `ssh://git@example.test:2222${bare}`;
+  sh(repo, 'remote', 'set-url', 'origin', sshUrl);
+  const { dir, log } = await fakeSsh(root);
+  const target = join(root, 'trees', 'ssh-uri');
+
+  const result = await withPath(dir, () =>
+    git.prepareDelegationWorktree!({
+      repoPath: repo,
+      path: target,
+      branch: 'agent-hub/ssh-uri',
+      baseBranch: 'main',
+      expectedUrl: sshUrl
+    })
+  );
+  assert.ok(result.ok, result.ok ? '' : result.error.message);
+  assert.equal(result.value.baseSha, baseSha);
+  assert.equal(result.value.path, realpathSync(target));
+  assert.equal(sh(target, 'rev-parse', 'HEAD').trim(), baseSha);
+  assert.equal(sh(target, 'symbolic-ref', '--short', 'HEAD').trim(), 'agent-hub/ssh-uri');
+  assert.deepEqual(delegationState(repo), before);
+
+  // 固定调用确实发生：不读 ssh 配置、BatchMode + host key 校验 + 明确的 user / port
+  const argv = (await readFile(log, 'utf8')).split('\n');
+  assert.ok(argv.includes('-F'));
+  assert.ok(argv.includes('/dev/null'));
+  assert.ok(argv.includes('BatchMode=yes'));
+  assert.ok(argv.includes('StrictHostKeyChecking=yes'));
+  assert.ok(argv.includes('UpdateHostKeys=no'));
+  assert.ok(argv.includes('ForwardAgent=no'));
+  assert.ok(argv.includes('-p'));
+  assert.ok(argv.includes('2222'));
+  assert.ok(argv.some((arg) => arg === 'git' || arg === 'git@example.test'));
+
+  // 只读：远端没有新分支，源仓库也没有 push 任何东西
+  assert.equal(sh(bare, 'for-each-ref', '--format=%(refname)', 'refs/heads').includes('agent-hub/ssh-uri'), false);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('prepareDelegationWorktree：scp 形式用相对 home 路径准备，且与绝对路径互不混淆', async () => {
+  const { root, bare: localBare, repo, before, baseSha, git } = await sshFixture();
+  const home = join(root, 'home');
+  await mkdir(home);
+  sh(root, 'clone', '-q', '--bare', localBare, join(home, 'origin.git'));
+  sh(repo, 'remote', 'set-url', 'origin', 'git@example.test:origin.git');
+  const { dir } = await fakeSsh(root, { cwd: home });
+  const target = join(root, 'trees', 'ssh-scp');
+
+  const result = await withPath(dir, () =>
+    git.prepareDelegationWorktree!({
+      repoPath: repo,
+      path: target,
+      branch: 'agent-hub/ssh-scp',
+      baseBranch: 'main',
+      expectedUrl: 'git@example.test:origin.git'
+    })
+  );
+  assert.ok(result.ok, result.ok ? '' : result.error.message);
+  assert.equal(result.value.baseSha, baseSha);
+  assert.equal(sh(target, 'rev-parse', 'HEAD').trim(), baseSha);
+  assert.deepEqual(delegationState(repo), before);
+
+  // 同一个字符串若按绝对路径解释，是另一个目的地：绝不混用
+  assert.notEqual(sshScopeUrl('git@example.test:origin.git'), sshScopeUrl('git@example.test:/origin.git'));
+  const absolute = await git.prepareDelegationWorktree!({
+    repoPath: repo,
+    path: join(root, 'trees', 'ssh-scp-abs'),
+    branch: 'agent-hub/ssh-scp-abs',
+    baseBranch: 'main',
+    expectedUrl: 'git@example.test:/origin.git'
+  });
+  assert.equal(absolute.ok, false);
+  assert.match(absolute.ok ? '' : absolute.error.message, /不一致/);
+  assert.equal(existsSync(join(root, 'trees', 'ssh-scp-abs')), false);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('prepareDelegationWorktree：SSH 默认端口 22 与 /~/ 语义按 git 实际传输处理', async () => {
+  const { root, bare, repo, git } = await sshFixture();
+  const { dir, log } = await fakeSsh(root);
+
+  // 显式 :22 与省略端口是同一个目的地；git 对显式端口会传 -p 22
+  sh(repo, 'remote', 'set-url', 'origin', `ssh://git@example.test:22${bare}`);
+  const explicit = await withPath(dir, () =>
+    git.prepareDelegationWorktree!({
+      repoPath: repo,
+      path: join(root, 'trees', 'ssh-port-explicit'),
+      branch: 'agent-hub/ssh-port-explicit',
+      baseBranch: 'main',
+      expectedUrl: `ssh://git@example.test${bare}`
+    })
+  );
+  assert.ok(explicit.ok, explicit.ok ? '' : explicit.error.message);
+  const explicitArgv = (await readFile(log, 'utf8')).split('\n');
+  assert.ok(explicitArgv.includes('-p'), '显式 :22 应传 -p');
+  assert.ok(explicitArgv.includes('22'));
+
+  // 省略端口：不传 -p，ssh 用默认 22
+  sh(repo, 'remote', 'set-url', 'origin', `ssh://git@example.test${bare}`);
+  const omitted = await withPath(dir, () =>
+    git.prepareDelegationWorktree!({
+      repoPath: repo,
+      path: join(root, 'trees', 'ssh-port-omitted'),
+      branch: 'agent-hub/ssh-port-omitted',
+      baseBranch: 'main',
+      expectedUrl: `ssh://git@example.test${bare}`
+    })
+  );
+  assert.ok(omitted.ok, omitted.ok ? '' : omitted.error.message);
+  const omittedArgv = (await readFile(log, 'utf8')).split('\n');
+  assert.equal(omittedArgv.includes('-p'), false, '省略端口不应传 -p');
+
+  // ssh://host/~/repo.git：git 原样把 ~/repo.git 交给远端，和 scp host:repo.git 一样是 home 相对
+  const home = join(root, 'home');
+  await mkdir(home);
+  sh(root, 'clone', '-q', '--bare', bare, join(home, 'origin.git'));
+  sh(repo, 'remote', 'set-url', 'origin', 'ssh://git@example.test/~/origin.git');
+  const homeRelative = await withPath((await fakeSsh(root, { cwd: home })).dir, () =>
+    git.prepareDelegationWorktree!({
+      repoPath: repo,
+      path: join(root, 'trees', 'ssh-home'),
+      branch: 'agent-hub/ssh-home',
+      baseBranch: 'main',
+      expectedUrl: 'ssh://git@example.test/~/origin.git'
+    })
+  );
+  assert.ok(homeRelative.ok, homeRelative.ok ? '' : homeRelative.error.message);
+  assert.equal(sh(homeRelative.ok ? homeRelative.value.path : root, 'rev-parse', 'HEAD').trim(), sh(bare, 'rev-parse', 'HEAD').trim());
+  await rm(root, { recursive: true, force: true });
+});
+
+test('prepareDelegationWorktree：SSH 目的地只在 user / port / 路径语义完全一致时接受', async () => {
+  const { root, bare, repo, git } = await sshFixture();
+  const sshUrl = `ssh://git@example.test:2222${bare}`;
+  sh(repo, 'remote', 'set-url', 'origin', sshUrl);
+  const { dir } = await fakeSsh(root);
+
+  const cases: readonly [string, string][] = [
+    ['不同端口', `ssh://git@example.test:2223${bare}`],
+    ['不同用户', `ssh://other@example.test:2222${bare}`],
+    ['不同主机', `ssh://git@evil.test:2222${bare}`],
+    ['scp 相对 vs URI 绝对', `git@example.test:${bare.slice(1)}`]
+  ];
+  for (const [label, expectedUrl] of cases) {
+    const target = join(root, 'trees', `mismatch-${label.replace(/\s/g, '-')}`);
+    const result = await withPath(dir, () =>
+      git.prepareDelegationWorktree!({
+        repoPath: repo,
+        path: target,
+        branch: 'agent-hub/mismatch',
+        baseBranch: 'main',
+        expectedUrl
+      })
+    );
+    assert.equal(result.ok, false, label);
+    assert.match(result.ok ? '' : result.error.message, /不一致/, label);
+    assert.equal(existsSync(target), false, label);
+  }
+
+  // origin 是 SSH，expected 是 HTTPS：既有的 HTTPS-only 准入仍然失败关闭
+  const httpsExpected = await git.prepareDelegationWorktree!({
+    repoPath: repo,
+    path: join(root, 'trees', 'mismatch-https'),
+    branch: 'agent-hub/mismatch-https',
+    baseBranch: 'main',
+    expectedUrl: 'https://example.test/repo.git'
+  });
+  assert.equal(httpsExpected.ok, false);
+  assert.match(httpsExpected.ok ? '' : httpsExpected.error.message, /HTTPS/);
+
+  // origin 是本地路径，expected 是 SSH：不退回本地 base / 本地目的地
+  sh(repo, 'remote', 'set-url', 'origin', bare);
+  const localOrigin = await git.prepareDelegationWorktree!({
+    repoPath: repo,
+    path: join(root, 'trees', 'mismatch-local'),
+    branch: 'agent-hub/mismatch-local',
+    baseBranch: 'main',
+    expectedUrl: sshUrl
+  });
+  assert.equal(localOrigin.ok, false);
+  assert.match(localOrigin.ok ? '' : localOrigin.error.message, /不一致/);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('prepareDelegationWorktree：SSH 目的地拒绝 HTTPS 令牌，且不建目录', async () => {
+  const { root, bare, repo, before, git } = await sshFixture();
+  const sshUrl = `ssh://git@example.test:2222${bare}`;
+  sh(repo, 'remote', 'set-url', 'origin', sshUrl);
+  const { dir } = await fakeSsh(root);
+  const target = join(root, 'trees', 'ssh-token');
+
+  const result = await withPath(dir, () =>
+    git.prepareDelegationWorktree!({
+      repoPath: repo,
+      path: target,
+      branch: 'agent-hub/ssh-token',
+      baseBranch: 'main',
+      expectedUrl: sshUrl,
+      auth: { header: 'AUTHORIZATION: basic c2VjcmV0', url: 'https://example.test/repo.git' }
+    })
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? '' : result.error.message, /SSH 仓库不接受|令牌/);
+  assert.equal(result.ok ? '' : result.error.message.includes('c2VjcmV0'), false);
+  assert.equal(existsSync(target), false);
+  assert.deepEqual(delegationState(repo), before);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('prepareDelegationWorktree：SSH 主机信任 / 身份失败给可执行提示，不回显 key 路径', async () => {
+  const { root, bare, repo, before, git } = await sshFixture();
+  const sshUrl = `ssh://git@example.test:2222${bare}`;
+  sh(repo, 'remote', 'set-url', 'origin', sshUrl);
+
+  const hostkey = await withPath((await fakeSsh(root, { mode: 'hostkey' })).dir, () =>
+    git.prepareDelegationWorktree!({
+      repoPath: repo,
+      path: join(root, 'trees', 'ssh-hostkey'),
+      branch: 'agent-hub/ssh-hostkey',
+      baseBranch: 'main',
+      expectedUrl: sshUrl
+    })
+  );
+  assert.equal(hostkey.ok, false);
+  assert.match(hostkey.ok ? '' : hostkey.error.message, /主机密钥|known_hosts/);
+  assert.equal(hostkey.ok ? '' : hostkey.error.message.includes('Host key verification failed'), false);
+  assert.equal(hostkey.ok ? '' : hostkey.error.message.includes(root), false);
+
+  const identity = await withPath((await fakeSsh(root, { mode: 'identity' })).dir, () =>
+    git.prepareDelegationWorktree!({
+      repoPath: repo,
+      path: join(root, 'trees', 'ssh-identity'),
+      branch: 'agent-hub/ssh-identity',
+      baseBranch: 'main',
+      expectedUrl: sshUrl
+    })
+  );
+  assert.equal(identity.ok, false);
+  assert.match(identity.ok ? '' : identity.error.message, /身份认证|ssh-agent/);
+  assert.equal(identity.ok ? '' : identity.error.message.includes('Permission denied'), false);
+  assert.equal(identity.ok ? '' : identity.error.message.includes(root), false);
+
+  assert.equal(existsSync(join(root, 'trees', 'ssh-hostkey')), false);
+  assert.equal(existsSync(join(root, 'trees', 'ssh-identity')), false);
+  assert.deepEqual(delegationState(repo), before);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('prepareDelegationWorktree：仓库本地 core.sshCommand 不能替换固定的 SSH 调用', async () => {
+  const { root, bare, repo, git } = await sshFixture();
+  const sshUrl = `ssh://git@example.test:2222${bare}`;
+  sh(repo, 'remote', 'set-url', 'origin', sshUrl);
+  const marker = join(root, 'evil-ssh-ran');
+  const evil = join(root, 'evil-ssh');
+  await writeFile(evil, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o755 });
+  sh(repo, 'config', 'core.sshCommand', evil);
+
+  const { dir } = await fakeSsh(root);
+  const result = await withPath(dir, () =>
+    git.prepareDelegationWorktree!({
+      repoPath: repo,
+      path: join(root, 'trees', 'ssh-sshcommand'),
+      branch: 'agent-hub/ssh-sshc',
+      baseBranch: 'main',
+      expectedUrl: sshUrl
+    })
+  );
+  assert.ok(result.ok, result.ok ? '' : result.error.message);
+  assert.equal(existsSync(marker), false, '仓库本地 core.sshCommand 不能被执行');
+  await rm(root, { recursive: true, force: true });
+});
+
+test('prepareDelegationWorktree：仓库本地 insteadOf 改写 SSH 目的地时在联网前拒绝', async () => {
+  const { root, bare, repo, before, git } = await sshFixture();
+  const sshUrl = `ssh://git@example.test:2222${bare}`;
+  sh(repo, 'remote', 'set-url', 'origin', sshUrl);
+  // 展开后规范化相等（:22 省略 / 端口等价），但 raw 与展开结果不是逐字节相同 → 仍拒绝
+  sh(repo, 'config', `url.ssh://git@example.test${bare}.insteadOf`, sshUrl);
+  const { dir, log } = await fakeSsh(root);
+  const target = join(root, 'trees', 'ssh-rewrite');
+
+  const result = await withPath(dir, () =>
+    git.prepareDelegationWorktree!({
+      repoPath: repo,
+      path: target,
+      branch: 'agent-hub/ssh-rewrite',
+      baseBranch: 'main',
+      expectedUrl: sshUrl
+    })
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? '' : result.error.message, /改写|insteadOf/);
+  assert.equal(existsSync(target), false);
+  assert.deepEqual(delegationState(repo), before);
+  // 目的地核对失败必须发生在任何 SSH 传输之前
+  assert.equal(existsSync(log) ? (await readFile(log, 'utf8')).trim() : '', '');
+  await rm(root, { recursive: true, force: true });
+});
+
+test('publishRef：SSH 地址仍然被拒绝（不扩大发布面）', async () => {
+  const { root, bare, repo, baseSha, git } = await sshFixture();
+  const sshUrl = `ssh://git@example.test:2222${bare}`;
+  sh(repo, 'remote', 'set-url', 'origin', sshUrl);
+  const result = await git.publishRef!({
+    path: repo,
+    branch: 'agent-hub/publish-ssh',
+    baseBranch: 'main',
+    sha: baseSha,
+    expectedUrl: sshUrl
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? '' : result.error.message, /HTTPS/);
+  await rm(root, { recursive: true, force: true });
 });

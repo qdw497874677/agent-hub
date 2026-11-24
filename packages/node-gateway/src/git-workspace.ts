@@ -406,9 +406,12 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       const parentInfo = await lstat(dirname(target)).catch(() => null);
       if (parentInfo?.isDirectory() !== true) return { ok: false, error: invalid(`目标目录的父目录不存在：${dirname(target)}`) };
       const allowLocal = options.allowLocalPublishOrigin === true;
-      const expectedScope = authScopeUrl(input.expectedUrl);
-      if (expectedScope === null && !(allowLocal && isLocalGitUrl(input.expectedUrl))) {
-        return { ok: false, error: invalid('项目仓库地址必须是可校验的 HTTPS 地址') };
+      const expected = input.expectedUrl.trim();
+      const expectedHttps = authScopeUrl(expected);
+      // SSH 只读：只有 HTTPS 绑不上时才尝试 SSH 文法；HTTPS / 本地路径的既有判定完全不变。
+      const expectedSsh = expectedHttps === null ? sshScopeUrl(expected) : null;
+      if (expectedHttps === null && expectedSsh === null && !(allowLocal && isLocalGitUrl(expected))) {
+        return { ok: false, error: invalid('项目仓库地址必须是可校验的 HTTPS 或 SSH 地址') };
       }
       const git = simpleGit(repoPath);
       if (!(await git.checkIsRepo().catch(() => false)) || !(await ownRepo(git, repoPath))) {
@@ -424,28 +427,48 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
           if (localRef !== '') return { ok: false, error: conflict(`本地分支 ${branch} 已经存在（不采用已有分支）`) };
 
           // ── 目的地准入：只认 domain 给的 expectedUrl，且 fetch / push 都必须落到它上面 ──
-          const origin = await readOriginDestination(repoPath);
+          const origin = await readOriginDestination(repoPath, { allowSsh: expectedSsh !== null });
           if (!origin.ok) return origin;
           const destination = origin.value;
-          const expected = input.expectedUrl.trim();
-          const matches = (canonical: string | null, url: string): boolean =>
-            expectedScope === null ? allowLocal && url === expected : canonical === expectedScope;
-          if (!matches(destination.canonicalFetch, destination.fetchUrl) || !matches(destination.canonicalPush, destination.pushUrl)) {
+          const matches = (https: string | null, ssh: string | null, url: string): boolean =>
+            expectedHttps !== null
+              ? https === expectedHttps
+              : expectedSsh !== null
+                ? ssh === expectedSsh
+                : allowLocal && url === expected;
+          if (
+            !matches(destination.canonicalFetch, destination.sshFetch, destination.fetchUrl) ||
+            !matches(destination.canonicalPush, destination.sshPush, destination.pushUrl)
+          ) {
             return { ok: false, error: invalid('origin 的 fetch / push 目的地与项目仓库地址不一致，已拒绝准备工作区') };
           }
-          // 公开 base 可以不传凭据；传了就必须绑定同一个目的地（不读 ambient 凭据）。
-          const binding = bindAuth(auth, destination.fetchUrl);
-          if (!binding.ok) return { ok: false, error: invalid(binding.reason) };
-          const env = publishEnv(binding.auth, destination.fetchUrl);
+          // SSH 只读不接受任何 HTTPS 令牌：不把令牌喂给 ssh，也不降级成匿名后重试。
+          if (expectedSsh !== null && hasAuth(auth)) {
+            return {
+              ok: false,
+              error: invalid('SSH 仓库不接受本次传入的 HTTPS 令牌；SSH 只使用这台 Worker 已有的信任身份（不会读取或转发令牌）')
+            };
+          }
+          // ── 公开 base 可以不传凭据；传了就必须绑定同一个目的地（不读 ambient 凭据）。──
+          // SSH 只读走独立的 env：固定 ssh 命令、只允许 ssh 协议、不继承任何 ambient ssh 入口。
+          let env: Record<string, string>;
+          if (expectedSsh !== null) {
+            env = sshPrepareEnv();
+          } else {
+            const binding = bindAuth(auth, destination.fetchUrl);
+            if (!binding.ok) return { ok: false, error: invalid(binding.reason) };
+            env = publishEnv(binding.auth, destination.fetchUrl);
+          }
+          const remoteDetail = (stderr: string) => (expectedSsh !== null ? sshFailureReason(stderr) : gitMessage(stderr));
 
           // ── 远端权威事实：默认分支、选中的 base、是否已有同名功能分支 ──
           const symref = await runGit(repoPath, ['ls-remote', '--symref', destination.fetchUrl, 'HEAD'], env);
-          if (symref.code !== 0) return { ok: false, error: unavailable(`连不上远端：${gitMessage(symref.stderr)}`) };
+          if (symref.code !== 0) return { ok: false, error: unavailable(`连不上远端：${remoteDetail(symref.stderr)}`) };
           const defaultBranch = parseSymrefDefault(symref.stdout);
           if (defaultBranch === null) return { ok: false, error: invalid('远端没有可解析的默认分支（ls-remote --symref HEAD），已拒绝准备工作区') };
           if (defaultBranch === branch) return { ok: false, error: invalid('功能分支不能是远端默认分支') };
           const refs = await runGit(repoPath, ['ls-remote', destination.fetchUrl, `refs/heads/${baseBranch}`, `refs/heads/${branch}`], env);
-          if (refs.code !== 0) return { ok: false, error: unavailable(`连不上远端：${gitMessage(refs.stderr)}`) };
+          if (refs.code !== 0) return { ok: false, error: unavailable(`连不上远端：${remoteDetail(refs.stderr)}`) };
           const baseSha = parseLsRemoteRef(refs.stdout, `refs/heads/${baseBranch}`);
           if (baseSha === null) return { ok: false, error: conflict(`远端没有 base 分支「${baseBranch}」，已拒绝准备工作区`) };
           if (parseLsRemoteRef(refs.stdout, `refs/heads/${branch}`) !== null) {
@@ -461,7 +484,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
             300_000
           );
           if (fetched.code !== 0) {
-            return { ok: false, error: unavailable(`拉取 base 分支失败（未创建工作区）：${gitMessage(fetched.stderr)}`) };
+            return { ok: false, error: unavailable(`拉取 base 分支失败（未创建工作区）：${remoteDetail(fetched.stderr)}`) };
           }
           const object = await runGit(repoPath, ['rev-parse', '-q', '--verify', `${baseSha}^{commit}`], env, 20_000);
           if (object.code !== 0 || object.stdout.trim() !== baseSha) {
@@ -864,6 +887,148 @@ export function authScopeUrl(raw: string | null | undefined): string | null {
   return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
 }
 
+/**
+ * SSH 只读支持的「小闭集」文法：`ssh://[user@]host[:port]/path` 与 scp 形式 `[user@]host:path`。
+ *
+ * 只接受普通 DNS 名 / IPv4、可打印的用户名、1..65535 的端口，以及不含空白 / 控制字符 /
+ * `%` / `?` / `#` / `\` / `.` / `..` 段的路径。拒绝带口令的 userinfo、`-` 开头的主机、
+ * IPv6 字面量等没有把握安全规范化的写法（失败关闭，不猜）。
+ *
+ * 规范形式固定为 `ssh://[user@]host[:port]/<path>`：
+ * - 绝对路径 = 远端绝对路径（scp 的 `host:/srv/repo.git` → `ssh://host/srv/repo.git`）；
+ * - 相对路径 = 相对远端用户 home（scp 的 `host:repo.git` → `ssh://host/~/repo.git`）。
+ *   两种语义绝不合并；默认端口 22 与省略端口视为同一目的地（ssh 的默认值）。
+ */
+const SSH_USER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const SSH_HOST_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
+const SSH_PATH_PATTERN = /^[A-Za-z0-9._+@/-]+$/;
+
+function canonicalSshPath(raw: string, kind: 'uri' | 'scp'): string | null {
+  // 仓库地址末尾的 `/` 不改变目的地（与 HTTPS scope 的处理一致）
+  const path = raw.replace(/\/+$/, '');
+  if (path === '' || path === '/') return null;
+  let relative: boolean;
+  let body: string;
+  if (path.startsWith('/~/')) {
+    // `ssh://host/~/path` 是 git 的 home 相对写法（实测 git 把 `~/path` 原样交给远端展开）。
+    if (kind !== 'uri') return null;
+    relative = true;
+    body = path.slice(3);
+  } else if (kind === 'scp' && path.startsWith('~/')) {
+    // scp 形式 `host:~/path` 实测同样把 `~/path` 交给远端；语义与 URI 的 `/~/` 相同。
+    relative = true;
+    body = path.slice(2);
+  } else if (path.startsWith('/')) {
+    relative = false;
+    body = path.slice(1);
+  } else {
+    relative = true;
+    body = path;
+  }
+  if (body === '' || !SSH_PATH_PATTERN.test(body)) return null;
+  const segments = body.split('/');
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return null;
+  return relative ? `~/${body}` : body;
+}
+
+function buildSshScope(
+  kind: 'uri' | 'scp',
+  user: string | undefined,
+  host: string | undefined,
+  port: string | undefined,
+  path: string
+): string | null {
+  if (host === undefined || !SSH_HOST_PATTERN.test(host) || host.includes('..')) return null;
+  if (host.startsWith('-') || host.endsWith('-')) return null;
+  if (user !== undefined && !SSH_USER_PATTERN.test(user)) return null;
+  let portPart = '';
+  if (port !== undefined) {
+    const value = Number(port);
+    if (!/^\d+$/.test(port) || !Number.isInteger(value) || value < 1 || value > 65535) return null;
+    if (value !== 22) portPart = `:${value}`;
+  }
+  const canonicalPath = canonicalSshPath(path, kind);
+  if (canonicalPath === null) return null;
+  return `ssh://${user === undefined ? '' : `${user}@`}${host.toLowerCase()}${portPart}/${canonicalPath}`;
+}
+
+/** 可绑定的 SSH 目的地，返回规范化后的 `ssh://` 地址；不是安全可解析的 SSH 地址就返回 null。 */
+export function sshScopeUrl(raw: string | null | undefined): string | null {
+  const rawValue = raw ?? '';
+  if (/[\u0000-\u001f\u007f]/.test(rawValue)) return null;
+  const value = rawValue.trim();
+  if (value === '' || /\s/.test(value)) return null;
+  if (/^ssh:\/\//i.test(value)) {
+    const match = /^ssh:\/\/(?:([^@/]+)@)?([^/:]+)(?::(\d{1,5}))?(\/.*)$/i.exec(value);
+    if (match === null) return null;
+    return buildSshScope('uri', match[1], match[2], match[3], match[4]!);
+  }
+  // 任何别的 `scheme://`（https、git、file…）都不是 scp 形式，别把 scheme 当主机名。
+  if (value.includes('://')) return null;
+  const match = /^(?:([^@/]+)@)?([^/:]+):(.*)$/.exec(value);
+  if (match === null) return null;
+  return buildSshScope('scp', match[1], match[2], undefined, match[3]!);
+}
+
+/**
+ * SSH 传输失败的可执行提示：区分「主机密钥不受信任」与「身份认证失败」，
+ * 不回显 ssh 的原始 stderr（里面常带用户名、key 路径和主机细节）。
+ */
+export function sshFailureReason(stderr: string): string {
+  const text = stderr.toLowerCase();
+  if (/host key verification failed|remote host identification has changed|no (?:matching )?host key|host key for .* has changed|known_hosts/.test(text)) {
+    return 'SSH 主机密钥校验失败：这台 Worker 的 known_hosts 不信任该主机。请让管理员核对主机指纹并加入 known_hosts（不会跳过校验，也不会自动信任）';
+  }
+  if (/permission denied|publickey|no such identity|agent admitted failure|too many authentication failures|authentication failed/.test(text)) {
+    return 'SSH 身份认证未通过：这台 Worker 的 SSH 身份没有被该主机接受（可能是未配置身份、密钥未被授权，或账号权限不足）。请让管理员检查 Worker 的 SSH 身份与远端授权（不会使用本次传入的 HTTPS 令牌）';
+  }
+  return 'SSH 连接失败（主机不可达或 SSH 配置不可用）；请检查 Worker 到该主机的网络与 SSH 配置';
+}
+
+/**
+ * 固定 SSH 客户端调用（只读准备专用）：
+ * - `-F /dev/null`：不读 `~/.ssh/config` 与 `/etc/ssh/ssh_config`，因此 HostName / Port /
+ *   ProxyCommand / ProxyJump / LocalCommand 等都不能把已核对的目的地改到别处；默认的
+ *   `~/.ssh/known_hosts`、`~/.ssh/id_*`、`SSH_AUTH_SOCK` 仍然生效。
+ * - `StrictHostKeyChecking=yes` + `UpdateHostKeys=no`：只认已有 known_hosts，不 TOFU、不回写。
+ * - `BatchMode=yes`：不弹密码 / passphrase，也不能偷偷降级成交互认证。
+ * - 端口：URL 显式写 `:22` 时 git 会传 `-p 22`，省略时 ssh 用默认 22；两者是同一个目的地。
+ * - `ForwardAgent` / `ClearAllForwardings` / `ControlMaster` 都关掉，避免借用连接或转发。
+ * 通过 `GIT_SSH_COMMAND` 和命令行作用域的 `core.sshCommand` 同时注入（见 `sshPrepareEnv`）。
+ */
+const SSH_COMMAND =
+  'ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=yes -o UpdateHostKeys=no ' +
+  '-o ForwardAgent=no -o ClearAllForwardings=yes -o ControlMaster=no ' +
+  '-o ProxyCommand=none -o ProxyJump=none -o ConnectTimeout=30';
+
+/**
+ * SSH 只读准备专用的网络 env：不复用 `publishEnv`，免得把 HTTPS 令牌 / helper 逻辑带进 SSH。
+ *
+ * 除了固定 ssh 命令，还：
+ * - 屏蔽 global / system 配置，只保留仓库本地配置；
+ * - `GIT_ALLOW_PROTOCOL=ssh`：这次网络操作只允许 ssh，不能因为仓库配置落到 file/http/git；
+ * - 清掉机器 ambient 的 `GIT_SSH` / `GIT_SSH_COMMAND` / `GIT_ASKPASS`，避免它们替换固定命令；
+ * - 保留 `HOME`、`SSH_AUTH_SOCK`（Worker 已有的 known_hosts / 默认身份 / agent）。
+ *
+ * 仓库本地 `core.sshCommand` 被命令行配置（`GIT_CONFIG_*`）覆盖；`readOriginDestination`
+ * 另要求 raw 与 `remote get-url` 展开结果**逐字节相同**，所以本地 `insteadOf` 也改不掉目的地。
+ */
+export function sshPrepareEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env = networkEnv(undefined, source, null);
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  env.GIT_CONFIG_SYSTEM = '/dev/null';
+  env.GIT_CONFIG_COUNT = '1';
+  env.GIT_CONFIG_KEY_0 = 'core.sshCommand';
+  env.GIT_CONFIG_VALUE_0 = SSH_COMMAND;
+  env.GIT_SSH_COMMAND = SSH_COMMAND;
+  env.GIT_SSH_VARIANT = 'ssh';
+  env.GIT_ALLOW_PROTOCOL = 'ssh';
+  delete env.GIT_SSH;
+  delete env.GIT_ASKPASS;
+  return env;
+}
+
 function hasAuth(auth: GitAuth | undefined): boolean {
   return auth !== undefined && auth.header.trim() !== '';
 }
@@ -1040,6 +1205,9 @@ export interface OriginDestination {
   readonly pushUrl: string;
   readonly canonicalFetch: string | null;
   readonly canonicalPush: string | null;
+  /** 仅在 `allowSsh` 时填充：规范化后的 SSH 目的地（`ssh://…`）。 */
+  readonly sshFetch: string | null;
+  readonly sshPush: string | null;
   readonly local: boolean;
 }
 
@@ -1047,8 +1215,15 @@ export interface OriginDestination {
  * 读出 origin 的真实目的地：raw 配置各恰好一条，且 git 展开后与 raw 指向同一个地方。
  * 展开在 publishEnv 下做（屏蔽 global/system 的 insteadOf），所以核对的就是发布时 git 看到的东西；
  * 仓库本地 insteadOf 仍会生效，因而也会被这一致性检查抓住并拒绝。
+ *
+ * `allowSsh` 只为 SSH 只读路径（`prepareDelegationWorktree`）打开；默认关，
+ * `publishRef` / `importCommit` 的 HTTPS-only 判定完全不变。
  */
-export async function readOriginDestination(path: string): Promise<Result<OriginDestination, DomainError>> {
+export async function readOriginDestination(
+  path: string,
+  options: { readonly allowSsh?: boolean } = {}
+): Promise<Result<OriginDestination, DomainError>> {
+  const allowSsh = options.allowSsh === true;
   const raw = await rawRemoteUrls(path, 'url');
   if (raw.length !== 1) return { ok: false, error: invalid('origin 必须恰好配置一个 fetch 地址') };
   const rawPushUrls = await rawRemoteUrls(path, 'pushurl');
@@ -1062,18 +1237,35 @@ export async function readOriginDestination(path: string): Promise<Result<Origin
   const pushUrl = expandedPush || rawPush;
   const canonicalFetch = authScopeUrl(fetchUrl);
   const canonicalPush = authScopeUrl(pushUrl);
-  const local = canonicalFetch === null && isLocalGitUrl(fetchUrl);
-  if (canonicalFetch === null && !local) return { ok: false, error: invalid('origin 不是可校验的 HTTPS 地址（本地路径仅测试策略放行）') };
-  if (canonicalPush === null && !local) return { ok: false, error: invalid('origin 的 push 地址不是可校验的 HTTPS 地址') };
+  const sshFetch = allowSsh ? sshScopeUrl(fetchUrl) : null;
+  const sshPush = allowSsh ? sshScopeUrl(pushUrl) : null;
+  const local = canonicalFetch === null && sshFetch === null && isLocalGitUrl(fetchUrl);
+  if (canonicalFetch === null && sshFetch === null && !local) {
+    return {
+      ok: false,
+      error: invalid(allowSsh ? 'origin 不是可校验的 HTTPS / SSH 地址（本地路径仅测试策略放行）' : 'origin 不是可校验的 HTTPS 地址（本地路径仅测试策略放行）')
+    };
+  }
+  if (canonicalPush === null && sshPush === null && !local) {
+    return { ok: false, error: invalid(allowSsh ? 'origin 的 push 地址不是可校验的 HTTPS / SSH 地址' : 'origin 的 push 地址不是可校验的 HTTPS 地址') };
+  }
   if (canonicalFetch !== null && authScopeUrl(rawFetch) !== canonicalFetch) {
     return { ok: false, error: invalid('origin 地址被 git 配置改写（insteadOf），拒绝发布') };
   }
   if (canonicalPush !== null && authScopeUrl(rawPush) !== canonicalPush) {
     return { ok: false, error: invalid('origin 的 push 地址被 git 配置改写（insteadOf），拒绝发布') };
   }
-  if (canonicalFetch === null && fetchUrl !== rawFetch) return { ok: false, error: invalid('origin 地址被 git 配置改写（insteadOf），拒绝发布') };
-  if (canonicalPush === null && pushUrl !== rawPush) return { ok: false, error: invalid('origin 的 push 地址被 git 配置改写（insteadOf），拒绝发布') };
-  return { ok: true, value: { fetchUrl, pushUrl, canonicalFetch, canonicalPush, local } };
+  // SSH：不满足于「规范化后相等」，要求 raw 与展开结果逐字节相同。这样 git 在真正联网时
+  // 对同一个字符串也不会命中任何 local insteadOf；另有 GIT_ALLOW_PROTOCOL=ssh 兜底。
+  if (sshFetch !== null && fetchUrl !== rawFetch) {
+    return { ok: false, error: invalid('origin 地址被 git 配置改写（insteadOf），拒绝发布') };
+  }
+  if (sshPush !== null && pushUrl !== rawPush) {
+    return { ok: false, error: invalid('origin 的 push 地址被 git 配置改写（insteadOf），拒绝发布') };
+  }
+  if (canonicalFetch === null && sshFetch === null && fetchUrl !== rawFetch) return { ok: false, error: invalid('origin 地址被 git 配置改写（insteadOf），拒绝发布') };
+  if (canonicalPush === null && sshPush === null && pushUrl !== rawPush) return { ok: false, error: invalid('origin 的 push 地址被 git 配置改写（insteadOf），拒绝发布') };
+  return { ok: true, value: { fetchUrl, pushUrl, canonicalFetch, canonicalPush, sshFetch, sshPush, local } };
 }
 
 /** `ls-remote --symref <url> HEAD` 的第一行 `ref: refs/heads/<name>\tHEAD`。 */

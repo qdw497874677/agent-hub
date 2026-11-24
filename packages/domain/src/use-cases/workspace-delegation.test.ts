@@ -20,6 +20,7 @@ import {
   type DelegationDirectAuthorizeInput,
   type DelegationDirectAuthorizer,
   type DelegationDirectSource,
+  type DelegationDirectSourceRejection,
   type DelegationPlan,
   type DelegationStore,
   type DirectDelegateWorkspaceCommand,
@@ -701,6 +702,98 @@ function authorizer(
     return input.step === deny ? err(forbidden('当前授权已失效')) : ok(undefined);
   };
 }
+
+function rejectingBridges(
+  w: World,
+  rejection: DelegationDirectSourceRejection | null
+): WorkspaceDelegationDirectBridges {
+  return {
+    ...w.bridges,
+    resolveDirectSource: async () => null,
+    explainDirectSourceRejection: async (_sessionId, accountId) =>
+      accountId === user.id ? rejection : null
+  };
+}
+
+test('直接执行：来源不可用时只对主人给出安全、可行动的原因', async () => {
+  const w = await world();
+  const cases: Array<[DelegationDirectSourceRejection, string]> = [
+    ['chat_only', '没有可复用的长期工作空间'],
+    ['workspace_missing', '工作空间已不存在'],
+    ['workspace_not_ready', '尚未就绪'],
+    ['workspace_unlinked', '未关联到当前项目'],
+    ['worker_mismatch', '不同的 Worker']
+  ];
+  for (const [reason, expected] of cases) {
+    const seen: DelegationDirectAuthorizeInput[] = [];
+    const result = await delegateWorkspaceDirectUseCase(
+      w.world.deps,
+      w.store,
+      rejectingBridges(w, reason),
+      authorizer(null, seen),
+      directCommand(w)
+    );
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.error.code, 'not_found');
+    assert.match(!result.ok ? result.error.message : '', new RegExp(expected));
+    assert.deepEqual(seen, []);
+    assert.deepEqual(w.store.writes, { allocate: 0, claim: 0, compareAndSet: 0 });
+  }
+});
+
+test('直接执行：非主人或不提供归类时保持中性 notFound', async () => {
+  const w = await world();
+  const other: Principal = { ...actor, user: { ...user, id: asUserId('user_other') } };
+
+  const stranger = await delegateWorkspaceDirectUseCase(
+    w.world.deps,
+    w.store,
+    rejectingBridges(w, 'chat_only'),
+    authorizer(),
+    directCommand(w, { actor: other })
+  );
+  assert.equal(stranger.ok, false);
+  assert.equal(!stranger.ok && stranger.error.code, 'not_found');
+  assert.equal(!stranger.ok ? stranger.error.message : '', '直接执行的来源会话不存在或不可用');
+
+  const silent: WorkspaceDelegationDirectBridges = {
+    ...w.bridges,
+    resolveDirectSource: async () => null
+  };
+  const noBridge = await delegateWorkspaceDirectUseCase(
+    w.world.deps,
+    w.store,
+    silent,
+    authorizer(),
+    directCommand(w)
+  );
+  assert.equal(noBridge.ok, false);
+  assert.equal(!noBridge.ok && noBridge.error.code, 'not_found');
+  assert.equal(!noBridge.ok ? noBridge.error.message : '', '直接执行的来源会话不存在或不可用');
+  assert.deepEqual(w.store.writes, { allocate: 0, claim: 0, compareAndSet: 0 });
+});
+
+test('直接执行：来源诊断异常时保持中性 notFound，不透出内部错误', async () => {
+  const w = await world();
+  const broken: WorkspaceDelegationDirectBridges = {
+    ...w.bridges,
+    resolveDirectSource: async () => null,
+    explainDirectSourceRejection: async () => {
+      throw new Error('boom');
+    }
+  };
+  const result = await delegateWorkspaceDirectUseCase(
+    w.world.deps,
+    w.store,
+    broken,
+    authorizer(),
+    directCommand(w)
+  );
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.error.code, 'not_found');
+  assert.equal(!result.ok ? result.error.message : '', '直接执行的来源会话不存在或不可用');
+  assert.deepEqual(w.store.writes, { allocate: 0, claim: 0, compareAndSet: 0 });
+});
 
 test('直接执行：无任务会话按不可变项目直接建链，且与同键提案记录隔离', async () => {
   const w = await world();
