@@ -12,7 +12,7 @@ export interface HandoffItem {
   /** 这条在 journal 里的起止 seq（session.read 翻页用）。 */
   readonly seq: number;
   readonly lastSeq: number;
-  /** 第几轮（第 n 句用户话开始算第 n 轮；之前的算第 0 轮）。 */
+  /** 按输入顺序标记的轮次（第 n 句用户话起为第 n 轮），不代表排队消息的因果分组。 */
   readonly turn: number;
   readonly role: 'user' | 'assistant';
   readonly kind: 'user' | 'assistant' | 'tool' | 'artifact';
@@ -29,7 +29,7 @@ export interface HandoffStats {
   readonly omitted: number;
   /** 被整轮省略的轮次区间（含两端）。 */
   readonly omittedTurns: readonly (readonly [number, number])[];
-  /** 估算用量 / 预算（token）。 */
+  /** 选中历史条目的估算用量 / 预算（token）；不含序列化格式、前言、遗漏提示或可选工具提示。 */
   readonly tokens: number;
   readonly budget: number;
 }
@@ -53,6 +53,10 @@ const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
 
 /** journal → 交接条目。thinking / diagnostic / 旁路事件不带。 */
 export function handoffItems(entries: readonly JournalEntry[]): HandoffItem[] {
+  return projectHandoffItems(entries, 'legacy');
+}
+
+function projectHandoffItems(entries: readonly JournalEntry[], policy: 'portable' | 'legacy'): HandoffItem[] {
   const items: HandoffItem[] = [];
   let turn = 0;
   let reply = null as { seq: number; lastSeq: number; text: string } | null;
@@ -65,6 +69,7 @@ export function handoffItems(entries: readonly JournalEntry[]): HandoffItem[] {
     const seq = Number(rawSeq);
     switch (event.kind) {
       case 'text':
+        if (policy === 'portable' && event.subagentId) break;
         if (reply) {
           reply.lastSeq = seq;
           reply.text += event.delta;
@@ -74,12 +79,15 @@ export function handoffItems(entries: readonly JournalEntry[]): HandoffItem[] {
         flush();
         pendingTool = null;
         turn += 1;
-        const files = (event.attachments ?? []).map((a) => a.path).join('、');
+        // 旧交接简报也写作 prompt，但正文可能已经内嵌工具输出和附件路径，不能再当成用户原话转交。
+        if (policy === 'portable' && (event.handoff !== undefined || event.text.trim() === '')) break;
+        const files = policy === 'legacy' ? (event.attachments ?? []).map((a) => a.path).join('、') : '';
         items.push({ seq, lastSeq: seq, turn, role: 'user', kind: 'user', text: `用户：${event.text.trim()}${files ? `（附带：${files}）` : ''}` });
         break;
       }
       case 'tool_call': {
         flush();
+        if (policy === 'portable') break;
         const input = event.input.trim();
         items.push({ seq, lastSeq: seq, turn, role: 'assistant', kind: 'tool', text: `[工具] ${event.name}${input ? `\n输入：${clip(input, TOOL_INPUT_CHARS)}` : ''}` });
         pendingTool = { index: items.length - 1, name: event.name, input, seq };
@@ -87,6 +95,7 @@ export function handoffItems(entries: readonly JournalEntry[]): HandoffItem[] {
       }
       case 'tool_result': {
         flush();
+        if (policy === 'portable') break;
         const output = (event.output ?? '').trim();
         const head = `[工具] ${event.name} ${event.ok ? '✓' : '✗'} ${seconds(event.durationMs)}`;
         const outLine = output ? `\n输出${output.length > TOOL_OUTPUT_CHARS ? '（截短）' : ''}：${tail(output, TOOL_OUTPUT_CHARS)}` : '';
@@ -105,7 +114,7 @@ export function handoffItems(entries: readonly JournalEntry[]): HandoffItem[] {
       }
       case 'artifact':
         flush();
-        items.push({ seq, lastSeq: seq, turn, role: 'assistant', kind: 'artifact', text: `[产出] ${event.path}` });
+        if (policy === 'legacy') items.push({ seq, lastSeq: seq, turn, role: 'assistant', kind: 'artifact', text: `[产出] ${event.path}` });
         break;
       case 'ended':
         flush();
@@ -210,29 +219,70 @@ export interface HandoffOptions {
   readonly toolHint?: boolean;
 }
 
-/** 生成交接简报和统计（D1–D5）。 */
-export function buildHandoff(entries: readonly JournalEntry[], where: HandoffWhere, options: HandoffOptions): HandoffResult {
-  const items = handoffItems(entries);
-  const windowTokens = options.windowTokens ?? estimateContextUsage(entries).windowTokens;
-  const headerReserve = 400;
-  const budget = handoffBudget({
-    windowTokens,
-    currentTokens: estimateTokens(options.currentText ?? '') + attachmentAllowance(options.attachments ?? []) + headerReserve,
-    ...(options.cap !== undefined ? { cap: options.cap } : {})
-  });
-  const { kept, used } = selectHandoffItems(items, budget);
-  const hint = options.toolHint !== false;
-  const read = (afterSeq: number) => (hint ? `，可用 session.read({session_id:"${options.sourceSessionId}", after_seq:${afterSeq}}) 查原文` : '');
+export interface HandoffGap {
+  readonly kind: 'gap';
+  readonly firstSeq: number;
+  readonly lastSeq: number;
+  readonly firstTurn: number;
+  readonly lastTurn: number;
+  readonly count: number;
+  /** Cursor immediately preceding the gap, for optional history lookup. */
+  readonly afterSeq: number;
+}
 
-  const lines: string[] = [];
+export interface HandoffDocument {
+  readonly version: 1;
+  readonly sourceSessionId: string;
+  /** Inclusive source boundary; null only for an empty legacy input. */
+  readonly cursor: number | null;
+  readonly parts: readonly ({ readonly kind: 'entry'; readonly item: HandoffItem } | HandoffGap)[];
+  readonly stats: HandoffStats;
+}
+
+export interface HandoffDocumentOptions {
+  readonly sourceSessionId: string;
+  /** Inclusive journal boundary. Entries beyond this cursor are never included. */
+  readonly cursor: number;
+  /** Target window must be explicitly provided; it is never inferred from the source. */
+  readonly windowTokens: number;
+  readonly cap?: number;
+  /** Budget reservations only; neither value is included in the document. */
+  readonly currentText?: string;
+  readonly attachments?: readonly { kind: string }[];
+}
+
+/**
+ * Build a portable history artifact from a journal supplied in ascending sequence order.
+ * Turns are positional labels, not authoritative causal grouping for queued prompts.
+ * Tool data, artifacts and attachment references are excluded.
+ */
+export function buildHandoffDocument(entries: readonly JournalEntry[], options: HandoffDocumentOptions): HandoffDocument {
+  if (!Number.isSafeInteger(options.windowTokens) || options.windowTokens <= 0) throw new RangeError('windowTokens must be a positive safe integer');
+  if (!Number.isSafeInteger(options.cursor) || options.cursor < 0) throw new RangeError('cursor must be a non-negative safe integer');
+  if (options.cap !== undefined && (!Number.isSafeInteger(options.cap) || options.cap < 0)) throw new RangeError('cap must be a non-negative safe integer');
+  return makeHandoffDocument(entries.filter(({ seq }) => Number(seq) <= options.cursor), options, 'portable', options.cursor);
+}
+
+function makeHandoffDocument(
+  entries: readonly JournalEntry[],
+  options: HandoffOptions & { readonly windowTokens: number },
+  policy: 'portable' | 'legacy',
+  cursor: number | null
+): HandoffDocument {
+  const items = projectHandoffItems(entries, policy);
+  const windowTokens = options.windowTokens;
+  const headerReserve = 400;
+  const currentTokens = estimateTokens(options.currentText ?? '') + attachmentAllowance(options.attachments ?? []) + headerReserve;
+  const budget = policy === 'legacy'
+    ? handoffBudget({ windowTokens, currentTokens, ...(options.cap !== undefined ? { cap: options.cap } : {}) })
+    : Math.max(0, Math.min(Math.max(0, options.cap ?? HANDOFF_TOKEN_CAP), windowTokens - currentTokens - Math.max(16_000, Math.ceil(windowTokens / 4))));
+  const { kept, used } = selectHandoffItems(items, budget);
+  const parts: ({ kind: 'entry'; item: HandoffItem } | HandoffGap)[] = [];
   let gap: HandoffItem[] = [];
   let lastKeptSeq = 0;
   const flushGap = () => {
     if (gap.length === 0) return;
-    const a = gap[0]!.turn;
-    const b = gap.at(-1)!.turn;
-    const range = a === b ? `第 ${a} 轮` : `第 ${a}–${b} 轮`;
-    lines.push(`……（这里省略了${range}里的 ${gap.length} 条${read(lastKeptSeq)}）……`);
+    parts.push({ kind: 'gap', firstSeq: gap[0]!.seq, lastSeq: gap.at(-1)!.lastSeq, firstTurn: gap[0]!.turn, lastTurn: gap.at(-1)!.turn, count: gap.length, afterSeq: lastKeptSeq });
     gap = [];
   };
   items.forEach((item, index) => {
@@ -242,7 +292,7 @@ export function buildHandoff(entries: readonly JournalEntry[], where: HandoffWhe
       return;
     }
     flushGap();
-    lines.push(chosen.text);
+    parts.push({ kind: 'entry', item: chosen });
     lastKeptSeq = item.lastSeq;
   });
   flushGap();
@@ -266,6 +316,34 @@ export function buildHandoff(entries: readonly JournalEntry[], where: HandoffWhe
     tokens: used,
     budget
   };
+  return { version: 1, sourceSessionId: options.sourceSessionId, cursor, parts, stats };
+}
+
+function renderParts(document: HandoffDocument, hint: boolean, safeHint = false): string[] {
+  return document.parts.map((part) => {
+    if (part.kind === 'entry') return part.item.text;
+    const range = part.firstTurn === part.lastTurn ? `第 ${part.firstTurn} 轮` : `第 ${part.firstTurn}–${part.lastTurn} 轮`;
+    const sessionId = safeHint ? JSON.stringify(document.sourceSessionId) : `"${document.sourceSessionId}"`;
+    const read = hint ? `，可用 session.read({session_id:${sessionId}, after_seq:${part.afterSeq}}) 查原文` : '';
+    return `……（这里省略了${range}里的 ${part.count} 条${read}）……`;
+  });
+}
+
+/**
+ * Standalone historical evidence, not a new request or a target-environment instruction.
+ * Returns an empty string when no history was selected; omission metadata remains on the document.
+ */
+export function renderHandoffDocument(document: HandoffDocument, options: { readonly toolHint?: boolean } = {}): string {
+  if (document.stats.carried === 0) return '';
+  return [HANDOFF_PREAMBLE, '', '--- 之前的对话 ---', ...renderParts(document, options.toolHint === true, true), '--- 历史结束 ---'].join('\n');
+}
+
+/** 生成交接简报和统计（D1–D5）。 */
+export function buildHandoff(entries: readonly JournalEntry[], where: HandoffWhere, options: HandoffOptions): HandoffResult {
+  const windowTokens = options.windowTokens ?? estimateContextUsage(entries).windowTokens;
+  const document = makeHandoffDocument(entries, { ...options, windowTokens }, 'legacy', entries.length ? Number(entries.at(-1)!.seq) : null);
+  const { stats } = document;
+  const hint = options.toolHint !== false;
   const summary =
     stats.omitted > 0
       ? `共 ${stats.turns} 轮，带了其中 ${stats.carriedTurns} 轮的 ${stats.carried} 条，省略 ${stats.omitted} 条${hint ? `；需要时用 session.read({session_id:"${options.sourceSessionId}"}) 分页查原文` : ''}。`
@@ -277,11 +355,10 @@ export function buildHandoff(entries: readonly JournalEntry[], where: HandoffWhe
     `现在你在「${where.to}」上，工作目录是 ${where.root}。${where.code ?? '文件以这台机器上的为准，原机器上没提交的改动这里可能没有。'}`,
     '',
     '--- 之前的对话 ---',
-    ...lines,
+    ...renderParts(document, hint),
     '--- 历史结束 ---',
     '',
     '请先用一两句话确认你理解到的目标和进展，然后等我下一条指令。'
   ].join('\n');
   return { text, stats };
 }
-

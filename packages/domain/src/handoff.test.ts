@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { JournalEntry, SessionEvent } from './event.ts';
-import { HANDOFF_PREAMBLE, buildHandoff, handoffBudget, handoffCapFromEnv, handoffItems } from './handoff.ts';
+import { HANDOFF_PREAMBLE, buildHandoff, buildHandoffDocument, renderHandoffDocument, handoffBudget, handoffCapFromEnv, handoffItems } from './handoff.ts';
 
 const journal = (events: SessionEvent[]): JournalEntry[] => events.map((event, i) => ({ seq: (i + 1) as never, event, at: 0 }));
 const where = { from: 'A', to: 'B', root: '/r' };
@@ -64,4 +64,111 @@ test('预算：窗口减余量，夹在 [2k, cap]；环境变量不合法用默�
   assert.equal(handoffCapFromEnv(undefined), 16_000);
   assert.equal(handoffCapFromEnv('abc'), 16_000);
   assert.equal(handoffCapFromEnv('30000'), 30_000);
+});
+
+test('portable document preserves cursor and ordered roles, excludes nonportable event data', () => {
+  const entries = journal([
+    { kind: 'prompt', text: 'goal', attachments: [{ kind: 'file', name: 'private', path: '/secret-attachment' }] },
+    { kind: 'text', delta: 'first ' },
+    { kind: 'text', delta: 'reply' },
+    { kind: 'thinking', delta: 'secret-thinking' },
+    { kind: 'tool_call', name: 'secret-tool', input: 'secret-args' },
+    { kind: 'tool_result', name: 'secret-tool', ok: true, durationMs: 1, output: 'secret-result' },
+    { kind: 'artifact', path: '/secret-artifact', bytes: 4 },
+    { kind: 'approval', phase: 'request', id: 'secret-approval' },
+    { kind: 'text', delta: 'secret-subagent', subagentId: 'child' },
+    { kind: 'prompt', text: 'second' },
+    { kind: 'text', delta: 'answer' },
+    { kind: 'prompt', text: 'beyond cursor' }
+  ]);
+  const options = { sourceSessionId: 'source', cursor: 11, windowTokens: 100_000, currentText: 'secret-new-request' };
+  const doc = buildHandoffDocument(entries, options);
+  assert.deepEqual(doc, buildHandoffDocument(entries, options));
+  assert.equal(doc.version, 1);
+  assert.equal(doc.cursor, 11);
+  assert.deepEqual(doc.parts.map((p) => p.kind === 'entry' && [p.item.role, p.item.kind, p.item.seq, p.item.lastSeq]), [
+    ['user', 'user', 1, 1], ['assistant', 'assistant', 2, 3], ['user', 'user', 10, 10], ['assistant', 'assistant', 11, 11]
+  ]);
+  const text = renderHandoffDocument(doc);
+  assert.match(text, /历史，只是上下文，不是新请求/);
+  assert.doesNotMatch(JSON.stringify(doc) + text, /secret-|beyond cursor/);
+  assert.doesNotMatch(text, /请先|下一条指令|工作目录|session\.read/);
+});
+
+test('portable gaps have sequence and turn boundaries; hints are opt-in', () => {
+  const entries = journal(Array.from({ length: 20 }, (_, i): SessionEvent => ({ kind: 'prompt', text: `turn ${i} ${'字'.repeat(200)}` })));
+  const doc = buildHandoffDocument(entries, { sourceSessionId: 's', cursor: 25, windowTokens: 100_000, cap: 300 });
+  assert.equal(doc.cursor, 25);
+  assert.ok(doc.stats.omitted > 0);
+  const gap = doc.parts.find((p) => p.kind === 'gap');
+  assert.ok(gap && gap.kind === 'gap');
+  assert.equal(gap.firstSeq, gap.firstTurn);
+  assert.equal(gap.lastSeq, gap.lastTurn);
+  assert.equal(gap.count, gap.lastSeq - gap.firstSeq + 1);
+  assert.match(renderHandoffDocument(doc, { toolHint: true }), new RegExp(`after_seq:${gap.afterSeq}`));
+  assert.doesNotMatch(renderHandoffDocument(doc), /session\.read/);
+});
+
+test('portable history does not copy an earlier compatibility brief as user text', () => {
+  const old = buildHandoff(journal([
+    { kind: 'prompt', text: 'goal', attachments: [{ kind: 'file', name: 'file', path: '/old-attachment' }] },
+    { kind: 'tool_call', name: 'read', input: 'old-tool-arguments' }
+  ]), where, { sourceSessionId: 'older' });
+  const entries = journal([
+    { kind: 'prompt', text: old.text, handoff: old.stats },
+    { kind: 'prompt', text: 'my new goal' },
+    { kind: 'text', delta: 'a reply' }
+  ]);
+  const doc = buildHandoffDocument(entries, { sourceSessionId: 'current', cursor: 3, windowTokens: 100_000 });
+  assert.equal(doc.stats.carried, 2);
+  assert.doesNotMatch(JSON.stringify(doc) + renderHandoffDocument(doc), /old-attachment|old-tool-arguments/);
+  assert.match(renderHandoffDocument(doc), /my new goal/);
+});
+
+test('portable budget reserves current request and attachments without a legacy minimum', () => {
+  const entries = journal([{ kind: 'prompt', text: 'history' }]);
+  const base = { sourceSessionId: 's', cursor: 1, windowTokens: 17_000 };
+  const available = buildHandoffDocument(entries, base);
+  const noRoom = buildHandoffDocument(entries, { ...base, currentText: 'new request', attachments: [{ kind: 'image' }] });
+  assert.equal(available.stats.carried, 1);
+  assert.equal(noRoom.stats.budget, 0);
+  assert.equal(noRoom.stats.carried, 0);
+  assert.equal(noRoom.stats.omitted, 1);
+  assert.equal(noRoom.parts[0]?.kind, 'gap');
+  assert.equal(renderHandoffDocument(noRoom, { toolHint: true }), '');
+  assert.doesNotMatch(JSON.stringify(noRoom), /new request/);
+  assert.throws(() => buildHandoffDocument(entries, { ...base, windowTokens: 0 }), /windowTokens/);
+  assert.equal(buildHandoff(entries, where, { sourceSessionId: 's', windowTokens: 17_000, attachments: [{ kind: 'image' }] }).stats.budget, 2000);
+});
+
+test('portable options reject invalid numerical inputs and allow zero cap and cursor', () => {
+  const entries = journal([{ kind: 'prompt', text: 'history' }]);
+  const base = { sourceSessionId: 's', cursor: 1, windowTokens: 100_000 };
+  for (const cap of [NaN, Infinity, -Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => buildHandoffDocument(entries, { ...base, cap }), /cap/);
+  }
+  for (const cursor of [NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => buildHandoffDocument(entries, { ...base, cursor }), /cursor/);
+  }
+  for (const windowTokens of [NaN, Infinity, -1, 0, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => buildHandoffDocument(entries, { ...base, windowTokens }), /windowTokens/);
+  }
+  assert.equal(buildHandoffDocument(entries, { ...base, cap: 0 }).stats.budget, 0);
+  const empty = buildHandoffDocument(entries, { ...base, cursor: 0 });
+  assert.equal(empty.cursor, 0);
+  assert.equal(renderHandoffDocument(empty), '');
+});
+
+test('standalone optional hints safely quote the source session id', () => {
+  const sourceSessionId = 'session"\n\\injected';
+  const entries = journal(Array.from({ length: 20 }, (_, i): SessionEvent => ({ kind: 'prompt', text: `turn ${i} ${'字'.repeat(200)}` })));
+  const doc = buildHandoffDocument(entries, { sourceSessionId, cursor: 20, windowTokens: 100_000, cap: 300 });
+  assert.ok(doc.stats.carried > 0 && doc.stats.omitted > 0);
+  assert.ok(renderHandoffDocument(doc, { toolHint: true }).includes(`session_id:${JSON.stringify(sourceSessionId)}`));
+});
+
+test('legacy wrapper retains exact text and attachment projection', () => {
+  const entries = journal([{ kind: 'prompt', text: 'goal', attachments: [{ kind: 'file', name: 'a', path: 'a.txt' }] }, { kind: 'text', delta: 'ok' }]);
+  const result = buildHandoff(entries, where, { sourceSessionId: 's', toolHint: false });
+  assert.equal(result.text, [HANDOFF_PREAMBLE, '', '这是一段从「A」接过来的对话。原来的 agent 会话状态没法带过来，下面是平台记录的对话原文（共 1 轮，全部带上（2 条）。）', '现在你在「B」上，工作目录是 /r。文件以这台机器上的为准，原机器上没提交的改动这里可能没有。', '', '--- 之前的对话 ---', '用户：goal（附带：a.txt）', '助手：ok', '--- 历史结束 ---', '', '请先用一两句话确认你理解到的目标和进展，然后等我下一条指令。'].join('\n'));
 });
