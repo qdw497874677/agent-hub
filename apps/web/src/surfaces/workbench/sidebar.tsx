@@ -75,6 +75,7 @@ interface Props {
   readonly onOpenSession: (sessionId: string) => void;
   readonly onSearch: () => void;
   readonly onNewTask: () => void;
+  readonly onDerive: (taskId: string) => void;
   /** 新开主会话：和新建任务并排，因为它也是「从这条项目开始干活」。 */
   readonly onNewCoordinator: () => void;
   readonly onClose?: (() => void) | undefined;
@@ -99,6 +100,7 @@ export function ProjectSidebar({
   onOpenSession,
   onSearch,
   onNewTask,
+  onDerive,
   onNewCoordinator,
   onClose
 }: Props) {
@@ -107,7 +109,7 @@ export function ProjectSidebar({
   const [showSettled, setShowSettled] = useState(false);
   const [collapsed, setCollapsed] = useState(() => !drawer && readFlag(COLLAPSED_KEY));
   const [foldedTasks, setFoldedTasks] = useState<Set<string>>(() => readSet(COLLAPSED_TASKS_KEY));
-  const tasks = canvas?.tasks ?? [];
+  const tasks = useMemo(() => (canvas?.tasks ?? []).filter((task) => task.archivedAt == null), [canvas?.tasks]);
   // 活跃列表默认不含收起过的：侧栏是「现在要管什么」，不是全量档案。
   const active = useMemo(() => activeSessions(canvas?.sessions ?? []), [canvas?.sessions]);
   const settled = useMemo(() => settledSessions(canvas?.sessions ?? []), [canvas?.sessions]);
@@ -296,6 +298,7 @@ export function ProjectSidebar({
   // 列表里 ↑ / ↓ 在会话行之间移动焦点（Home / End 到头尾）。
   const listRef = useRef<HTMLElement>(null);
   const onListKey = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).closest('[data-sidebar-derive]')) return;
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     const rows = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-nav-row]') ?? [])];
     if (rows.length === 0) return;
@@ -420,22 +423,35 @@ export function ProjectSidebar({
             const busy = rows.some((session) => sessionPhase(session) === 'working');
             return (
               <section key={task.id} className="mb-1">
-                <button
-                  data-nav-row
-                  className="group flex min-h-10 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-sub text-tertiary hover:bg-hover hover:text-secondary lg:min-h-7"
-                  aria-expanded={rows.length > 0 ? !folded : undefined}
-                  title={task.title}
-                  onClick={() => rows.length > 0 && toggleTask(task.id)}
-                >
-                  <Icon name={folded ? 'chevron-right' : 'chevron-down'} size={13} className={rows.length > 0 ? '' : 'opacity-0'} />
-                  <span className="min-w-0 flex-1 truncate">{task.title}</span>
-                  {folded && rows.length > 0 ? (
-                    <span className="flex shrink-0 items-center gap-1 text-meta">
-                      {busy ? <span aria-hidden className={`size-1.5 rounded-full ${PHASE_DOT.busy}`} /> : null}
-                      {rows.length}
-                    </span>
-                  ) : null}
-                </button>
+                <div className="flex min-w-0 items-center">
+                  <button
+                    data-nav-row
+                    className="group flex min-h-10 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left text-sub text-tertiary hover:bg-hover hover:text-secondary lg:min-h-7"
+                    aria-expanded={rows.length > 0 ? !folded : undefined}
+                    title={task.title}
+                    onClick={() => rows.length > 0 && toggleTask(task.id)}
+                  >
+                    <Icon name={folded ? 'chevron-right' : 'chevron-down'} size={13} className={rows.length > 0 ? '' : 'opacity-0'} />
+                    <span className="min-w-0 flex-1 truncate">{task.title}</span>
+                    {folded && rows.length > 0 ? (
+                      <span className="flex shrink-0 items-center gap-1 text-meta">
+                        {busy ? <span aria-hidden className={`size-1.5 rounded-full ${PHASE_DOT.busy}`} /> : null}
+                        {rows.length}
+                      </span>
+                    ) : null}
+                  </button>
+                  <button
+                    type="button"
+                    className={`${GHOST_ICON} focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px]`}
+                    data-sidebar-derive
+                    data-testid="sidebar-task-derive"
+                    aria-label={`为${task.title}开始会话`}
+                    title="开始会话"
+                    onClick={() => onDerive(task.id)}
+                  >
+                    <Icon name="plus" size={14} />
+                  </button>
+                </div>
                 {folded
                   ? null
                   : rows.map((session) => (

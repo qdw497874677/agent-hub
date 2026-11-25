@@ -486,6 +486,10 @@ function Workspace() {
         onClose?.();
         setNewTask(true);
       }}
+      onDerive={(taskId) => {
+        onClose?.();
+        setDeriveFor(taskId);
+      }}
       onNewCoordinator={() => {
         onClose?.();
         setNewCoordinator(true);
