@@ -18,18 +18,20 @@ import { admitBranchSession } from './branch-admission.ts';
 export async function ensureHosted(
   deps: Pick<Deps, 'hosting' | 'tasks' | 'taskGate' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'bots' | 'workspaceGroups' | 'now'> &
     Partial<Pick<Deps, 'toolGrants' | 'environment' | 'branchAttempts'>>,
-  session: Session
+  session: Session,
+  options: { readonly requireFresh?: boolean } = {}
 ): Promise<Result<void, DomainError>> {
   const admitted = await admitBranchSession(deps, session.id);
   if (!admitted.ok) return admitted;
   const current = admitted.value ?? session;
-  return withActiveTask(deps, current.taskId, () => ensureHostedAdmitted(deps, current));
+  return withActiveTask(deps, current.taskId, () => ensureHostedAdmitted(deps, current, options));
 }
 
 async function ensureHostedAdmitted(
   deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'bots' | 'workspaceGroups' | 'now'> &
     Partial<Pick<Deps, 'toolGrants' | 'environment'>>,
-  session: Session
+  session: Session,
+  options: { readonly requireFresh?: boolean }
 ): Promise<Result<void, DomainError>> {
   // 环境版本只比较，不在这里解释资产/MCP；算不出来就维持旧行为。
   const currentRevision = deps.environment
@@ -42,7 +44,7 @@ async function ensureHostedAdmitted(
   if (deps.hosting.has(session.id)) {
     // 资产/MCP/技能变化：不在一轮中途换进程，等下一次投递前重新托管。
     // 重新托管会走 start_session(resume)，Worker 同 id 启动会先 dispose 旧进程。
-    if (!stale) {
+    if (!stale && !options.requireFresh) {
       // 托管中的进程可能已经跨过 token 的 TTL。ACP 的 MCP Authorization 只在
       // session/new|load 注入，prompt 无法热换；令牌失效时主动重新托管，
       // 让 start_session 重新签发并下发。

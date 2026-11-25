@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { ProcessInfo, WorkspaceBrowser } from '@agent-hub/domain';
 import { createRemoteBrowsers } from './remote-workspace-browser.ts';
@@ -14,6 +14,7 @@ import {
   WORKER_CAPABILITY_METRICS,
   WORKER_CAPABILITY_NATIVE_BRANCH,
   WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT,
+  WORKER_CAPABILITY_SESSION_START_READY,
   assetsSync,
   providerTest,
   createRpcChannel,
@@ -147,6 +148,10 @@ export interface GatewayHooks {
   onTurnRef?(workerId: string, sessionId: SessionId, turnRef: string, deliveryId?: string): void;
   onBranchResult?(workerId: string, sessionId: SessionId, outcome: 'native' | 'failed', reason?: string): void;
   onBranchAttemptResult?(workerId: string, sessionId: SessionId, attemptId: string, outcome: 'native' | 'plain' | 'both_failed', agentSessionRef?: string): void;
+  onSessionStartChanged?(workerId: string, sessionId: SessionId): void;
+  /** Check isCurrent immediately before each asynchronous side effect; it expires on any new ownership attempt. */
+  onSessionStartEnded?(workerId: string, sessionId: SessionId, startAttemptId: string, isCurrent: () => boolean): void;
+  onPromptStartRefused?(workerId: string, sessionId: SessionId, deliveryId: string): void;
   onStatus(workerId: string, sessionId: SessionId, status: RuntimeStatus, reason?: string): void;
   onWorkerGone(workerId: string, reason: string): void;
   /**
@@ -218,6 +223,7 @@ export interface GatewayOptions {
   readonly projectGitBundleTimeoutMs?: number;
   /** 连上之后多久内必须 hello；不说话的连接不该一直占着。 */
   readonly helloTimeoutMs?: number;
+  readonly sessionStartTimeoutMs?: number;
   readonly now?: () => number;
 }
 
@@ -287,6 +293,7 @@ interface Registered {
   capabilities: readonly string[] | null;
   /** 这条连接的 Worker 声明了 durable_delivery 没有（#269）；每次 hello 重建。 */
   durableDelivery: boolean;
+  sessionStartReady: boolean;
   branchAttempt: boolean;
   branchAttemptAgents: Set<string>;
   helloAgents: AgentDto[];
@@ -435,6 +442,30 @@ export interface WorkspaceGroupOps {
 export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions = {}): ServerGateway {
   const registry = new Map<string, Registered>();
   const placement = new Map<string, string>();
+  // Readiness is bound to the socket and generation, never inferred from hello/adopt.
+  const starts = new Map<string, { workerId: string; socket: WebSocket; attemptId: string; startedAt: number; state: 'starting' | 'ready' | 'failed'; reason?: 'runtime' | 'configuration'; deliveries: Map<string, number>; seen: Uint8Array }>();
+  const endedStarts = new Map<string, { workerId: string; socket: WebSocket }>();
+  // Cleanly ended generations may still have attachment preparation in flight.
+  // This proof is independent of the end-cleanup guard and never survives its socket.
+  const retiredProofs = new Map<WebSocket, Map<string, { sessionId: string; attemptId: string; deliveryId: string }>>();
+  // Once full, unseen IDs are never admitted as proof for this generation.
+  const MAX_REFUSAL_PROOFS_PER_START = 1024;
+  const MAX_RETIRED_REFUSAL_PROOFS_PER_SOCKET = 1024;
+  // Fixed-size, fail-closed replay filter. False positives only suppress a
+  // refusal proof; an old ID can never become fresh after its turn completes.
+  function markSeen(seen: Uint8Array, id: string): boolean {
+    const hash = createHash('sha256').update(id).digest();
+    let present = true;
+    for (let i = 0; i < 4; i++) {
+      const bit = hash.readUInt32LE(i * 4) % (seen.length * 8);
+      const index = bit >>> 3;
+      const mask = 1 << (bit & 7);
+      if (!(seen[index]! & mask)) present = false;
+      seen[index] = seen[index]! | mask;
+    }
+    return present;
+  }
+  const managedSessions = new Set<string>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
   const now = options.now ?? Date.now;
   const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT.intervalMs;
@@ -467,6 +498,33 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     const entry = registry.get(workerId);
     return entry?.socket && entry.socket.readyState === WebSocket.OPEN ? entry : null;
   };
+  function sessionStartReadiness(sessionId: SessionId, workerId?: string | null) {
+    const start = starts.get(sessionId);
+    const target = workerId ?? start?.workerId ?? placement.get(sessionId);
+    if (!target) return { state: 'untracked' as const };
+    const entry = online(target);
+    if (!entry) return { state: 'offline' as const };
+    if (!entry.sessionStartReady || !entry.durableDelivery) return { state: 'upgrade_required' as const };
+    if (!start || start.workerId !== target || start.socket !== entry.socket || placement.get(sessionId) !== target) return { state: 'untracked' as const };
+    if (start.state === 'ready') return { state: 'ready' as const, startAttemptId: start.attemptId };
+    if (start.state === 'failed') return { state: 'failed' as const, reason: start.reason ?? 'runtime' as const };
+    if (now() - start.startedAt >= (options.sessionStartTimeoutMs ?? 90_000)) return { state: 'failed' as const, reason: 'timed_out' as const };
+    return { state: 'starting' as const };
+  }
+  function invalidateSocket(socket: WebSocket): void {
+    for (const [id, start] of starts) if (start.socket === socket) starts.delete(id);
+    for (const [id, end] of endedStarts) if (end.socket === socket) endedStarts.delete(id);
+    retiredProofs.delete(socket);
+  }
+  function retireStart(sessionId: string, start: { socket: WebSocket; attemptId: string; deliveries: Map<string, number> }): void {
+    let proofs = retiredProofs.get(start.socket);
+    for (const [deliveryId, count] of start.deliveries) {
+      if (count !== 1) continue;
+      if (!proofs) retiredProofs.set(start.socket, proofs = new Map());
+      if (proofs.size >= MAX_RETIRED_REFUSAL_PROOFS_PER_SOCKET) break;
+      proofs.set(JSON.stringify([sessionId, start.attemptId, deliveryId]), { sessionId, attemptId: start.attemptId, deliveryId });
+    }
+  }
   const supportsBranchAttempt = (workerId: string, agentId: string): boolean => {
     const entry = online(workerId);
     const helloAgent = entry?.helloAgents.find((agent) => agent.id === agentId);
@@ -508,23 +566,54 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
 
   function sendTo(workerId: string, command: ServerToWorker): Result<void, DomainError> {
     const entry = online(workerId);
-    if (!entry?.socket) return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」不在线`) };
+    if (!entry?.socket) return { ok: false, error: command.kind === 'prompt' && command.deliveryId
+      ? { ...unavailable(`Worker「${labelOf(workerId)}」不在线`), deliveryDeferred: true }
+      : unavailable(`Worker「${labelOf(workerId)}」不在线`) };
     const needed = commandCapability(command.kind);
-    if (!canInvoke(entry.capabilities, needed)) return { ok: false, error: forbidden(capabilityDenied(needed as WorkerCapability)) };
+    if (!canInvoke(entry.capabilities, needed)) {
+      const error = forbidden(capabilityDenied(needed as WorkerCapability));
+      return { ok: false, error: command.kind === 'prompt' && command.deliveryId ? { ...error, deliveryDeferred: true } : error };
+    }
     if (command.kind === 'start_session' && command.branchAttemptId !== undefined) {
       if (!command.branch || command.resume !== null || !command.branchAttemptId || command.branchAttemptId.length > 128)
         return { ok: false, error: invalid('branchAttemptId requires a valid branch and attempt id') };
       if (!supportsBranchAttempt(workerId, command.agentId)) return { ok: false, error: conflict('Worker does not support branch_attempt; command not sent') };
     }
-    // #269：老 Worker 不会在回合结束时回传投递号，Hub 无法确认这条投递已结束。
-    // 只拒这一帧（socket.send 之前返回，对端一个字节都收不到），连接与其它无键指令照常。
-    if (command.kind === 'prompt' && command.deliveryId && !entry.durableDelivery) {
-      return {
-        ok: false,
-        error: conflict(`Worker「${entry.label}」没有声明 durable_delivery，这条带投递号的指令没有发出；把这台机器的 Worker 更新到最新版后重试`)
-      };
+    if (command.kind === 'prompt' && command.deliveryId) {
+      const readiness = sessionStartReadiness(command.sessionId as SessionId, workerId);
+      if (readiness.state !== 'ready' || readiness.startAttemptId !== command.startAttemptId) {
+        return { ok: false, error: { ...conflict('Session start readiness changed before prompt dispatch; command not sent'), deliveryDeferred: true } };
+      }
     }
-    entry.socket.send(JSON.stringify(command));
+    // Reserve before send: even an exception may have handed off bytes. If the
+    // ID is ever retried, neither receipt can prove which dispatch was refused.
+    let newProof: { deliveries: Map<string, number>; deliveryId: string } | undefined;
+    if (command.kind === 'prompt' && command.deliveryId && command.startAttemptId) {
+      // A receipt for an earlier generation cannot identify which dispatch a
+      // delivery-only callback refers to once this ID is sent again.
+      for (const [proofSocket, retired] of retiredProofs) {
+        for (const [key, proof] of retired) if (proof.sessionId === command.sessionId && proof.deliveryId === command.deliveryId) retired.delete(key);
+        if (!retired.size) retiredProofs.delete(proofSocket);
+      }
+      const start = starts.get(command.sessionId);
+      if (start && start.socket === entry.socket && start.attemptId === command.startAttemptId) {
+        const seen = markSeen(start.seen, command.deliveryId);
+        if (start.deliveries.has(command.deliveryId)) start.deliveries.set(command.deliveryId, 2);
+        else if (start.deliveries.size < MAX_REFUSAL_PROOFS_PER_START) {
+          if (!seen) {
+            start.deliveries.set(command.deliveryId, 2);
+            newProof = { deliveries: start.deliveries, deliveryId: command.deliveryId };
+          }
+        }
+      }
+    }
+    // A send exception is ambiguous: never mark it as provably unsent.
+    try {
+      entry.socket.send(JSON.stringify(command));
+    } catch {
+      return { ok: false, error: unavailable('Worker send failed; delivery outcome unknown, do not automatically replay') };
+    }
+    if (newProof) newProof.deliveries.set(newProof.deliveryId, 1);
     if (command.kind === 'start_session') {
       entry.branchAttempts.delete(command.sessionId);
       if (command.branchAttemptId !== undefined && command.branch) entry.branchAttempts.set(command.sessionId, { attemptId: command.branchAttemptId, sourceRef: command.branch.fromAgentSessionRef });
@@ -722,13 +811,34 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
 
   function dispatchTo(command: WorkerCommand): Result<void, DomainError> {
     if (command.kind === 'start_session') {
-      const sent = sendTo(command.workerId, toWire(command));
+      endedStarts.delete(command.sessionId);
+      const old = starts.get(command.sessionId);
+      if (old && online(old.workerId)?.socket === old.socket) retireStart(command.sessionId, old);
+      starts.delete(command.sessionId);
+      placement.delete(command.sessionId);
+      const entry = online(command.workerId);
+      const wire = toWire(command);
+      if (wire.kind !== 'start_session') throw new Error('invalid start command');
+      const attemptId = entry?.sessionStartReady && entry.durableDelivery ? randomUUID() : undefined;
+      if (attemptId && entry?.socket) {
+        managedSessions.add(command.sessionId);
+        starts.set(command.sessionId, { workerId: command.workerId, socket: entry.socket, attemptId, startedAt: now(), state: 'starting', deliveries: new Map(), seen: new Uint8Array(32_768) });
+      }
+      const sent = sendTo(command.workerId, { ...wire, ...(attemptId ? { startAttemptId: attemptId } : {}) });
       if (sent.ok) placement.set(command.sessionId, command.workerId);
+      else starts.delete(command.sessionId);
       return sent;
     }
+    if (command.kind === 'dispose') endedStarts.delete(command.sessionId);
     const workerId = placement.get(command.sessionId);
     if (workerId === undefined) {
+      if (command.kind === 'prompt' && command.deliveryId) return { ok: false, error: { ...unavailable('Session placement changed before prompt dispatch; command not sent'), deliveryDeferred: true } };
       return { ok: false, error: unavailable('这条会话此刻没有托管在任何 Worker 上') };
+    }
+    if (command.kind === 'dispose') {
+      const old = starts.get(command.sessionId);
+      if (old && online(old.workerId)?.socket === old.socket) retireStart(command.sessionId, old);
+      starts.delete(command.sessionId);
     }
     return sendTo(workerId, toWire(command));
   }
@@ -736,6 +846,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   function markOffline(entry: Registered, socket: WebSocket, reason: string): void {
     // 同一个 workerId 重连时旧连接晚一步关闭：别让它把新连接标成离线。
     if (entry.socket !== socket) return;
+    invalidateSocket(socket);
     entry.socket = null;
     entry.terminalReconciled = false;
     entry.serviceReconciled = false;
@@ -864,6 +975,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
             return;
           }
           const stale = previous.socket;
+          invalidateSocket(stale);
           previous.closeObservation();
           previous.socket = null;
           stale.terminate();
@@ -908,6 +1020,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           channel: null,
           capabilities: verdict.capabilities ?? null,
           durableDelivery: frame.capabilities?.includes(WORKER_CAPABILITY_DURABLE_DELIVERY) === true,
+          sessionStartReady: frame.capabilities?.includes(WORKER_CAPABILITY_SESSION_START_READY) === true,
           branchAttempt: frame.capabilities?.includes(WORKER_CAPABILITY_BRANCH_ATTEMPT) === true,
           branchAttemptAgents: new Set(frame.branchAttemptAgents ?? []),
           helloAgents: frame.agents,
@@ -946,7 +1059,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         socket.send(
           JSON.stringify({
             kind: 'welcome',
-            accepts: [WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH],
+            accepts: [WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, WORKER_CAPABILITY_SESSION_START_READY],
             heartbeat: { intervalMs: policy.intervalMs, missLimit: policy.missLimit, echoMs: policy.echoMs },
             ...(entry.capabilities ? { capabilities: [...entry.capabilities] } : {})
           } satisfies ServerToWorker)
@@ -1067,7 +1180,21 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         hooks.onServiceLog?.(from, frame.serviceId, frame.chunk);
         return;
       }
-      if (frame.type === 'event') hooks.onEvent(from, frame.sessionId as SessionId, frame.event);
+      if (frame.type === 'event') {
+        if (frame.event.kind === 'ended' && frame.event.deliveryId) {
+          const deliveryId = frame.event.deliveryId;
+          const start = starts.get(frame.sessionId);
+          // A reused ID is ambiguous: an unkeyed-generation ended event might
+          // belong to an earlier dispatch, so leave its proof fail-closed.
+          if (start && start.socket === socket && start.workerId === from && placement.get(frame.sessionId) === from && start.deliveries.get(deliveryId) === 1) start.deliveries.delete(deliveryId);
+          const proofs = retiredProofs.get(socket);
+          if (proofs) {
+            for (const [key, proof] of proofs) if (proof.sessionId === frame.sessionId && proof.deliveryId === deliveryId) proofs.delete(key);
+            if (!proofs.size) retiredProofs.delete(socket);
+          }
+        }
+        hooks.onEvent(from, frame.sessionId as SessionId, frame.event);
+      }
       else if (frame.type === 'agent_session') {
         hooks.onAgentSession(from, frame.sessionId as SessionId, frame.agentSessionRef);
       } else if (frame.type === 'turn_ref') {
@@ -1080,9 +1207,46 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         if (frame.outcome !== 'both_failed' && frame.agentSessionRef === attempt.sourceRef) return;
         entry.branchAttempts.delete(frame.sessionId);
         hooks.onBranchAttemptResult?.(from, frame.sessionId as SessionId, frame.attemptId, frame.outcome, frame.outcome === 'both_failed' ? undefined : frame.agentSessionRef);
+      } else if (frame.type === 'session_start_result') {
+        const start = starts.get(frame.sessionId);
+        if (!start || start.socket !== socket || start.workerId !== from || start.attemptId !== frame.startAttemptId || placement.get(frame.sessionId) !== from) return;
+        if (frame.state === 'ended') {
+          retireStart(frame.sessionId, start);
+          starts.delete(frame.sessionId);
+          placement.delete(frame.sessionId);
+          entry.branchAttempts.delete(frame.sessionId);
+          const end = { workerId: from, socket };
+          endedStarts.set(frame.sessionId, end);
+          hooks.onSessionStartEnded?.(from, frame.sessionId as SessionId, frame.startAttemptId, () => endedStarts.get(frame.sessionId) === end);
+        } else {
+          if (start.state !== 'starting') return;
+          start.state = frame.state;
+          if (frame.state === 'failed') start.reason = frame.reason ?? 'runtime';
+        }
+        hooks.onSessionStartChanged?.(from, frame.sessionId as SessionId);
+      } else if (frame.type === 'prompt_start_refused') {
+        const start = starts.get(frame.sessionId);
+        if (start && start.socket === socket && start.workerId === from && start.attemptId === frame.startAttemptId && placement.get(frame.sessionId) === from && start.deliveries.get(frame.deliveryId) === 1) {
+          // Retain consumed proof so redispatch cannot authorize a replay.
+          start.deliveries.set(frame.deliveryId, 2);
+          // Admission was refused despite readiness; require an explicit retry
+          // and a fresh generation rather than resending this delivery here.
+          if (start.state === 'ready') {
+            start.state = 'failed';
+            start.reason = 'runtime';
+            hooks.onSessionStartChanged?.(from, frame.sessionId as SessionId);
+          }
+        } else {
+          const proofs = retiredProofs.get(socket);
+          const key = JSON.stringify([frame.sessionId, frame.startAttemptId, frame.deliveryId]);
+          if (!proofs?.delete(key)) return;
+          if (!proofs.size) retiredProofs.delete(socket);
+        }
+        hooks.onPromptStartRefused?.(from, frame.sessionId as SessionId, frame.deliveryId);
       } else if (frame.type === 'options') {
         hooks.onOptions(from, frame.sessionId as SessionId, frame.options);
       } else if (frame.type === 'status') {
+        if ((frame.status === 'ended' || frame.status === 'gone') && managedSessions.has(frame.sessionId)) return;
         // 路由只由 start_session / adopt 建立；一台 Worker 报「running」不能把别人的会话改道到自己身上，
         // 报「结束」也只能划掉确实路由到它的那条。`idle` 是「这一轮结束了、进程还在」，路由得留着。
         if ((frame.status === 'ended' || frame.status === 'gone') && placement.get(frame.sessionId) === from) {
@@ -1269,6 +1433,13 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   }
 
   const gateway: NodeGateway = {
+    sessionStartReadiness,
+    retrySessionStart(sessionId: SessionId, workerId?: string | null): void {
+      const end = endedStarts.get(sessionId);
+      if (end && (!workerId || end.workerId === workerId)) endedStarts.delete(sessionId);
+      const start = starts.get(sessionId);
+      if (start && (!workerId || start.workerId === workerId) && sessionStartReadiness(sessionId, workerId).state === 'failed') starts.delete(sessionId);
+    },
     async status(): Promise<WorkerStatus[]> {
       return statuses();
     },
@@ -1476,7 +1647,11 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     },
     adopt(workerId: string, sessionIds: readonly string[]): void {
       if (!online(workerId)) return;
-      for (const sessionId of sessionIds) placement.set(sessionId, workerId);
+      for (const sessionId of sessionIds) {
+        endedStarts.delete(sessionId);
+        if (placement.get(sessionId) !== workerId) starts.delete(sessionId);
+        placement.set(sessionId, workerId);
+      }
     },
     hostOf(sessionId: string): string | null {
       return placement.get(sessionId) ?? null;
@@ -1488,6 +1663,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       const kicked = registry.get(workerId);
       if (kicked) kicked.kicked = true;
       const socket = kicked?.socket;
+      if (socket) invalidateSocket(socket);
       if (why === 'revoked') {
         registry.delete(workerId);
         usage.delete(workerId);
@@ -1537,12 +1713,16 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       return true;
     },
     close(): void {
+      endedStarts.clear();
+      retiredProofs.clear();
       clearInterval(heartbeat);
       clearInterval(trials);
       if (echoes) clearInterval(echoes);
       for (const entry of registry.values()) entry.channel?.close('hub 正在关闭');
       for (const entry of registry.values()) entry.socket?.terminate();
       registry.clear();
+      starts.clear();
+      managedSessions.clear();
       wss.close();
     }
   };
@@ -1557,7 +1737,10 @@ function toWire(command: WorkerCommand): ServerToWorker {
         taskId: command.taskId,
         agentId: command.agentId,
         workspaceRoot: command.workspaceRoot,
-        origin: command.origin,
+        // Older Workers reject fork sequence 0. Origin is metadata only on the
+        // Worker; branch/resume independently control runtime startup. Keep the
+        // real fork in the Hub and project only this startup frame for them.
+        origin: command.origin.kind === 'fork' && command.origin.atSeq === 0 ? { kind: 'derive' } : command.origin,
         resume: command.resume,
         options: command.options,
         ...(command.branch ? { branch: { ...command.branch } } : {}),
@@ -1572,7 +1755,7 @@ function toWire(command: WorkerCommand): ServerToWorker {
         ...(command.provider ? { provider: { ...command.provider, models: command.provider.models.map((model) => ({ ...model })) } } : {})
       };
     case 'prompt':
-      return { kind: 'prompt', sessionId: command.sessionId, text: command.text, parts: [...command.parts], ...(command.deliveryId ? { deliveryId: command.deliveryId } : {}) };
+      return { kind: 'prompt', sessionId: command.sessionId, text: command.text, parts: [...command.parts], ...(command.deliveryId ? { deliveryId: command.deliveryId } : {}), ...(command.startAttemptId === undefined ? {} : { startAttemptId: command.startAttemptId }) };
     case 'interrupt':
       return { kind: 'interrupt', sessionId: command.sessionId };
     case 'dispose':

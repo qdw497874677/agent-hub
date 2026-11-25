@@ -214,7 +214,7 @@ test.describe('390×844 · 唯一在线机器但当前 agent 不可用（网络�
         ? { agentId, models: [] as string[], defaultModel: '', readiness: { state: 'unavailable', reason: '未安装', hint: FIXTURE_HINT } }
         : { agentId, models: [FIXTURE_MODEL], defaultModel: FIXTURE_MODEL, readiness: { state: 'ready' } }
     );
-    // 唯一一台在线机器：装着所有 agent，但当前默认 agent 是「未安装」，其余可用。
+    // 唯一一台在线机器：第一个 Agent 未安装，其余可用。
     // 只替换 /api/workers；项目、任务、目录仍是真服务端，不启动真模型。
     const worker = {
       ...shape,
@@ -225,16 +225,32 @@ test.describe('390×844 · 唯一在线机器但当前 agent 不可用（网络�
       agentIds,
       agentModels: models
     };
-    await page.route('**/api/workers', (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([worker]) })
-    );
+    let readinessChanged = false;
+    await page.route('**/api/workers', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([readinessChanged ? {
+        ...worker,
+        agentModels: models.map((model) => model.agentId === readyId
+          ? { ...model, models: [], defaultModel: '', readiness: { state: 'unavailable', reason: '未安装', hint: FIXTURE_HINT } }
+          : model.agentId === downId ? { ...model, models: [FIXTURE_MODEL], defaultModel: FIXTURE_MODEL, readiness: { state: 'ready' } } : model)
+      } : worker])
+    }));
     await openCanvas(page, projectId);
     const run = page.getByRole('dialog', { name: '开始会话' });
     await settleSheet(page);
 
-    // 1）不是「没有在线的机器」，而是「在线，但这台机器上的当前 agent 用不了」
+    // 1）默认跳过不可用 Agent。明确选择后，探测变化不应偷偷替换它。
+    const section = page.getByTestId('derive-agent-section');
+    if ((await section.getAttribute('open')) === null) await section.locator('summary').click();
+    const picker = page.locator('#derive-agent');
+    await expect(picker).toHaveValue(readyId);
+    await picker.dispatchEvent('change');
+    readinessChanged = true;
     const message = page.getByTestId('machine-availability');
     await expect(message).toHaveAttribute('data-kind', 'agent-unavailable');
+    await expect(picker).toHaveValue(readyId);
+    await expect(run.locator('#derive-model')).toBeDisabled();
     await expect(message).toContainText('暂时都用不了');
     await expect(message).not.toContainText('现在没有在线的机器');
     const switchAgent = page.getByTestId('derive-switch-agent');
@@ -250,17 +266,15 @@ test.describe('390×844 · 唯一在线机器但当前 agent 不可用（网络�
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/390-agent-unavailable.png` });
 
     // 2）先收起手机上的 agent 折叠区，确认「换 Agent」会自己展开并聚焦选择器
-    const section = page.getByTestId('derive-agent-section');
     if ((await section.getAttribute('open')) !== null) await section.locator('summary').click();
     await expect(section).not.toHaveAttribute('open', '');
     await switchAgent.click();
     await expect(section).toHaveAttribute('open', '');
-    const picker = page.locator('#derive-agent');
     await expect(picker).toBeFocused();
     await expect(picker).toBeVisible();
 
-    // 3）换成唯一可用的 agent：机器自动选中（仍只有一台可用），目录可选，开始可用
-    await picker.selectOption(readyId);
+    // 3）手动换为另一已就绪的 Agent：机器可用，目录可选，开始可用。
+    await picker.selectOption(downId);
     await expect(message).toHaveCount(0);
     await expect(run).toContainText('唯一在线机');
     await expect(page.getByTestId('derive-start-hint')).toContainText('工作目录');

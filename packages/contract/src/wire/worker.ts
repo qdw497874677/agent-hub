@@ -24,6 +24,7 @@ import { agentSchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema,
 // 换钉 / 卸载会影响到运行中的会话，所以换版本让它们先升级。
 export const PROTOCOL_VERSION = 7;
 export const PROTOCOL_MISMATCH_CLOSE = 4426;
+export const WORKER_CAPABILITY_SESSION_START_READY = 'session_start_ready';
 
 /** 一份代码的身份：package 版本 + git 提交（不在 git 仓库里就是 null）+ 协议版本。 */
 export const buildInfoSchema = z.object({
@@ -112,6 +113,20 @@ export const workerBranchResultSchema = z.object({
 });
 
 export const branchAttemptIdSchema = z.string().min(1).max(128);
+export const startAttemptIdSchema = z.string().min(1).max(128);
+export const workerSessionStartResultSchema = z.object({
+  type: z.literal('session_start_result'),
+  sessionId: id,
+  startAttemptId: startAttemptIdSchema,
+  state: z.enum(['ready', 'failed', 'ended']),
+  reason: z.enum(['runtime', 'configuration']).optional()
+});
+export const workerPromptStartRefusedSchema = z.object({
+  type: z.literal('prompt_start_refused'),
+  sessionId: id,
+  startAttemptId: startAttemptIdSchema,
+  deliveryId: z.string().min(1).max(128)
+});
 export const branchAgentSessionRefSchema = z.string().refine(
   (ref) => ref.trim().length > 0 && ref.trim().toLowerCase() !== 'pending' && new TextEncoder().encode(ref).length <= 512,
   'invalid attested agent session ref'
@@ -347,6 +362,8 @@ export const workerToServerSchema = z.union([
   workerTurnRefSchema,
   workerBranchResultSchema,
   workerBranchAttemptResultSchema,
+  workerSessionStartResultSchema,
+  workerPromptStartRefusedSchema,
   workerOptionsSchema,
   workerStatusSchema,
   workerUpdateStatusSchema,
@@ -407,6 +424,7 @@ export const startSessionCommandSchema = z.object({
     })
     .optional(),
   branchAttemptId: branchAttemptIdSchema.optional(),
+  startAttemptId: startAttemptIdSchema.optional(),
   /** 能力层（可选）：旧 worker 收不到就当没有工具。token 不许进日志。 */
   tools: toolAccessSchema.optional(),
   /** MCP 资产（旧 worker 忽略）。stdio 的 env 含密钥明文：只进 agent 进程，不落盘、不进日志。 */
@@ -464,7 +482,7 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
     capabilities: z.array(z.string().max(32)).max(16).optional()
   }),
   startSessionCommandSchema,
-  z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]), deliveryId: z.string().max(128).optional() }),
+  z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]), deliveryId: z.string().max(128).optional(), startAttemptId: startAttemptIdSchema.optional() }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),
   /** 手动压缩上下文（ADR 0020）。老 worker 不认，只记一条日志。 */
   z.object({ kind: z.literal('compact'), sessionId: id, instructions: z.string().max(2000).optional() }),

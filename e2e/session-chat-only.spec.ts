@@ -83,11 +83,13 @@ test('仅对话：空的临时目录，不下载仓库，会话照常聊天（�
     await expect(empty).toBeVisible();
     // 常用方式不能藏进折叠区：手机上「更多创建方式」默认收起时也看得到。
     await expect(dialog.getByTestId('ws-advanced').getByTestId('ws-new-empty')).toHaveCount(0);
-    // 手机上 agent 区默认折叠；先选 agent，机器才会落到提供它的假 ACP 上。
+    // 选假 ACP 后，如果已经选了别的机器，需明确切换到提供它的机器。
     if (!(await dialog.locator('#derive-agent').isVisible())) {
       await dialog.getByTestId('derive-agent-section').locator('summary').click();
     }
     await dialog.locator('#derive-agent').selectOption(AGENT_ID);
+    const switchMachine = dialog.getByTestId('machine-select-alternative');
+    if (await switchMachine.isVisible()) await switchMachine.click();
     await empty.scrollIntoViewIfNeeded();
     await empty.click();
     await expect(empty).toHaveAttribute('aria-checked', 'true');

@@ -27,7 +27,7 @@ export interface PendingPrompt {
   readonly sentAt: number;
 }
 
-/** 回执等这么久还没来，就把气泡标成「未送达」。 */
+/** 回执等这么久还没来，送达结果仍未知。 */
 export const ACK_TIMEOUT_MS = 8000;
 
 /**
@@ -72,7 +72,7 @@ export function reconcilePending(
 const LABELS: Record<PendingPromptState, string> = {
   sending: '正在发送…',
   queued: '已收到 · 排队中',
-  unknown: '未送达'
+  unknown: '未收到回执'
 };
 
 export function pendingLabel(state: PendingPromptState): string {

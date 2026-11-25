@@ -7,6 +7,7 @@ import {
   WORKER_CAPABILITY_METRICS,
   WORKER_CAPABILITY_NATIVE_BRANCH,
   WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT,
+  WORKER_CAPABILITY_SESSION_START_READY,
   createRpcChannel,
   linkEcho,
   serverToWorkerSchema
@@ -26,7 +27,9 @@ export interface Transport {
   connect(): void;
   send(frame: WorkerToServer): void;
   /** Never buffers: results are delivered only over the socket which received the command. */
-  sendOnOrigin(command: ServerToWorker, frame: WorkerToServer): void;
+  sendOnOrigin(command: object, frame: WorkerToServer): void;
+  /** A lightweight identity retaining only the originating socket, not the command payload. */
+  originOf(command: ServerToWorker): object;
   /** agent 清单 = runtime 的描述 + 最近一次探测的就绪状态。 */
   probe(always: boolean): Promise<void>;
   selfCheck(): Promise<void>;
@@ -43,7 +46,7 @@ export function installTransport(ctx: LinkCtx): Transport {
   /** 老 hub 不发 welcome：等这么久没等到就照旧补发，别把输出永远憋在本地。 */
   const WELCOME_FALLBACK_MS = options.welcomeFallbackMs ?? 5_000;
   let handlers: TransportHandlers | null = null;
-  const origins = new WeakMap<ServerToWorker, WebSocket>();
+  const origins = new WeakMap<object, WebSocket>();
 
   const stopMetrics = (): void => {
     if (ctx.metricsTimer) clearInterval(ctx.metricsTimer);
@@ -159,7 +162,7 @@ export function installTransport(ctx: LinkCtx): Transport {
   channel.handle(linkEcho, async ({ at }) => ({ at }));
 
   const send = (frame: WorkerToServer): void => {
-    if (frame.type === 'branch_attempt_result') return; // only sendOnOrigin may carry an attestation
+    if (frame.type === 'branch_attempt_result' || frame.type === 'session_start_result' || frame.type === 'prompt_start_refused') return; // origin-only evidence
     if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN && ctx.accepted) {
       ctx.socket.send(JSON.stringify(frame));
       return;
@@ -267,6 +270,7 @@ export function installTransport(ctx: LinkCtx): Transport {
             ...(options.resources ? [WORKER_CAPABILITY_METRICS] : []),
             ...(options.gitBundleImport ? [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] : []),
             WORKER_CAPABILITY_DURABLE_DELIVERY,
+            WORKER_CAPABILITY_SESSION_START_READY,
             ...(branchAttemptAgents.length > 0 ? [WORKER_CAPABILITY_BRANCH_ATTEMPT] : [])
           ],
           ...(branchAttemptAgents.length > 0 ? { branchAttemptAgents } : {}),
@@ -350,6 +354,16 @@ export function installTransport(ctx: LinkCtx): Transport {
       }
       const command = parsed.data as ServerToWorker;
       origins.set(command, current);
+      if (command.kind === 'start_session') {
+        // Old lifecycle/diagnostic evidence must not be replayed against this
+        // newly fenced generation after a later reconnect.
+        for (let i = outbox.length - 1; i >= 0; i--) {
+          const frame = outbox[i]!;
+          if ('sessionId' in frame && frame.sessionId === command.sessionId &&
+              ((frame.type === 'status' && (frame.status === 'gone' || frame.status === 'ended')) ||
+               (frame.type === 'event' && frame.event.kind === 'diagnostic'))) outbox.splice(i, 1);
+        }
+      }
       const wired = handlers;
       if (!wired) return;
       if (command.kind === 'rpc') channel.receive(command.frame);
@@ -386,6 +400,12 @@ export function installTransport(ctx: LinkCtx): Transport {
     },
     connect,
     send,
+    originOf(command): object {
+      const identity = {};
+      const origin = origins.get(command);
+      if (origin) origins.set(identity, origin);
+      return identity;
+    },
     sendOnOrigin(command, frame): void {
       const origin = origins.get(command);
       if (origin && ctx.socket === origin && ctx.accepted && origin.readyState === WebSocket.OPEN) origin.send(JSON.stringify(frame));

@@ -12,7 +12,7 @@ import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createSecretVault, createSqliteAgentObserve, createSqliteApiTokens, createSqliteComponents, createSqliteMachineObserve, createSqliteMessageObserve, createSqliteProviders, createSqliteWorkObserve, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
-import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, ServiceGateway, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
+import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, ServiceGateway, SessionId, SessionStartReadiness, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
 import { authenticateWorker, withToolAccess,
   createBotUseCase,
   getBotUseCase,
@@ -40,6 +40,8 @@ import { authenticateWorker, withToolAccess,
   MEMORY_SWEEP_INTERVAL_MS,
   MEMORY_GUIDANCE_VERSION,
   pumpDeliveries,
+  releaseAfterTurn,
+  requeueRefusedPrompt,
   reconcileSendingDeliveries,
   recoverOrphanedTurns,
   resolveOrphanTurnMs,
@@ -179,6 +181,18 @@ let serverGateway: ServerGateway | null = null;
 let terminalBridge: TerminalBridge | null = null;
 let sessionEnvironment: EnvironmentPlanner | null = null;
 const optionWaiters = createOptionWaiters();
+const preparingStarts = new Map<SessionId, symbol>();
+const failedStartPreparations = new Map<SessionId, string | null>();
+
+function startReadiness(sessionId: SessionId, workerId?: string | null): SessionStartReadiness {
+  const observed = serverGateway?.gateway.sessionStartReadiness?.(sessionId, workerId) ?? { state: 'offline' };
+  if (observed.state === 'offline' || observed.state === 'upgrade_required') return observed;
+  if (preparingStarts.has(sessionId)) return { state: 'starting' };
+  if (failedStartPreparations.has(sessionId) && (workerId == null || failedStartPreparations.get(sessionId) === workerId)) {
+    return { state: 'failed', reason: 'configuration' };
+  }
+  return observed;
+}
 
 /** 通道没起来 / 老网关没有 groups 时的替身：每个方法都返回可读的失败，不抛。 */
 const missingGroups: WorkspaceGroupGit = {
@@ -234,9 +248,26 @@ const deps: Deps = {
   gateway: {
     status: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),
     probe: async (workerId) => serverGateway?.gateway.probe?.(workerId) ?? false,
+    sessionStartReadiness: startReadiness,
+    retrySessionStart: (sessionId, workerId) => {
+      failedStartPreparations.delete(sessionId);
+      serverGateway?.gateway.retrySessionStart?.(sessionId, workerId);
+    },
     // 发给 worker 前给 start_session 配上工具令牌（换新、旧的作废），dispose 时作废。
     dispatch: async (command) => {
-      if (!serverGateway) return err(unavailable('worker 通道尚未就绪'));
+      const gateway = serverGateway?.gateway;
+      if (!gateway) return err(unavailable('worker 通道尚未就绪'));
+      const start = command.kind === 'start_session' ? command : null;
+      const preparation = start ? Symbol() : undefined;
+      if (preparation) {
+        preparingStarts.set(command.sessionId, preparation);
+        failedStartPreparations.delete(command.sessionId);
+      } else if (command.kind === 'dispose') {
+        preparingStarts.delete(command.sessionId);
+        failedStartPreparations.delete(command.sessionId);
+      }
+      let gatewayInvoked = false;
+      const send = async () => {
       if (command.kind === 'dispose') providerWiring.revoke(command.sessionId);
       // hub 模型提供商：只给选中的那一个（ADR 0013 D3）；不能用就让这次启动失败，不静默换模型
       // 回合检查点（ADR 0027 D2）：问话发给 agent 之前先给工作区拍一张；最多等 5 秒，拍不成也照发
@@ -282,7 +313,14 @@ const deps: Deps = {
         effective = prepared.command;
         environmentRevision = prepared.revision;
       }
-      const sent = await serverGateway.gateway.dispatch(effective);
+      if (preparation && preparingStarts.get(command.sessionId) !== preparation) return err(unavailable('启动请求已被替换'));
+      if (command.kind === 'prompt' && command.startAttemptId !== undefined) {
+        const ready = startReadiness(command.sessionId);
+        if (ready.state !== 'ready' || ready.startAttemptId !== command.startAttemptId)
+          return err({ ...unavailable('运行时已发生变化，消息尚未发送'), deliveryDeferred: true as const });
+      }
+      gatewayInvoked = true;
+      const sent = await gateway.dispatch(effective);
       if (!sent.ok) return sent;
       // 记下会话开始时的 HEAD（ADR 0025 决定 7）：diff 默认对它比；失败不影响会话
       if (command.kind === 'start_session') {
@@ -290,6 +328,22 @@ const deps: Deps = {
         return ok({ environmentRevision });
       }
       return ok(undefined);
+      };
+      if (!start || !preparation) return send();
+      const rememberPrepFailure = () => {
+        if (!gatewayInvoked && preparingStarts.get(start.sessionId) === preparation) failedStartPreparations.set(start.sessionId, start.workerId);
+      };
+      try {
+        const result = await send();
+        if (!result.ok) rememberPrepFailure();
+        return result;
+      } catch (error) {
+        if (gatewayInvoked) throw error;
+        rememberPrepFailure();
+        return err(unavailable('运行时启动配置准备失败'));
+      } finally {
+        if (preparingStarts.get(command.sessionId) === preparation) preparingStarts.delete(command.sessionId);
+      }
     },
     listDirectories: async (workerId, path) =>
       serverGateway
@@ -905,6 +959,35 @@ serverGateway = createServerGateway({
     // Gateway already verifies the exact socket/start attempt; the durable CAS checks it again against the staged child.
     const receipt = outcome === 'both_failed' ? { outcome } as const : agentSessionRef === undefined ? null : { outcome, agentSessionRef };
     if (receipt) void rewindService.branchResult(sessionId, attemptId, workerId, receipt).catch((e) => log(`处理分叉结果失败：${String(e)}`));
+  },
+  onSessionStartChanged(workerId, sessionId) {
+    // This hook is emitted only after gateway acceptance on the exact socket/start.
+    // Startup is not a completed turn: wake a queued head without releasing in-flight work.
+    if (serverGateway?.gateway.sessionStartReadiness?.(sessionId, workerId).state !== 'ready') return;
+    fromWorker(workerId, sessionId, () => {
+      void releaseAfterTurn({ ...deps, deliveries: store.deliveries }, sessionId).catch(() => log('运行时就绪后检查送达队列失败'));
+    });
+  },
+  onSessionStartEnded(workerId, sessionId, _startAttemptId, isCurrent) {
+    fromWorker(workerId, sessionId, () => {
+      void deps.queue.run(sessionId, async () => {
+        const valid = () => isCurrent() && !preparingStarts.has(sessionId);
+        const session = await store.sessions.byId(sessionId);
+        if (!session || !valid() || (session.workerId !== null && session.workerId !== workerId)) return;
+        deps.hosting.drop(sessionId);
+        providerWiring.revoke(sessionId);
+        terminalBridge?.closeSession(sessionId);
+        const interrupted = session.status === 'running' && await store.sessions.markInterrupted(sessionId, deps.now());
+        if (valid()) deps.stream.publish({ sessionId, seq: session.lastSeq, event: null, status: interrupted ? 'interrupted' : session.status });
+      }).catch(() => log('运行时结束状态处理失败'));
+      // A process end is not a durable turn end or proof of an unsent prompt.
+    });
+  },
+  onPromptStartRefused(workerId, sessionId, deliveryId) {
+    // The authenticated worker proved this exact frame did not reach the adapter.
+    fromWorker(workerId, sessionId, () => {
+      void requeueRefusedPrompt({ ...deps, deliveries: store.deliveries }, sessionId, deliveryId).catch(() => log('重新排队未提交的消息失败'));
+    });
   },
   onAgentSession(workerId, sessionId, agentSessionRef) {
     fromWorker(workerId, sessionId, () => void ingestAgentSessionRef(deps, sessionId, agentSessionRef));

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { filterModelsByScope, modelScope, sameModelScope, scopeNote } from './model-scope.ts';
+import { filterModelsByScope, hasSelectableCrossScope, modelScope, sameModelScope, scopeNote } from './model-scope.ts';
 
 const hub = (value: string) => ({ value, label: value });
 
@@ -11,6 +11,16 @@ test('作用域：hub-<slug>/… 是 hub，其余是原生', () => {
   assert.deepEqual(modelScope('local'), { kind: 'native' });
   assert.deepEqual(modelScope(''), { kind: 'native' });
   assert.deepEqual(modelScope(undefined), { kind: 'native' });
+});
+
+test('只有可选择的跨提供商选项才提示，包括两个 hub 提供商', () => {
+  assert.equal(hasSelectableCrossScope([{ value: 'hub-a/y' }], 'hub-a/x'), false);
+  assert.equal(hasSelectableCrossScope([{ value: 'hub-b/y', disabled: true }], 'hub-a/x'), false);
+  assert.equal(hasSelectableCrossScope([{ value: 'hub-b/y' }], 'hub-a/x'), true);
+  assert.equal(hasSelectableCrossScope([{ value: 'native/x' }], 'hub-a/x'), true);
+  assert.equal(hasSelectableCrossScope([{ value: 'hub-a/x' }], 'native/x'), true);
+  assert.match(scopeNote('hub-a/x'), /当前回合未结束时不能切换/);
+  assert.doesNotMatch(scopeNote('hub-a/x'), /中断/);
 });
 
 test('作用域：hub- 但拆不出合法 slug / 模型的，按原生算（跟 parseHubModel 一致）', () => {

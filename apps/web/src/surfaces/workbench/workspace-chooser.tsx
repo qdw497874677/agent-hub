@@ -224,9 +224,10 @@ export function WorkspaceChooser({
     ({ workspace }) => workspace.kind === 'temporary' && workspace.ownerTaskId === taskId && workspace.state !== 'removed'
   ).length;
 
-  const machineName = machines.find((worker) => worker.workerId === machine)?.label ?? '这台机器';
+  const machineName = workers.find((worker) => worker.workerId === machine)?.label ?? '这台机器';
   // 选中的机器还在列表里，但此刻开不了（agent 探测失败 / 机器离线）：保留选择，只把原因说清。
   const chosenWorker = machine === null ? undefined : workers.find((worker) => worker.workerId === machine);
+  const chosenMissingAgent = chosenWorker !== undefined && !offers(chosenWorker);
   const chosenBlock =
     chosenWorker === undefined
       ? null
@@ -288,10 +289,23 @@ export function WorkspaceChooser({
           </div>
         </div>
       )}
-      {machines.length === 1 && usable.length > 0 ? (
+      {chosenMissingAgent ? (
+        <div data-testid="machine-selected-incompatible" className="mb-3 text-meta text-secondary">
+          <p>已选机器：<WorkerChip worker={chosenWorker} /></p>
+          <p className="mt-1">这台机器没有 {agentLabel}。已保留机器和目录；要在其他机器上开始，请重新选择机器。</p>
+        </div>
+      ) : null}
+      {machines.length === 1 && usable.length > 0 && (machine === null || machine === machines[0]?.workerId) ? (
         <p className="mb-3">
           <WorkerChip worker={machines[0]} />
         </p>
+      ) : machines.length === 1 && usable.length > 0 ? (
+        <div className="mb-3">
+          <p className="mb-1 text-meta text-secondary">选择其他机器</p>
+          <button type="button" data-testid="machine-select-alternative" className="min-h-[44px] rounded-sm border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary md:min-h-[32px]" onClick={() => onMachine(machines[0]!.workerId)}>
+            {machines[0]!.label}
+          </button>
+        </div>
       ) : machines.length >= 2 ? (
         <WorkerPicker
           label="机器"

@@ -6,13 +6,15 @@ import { deliveryNeedsAction, HELD_DELIVERY_STATES, queuedBehind } from './turn-
 /**
  * 送达状态（ADR 0031 D2）：按 prompt 的 seq 查。送达了就什么都不显示（安静）。
  *
- * `quiet` 给窄屏用：纯等待（还在投递 / 排队等前面那条）由对话末尾那一条进度说，
- * 气泡下面就不再重复；要人动手的（未送达、重试倒计时、带回撤的排队）照旧显示在这儿。
+ * `quietSeq` 避免和对话末尾同一条进度重复；其他消息和要人动手的状态照旧显示。
  */
 export const DeliveryContext = createContext<{
   sessionId: string;
   bySeq: ReadonlyMap<number, DeliveryDto>;
   quiet?: boolean;
+  quietSeq?: number;
+  withdrawQueued?: boolean;
+  startupFailed?: boolean;
 } | null>(null);
 
 /**
@@ -59,7 +61,7 @@ export function DeliveryNote({ seq }: { seq: number }) {
     return d?.state === 'cancelled' ? <p className="text-meta text-tertiary" data-testid="delivery-note">已撤回 · 没有发给 agent</p> : null;
   }
   // 窄屏：纯等待的两种（投递在途、排队等前面那条）由 turn-hint 统一说，这里不重复。
-  if (ctx.quiet === true && (d.state === 'sending' || (d.state === 'queued' && !deliveryNeedsAction(d, ctx.bySeq.values())))) {
+  if ((ctx.quiet === true || ctx.quietSeq === seq) && (d.state === 'sending' || (d.state === 'queued' && !deliveryNeedsAction(d, ctx.bySeq.values(), ctx.withdrawQueued)))) {
     return null;
   }
   const act = (run: typeof deliveryApi.retry) => async () => {
@@ -72,15 +74,16 @@ export function DeliveryNote({ seq }: { seq: number }) {
     } finally {
       setBusy(false);
       void client.invalidateQueries({ queryKey: ['deliveries', ctx.sessionId] });
+      void client.invalidateQueries({ queryKey: ['session-startup', ctx.sessionId] });
     }
   };
-  const retry = <button className="underline underline-offset-2 disabled:opacity-50" disabled={busy} onClick={act(deliveryApi.retry)}>立即重试</button>;
-  const cancel = <button className="underline underline-offset-2 disabled:opacity-50" disabled={busy} onClick={act(deliveryApi.cancel)}>撤回</button>;
+  const retry = <button type="button" className="min-h-11 underline underline-offset-2 disabled:opacity-50 md:min-h-0" disabled={busy} onClick={act(deliveryApi.retry)}>立即重试</button>;
+  const cancel = <button type="button" className="min-h-11 underline underline-offset-2 disabled:opacity-50 md:min-h-0" disabled={busy} onClick={act(deliveryApi.cancel)}>撤回</button>;
+  const behind = queuedBehind(d, ctx.bySeq.values());
   const actions = (
     <>
       {' · '}
-      {retry}
-      {' · '}
+      {!behind ? <>{retry}{' · '}</> : null}
       {cancel}
     </>
   );
@@ -89,10 +92,7 @@ export function DeliveryNote({ seq }: { seq: number }) {
   else if (d.state === 'undelivered')
     body = <span className="text-rust" title={d.lastError ?? undefined}>未送达{d.lastError ? `：${d.lastError}` : ''}{actions}</span>;
   else if (d.attempt === 0) {
-    const behind = queuedBehind(d, ctx.bySeq.values());
-    body = behind
-      ? <span className="text-tertiary">排队中 · 等上一条送达</span>
-      : <span className="text-tertiary">排队中 · {cancel}</span>;
+    body = <span className="text-tertiary">已排队 · 等待投递{behind ? ' · 前面还有消息' : ''}{ctx.startupFailed && !behind ? <> · {retry}</> : null}{(!behind || ctx.withdrawQueued) ? <> · {cancel}</> : null}</span>;
   }
   else {
     const secs = Math.max(0, Math.ceil(((d.nextAt ?? now) - now) / 1000));

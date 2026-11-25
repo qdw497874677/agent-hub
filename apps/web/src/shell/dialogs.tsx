@@ -31,6 +31,7 @@ import { useNarrow } from './device.ts';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
 import { cloneErrorHint } from '../surfaces/workbench/project-repos.ts';
 import { groupStateNote, memberStateLabel, failedGroupIdFromWorkspaces, type WorkspaceGroupView } from '../surfaces/workbench/workspace-group.ts';
+import { defaultAgent, verifiedAgent } from './derive-default-agent.ts';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
 export function NewTaskDialog({
@@ -133,7 +134,8 @@ export function DeriveDialog({
   /** 派生成功后调用；不传就和取消一样只关掉。 */
   onDerived?: (session: SessionDto) => void;
 }) {
-  const [agentId, setAgentId] = useState(canvas.agents[0]?.id ?? '');
+  const [agentId, setAgentId] = useState('');
+  const [agentTouched, setAgentTouched] = useState(false);
   const agent = canvas.agents.find((candidate) => candidate.id === agentId);
   const [model, setModel] = useState(agent?.defaultModel ?? '');
   const [profileId, setProfileId] = useState('');
@@ -189,11 +191,15 @@ export function DeriveDialog({
   const hubModels = useQuery({ queryKey: ['hub-models', taskId], queryFn: () => providersApi.modelsExplained(taskId), retry: false });
   const hubList = hubModels.data?.providers ?? [];
   const hubHidden = hubModels.data?.hidden ?? [];
-  const hubProtocols = [...new Set(hubList.map((provider) => provider.protocol))];
-  const availability = machineAvailability(workers.list, agentId, hubProtocols, {
+  const hubProtocols = [...new Set(hubList.filter((provider) => provider.models.length > 0).map((provider) => provider.protocol))];
+  const assessedAvailability = machineAvailability(workers.list, agentId, hubProtocols, {
     loading: workers.list.length === 0 && workers.loading,
     failed: workers.list.length === 0 && workers.failed
   });
+  // 全离线是机器的状态，即使还没有选择 agent 也应说明真正的阻碍。
+  const availability = agentId === '' && workers.list.length > 0 && workers.list.every((worker) => worker.state !== 'online')
+    ? { kind: 'all-offline' as const, total: workers.list.length }
+    : assessedAvailability;
   const selectedHub = hubList.flatMap((provider) => provider.models.map((item) => ({ id: item.id, protocol: provider.protocol }))).find((item) => item.id === model) ?? null;
   const offered = withHubModels(
     modelsFor(workers.list, machine, agentId) ?? { models: agent?.models ?? [], defaultModel: agent?.defaultModel ?? '' },
@@ -245,7 +251,6 @@ export function DeriveDialog({
   const profileModelUnavailable =
     selectedProfile !== null &&
     selectedProfile.model !== '' &&
-    offered.models.length > 0 &&
     !offered.models.includes(selectedProfile.model);
   // 手机顶上那张「给谁开、在哪开」的摘要；桌面上不渲染（md:hidden）
   const taskTitle = canvas.tasks.find((task) => task.id === taskId)?.title ?? '这条任务';
@@ -271,6 +276,9 @@ export function DeriveDialog({
   })();
   // agent / 模型这块什么时候自己打开：模型没选或配置对不上时，别让人猜「开始」为什么是灰的
   const modelNeedsAttention = model === '' || profileModelUnavailable || unsupportedProfileOptions.length > 0;
+  useEffect(() => {
+    if (narrow && modelNeedsAttention) setAgentSectionOpen(true);
+  }, [narrow, modelNeedsAttention]);
   const queryClient = useQueryClient();
   const projectId = canvas.project.id;
   /** 建组失败后把那一组找回来（见 failedGroupIdFromWorkspaces）；找不回来就只留错误，不再抛新错盖住它。 */
@@ -406,13 +414,29 @@ export function DeriveDialog({
   const offeredKey = `${offered.defaultModel}\n${offered.models.join('\n')}`;
   useEffect(() => {
     // 换了 agent 或机器：当前模型那边没有就换成那边的默认
-    setModel((current) => (offered.models.includes(current) ? current : offered.defaultModel));
-  }, [offeredKey]);
+    if (profileId !== '') return;
+    setModel((current) => (offered.models.includes(current) ? current : offered.models.includes(offered.defaultModel) ? offered.defaultModel : ''));
+  }, [offeredKey, profileId]);
 
-  // worker 可能比页面晚到（远程机器、或者本机 Pi 还在报模型列表）。不要空着让人点不动。
+  // 探测可能晚到；用户或预设一旦选过，就不再替换。已有自动选择在证据暂缺时也保持稳定。
   useEffect(() => {
-    if (agentId === '' && canvas.agents.length > 0) setAgentId(canvas.agents[0]?.id ?? '');
-  }, [agentId, canvas.agents]);
+    if (agentTouched || profileId !== '') return;
+    const eligible = machine === null ? workers.list : workers.list.filter((worker) => worker.workerId === machine);
+    if (agentId !== '') {
+      if (eligible.some((worker) => verifiedAgent(worker, agentId, hubList))) return;
+      // 列表或探测结果暂缺时不抖动；只有明确不可用时才尝试换到同一范围内的 agent。
+      const definitelyUnavailable = eligible.length > 0 && eligible.every((worker) => {
+        if (worker.state !== 'online') return true;
+        if (worker.agentIds !== undefined && !worker.agentIds.includes(agentId)) return true;
+        const readiness = worker.agentModels?.find((entry) => entry.agentId === agentId)?.readiness;
+        return (readiness?.state === 'ready' && readiness.check?.ok === false) ||
+          (readiness?.state === 'unavailable' && (readiness.reason !== '未配置模型' || hubModels.isSuccess));
+      });
+      if (!definitelyUnavailable) return;
+    }
+    const next = defaultAgent(canvas.agents, workers.list, machine, hubList);
+    if (next !== null && next !== agentId) setAgentId(next);
+  }, [agentId, agentTouched, canvas.agents, workers.list, machine, hubList, hubModels.isSuccess, profileId]);
 
   const switchAgent = () => {
     setAgentSectionOpen(true);
@@ -432,9 +456,9 @@ export function DeriveDialog({
               {busy.title}
               <span className="text-tertiary"> · {busy.scope}</span>
             </p>
-          ) : hint !== null ? (
+          ) : hint !== null || profileModelUnavailable ? (
             <p data-testid="derive-start-hint" className="text-meta text-secondary">
-              {hint}
+              {hint ?? '预设的模型在当前机器上不可用，换一个模型或预设'}
             </p>
           ) : (
             <div data-testid="derive-review" className="flex flex-col gap-0.5 md:hidden">
@@ -450,7 +474,7 @@ export function DeriveDialog({
             <button type="button" className={SECONDARY_BUTTON} onClick={onDone}>
               取消
             </button>
-            <button type="button" className={PRIMARY_BUTTON} disabled={hint !== null || derive.isPending || groupFailed} onClick={() => derive.mutate()}>
+            <button type="button" className={PRIMARY_BUTTON} disabled={hint !== null || profileModelUnavailable || derive.isPending || groupFailed} onClick={() => derive.mutate()}>
               {derive.isPending ? (phase === 'starting' ? '启动中…' : '准备中…') : derive.error ? '重试' : '开始'}
             </button>
           </div>
@@ -467,13 +491,29 @@ export function DeriveDialog({
           <p className="mt-0.5 truncate text-meta text-tertiary">{canvas.project.name}</p>
         </section>
         <div data-testid="derive-workspace-region" className="max-md:order-5">
-          <WorkspaceChooser
+          {agentId === '' ? (
+            availability.kind === 'all-offline' ? (
+              <div data-testid="machine-availability" data-kind="all-offline" aria-live="polite" className="mb-3 border-l-2 border-rust pl-2 text-meta text-secondary">
+                <p>现在没有在线的机器。打开一台已接入的机器，或接入一台新的，再回来开始。</p>
+                  <button type="button" className="mt-1 min-h-[44px] rounded-sm border border-hair px-2 text-meta text-secondary hover:border-strong md:min-h-[28px]" onClick={() => void Promise.all([
+                    queryClient.invalidateQueries({ queryKey: ['workers'] }),
+                    queryClient.invalidateQueries({ queryKey: projectKeys.canvas(projectId) })
+                  ])}>
+                  重新检查
+                </button>
+              </div>
+            ) : (
+              <p data-testid="derive-agent-pending" className="mb-3 text-meta text-secondary" aria-live="polite">
+                {workers.loading ? '正在读取机器状态…' : '还没有确认可用的 agent，可以手动选择或等待机器检测完成。'}
+              </p>
+            )
+          ) : <WorkspaceChooser
             canvas={canvas}
             taskId={taskId}
             agentId={agentId}
             workers={workers.list}
             machine={machine}
-            onMachine={setMachine}
+            onMachine={(next) => { if (next !== null) setMachine(next); }}
             choice={choice}
             onChoice={(next) => {
               setModeTouched(true);
@@ -485,7 +525,7 @@ export function DeriveDialog({
             groups
             chatOnly
             onSwitchAgent={switchAgent}
-          />
+          />}
         </div>
         <div className="mb-3 max-md:order-6">
           <div className="mb-1 flex items-center justify-between gap-2">
@@ -503,6 +543,7 @@ export function DeriveDialog({
               setProfileId(next);
               const profile = (profiles.data ?? []).find((candidate) => candidate.id === next);
               if (profile) {
+                setAgentTouched(true);
                 setAgentId(profile.agentId);
                 setModel(profile.model);
               }
@@ -531,7 +572,7 @@ export function DeriveDialog({
         <details
           data-testid="derive-agent-section"
           className="group max-md:order-7 max-md:mb-3 max-md:rounded-md max-md:border max-md:border-hair"
-          open={narrow ? agentSectionOpen || modelNeedsAttention : true}
+          open={narrow ? agentSectionOpen : true}
           onToggle={(event) => {
             if (narrow) setAgentSectionOpen(event.currentTarget.open);
           }}
@@ -554,10 +595,12 @@ export function DeriveDialog({
           className={`mb-3 ${INPUT}`}
           value={agentId}
           onChange={(event) => {
+            setAgentTouched(true);
             setProfileId('');
             setAgentId(event.target.value);
           }}
         >
+          {agentId === '' ? <option value="">选择 agent…</option> : null}
           {canvas.agents.map((candidate) => {
             // 选了机器：那台上不能用的 agent 变灰并写明原因（没选机器时由下面的机器列表说明）
             const worker = machine === null ? undefined : workers.byId(machine);

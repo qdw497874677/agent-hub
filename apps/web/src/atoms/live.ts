@@ -6,10 +6,12 @@ export * from './live-core.ts';
 
 /** 连接状态：手机切后台、换网络时 SSE 会断，界面要说出来，而不是安静地停更。 */
 export type StreamState = 'connecting' | 'open' | 'reconnecting';
+export type HistoryState = 'loading' | 'loaded' | 'error';
 
 export interface LiveStream {
   readonly live: LiveMap;
   readonly state: StreamState;
+  readonly history: Readonly<Record<string, HistoryState>>;
   /** 用画布投影里的历史给内存播种：一条会话只播一次，之后只吃比它新的帧。 */
   readonly seed: (sessions: readonly SessionDto[], previews: Readonly<Record<string, readonly JournalEntryDto[]>>) => void;
   /** 专注对话打开时拉整段历史（投影只有最后几十条）。 */
@@ -26,6 +28,8 @@ const MAX_BACKOFF_MS = 15_000;
 export function useLiveStream(onResync?: () => void): LiveStream {
   const [live, setLive] = useState<LiveMap>({});
   const [state, setState] = useState<StreamState>('connecting');
+  const [history, setHistory] = useState<Record<string, HistoryState>>({});
+  const historyRequests = useRef(new Map<string, Promise<void>>());
   const liveRef = useRef(live);
   liveRef.current = live;
   const resyncRef = useRef(onResync);
@@ -38,9 +42,18 @@ export function useLiveStream(onResync?: () => void): LiveStream {
     []
   );
 
-  const loadHistory = useCallback(async (session: SessionDto) => {
-    const entries = await api.events(session.id).catch(() => null);
-    if (entries !== null) setLive((current) => withFullHistory(current, session, entries));
+  const loadHistory = useCallback((session: SessionDto): Promise<void> => {
+    const existing = historyRequests.current.get(session.id);
+    if (existing) return existing;
+    setHistory((current) => ({ ...current, [session.id]: 'loading' }));
+    const request = api.events(session.id).then((entries) => {
+      setLive((current) => withFullHistory(current, session, entries));
+      setHistory((current) => ({ ...current, [session.id]: 'loaded' }));
+    }, () => {
+      setHistory((current) => ({ ...current, [session.id]: 'error' }));
+    }).finally(() => historyRequests.current.delete(session.id));
+    historyRequests.current.set(session.id, request);
+    return request;
   }, []);
 
   useEffect(() => {
@@ -102,5 +115,5 @@ export function useLiveStream(onResync?: () => void): LiveStream {
     };
   }, []);
 
-  return { live, state, seed, loadHistory };
+  return { live, state, seed, loadHistory, history };
 }

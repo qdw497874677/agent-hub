@@ -59,6 +59,7 @@ export class PiSession implements RuntimeSession {
    */
   private readonly modelChoices: readonly string[];
   private current: readonly RuntimeOption[] = [];
+  private optionsGeneration = 0;
   private readonly onOptions: ((options: readonly RuntimeOption[]) => void) | undefined;
   /** Pi 的失败原因几乎都在 stderr 上（比如模型名有歧义），丢掉它等于把可诊断性丢了。 */
   private lastStderr = '';
@@ -72,6 +73,48 @@ export class PiSession implements RuntimeSession {
   private tail: Promise<void> = Promise.resolve();
   private readonly onTurnRef: ((turnRef: string, deliveryId?: string) => void) | undefined;
   private promptGeneration = 0;
+  private preparation: Promise<Result<void, DomainError>> | null = null;
+
+  setPreparation(preparation: Promise<Result<void, DomainError>>): void {
+    this.preparation = preparation;
+  }
+
+  async prepareForPrompt(): Promise<Result<void, DomainError>> {
+    return this.preparation ?? { ok: false, error: unavailable('Pi 未请求受管启动准备') };
+  }
+
+  /** Validate actual RPC state and acknowledged changes, without sending an inference prompt. */
+  async prepareManaged(options: StartSpec['options'], onRef: (ref: string) => void): Promise<void> {
+    if (this.disposed) throw new Error('Pi 会话已结束');
+    const response = await this.send({ type: 'get_state' });
+    if (this.disposed) throw new Error('Pi 会话已结束');
+    const data = response['data'] as Record<string, unknown> | undefined;
+    if (!data || typeof data['sessionId'] !== 'string' || !data['sessionId']) throw new Error('Pi 未提供有效会话标识');
+    onRef(data['sessionId']);
+    const model = options['model'];
+    if (model !== undefined && model !== '') {
+      if (typeof model !== 'string') throw new Error('模型必须是一个字符串');
+      const actual = data['model'] as { provider?: unknown; id?: unknown } | undefined;
+      const slash = model.indexOf('/');
+      if (!actual || typeof actual.id !== 'string' || (slash > 0
+        ? actual.provider !== model.slice(0, slash) || actual.id !== model.slice(slash + 1)
+        : actual.id !== model)) throw new Error(`Pi 未确认请求的模型：${model}`);
+    }
+    for (const [id, value] of Object.entries(options)) {
+      if (id === 'model' || value === '') continue;
+      if (id !== 'thinking') throw new Error(`Pi 无法确认配置项：${id}`);
+      if (typeof value !== 'string') throw new Error('思考档位必须是一个字符串');
+      await this.send({ type: 'set_thinking_level', level: value });
+      if (this.disposed) throw new Error('Pi 会话已结束');
+      const state = await this.send({ type: 'get_state' });
+      if (this.disposed) throw new Error('Pi 会话已结束');
+      if ((state['data'] as Record<string, unknown> | undefined)?.['thinkingLevel'] !== value) {
+        throw new Error(`Pi 未确认请求的思考档位：${value}`);
+      }
+    }
+  }
+
+  isDisposed(): boolean { return this.disposed; }
 
   pid(): number | null {
     return this.child.pid ?? null;
@@ -408,11 +451,13 @@ export class PiSession implements RuntimeSession {
 
   /** 问 Pi 一遍：模型 + 思考档位。两次往返换来一个「不撒谎」的选择器，值得。 */
   async loadOptions(): Promise<readonly RuntimeOption[]> {
+    const generation = ++this.optionsGeneration;
     const options: RuntimeOption[] = [];
     const model = await this.modelOption();
     if (model) options.push(model);
     const thinking = await this.thinkingOption();
     if (thinking) options.push(thinking);
+    if (this.disposed || generation !== this.optionsGeneration) return options;
     this.current = options;
     if (options.length === 0) return options;
     this.onOptions?.(options);
@@ -427,6 +472,7 @@ export class PiSession implements RuntimeSession {
     id: string,
     value: string | boolean
   ): Promise<Result<readonly RuntimeOption[], DomainError>> {
+    this.optionsGeneration += 1;
     try {
       if (id === 'model') {
         if (typeof value !== 'string') return { ok: false, error: unavailable('模型必须是一个字符串') };
@@ -623,6 +669,35 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
         options.onTurnRef ? (turnRef, deliveryId) => options.onTurnRef?.(spec.sessionId, turnRef, deliveryId) : undefined,
         spec.workspaceRoot
       );
+
+      if (spec.requirePromptReady) {
+        const spawned = new Promise<void>((resolve, reject) => {
+          child.once('spawn', resolve);
+          child.once('error', reject);
+        });
+        const preparation = (async (): Promise<Result<void, DomainError>> => {
+          try {
+            await withTimeout((async () => {
+              await spawned;
+              if (session.isDisposed()) throw new Error('Pi 会话已结束');
+              if (branch) await session.fork(branch.turnRef!);
+              await session.prepareManaged(spec.options, (ref) => options.onAgentSessionRef?.(spec.sessionId, ref));
+              if (child.exitCode !== null || child.signalCode !== null) throw new Error('Pi 进程已退出');
+            })(), 30_000, 'Pi 启动准备超时');
+            void session.loadOptions();
+            return { ok: true, value: undefined };
+          } catch (error) {
+            await session.dispose();
+            return { ok: false, error: unavailable(`Pi 启动准备失败：${(error as Error).message}`) };
+          }
+        })();
+        session.setPreparation(preparation);
+        if (branch) {
+          const ready = await preparation;
+          if (!ready.ok) return ready;
+        }
+        return { ok: true, value: session };
+      }
 
       if (branch) {
         // 先等进程起来、在原会话上 fork 成功，再报新会话 id；失败就收掉进程，worker 会退回新开 + 摘要

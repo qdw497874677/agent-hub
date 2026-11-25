@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
 import type { RpcChannel, ServerToWorker } from '@agent-hub/contract';
-import { PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_BRANCH_ATTEMPT, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, createRpcChannel, wsImportProjectGitBundle } from '@agent-hub/contract';
+import { PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_BRANCH_ATTEMPT, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, WORKER_CAPABILITY_SESSION_START_READY, createRpcChannel, serverToWorkerSchema, workerToServerSchema, wsImportProjectGitBundle } from '@agent-hub/contract';
 import { CAPABILITY_NAMES, asSessionId, available } from '@agent-hub/domain';
 import { createServerGateway, type GatewayHooks, type GatewayOptions, type WorkerConnectionObservation } from './server-gateway.ts';
 import { serveProjectGitBundleImport } from './worker-fs-rpc.ts';
@@ -30,6 +30,10 @@ interface HarnessOptions {
   readonly onObservedRuntimeInstall?: GatewayHooks['onObservedRuntimeInstall'];
   readonly onRuntimeJob?: GatewayHooks['onRuntimeJob'];
   readonly onBranchAttemptResult?: GatewayHooks['onBranchAttemptResult'];
+  readonly onSessionStartChanged?: GatewayHooks['onSessionStartChanged'];
+  readonly onSessionStartEnded?: GatewayHooks['onSessionStartEnded'];
+  readonly onPromptStartRefused?: GatewayHooks['onPromptStartRefused'];
+  readonly onStatus?: GatewayHooks['onStatus'];
   readonly agentConfig?: GatewayHooks['agentConfig'];
   readonly onTerminalData?: GatewayHooks['onTerminalData'];
   readonly onTerminalExit?: GatewayHooks['onTerminalExit'];
@@ -51,6 +55,9 @@ async function harness(options: HarnessOptions = {}) {
     ...(options.onObservedRuntimeInstall ? { onObservedRuntimeInstall: options.onObservedRuntimeInstall } : {}),
     ...(options.onRuntimeJob ? { onRuntimeJob: options.onRuntimeJob } : {}),
     ...(options.onBranchAttemptResult ? { onBranchAttemptResult: options.onBranchAttemptResult } : {}),
+    ...(options.onSessionStartChanged ? { onSessionStartChanged: options.onSessionStartChanged } : {}),
+    ...(options.onSessionStartEnded ? { onSessionStartEnded: options.onSessionStartEnded } : {}),
+    ...(options.onPromptStartRefused ? { onPromptStartRefused: options.onPromptStartRefused } : {}),
     ...(options.agentConfig ? { agentConfig: options.agentConfig } : {}),
     onHello: () => {
       helloSeen = true;
@@ -58,7 +65,7 @@ async function harness(options: HarnessOptions = {}) {
     onEvent: () => {},
     onAgentSession: () => {},
     onOptions: () => {},
-    onStatus: () => {},
+    onStatus: options.onStatus ?? (() => {}),
     onWorkerGone: () => {},
     ...(options.onTerminalData ? { onTerminalData: options.onTerminalData } : {}),
     ...(options.onTerminalExit ? { onTerminalExit: options.onTerminalExit } : {}),
@@ -117,6 +124,411 @@ async function harness(options: HarnessOptions = {}) {
   };
   return { gateway, url, connect, stop };
 }
+
+test('first-prompt fork projects only worker origin for legacy compatibility', async () => {
+  const h = await harness({ gateway: { echoMs: 0 } });
+  const wire = await h.connect();
+  try {
+    const origin = { kind: 'fork' as const, fromSessionId: asSessionId('parent'), atSeq: 0 };
+    const branch = { fromAgentSessionRef: 'parent-ref', turnRef: null, previousTurnRef: null };
+    const command = { kind: 'start_session' as const, sessionId: asSessionId('zero'), workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin, resume: null, options: {}, branch };
+    assert.equal((await h.gateway.gateway.dispatch(command)).ok, true);
+    const positiveOrigin = { ...origin, atSeq: 7 };
+    assert.equal((await h.gateway.gateway.dispatch({ ...command, sessionId: asSessionId('positive'), origin: positiveOrigin })).ok, true);
+    await until(() => wire.frames.filter((frame) => frame.kind === 'start_session').length === 2);
+    const frames = wire.frames.filter((frame) => frame.kind === 'start_session');
+    assert.deepEqual(frames[0]?.origin, { kind: 'derive' });
+    assert.deepEqual(frames[0]?.branch, branch);
+    assert.equal(frames[0]?.resume, null);
+    assert.deepEqual(origin, { kind: 'fork', fromSessionId: 'parent', atSeq: 0 });
+    assert.deepEqual(frames[1]?.origin, positiveOrigin);
+    assert.deepEqual(frames[1]?.branch, branch);
+  } finally {
+    await h.stop(wire);
+  }
+});
+
+test('session start wire IDs are optional for old peers and bounded for new frames', () => {
+  const prompt = { kind: 'prompt', sessionId: 's1', text: '', parts: [], deliveryId: 'd1' };
+  const start = { kind: 'start_session', sessionId: 's1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' }, resume: null, options: {} };
+  assert.equal(serverToWorkerSchema.safeParse(start).success, true);
+  assert.equal(serverToWorkerSchema.safeParse({ ...start, startAttemptId: 'a' }).success, true);
+  assert.equal(serverToWorkerSchema.safeParse({ ...start, startAttemptId: '' }).success, false);
+  assert.equal(serverToWorkerSchema.safeParse(prompt).success, true);
+  assert.equal(serverToWorkerSchema.safeParse({ ...prompt, startAttemptId: 'x'.repeat(128) }).success, true);
+  for (const startAttemptId of ['', 'x'.repeat(129)]) {
+    assert.equal(serverToWorkerSchema.safeParse({ ...prompt, startAttemptId }).success, false);
+    assert.equal(workerToServerSchema.safeParse({ type: 'session_start_result', sessionId: 's1', startAttemptId, state: 'ready' }).success, false);
+  }
+  assert.equal(workerToServerSchema.safeParse({ type: 'prompt_start_refused', sessionId: 's1', startAttemptId: 'a', deliveryId: 'd' }).success, true);
+  assert.equal(workerToServerSchema.safeParse({ type: 'prompt_start_refused', sessionId: 's1', startAttemptId: 'a', deliveryId: '' }).success, false);
+});
+
+test('keyed prompts are fenced by current start generation and refusals are exactly correlated', async () => {
+  let clock = 0;
+  let markers = 0;
+  const changes: unknown[][] = [];
+  const refusals: unknown[][] = [];
+  const statuses: unknown[][] = [];
+  const ends: Array<{ worker: string; session: string; attempt: string; isCurrent: () => boolean }> = [];
+  const h = await harness({ gateway: { echoMs: 0, now: () => clock, sessionStartTimeoutMs: 10 }, onSessionStartChanged: (...a) => changes.push(a), onSessionStartEnded: (worker, session, attempt, isCurrent) => ends.push({ worker, session, attempt, isCurrent }), onPromptStartRefused: (...a) => refusals.push(a), onStatus: (...a) => statuses.push(a), onTerminalData: () => { markers++; } });
+  const hello = { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY] };
+  const first = await h.connect('w1', hello);
+  const other = await h.connect('w2', hello);
+  const sessionId = asSessionId('ready-session');
+  const start = { kind: 'start_session' as const, sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' as const }, resume: null, options: {} };
+  const prompt = { kind: 'prompt' as const, sessionId, text: 'hello', parts: [], deliveryId: 'd1' };
+  const sync = async (wire: Wire) => { const target = markers + 1; wire.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' })); await until(() => markers >= target); };
+  try {
+    assert.equal((await h.gateway.gateway.dispatch(start)).ok, true);
+    await until(() => first.frames.some((f) => f.kind === 'start_session'));
+    const sent = first.frames.find((f) => f.kind === 'start_session');
+    assert.ok(sent?.kind === 'start_session' && sent.startAttemptId);
+    const attempt = sent.startAttemptId;
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'starting' });
+    const pending = await h.gateway.gateway.dispatch({ ...prompt, startAttemptId: attempt });
+    assert.equal(pending.ok, false);
+    assert.equal(!pending.ok && pending.error.deliveryDeferred, true);
+    other.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: attempt, state: 'ready' }));
+    first.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: 'stale', state: 'ready' }));
+    await sync(first);
+    assert.equal(changes.length, 0);
+    clock = 11;
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'failed', reason: 'timed_out' });
+    first.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: attempt, state: 'ready' }));
+    await until(() => changes.length === 1);
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'ready', startAttemptId: attempt });
+    assert.equal((await h.gateway.gateway.dispatch({ ...prompt, startAttemptId: 'stale' })).ok, false);
+    assert.equal((await h.gateway.gateway.dispatch({ ...prompt, startAttemptId: attempt })).ok, true);
+    await until(() => first.frames.some((f) => f.kind === 'prompt'));
+    other.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: attempt, deliveryId: 'd1' }));
+    first.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: attempt, deliveryId: 'arbitrary' }));
+    first.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: attempt, deliveryId: 'd1' }));
+    first.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: attempt, deliveryId: 'd1' }));
+    await sync(first);
+    assert.deepEqual(refusals, [['w1', sessionId, 'd1']]);
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'failed', reason: 'runtime' });
+    assert.equal((await h.gateway.gateway.dispatch(start)).ok, true);
+    await until(() => first.frames.filter((f) => f.kind === 'start_session').length === 2);
+    const second = first.frames.filter((f) => f.kind === 'start_session')[1]!;
+    assert.ok(second.kind === 'start_session' && second.startAttemptId && second.startAttemptId !== attempt);
+    first.ws.send(JSON.stringify({ type: 'status', sessionId, status: 'ended' }));
+    first.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: attempt, state: 'ended' }));
+    await sync(first);
+    assert.equal(statuses.length, 0);
+    assert.equal(h.gateway.hostOf(sessionId), 'w1');
+    first.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: second.startAttemptId, state: 'failed', reason: 'configuration' }));
+    await until(() => changes.length === 3);
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'failed', reason: 'configuration' });
+    h.gateway.gateway.retrySessionStart!(sessionId, 'w1');
+    first.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: second.startAttemptId, state: 'ready' }));
+    await sync(first);
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'untracked' });
+    assert.equal((await h.gateway.gateway.dispatch(start)).ok, true);
+    await until(() => first.frames.filter((f) => f.kind === 'start_session').length === 3);
+    const third = first.frames.filter((f) => f.kind === 'start_session')[2]!;
+    assert.ok(third.kind === 'start_session' && third.startAttemptId);
+    first.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: third.startAttemptId, state: 'ended' }));
+    await until(() => ends.length === 1);
+    assert.equal(h.gateway.hostOf(sessionId), null);
+    assert.equal(statuses.length, 0);
+    assert.deepEqual({ ...ends[0], isCurrent: undefined }, { worker: 'w1', session: sessionId, attempt: third.startAttemptId, isCurrent: undefined });
+    assert.equal(ends[0]!.isCurrent(), true);
+    assert.equal((await h.gateway.gateway.dispatch(start)).ok, true);
+    assert.equal(ends[0]!.isCurrent(), false);
+  } finally { await h.stop(first, other); }
+});
+
+test('reconnect and old worker invalidate a pre-send readiness snapshot', async () => {
+  const h = await harness({ gateway: { echoMs: 0 } });
+  const hello = { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY] };
+  const first = await h.connect('w1', hello);
+  const sessionId = asSessionId('reconnect');
+  const start = { kind: 'start_session' as const, sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' as const }, resume: null, options: {} };
+  const prompt = { kind: 'prompt' as const, sessionId, text: 'hello', parts: [], deliveryId: 'd1' };
+  try {
+    assert.equal((await h.gateway.gateway.dispatch(start)).ok, true);
+    await until(() => first.frames.some((f) => f.kind === 'start_session'));
+    const frame = first.frames.find((f) => f.kind === 'start_session');
+    assert.ok(frame?.kind === 'start_session' && frame.startAttemptId);
+    first.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: frame.startAttemptId, state: 'ready' }));
+    await until(() => h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1').state === 'ready');
+    const replacement = await h.connect('w1', { capabilities: [WORKER_CAPABILITY_DURABLE_DELIVERY], sessions: [sessionId] });
+    try {
+      assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'upgrade_required' });
+      const result = await h.gateway.gateway.dispatch({ ...prompt, startAttemptId: frame.startAttemptId });
+      assert.equal(result.ok, false);
+      assert.equal(!result.ok && result.error.deliveryDeferred, true);
+      assert.equal(replacement.frames.some((f) => f.kind === 'prompt'), false);
+    } finally { await h.stop(replacement); }
+  } finally { first.ws.close(); }
+});
+
+test('partial readiness capabilities require upgrade before a keyed delivery can be claimed', async () => {
+  const h = await harness({ gateway: { echoMs: 0 } });
+  const partial = await h.connect('partial', { capabilities: [WORKER_CAPABILITY_SESSION_START_READY] });
+  const sessionId = asSessionId('partial');
+  try {
+    assert.equal((await h.gateway.gateway.dispatch({ kind: 'start_session', sessionId, workerId: 'partial', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' }, resume: null, options: {} })).ok, true);
+    await until(() => partial.frames.some((frame) => frame.kind === 'start_session'));
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'partial'), { state: 'upgrade_required' });
+    const sent = partial.frames.find((frame) => frame.kind === 'start_session');
+    assert.ok(sent?.kind === 'start_session' && !sent.startAttemptId);
+    const result = await h.gateway.gateway.dispatch({ kind: 'prompt', sessionId, text: 'hi', parts: [], deliveryId: 'd', startAttemptId: 'stale' });
+    assert.equal(!result.ok && result.error.deliveryDeferred, true);
+    assert.equal(partial.frames.some((frame) => frame.kind === 'prompt'), false);
+  } finally { await h.stop(partial); }
+});
+
+test('pre-send keyed capability denial is explicitly deferred without sending', async () => {
+  const h = await harness({ gateway: { echoMs: 0 }, authenticate: async () => ({ ok: true, capabilities: ['files.read'] }) });
+  const wire = await h.connect('w1', { credential: 'c1', capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY] });
+  const sessionId = asSessionId('denied');
+  try {
+    h.gateway.adopt('w1', [sessionId]);
+    const result = await h.gateway.gateway.dispatch({ kind: 'prompt', sessionId, text: 'hello', parts: [], deliveryId: 'd', startAttemptId: 'attempt' });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'forbidden');
+      assert.equal(result.error.deliveryDeferred, true);
+    }
+    assert.equal(wire.frames.some((frame) => frame.kind === 'prompt'), false);
+  } finally { await h.stop(wire); }
+});
+
+test('clean end retains exact refusal proof across same-socket replacement but not replay or reconnect', async () => {
+  let markers = 0;
+  const refusals: string[] = [];
+  const guards: Array<() => boolean> = [];
+  const h = await harness({ gateway: { echoMs: 0 }, onPromptStartRefused: (_worker, _session, deliveryId) => refusals.push(deliveryId), onSessionStartEnded: (_worker, _session, _attempt, isCurrent) => guards.push(isCurrent), onTerminalData: () => { markers++; } });
+  const hello = { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY] };
+  const wire = await h.connect('w1', hello);
+  const other = await h.connect('w2', hello);
+  const sessionId = asSessionId('retired');
+  const command = { kind: 'start_session' as const, sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' as const }, resume: null, options: {} };
+  const sync = async (w: Wire) => { const target = markers + 1; w.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' })); await until(() => markers >= target); };
+  const refuse = (w: Wire, attempt: string, deliveryId: string) => w.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: attempt, deliveryId }));
+  let replacement: Wire | undefined;
+  try {
+    await h.gateway.gateway.dispatch(command);
+    await until(() => wire.frames.filter((f) => f.kind === 'start_session').length === 1);
+    const first = wire.frames.find((f) => f.kind === 'start_session');
+    assert.ok(first?.kind === 'start_session' && first.startAttemptId);
+    const attempt = first.startAttemptId;
+    wire.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: attempt, state: 'ready' }));
+    await until(() => h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1').state === 'ready');
+    const prompt = (deliveryId: string, startAttemptId: string) => h.gateway.gateway.dispatch({ kind: 'prompt', sessionId, text: 'hello', parts: [], deliveryId, startAttemptId });
+    for (const id of ['delayed', 'reused', 'disconnected', 'duplicate']) assert.equal((await prompt(id, attempt)).ok, true);
+    assert.equal((await prompt('duplicate', attempt)).ok, true);
+    wire.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: attempt, state: 'ended' }));
+    await until(() => guards.length === 1);
+    assert.equal(guards[0]!(), true);
+    assert.deepEqual(refusals, []);
+    await h.gateway.gateway.dispatch(command);
+    assert.equal(guards[0]!(), false);
+    await until(() => wire.frames.filter((f) => f.kind === 'start_session').length === 2);
+    const second = wire.frames.filter((f) => f.kind === 'start_session')[1];
+    assert.ok(second?.kind === 'start_session' && second.startAttemptId);
+    wire.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: second.startAttemptId, state: 'ready' }));
+    await until(() => h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1').state === 'ready');
+    assert.equal((await prompt('reused', second.startAttemptId)).ok, true);
+    refuse(other, attempt, 'delayed');
+    refuse(wire, 'wrong', 'delayed');
+    refuse(wire, attempt, 'duplicate');
+    refuse(wire, attempt, 'reused');
+    refuse(wire, attempt, 'delayed');
+    refuse(wire, attempt, 'delayed');
+    await sync(wire);
+    assert.deepEqual(refusals, ['delayed']);
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'ready', startAttemptId: second.startAttemptId });
+    replacement = await h.connect('w1', hello);
+    refuse(replacement, attempt, 'disconnected');
+    await sync(replacement);
+    assert.deepEqual(refusals, ['delayed']);
+  } finally { await h.stop(wire, other, ...(replacement ? [replacement] : [])); }
+});
+
+test('replacement and dispose retire outstanding exact refusal proof without an end receipt', async () => {
+  const refusals: string[] = [];
+  const h = await harness({ gateway: { echoMs: 0 }, onPromptStartRefused: (_worker, _session, id) => refusals.push(id) });
+  const wire = await h.connect('w1', { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY] });
+  const sessionId = asSessionId('replace-retire');
+  const start = { kind: 'start_session' as const, sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' as const }, resume: null, options: {} };
+  let previousAttempt = '';
+  try {
+    for (let i = 0; i < 2; i++) {
+      assert.equal((await h.gateway.gateway.dispatch(start)).ok, true);
+      await until(() => wire.frames.filter((f) => f.kind === 'start_session').length === i + 1);
+      const frame = wire.frames.filter((f) => f.kind === 'start_session')[i];
+      assert.ok(frame?.kind === 'start_session' && frame.startAttemptId);
+      const attempt = frame.startAttemptId;
+      wire.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: attempt, state: 'ready' }));
+      await until(() => h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1').state === 'ready');
+      assert.equal((await h.gateway.gateway.dispatch({ kind: 'prompt', sessionId, text: 'hi', parts: [], deliveryId: `d${i}`, startAttemptId: attempt })).ok, true);
+      if (i === 0) {
+        // The next iteration replaces the generation before the refusal arrives.
+        previousAttempt = attempt;
+      } else {
+        await h.gateway.gateway.dispatch({ kind: 'dispose', sessionId });
+        wire.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: previousAttempt, deliveryId: 'd0' }));
+        wire.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: attempt, deliveryId: 'd1' }));
+      }
+    }
+    await until(() => refusals.length === 2);
+    assert.deepEqual(refusals, ['d0', 'd1']);
+  } finally { await h.stop(wire); }
+});
+
+test('exact turn completion frees refusal capacity without making completed IDs replayable', async () => {
+  let markers = 0;
+  const refusals: string[] = [];
+  const h = await harness({ gateway: { echoMs: 0 }, onPromptStartRefused: (_worker, _session, id) => refusals.push(id), onTerminalData: () => { markers++; } });
+  const hello = { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY] };
+  const wire = await h.connect('w1', hello);
+  const other = await h.connect('w2', hello);
+  const sessionId = asSessionId('long-stream');
+  try {
+    await h.gateway.gateway.dispatch({ kind: 'start_session', sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' }, resume: null, options: {} });
+    await until(() => wire.frames.some((f) => f.kind === 'start_session'));
+    const start = wire.frames.find((f) => f.kind === 'start_session');
+    assert.ok(start?.kind === 'start_session' && start.startAttemptId);
+    const attempt = start.startAttemptId;
+    wire.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: attempt, state: 'ready' }));
+    await until(() => h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1').state === 'ready');
+    const prompt = (deliveryId: string) => h.gateway.gateway.dispatch({ kind: 'prompt', sessionId, text: 'hi', parts: [], deliveryId, startAttemptId: attempt });
+    const event = (w: Wire, sid: string, id: string) => w.ws.send(JSON.stringify({ type: 'event', sessionId: sid, event: { kind: 'ended', outcome: 'done', deliveryId: id } }));
+    const sync = async () => { const target = markers + 1; wire.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' })); await until(() => markers === target); };
+    for (let i = 0; i < 1100; i++) {
+      assert.equal((await prompt(`d${i}`)).ok, true);
+      event(wire, sessionId, `d${i}`);
+      // Allow the socket to process completed turns before dispatching more.
+      if (i % 100 === 99) await sync();
+    }
+    assert.equal((await prompt('d0')).ok, true);
+    assert.equal((await prompt('fresh')).ok, true);
+    assert.equal((await prompt('mismatch')).ok, true);
+    event(other, sessionId, 'mismatch');
+    event(wire, 'wrong-session', 'mismatch');
+    wire.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: attempt, deliveryId: 'd0' }));
+    wire.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: attempt, deliveryId: 'fresh' }));
+    wire.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: attempt, deliveryId: 'mismatch' }));
+    await sync();
+    assert.deepEqual(refusals, ['fresh', 'mismatch']);
+  } finally { await h.stop(wire, other); }
+});
+
+test('end callback guard expires on dispose, retry, adoption, reconnect and gateway close', async () => {
+  const guards = new Map<string, () => boolean>();
+  const h = await harness({ gateway: { echoMs: 0 }, onSessionStartEnded: (_worker, session, _attempt, isCurrent) => guards.set(session, isCurrent) });
+  const hello = { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY] };
+  const first = await h.connect('w1', hello);
+  async function end(id: string, wire: Wire) {
+    const sessionId = asSessionId(id);
+    assert.equal((await h.gateway.gateway.dispatch({ kind: 'start_session', sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' }, resume: null, options: {} })).ok, true);
+    await until(() => wire.frames.some((f) => f.kind === 'start_session' && f.sessionId === id));
+    const frame = wire.frames.find((f) => f.kind === 'start_session' && f.sessionId === id);
+    assert.ok(frame?.kind === 'start_session' && frame.startAttemptId);
+    wire.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: frame.startAttemptId, state: 'ended' }));
+    await until(() => guards.has(id));
+    assert.equal(guards.get(id)!(), true);
+    return sessionId;
+  }
+  let replacement: Wire | undefined;
+  try {
+    const dispose = await end('dispose-end', first);
+    await h.gateway.gateway.dispatch({ kind: 'dispose', sessionId: dispose });
+    assert.equal(guards.get(dispose)!(), false);
+    const retry = await end('retry-end', first);
+    h.gateway.gateway.retrySessionStart!(retry, 'w1');
+    assert.equal(guards.get(retry)!(), false);
+    const adopt = await end('adopt-end', first);
+    h.gateway.adopt('w1', [adopt]);
+    assert.equal(guards.get(adopt)!(), false);
+    const reconnect = await end('reconnect-end', first);
+    replacement = await h.connect('w1', hello);
+    assert.equal(guards.get(reconnect)!(), false);
+    const disconnected = await end('disconnect-end', replacement);
+    assert.equal(h.gateway.disconnect('w1'), true);
+    assert.equal(guards.get(disconnected)!(), false);
+    replacement.ws.close();
+    replacement = await h.connect('w1', hello);
+    const closed = await end('close-end', replacement);
+    h.gateway.close();
+    assert.equal(guards.get(closed)!(), false);
+  } finally { await h.stop(first, ...(replacement ? [replacement] : [])); }
+});
+
+test('refusal evidence is bounded and never admits duplicate or overflow IDs', async () => {
+  let markers = 0;
+  const refusals: string[] = [];
+  const h = await harness({ gateway: { echoMs: 0 }, onPromptStartRefused: (_worker, _session, deliveryId) => refusals.push(deliveryId), onTerminalData: () => { markers++; } });
+  const wire = await h.connect('w1', { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY] });
+  const sessionId = asSessionId('proof-cap');
+  try {
+    await h.gateway.gateway.dispatch({ kind: 'start_session', sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' }, resume: null, options: {} });
+    await until(() => wire.frames.some((f) => f.kind === 'start_session'));
+    const start = wire.frames.find((f) => f.kind === 'start_session');
+    assert.ok(start?.kind === 'start_session' && start.startAttemptId);
+    const startAttemptId = start.startAttemptId;
+    wire.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId, state: 'ready' }));
+    await until(() => h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1').state === 'ready');
+    const dispatch = (deliveryId: string) => h.gateway.gateway.dispatch({ kind: 'prompt', sessionId, text: 'hi', parts: [], deliveryId, startAttemptId });
+    for (let i = 0; i <= 1024; i++) assert.equal((await dispatch(`d${i}`)).ok, true);
+    const refuse = (deliveryId: string) => wire.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId, deliveryId }));
+    refuse('d0'); refuse('d1024');
+    wire.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' }));
+    await until(() => markers === 1);
+    assert.deepEqual(refusals, ['d0']);
+    assert.equal((await dispatch('d0')).ok, false);
+    assert.equal((await dispatch('d1024')).ok, false);
+    refuse('d0'); refuse('d1024');
+    wire.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' }));
+    await until(() => markers === 2);
+    assert.deepEqual(refusals, ['d0']);
+  } finally { await h.stop(wire); }
+});
+
+test('exact refusals stop automatic resend and explicit retries produce fresh generations', async () => {
+  let markers = 0;
+  const refusals: string[] = [];
+  const changes: string[] = [];
+  const h = await harness({ gateway: { echoMs: 0 }, onPromptStartRefused: (_worker, _session, id) => refusals.push(id), onSessionStartChanged: (_worker, session) => changes.push(session), onTerminalData: () => { markers++; } });
+  const wire = await h.connect('w1', { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY] });
+  const sessionId = asSessionId('repeat-refusal');
+  const start = { kind: 'start_session' as const, sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' as const }, resume: null, options: {} };
+  const attempts: string[] = [];
+  const sync = async () => { const target = markers + 1; wire.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' })); await until(() => markers === target); };
+  try {
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await h.gateway.gateway.dispatch(start)).ok, true);
+      await until(() => wire.frames.filter((f) => f.kind === 'start_session').length === i + 1);
+      const frame = wire.frames.filter((f) => f.kind === 'start_session')[i];
+      assert.ok(frame?.kind === 'start_session' && frame.startAttemptId && !attempts.includes(frame.startAttemptId));
+      const attempt = frame.startAttemptId;
+      attempts.push(attempt);
+      wire.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: attempt, state: 'ready' }));
+      await until(() => h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1').state === 'ready');
+      if (i > 0) {
+        wire.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: attempts[i - 1], deliveryId: 'd' }));
+        await sync();
+        assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'ready', startAttemptId: attempt });
+        assert.equal(refusals.length, i);
+      }
+      if (i === 2) break;
+      const prompt = { kind: 'prompt' as const, sessionId, text: 'hi', parts: [], deliveryId: 'd', startAttemptId: attempt };
+      assert.equal((await h.gateway.gateway.dispatch(prompt)).ok, true);
+      wire.ws.send(JSON.stringify({ type: 'prompt_start_refused', sessionId, startAttemptId: attempt, deliveryId: 'd' }));
+      await until(() => refusals.length === i + 1);
+      assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'failed', reason: 'runtime' });
+      const retry = await h.gateway.gateway.dispatch(prompt);
+      assert.equal(!retry.ok && retry.error.deliveryDeferred, true);
+      h.gateway.gateway.retrySessionStart!(sessionId, 'w1');
+      assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'untracked' });
+    }
+    assert.deepEqual(refusals, ['d', 'd']);
+    assert.equal(changes.length, 5);
+  } finally { await h.stop(wire); }
+});
 
 test('keyed branch transport requires current socket capability and correlates results to sent attempts', async () => {
   const results: unknown[][] = [];

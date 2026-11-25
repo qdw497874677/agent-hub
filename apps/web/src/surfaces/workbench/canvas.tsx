@@ -11,7 +11,7 @@ import {
   type NodeTypes,
   type ReactFlowInstance
 } from '@xyflow/react';
-import type { AttachmentInputDto, CanvasDto, PromptAckDto, SaveLayoutRequest, TaskDto } from '../../shell/api.ts';
+import type { AttachmentInputDto, CanvasDto, PromptAckDto, SaveLayoutRequest, SessionDto, TaskDto } from '../../shell/api.ts';
 import { resolveLive, type LiveMap } from '../../atoms/live.ts';
 import { SessionCard, TaskCard, WorkerFrame, type FrameNode, type SessionNode, type TaskNode } from './nodes.tsx';
 type AnyNode = TaskNode | SessionNode | FrameNode;
@@ -39,6 +39,8 @@ export type LayoutPatch = SaveLayoutRequest;
 interface Props {
   readonly canvas: CanvasDto;
   readonly live: LiveMap;
+  readonly history: Readonly<Record<string, import('../../atoms/live.ts').HistoryState>>;
+  readonly onRetryHistory: (session: SessionDto) => void;
   readonly onDerive: (taskId: string) => void;
   /** 打开专注对话：一条会话，整屏看。 */
   readonly onOpen: (sessionId: string) => void;
@@ -127,6 +129,8 @@ export function openingBounds(
 export function CanvasView({
   canvas,
   live,
+  history,
+  onRetryHistory,
   onDerive,
   onOpen,
   onChanged,
@@ -672,6 +676,8 @@ export function CanvasView({
         narrow={narrow}
         canvas={canvas}
         live={live}
+        history={history}
+        onRetryHistory={onRetryHistory}
         drafts={drafts}
         onDraftChange={onDraftChange}
         onChanged={onChanged}
@@ -681,4 +687,3 @@ export function CanvasView({
     </div>
   );
 }
-

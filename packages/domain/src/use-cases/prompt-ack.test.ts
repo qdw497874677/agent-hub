@@ -93,7 +93,7 @@ test('prompt 返回 ack：seq 是 journal 里这条 prompt 的 seq，state 合�
   const rows = await w.deliveries.recent(w.sid, 10);
   assert.equal(rows.length, 1);
   assert.equal(ack.deliveryId, rows[0]!.id, 'ack.deliveryId 指向这条 prompt 的送达记录');
-  assert.equal(ack.state, 'sending', '队首、已尝试派发');
+  assert.equal(ack.state, 'queued', '持久入队后立即回执，不推测后台派发');
 });
 
 test('同一 clientMessageId 发两次：journal 只有一条 prompt，第二次拿到相同 seq', async () => {
@@ -128,7 +128,7 @@ test('MS-2：后台派发失败（unavailable）时仍然返回 ok，delivery �
   const w = await world('unavailable');
   const out = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '离线', clientMessageId: 'cm-offline' });
   assert.ok(out.ok, '派发失败不能再把 HTTP 变成 500');
-  assert.equal(out.value.state, 'sending', 'ack 不等派发，先回报「发送中」');
+  assert.equal(out.value.state, 'queued', 'ack 不等后台派发');
   assert.ok(out.value.deliveryId);
 
   await settle();
@@ -148,7 +148,7 @@ test('MS-2：后台派发失败（不可重试）时仍然返回 ok，delivery �
   const w = await world('forbidden');
   const out = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '没权限', clientMessageId: 'cm-denied' });
   assert.ok(out.ok, '失败只能落在 delivery/ended，不能是 HTTP 错误');
-  assert.equal(out.value.state, 'sending');
+  assert.equal(out.value.state, 'queued');
   assert.ok(out.value.deliveryId);
 
   await settle();

@@ -1,16 +1,17 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
 import { piModel } from './hub-model.ts';
+import { FAKE_AGENT_ID, ensureFakeWorker, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 弱网 / 离线：发送出去之后的每一段都要有落点。
  *
  * - 请求慢（弱网）：气泡先出来，超过回执超时变成「未送达 · 重试」，点重试用同一个 clientMessageId，
  *   服务端幂等，不会出现两条一样的消息。
- * - 机器离线：输入区说清原因并禁用发送，别让人写完一屏才发现在等一台不在的机器。
+ * - 机器离线：清楚说明消息可以先排队，并验证服务器真的持久排队，而不是只模拟离线显示。
  */
 async function openSession(page: Page, baseURL: string) {
   await loginByApi(page);
@@ -73,10 +74,11 @@ test('弱网：回执超时后气泡变未送达，重试不会产生重复消�
 
   const pending = page.getByTestId('pending-prompts');
   await expect(pending).toBeVisible();
-  await expect(pending).toContainText('正在发送…');
+  await expect(page.getByTestId('turn-hint')).toContainText('正在发送…');
 
   // 8 秒超时后：同一颗气泡原地变成「未送达」，给出重试/放弃。
   await expect(page.getByTestId('pending-unknown')).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByTestId('pending-unknown')).toContainText('未收到回执');
   await expect(page.getByTestId('pending-retry')).toBeVisible();
 
   await page.getByTestId('pending-retry').click();
@@ -88,21 +90,64 @@ test('弱网：回执超时后气泡变未送达，重试不会产生重复消�
   await expect(page.getByTestId('pending-prompts')).toHaveCount(0);
 });
 
-test('机器离线：输入区说明原因并禁用发送', async ({ page, baseURL }) => {
-  const { area } = await openSession(page, baseURL ?? '');
+for (const width of [1280, 390]) {
+  test(`机器离线：说明原因，仍可发送并持久排队 (${width}px)`, async ({ page, baseURL }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width, height: 844 });
+    await loginByApi(page);
+    const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
+    const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
+    const dir = mkdtempSync(join(tmpdir(), 'e2e-offline-queue-'));
+    let workerId = '';
+    try {
+      workerId = await ensureFakeWorker(page, baseURL!, FAKE_AGENT_ID);
+      const post = async <T>(url: string, data: unknown): Promise<T> => {
+        const response = await page.request.post(url, { data, headers });
+        expect(response.ok(), await response.text()).toBe(true);
+        return await response.json() as T;
+      };
+      const project = await post<{ id: string }>('/api/projects', { name: `offline-queue-${width}-${Date.now()}`, rootPath: dir, workerId });
+      const task = await post<{ id: string }>('/api/tasks', { projectId: project.id, title: '离线排队' });
+      const session = await post<{ id: string }>('/api/sessions/derive', { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' });
+      const api = `/api/sessions/${session.id}`;
+      await page.goto(`/#/p/${project.id}/focus/${session.id}`);
+      const area = page.getByLabel('发送消息');
+      await expect(area).toBeVisible();
 
-  // 把机器列表改成离线：composer 应当就地提示，而不是等发送失败。
-  await page.route('**/api/workers', async (route) => {
-    const response = await route.fetch();
-    const workers = (await response.json()) as Array<Record<string, unknown>>;
-    await route.fulfill({
-      response,
-      json: workers.map((worker) => ({ ...worker, state: 'offline', reason: '网络断了' }))
-    });
+      // 断开真正的独立 Worker；/workers 和 /startup 都由服务器报告，不造矛盾夹具。
+      stopFakeWorker();
+      await expect.poll(async () => {
+        const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ id?: string; workerId?: string; state: string }>;
+        return workers.find((worker) => (worker.workerId ?? worker.id) === workerId)?.state;
+      }, { timeout: 30_000 }).toBe('offline');
+      await expect.poll(async () => ((await (await page.request.get(`${api}/startup`)).json()) as { state: string }).state, { timeout: 30_000 }).toBe('offline');
+      const status = page.getByTestId('session-startup-status');
+      await expect(status).toHaveAttribute('data-state', 'offline');
+      await expect(status).toContainText('机器离线');
+      await expect(status).toContainText('消息可先排队');
+
+      const text = `离线排队消息 ${width}`;
+      await area.fill(text);
+      const send = page.getByRole('button', { name: /^(发送|排队发送)$/ });
+      await expect(send).toBeEnabled();
+      const ack = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith(`${api}/prompt`));
+      await send.click();
+      const response = await ack;
+      expect(response.ok(), await response.text()).toBe(true);
+      const { deliveryId } = await response.json() as { deliveryId: string };
+      const rows = async () => (await (await page.request.get(`${api}/deliveries`)).json()) as Array<{ id: string; state: string; attempt: number }>;
+      await expect.poll(async () => {
+        const delivery = (await rows()).find((row) => row.id === deliveryId);
+        return `${delivery?.state}/${delivery?.attempt}`;
+      }).toBe('queued/0');
+      const note = page.getByRole('log', { name: '会话记录' }).getByTestId('msg-user').filter({ hasText: text }).getByTestId('delivery-note');
+      await expect(note).toHaveAttribute('data-state', 'queued');
+      await expect(note).toContainText('已排队 · 等待投递');
+      await expect(note.getByRole('button', { name: '撤回' })).toBeVisible();
+    } finally {
+      stopFakeWorker();
+      if (workerId) await page.request.delete(`/api/workers/${encodeURIComponent(workerId)}`, { headers }).catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
-  await page.reload();
-
-  await expect(page.getByRole('status').filter({ hasText: '离线' }).first()).toBeVisible({ timeout: 15_000 });
-  await area.fill('写点东西');
-  await expect(page.getByRole('button', { name: '发送' })).toBeDisabled();
-});
+}

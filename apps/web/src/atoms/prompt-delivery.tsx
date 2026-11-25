@@ -61,7 +61,7 @@ export function usePromptDelivery({ sessionId, blocks, send }: UsePromptDelivery
     setPending((previous) => reconcilePending(previous, blocks));
   }, [blocks]);
 
-  // 回执迟迟不来就是「未送达」：宁可让人点一次重试，也别让气泡一直装作在发。
+  // 回执超时只代表结果未知，不能断言消息没有送达。
   useEffect(() => {
     const delay = nextAckDelay(pending, Date.now());
     if (delay === null) return;
@@ -140,6 +140,8 @@ export interface PendingPromptsProps {
    * 这里就不再重复一行。未送达（带重试/放弃）永远保留：那是要人动手的。
    */
   readonly quiet?: boolean;
+  /** 服务端送达记录已经接管该气泡时，不重复本地状态。 */
+  readonly hasDelivery?: (prompt: PendingPrompt) => boolean;
 }
 
 /**
@@ -154,7 +156,8 @@ export function PendingPrompts({
   testIdPrefix = '',
   compact = false,
   className = '',
-  quiet = false
+  quiet = false,
+  hasDelivery
 }: PendingPromptsProps) {
   if (pending.length === 0) return null;
   return (
@@ -177,7 +180,7 @@ export function PendingPrompts({
             onRetry={onRetry}
             onDiscard={onDiscard}
             testIdPrefix={testIdPrefix}
-            quiet={quiet}
+            quiet={(quiet && index === pending.length - 1) || (hasDelivery?.(prompt) ?? false)}
           />
         </div>
       ))}
@@ -209,7 +212,7 @@ function PendingStateLine({
         data-testid={`${testIdPrefix}pending-unknown`}
         data-state="unknown"
       >
-        <span className="mr-1 text-rust">未送达</span>
+        <span className="w-full text-right text-rust">未收到回执，送达未确认。重试会沿用同一消息 ID，避免重复；仅移除本地提示不会取消消息。</span>
         <button
           type="button"
           data-testid={`${testIdPrefix}pending-retry`}
@@ -224,7 +227,7 @@ function PendingStateLine({
           onClick={() => onDiscard(prompt.id)}
           className="inline-flex min-h-8 items-center rounded-sm px-2.5 text-meta text-tertiary hover:text-primary active:bg-card"
         >
-          放弃
+          移除本地提示
         </button>
       </div>
     );

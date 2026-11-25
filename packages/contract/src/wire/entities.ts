@@ -301,7 +301,7 @@ export const sessionStatusSchema = z.enum([
 
 export const sessionOriginSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('derive') }),
-  z.object({ kind: z.literal('fork'), fromSessionId: id, atSeq: z.number().int().positive() })
+  z.object({ kind: z.literal('fork'), fromSessionId: id, atSeq: z.number().int().nonnegative() })
 ]);
 
 export const sessionSchema = z.object({
@@ -370,7 +370,7 @@ export const lineageEdgeSchema = z.discriminatedUnion('kind', [
     kind: z.literal('fork'),
     fromSessionId: id,
     toSessionId: id,
-    atSeq: z.number().int().positive()
+    atSeq: z.number().int().nonnegative()
   }),
   z.object({ kind: z.literal('link'), aSessionId: id, bSessionId: id })
 ]);

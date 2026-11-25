@@ -9,7 +9,7 @@ import { DelegateDialog } from './delegate-dialog.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
-import { api, sessionGroupId } from '../../shell/api.ts';
+import { api, sessionGroupId, sessionStartupApi } from '../../shell/api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
 import { groupTimeline } from '../../atoms/timeline-groups.ts';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
@@ -77,6 +77,8 @@ interface Props {
   readonly canvas: CanvasDto;
   readonly session: SessionDto;
   readonly live: LiveSession | null;
+  readonly historyState: import('../../atoms/live.ts').HistoryState;
+  readonly onRetryHistory: () => void;
   readonly draft: string;
   readonly onDraftChange: (text: string) => void;
   /** 整页时的「← 返回」；画布窗口里没有（窗口自己有关闭）。 */
@@ -118,6 +120,8 @@ export function FocusView({
   canvas,
   session,
   live,
+  historyState,
+  onRetryHistory,
   draft,
   onDraftChange,
   onBack,
@@ -309,6 +313,23 @@ export function FocusView({
   });
   const status = live?.status ?? session.status;
   const reason = live?.reason ?? null;
+  // 每次只展示最近一次请求的观察值；刷新失败时不能继续展示过期的就绪/失败。
+  const startupQuery = useQuery({
+    queryKey: ['session-startup', session.id],
+    queryFn: () => sessionStartupApi.get(session.id),
+    retry: false,
+    refetchInterval: 2_000,
+    refetchIntervalInBackground: false
+  });
+  const startup = startupQuery.isError || !startupQuery.isFetchedAfterMount ? undefined : startupQuery.data;
+  const startupState = startup?.state ?? 'unknown';
+  const startupReason = startup?.state === 'failed' ? startup.reason : undefined;
+  const startupText = startupState === 'starting' ? '正在启动运行时…'
+    : startupState === 'ready' ? '运行时已就绪'
+    : startupState === 'offline' ? '机器离线'
+    : startupState === 'upgrade_required' ? '需要更新 Worker'
+    : startupState === 'failed' ? startupReason === 'timed_out' ? '运行时启动超时' : '运行时启动失败'
+    : '运行状态暂未确认';
   // 首页待办里的「等回答」是回合结束后的线索，不等于 runtime 正在阻塞。
   // 这里只读同一条 attention 缓存，用「当前这条会话是否还挂着 needs_answer」决定要不要提示回一句。
   const attention = useQuery({ queryKey: ['attention'], queryFn: api.attention, refetchInterval: 10_000 });
@@ -543,25 +564,24 @@ export function FocusView({
   };
   const lastPrompt = promptSeqs[promptSeqs.length - 1];
   const lastBadge = lastPrompt === undefined ? null : (doneTurns.find((t) => t.promptSeq === lastPrompt) ?? null);
-  /**
-   * 窄屏对话末尾那一条进度。只挑一条：谁的事实更靠前就说谁（本地在发 → 服务端排队/投递 → 运行时）。
-   * 桌面不渲染它，桌面仍由输入框上方那一行负责。
-   */
-  const hint = narrow
-    ? turnHint({
+  // 两端共用同一条有证据的进度；其他消息的独立状态和操作仍留在原位。
+  const newestPending = delivery.pending[delivery.pending.length - 1];
+  const hint = turnHint({
         pending: delivery.pending,
-        delivery: lastPrompt === undefined ? undefined : deliveriesBySeq.get(lastPrompt),
+        delivery: newestPending?.seq !== undefined && deliveriesBySeq.has(newestPending.seq)
+          ? deliveriesBySeq.get(newestPending.seq)
+          : lastPrompt === undefined ? undefined : deliveriesBySeq.get(lastPrompt),
         deliveries: deliveriesBySeq.values(),
-        progress
-      })
-    : null;
+        progress,
+        withdrawQueued: true
+      });
   /**
    * 输入框上方那条：桌面是「正在做什么 / 分支」，窄屏不重复进度（已移到对话末尾），
    * 只留一个「工作区」入口——分支、路径、加仓库都在里面。
    */
   const showStatusRow = narrow
     ? workspacePath !== null
-    : Boolean(progress || gitState?.isGit || live?.contextUsage || repo.isCombo);
+    : Boolean(gitState?.isGit || live?.contextUsage || repo.isCombo);
   const [turnBase, setTurnBase] = useState<{ base: string; nonce: number } | null>(null);
   const openTurn = (turn: number) => {
     setTurnBase({ base: `turn:${turn}`, nonce: Date.now() });
@@ -668,9 +688,10 @@ export function FocusView({
     setError(null);
     try {
       await delivery.deliver(text, attachments);
-      onDraftChange('');
       // 新回合已经交出去：让待办/角标尽快按新事件重算，别还挂着刚才那条「等回答」。
       void queries.invalidateQueries({ queryKey: ['attention'] });
+      void queries.invalidateQueries({ queryKey: ['deliveries', session.id] });
+      void queries.invalidateQueries({ queryKey: ['session-startup', session.id] });
       onChanged();
       return true;
     } catch (failure) {
@@ -770,7 +791,7 @@ export function FocusView({
           )}
           <p className="flex min-w-0 items-center gap-1 font-mono text-meta text-tertiary">
             <span className="truncate">
-              {session.title && task ? `${task.title} · ` : ''}{agentLabel} · {modelLabel(session.model)}
+              {session.title && task ? `${task.title} · ` : ''}{agentLabel} · 配置模型：{modelLabel(session.model)}
               {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
             </span>
             {/* 常驻标记放在状态行里：窄屏标题被截断时这一枚也不会换行 */}
@@ -1188,11 +1209,29 @@ export function FocusView({
                 <span className="h-px flex-1 border-t border-dashed border-sage" />
               </div>
             ) : null}
-            {blocks.length === 0 && delivery.pending.length === 0 ? (
+            {historyState !== 'loaded' ? (
+              <div data-testid="session-history-state" role={historyState === 'error' ? 'alert' : 'status'} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-tertiary">
+                <span>{historyState === 'error' ? '会话记录读取失败' : '正在读取会话记录…'}</span>
+                {historyState === 'error' ? <button type="button" onClick={onRetryHistory} className="min-h-11 text-sage underline underline-offset-2">重试</button> : null}
+              </div>
+            ) : null}
+            <div
+              data-testid="session-startup-status"
+              data-state={startupState}
+              data-reason={startupReason}
+              role="status"
+              className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-meta ${startupState === 'failed' || startupState === 'upgrade_required' || startupState === 'offline' ? 'text-rust' : 'text-secondary'}`}
+            >
+              <span>{startupText}</span>
+              {startupState === 'offline' ? <span>· 消息可先排队，机器恢复后等待投递</span> : null}
+              {startupState === 'failed' ? <span>· 有排队消息时，可在队首重试或撤回</span> : null}
+              {startupState === 'upgrade_required' ? <a className="min-h-11 content-center underline underline-offset-2" href={session.workerId ? `#/machines/${encodeURIComponent(session.workerId)}` : '#/machines'}>查看机器并更新</a> : null}
+            </div>
+            {blocks.length === 0 && delivery.pending.length === 0 ? historyState === 'loaded' ? (
               <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
-            ) : (
+            ) : null : (
               <FileLinksContext.Provider value={fileLinks}>
-              <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quiet: narrow }}>
+              <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: hint && delivery.pending.length === 0 ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed' }}>
               {timelineItems.map((item) => {
                 const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }) => (
                   <ChatBlock
@@ -1229,11 +1268,12 @@ export function FocusView({
                 pending={delivery.pending}
                 onRetry={(pending) => void retryPending(pending)}
                 onDiscard={delivery.discard}
-                quiet={narrow}
+                quiet={hint !== null}
+                hasDelivery={(pending) => pending.seq !== undefined && deliveriesBySeq.has(pending.seq)}
                 className={settings.compact ? 'gap-2' : 'gap-4'}
                 renderPrompt={(pending, _index, seq) => (
                   <ChatBlock
-                    block={{ kind: 'prompt', text: pending.text, attachments: [], seq }}
+                    block={{ kind: 'prompt', text: pending.text, attachments: [], seq: pending.seq ?? seq }}
                     agentLabel={agentLabel}
                     sessionId={session.id}
                     settings={settings}
@@ -1247,7 +1287,7 @@ export function FocusView({
               {reason && !['error', 'stopped'].includes(timelineBlocks[timelineBlocks.length - 1]?.kind ?? '') ? (
                 <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
               ) : null}
-              {/* 窄屏唯一的进度：贴在对话末尾，和消息同一个左边界，不再在输入框上方重复一行 */}
+              {/* 两端唯一的当前进度：贴在对话末尾，不再在输入框上方重复。 */}
               {hint ? (
                 <p
                   className="flex min-w-0 items-center gap-1.5 self-start text-meta text-secondary"
@@ -1306,21 +1346,10 @@ export function FocusView({
               })}
             </div>
           ) : null}
-          {/* 输入框上方的状态行：桌面是「● 正在做什么 · 几秒」/分支；窄屏只剩「工作区」入口 */}
+          {/* 输入框上方保留工作区、分支和上下文用量，不重复回合进度。 */}
           {showStatusRow ? (
             <div className="mb-1.5 flex min-h-5 items-center justify-between gap-3 px-1" data-testid="composer-status">
-              {progress && !narrow ? (
-                <div
-                  className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-meta text-tertiary"
-                  aria-live="polite"
-                  aria-label={progress.detail}
-                  title={progress.detail}
-                  data-testid="turn-progress"
-                >
-                  <TurnWave />
-                  <span className="min-w-0 truncate text-secondary" data-testid="turn-progress-phase">{progress.label}</span>
-                </div>
-              ) : <span />}
+              <span />
               <div className="flex min-w-0 shrink-0 items-center gap-3">
                 {narrow ? (
                   <button
@@ -1418,6 +1447,7 @@ export function FocusView({
           ) : null}
           <Composer
             large
+            allowOfflineSend
             session={{ ...session, status }}
             agentLabel={agentLabel}
             draft={draft}

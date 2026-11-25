@@ -22,6 +22,7 @@ import {
   type RuntimeStatus,
   type SessionEvent,
   type StartSpec,
+  type WorkerCommand,
   type WorkerStatus
 } from '@agent-hub/domain';
 import { createServerGateway, type GatewayHooks } from './server-gateway.ts';
@@ -82,6 +83,8 @@ interface Recorder {
   gone: string[];
   goneReasons: string[];
   helloSessions: (readonly string[])[];
+  startsChanged: { workerId: string; sessionId: string }[];
+  startsEnded: { workerId: string; sessionId: string; startAttemptId: string; isCurrent: () => boolean }[];
   until(predicate: () => boolean): Promise<void>;
 }
 
@@ -95,6 +98,8 @@ function recorder(token: string | null): Recorder {
     gone: [],
     goneReasons: [],
     helloSessions: [],
+    startsChanged: [],
+    startsEnded: [],
     hooks: {
       token,
       onHello: (worker, agents, sessions) => {
@@ -104,6 +109,8 @@ function recorder(token: string | null): Recorder {
       onEvent: (_worker, _id, event) => r.events.push(event),
       onAgentSession: (_worker, _id, ref) => r.refs.push(ref),
       onOptions: () => {},
+      onSessionStartChanged: (workerId, sessionId) => r.startsChanged.push({ workerId, sessionId }),
+      onSessionStartEnded: (workerId, sessionId, startAttemptId, isCurrent) => r.startsEnded.push({ workerId, sessionId, startAttemptId, isCurrent }),
       onStatus: (_worker, id, status) => {
         r.statuses.push(status);
         r.statusFrames.push({ sessionId: String(id), status });
@@ -131,13 +138,28 @@ async function harness(token: string | null, options: Parameters<typeof createSe
   server.on('upgrade', (request, socket, head) => gateway.handleUpgrade(request, socket, head));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  let stopped: Promise<void> | undefined;
   const stop = async (...links: (WorkerLink | undefined)[]) => {
-    for (const link of links) await link?.close();
-    gateway.close();
-    server.closeAllConnections?.();
-    await new Promise((resolve) => server.close(resolve));
+    stopped ??= (async () => {
+      for (const link of links) await link?.close();
+      gateway.close();
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+    })();
+    await stopped;
   };
   return { rec, gateway, url, server, stop };
+}
+
+let nextDelivery = 0;
+async function managedPrompt(gateway: ReturnType<typeof createServerGateway>, rec: Recorder, command: Omit<Extract<WorkerCommand, { kind: 'prompt' }>, 'kind'>) {
+  await rec.until(() => gateway.gateway.sessionStartReadiness!(command.sessionId).state === 'ready');
+  const readiness = gateway.gateway.sessionStartReadiness!(command.sessionId);
+  assert.equal(readiness.state, 'ready');
+  assert.ok(readiness.state === 'ready');
+  const result = await gateway.gateway.dispatch({ kind: 'prompt', ...command, deliveryId: command.deliveryId ?? `test-delivery-${++nextDelivery}`, startAttemptId: readiness.startAttemptId });
+  assert.ok(result.ok, JSON.stringify(result));
+  return result;
 }
 
 const start = (sessionId: string, workerId: string) =>
@@ -275,15 +297,18 @@ test('管理员断开：worker 收到 4403 后不再重连，列表里标离线�
   assert.equal(gateway.disconnect('nope'), false);
 });
 
-test('start + prompt 连发：worker 串行执行，事件与状态回到 server，模型只走 options', async () => {
+test('start 后先拒绝未就绪 prompt，再以当前 generation 送达，模型只走 options', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const seen: StartSpec[] = [];
   const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime(seen)] });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
 
   const sessionId = asSessionId('s1');
   assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '你好', deliveryId: 'delivery-1' });
+  const early = await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '你好', deliveryId: 'delivery-1', startAttemptId: 'not-current' });
+  assert.equal(!early.ok && early.error.deliveryDeferred, true);
+  await managedPrompt(gateway, rec, { parts: [], sessionId, text: '你好', deliveryId: 'delivery-1' });
 
   await rec.until(() => rec.statuses.includes('idle'));
   assert.deepEqual(seen[0]?.options, { model: 'm-1' });
@@ -366,7 +391,7 @@ function resyncRuntime(state: { pending: number; calls: number; stopAfter: numbe
   };
 }
 
-test('回合结束后仍有后台子代理：worker 周期性 resync，只转发新增事件，子代理结束即停', async () => {
+test('回合结束后仍有后台子代理：worker 周期性 resync，只转发新增事件，子代理结束即停', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const state = { pending: 1, calls: 0, stopAfter: 3 as number | null, resyncing: false, concurrent: false };
   const link = connectWorkerLink({
@@ -377,11 +402,12 @@ test('回合结束后仍有后台子代理：worker 周期性 resync，只转发
     runtimes: [resyncRuntime(state)],
     resyncIntervalMs: 20
   });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
 
   const sessionId = asSessionId('s1');
   assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '派给子代理' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId, text: '派给子代理' });
   await rec.until(() => rec.statuses.includes('idle'));
 
   // 重放里每次都有同一条总结：只该上报一次
@@ -399,7 +425,7 @@ test('回合结束后仍有后台子代理：worker 周期性 resync，只转发
   );
 });
 
-test('重放里一直没有子代理终态：子代理没结束就继续拉，间隔翻倍，结束后停', async () => {
+test('重放里一直没有子代理终态：子代理没结束就继续拉，间隔翻倍，结束后停', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const state = { pending: 1, calls: 0, stopAfter: null as number | null, resyncing: false, concurrent: false };
   const logs: string[] = [];
@@ -413,10 +439,11 @@ test('重放里一直没有子代理终态：子代理没结束就继续拉，�
     resyncIntervalMs: 50,
     onLog: (line) => logs.push(line)
   });
+  t.after(() => stop(link));
   try {
     await rec.until(() => rec.hellos.length === 1);
     assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
-    await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '派给子代理' });
+    await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: '派给子代理' });
     await rec.until(() => rec.statuses.includes('idle'));
 
     // pendingSubagents 一直是 1（opencode 的重放里没有终态）：不能像以前那样「几十秒没新东西就放弃」，
@@ -442,7 +469,7 @@ test('重放里一直没有子代理终态：子代理没结束就继续拉，�
   }
 });
 
-test('后台子代理还没结束时会话又收到 prompt：先停拉取，等 session/load 落地再发 prompt', async () => {
+test('后台子代理还没结束时会话又收到 prompt：先停拉取，等 session/load 落地再发 prompt', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const state = { pending: 1, calls: 0, stopAfter: null as number | null, resyncing: false, concurrent: false };
   const link = connectWorkerLink({
@@ -453,16 +480,17 @@ test('后台子代理还没结束时会话又收到 prompt：先停拉取，等 
     runtimes: [resyncRuntime(state)],
     resyncIntervalMs: 20
   });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
 
   const sessionId = asSessionId('s1');
   assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '第一句' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId, text: '第一句' });
   await rec.until(() => rec.statuses.includes('idle'));
 
   // 正好在一次重放在飞的时候发下一句（真实的竞态窗口）
   await rec.until(() => state.resyncing);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '第二句' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId, text: '第二句' });
   await rec.until(() => rec.events.some((event) => event.kind === 'text' && event.delta === '第二句'));
   await rec.until(() => rec.statuses.filter((status) => status === 'idle').length === 2);
   await stop(link);
@@ -527,7 +555,7 @@ test('provider_update：会话进行中热更新 extra，下一个请求立刻�
   upstream.close();
 });
 
-test('prompt 被 agent 拒掉：除了错误诊断还补一条 ended(failed)，会话不会一直挂在运行中', async () => {
+test('带键 prompt 被 agent 拒掉：发诊断，不伪造 ended', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const base = echoRuntime([]);
   const rejecting: AgentRuntime = {
@@ -539,15 +567,45 @@ test('prompt 被 agent 拒掉：除了错误诊断还补一条 ended(failed)，�
     }
   };
   const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [rejecting] });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
   assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '你好' });
-  await rec.until(() => rec.events.some((event) => event.kind === 'ended'));
+  assert.ok((await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: '你好' })).ok);
+  await rec.until(() => rec.events.some((event) => event.kind === 'diagnostic'));
   assert.deepEqual(rec.events, [
+    { kind: 'diagnostic', level: 'error', text: 'agent 没响应' }
+  ]);
+  await stop(link);
+});
+
+test('旧 Hub 未协商 readiness：无键 prompt 被 agent 拒掉时保留 ended(failed)', async (t) => {
+  const { WebSocketServer } = await import('ws');
+  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise((resolve) => wss.once('listening', resolve));
+  const url = `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
+  const frames: Record<string, unknown>[] = [];
+  wss.on('connection', (socket) => socket.on('message', (data) => {
+    const frame = JSON.parse(String(data)) as Record<string, unknown>;
+    frames.push(frame);
+    if (frame['type'] === 'hello') {
+      socket.send(JSON.stringify({ kind: 'welcome', accepts: [] }));
+      socket.send(JSON.stringify(start('s1', 'w1')));
+      socket.send(JSON.stringify({ kind: 'prompt', sessionId: 's1', text: '你好', parts: [] }));
+    }
+  }));
+  const base = echoRuntime([]);
+  const rejecting: AgentRuntime = { ...base, async start(spec) {
+    const started = await base.start(spec);
+    if (!started.ok) return started;
+    return { ok: true, value: { ...started.value, prompt: async () => ({ ok: false, error: { code: 'unavailable', message: 'agent 没响应' } }) } } as never;
+  } };
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', reconnect: false, runtimes: [rejecting] });
+  t.after(async () => { await link.close(); for (const client of wss.clients) client.terminate(); await new Promise((resolve) => wss.close(resolve)); });
+  await waitFor(async () => frames.some((frame) => frame['type'] === 'event' && (frame['event'] as SessionEvent)?.kind === 'ended'));
+  assert.deepEqual(frames.filter((frame) => frame['type'] === 'event').map((frame) => frame['event']), [
     { kind: 'diagnostic', level: 'error', text: 'agent 没响应' },
     { kind: 'ended', outcome: 'failed', reason: '发送失败：agent 没响应' }
   ]);
-  await stop(link);
 });
 
 test('两台 worker：会话按落点路由，后续指令跟着会话走，不是发给第一台', async () => {
@@ -674,9 +732,10 @@ test('目录浏览走 worker：从 roots 起步；roots 外的目录拒并说明
   await rm(base, { recursive: true, force: true });
 });
 
-test('文件走 worker：@ 清单、附件落盘与回读都在那台机器上；软链接逃不出 roots', async () => {
+test('文件走 worker：@ 清单、附件落盘与回读都在那台机器上；软链接逃不出 roots', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const base = await mkdtemp(join(tmpdir(), 'wf-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
   const root = join(base, 'proj');
   await mkdir(join(root, 'src'), { recursive: true });
   await writeFile(join(root, 'README.md'), 'hi');
@@ -691,6 +750,7 @@ test('文件走 worker：@ 清单、附件落盘与回读都在那台机器上�
     runtimes: [echoRuntime([])],
     files: createWorkerFiles({ roots: [root], enforced: true })
   });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
   const listed = await gateway.gateway.listFiles('w1', root, 100);
   assert.ok(listed.ok);
@@ -703,8 +763,7 @@ test('文件走 worker：@ 清单、附件落盘与回读都在那台机器上�
   assert.ok((await gateway.gateway.dispatch({ ...start('s1', 'w1'), workspaceRoot: root })).ok);
   await rec.until(() => rec.statuses.includes('running'));
   const attachment = join(root, '.agent-hub', 'attachments', 's1', '1-0-note.txt');
-  await gateway.gateway.dispatch({
-    kind: 'prompt', sessionId: asSessionId('s1'), text: 'hi',
+  await managedPrompt(gateway, rec, { sessionId: asSessionId('s1'), text: 'hi',
     parts: [{ kind: 'file', name: 'note.txt', mimeType: 'text/plain', data: Buffer.from('hello').toString('base64'), path: attachment }]
   });
   await waitFor(async () => (await readFile(attachment, 'utf8').catch(() => '')) === 'hello');
@@ -718,20 +777,46 @@ test('文件走 worker：@ 清单、附件落盘与回读都在那台机器上�
   await rm(base, { recursive: true, force: true });
 });
 
-test('roots 外的目录不能开会话：worker 直接以失败结束并说明原因', async () => {
+test('roots 外的目录不能开会话：managed worker 报 configuration 失败', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const base = await mkdtemp(join(tmpdir(), 'wf-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
   const link = connectWorkerLink({
     url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime([])],
     files: createWorkerFiles({ roots: [join(base, 'only')], enforced: true })
   });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
   await gateway.gateway.dispatch({ ...start('s2', 'w1'), workspaceRoot: '/etc' });
-  await rec.until(() => rec.events.some((event) => event.kind === 'ended'));
-  const ended = rec.events.find((event) => event.kind === 'ended');
-  assert.ok(ended?.kind === 'ended' && /WORKER_ROOTS/.test(ended.reason ?? ''));
+  await rec.until(() => gateway.gateway.sessionStartReadiness!(asSessionId('s2'), 'w1').state === 'failed');
+  assert.deepEqual(gateway.gateway.sessionStartReadiness!(asSessionId('s2'), 'w1'), { state: 'failed', reason: 'configuration' });
+  assert.deepEqual(rec.startsChanged, [{ workerId: 'w1', sessionId: 's2' }]);
   await stop(link);
   await rm(base, { recursive: true, force: true });
+});
+
+test('旧 Hub 未协商 readiness：roots 外开会话保留 WORKER_ROOTS 失败说明', async (t) => {
+  const { WebSocketServer } = await import('ws');
+  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise((resolve) => wss.once('listening', resolve));
+  const url = `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
+  const frames: Record<string, unknown>[] = [];
+  wss.on('connection', (socket) => socket.on('message', (data) => {
+    const frame = JSON.parse(String(data)) as Record<string, unknown>;
+    frames.push(frame);
+    if (frame['type'] === 'hello') {
+      socket.send(JSON.stringify({ kind: 'welcome', accepts: [] }));
+      socket.send(JSON.stringify({ ...start('s2', 'w1'), workspaceRoot: '/etc' }));
+    }
+  }));
+  const base = await mkdtemp(join(tmpdir(), 'wf-'));
+  const seen: StartSpec[] = [];
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', reconnect: false, runtimes: [echoRuntime(seen)], files: createWorkerFiles({ roots: [join(base, 'only')], enforced: true }) });
+  t.after(async () => { await link.close(); for (const client of wss.clients) client.terminate(); await new Promise((resolve) => wss.close(resolve)); await rm(base, { recursive: true, force: true }); });
+  await waitFor(async () => frames.some((frame) => frame['type'] === 'event' && (frame['event'] as SessionEvent)?.kind === 'ended'));
+  const event = frames.find((frame) => frame['type'] === 'event')?.['event'] as SessionEvent;
+  assert.ok(event.kind === 'ended' && event.outcome === 'failed' && /WORKER_ROOTS/.test(event.reason ?? ''));
+  assert.equal(seen.length, 0);
 });
 
 test('还没托管的会话：dispatch 返回 unavailable 而不是抛错或乱发', async () => {
@@ -847,7 +932,7 @@ function labeledRuntime(agentId: string, disposed: string[]): AgentRuntime {
   };
 }
 
-test('同一会话重复 start：复用活着的 agent 进程，不重新 spawn', async () => {
+test('同一会话重复 start：复用活着的 agent 进程，不重新 spawn', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const disposed: string[] = [];
   const base = labeledRuntime('echo', disposed);
@@ -860,14 +945,15 @@ test('同一会话重复 start：复用活着的 agent 进程，不重新 spawn'
     }
   };
   const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [counting] });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
 
   await gateway.gateway.dispatch(start('s1', 'w1'));
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '在吗' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: '在吗' });
   await rec.until(() => rec.statuses.includes('idle'));
   await gateway.gateway.dispatch(start('s1', 'w1'));
   await rec.until(() => rec.statuses.filter((status) => status === 'running').length === 2);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '还在吗' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: '还在吗' });
   await rec.until(() => rec.statuses.filter((status) => status === 'idle').length === 2);
 
   assert.equal(spawns, 1, '同一 agent / 工作目录：复用活着的进程');
@@ -880,7 +966,7 @@ test('同一会话重复 start：复用活着的 agent 进程，不重新 spawn'
   await stop(link);
 });
 
-test('同一会话换 agent：旧进程被收掉，旧事件流结束不会给新会话报 ended', async () => {
+test('同一会话换 agent：旧进程被收掉，旧事件流结束不会给新会话报 ended', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const disposed: string[] = [];
   const link = connectWorkerLink({
@@ -890,19 +976,21 @@ test('同一会话换 agent：旧进程被收掉，旧事件流结束不会给�
     label: 'x',
     runtimes: [labeledRuntime('echo', disposed), labeledRuntime('echo2', disposed)]
   });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
 
   await gateway.gateway.dispatch(start('s1', 'w1'));
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '一' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: '一' });
   await rec.until(() => rec.statuses.includes('idle'));
   await gateway.gateway.dispatch({ ...start('s1', 'w1'), agentId: asAgentId('echo2') });
   await rec.until(() => rec.statuses.filter((status) => status === 'running').length === 2);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '二' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: '二' });
   await rec.until(() => rec.statuses.filter((status) => status === 'idle').length === 2);
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   assert.deepEqual(disposed, ['echo'], '旧 agent 的进程被收掉');
   assert.deepEqual(rec.statuses, ['running', 'idle', 'running', 'idle'], '旧进程收掉不额外报 ended（那是新会话的托管）');
+  assert.equal(rec.startsEnded.length, 0, '旧 generation 不得结束新会话');
   assert.deepEqual(
     rec.events.flatMap((event) => (event.kind === 'text' ? [event.delta] : [])),
     ['echo:一', 'echo2:二']
@@ -910,14 +998,15 @@ test('同一会话换 agent：旧进程被收掉，旧事件流结束不会给�
   await stop(link);
 });
 
-test('回合结束后保活：闲置到 HUB_SESSION_IDLE_MS 才收进程，中途再 start 复用', async () => {
+test('回合结束后保活：闲置到 HUB_SESSION_IDLE_MS 才收进程，中途再 start 复用', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const seen: StartSpec[] = [];
   const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime(seen)], sessionIdleMs: 150 });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
 
   assert.ok((await gateway.gateway.dispatch(start('s1', 'w1'))).ok);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: 'hi' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: 'hi' });
   await rec.until(() => rec.statuses.includes('idle'));
   assert.equal(seen.length, 1);
 
@@ -927,59 +1016,86 @@ test('回合结束后保活：闲置到 HUB_SESSION_IDLE_MS 才收进程，中�
   assert.equal(seen.length, 1, '复用活着的进程');
 
   // 到点：收掉进程并报 ended
-  await rec.until(() => rec.statuses.includes('ended'));
+  await rec.until(() => rec.startsEnded.some((frame) => frame.sessionId === 's1'));
+  assert.equal(rec.startsEnded[0]?.isCurrent(), true);
   assert.deepEqual(
     rec.statusFrames.map((frame) => `${frame.sessionId}:${frame.status}`),
-    ['s1:running', 's1:idle', 's1:running', 's1:ended']
+    ['s1:running', 's1:idle', 's1:running']
   );
   await stop(link);
 });
 
-test('保活上限：超过 HUB_KEEPALIVE_MAX 时先收最久没活动的进程', async () => {
+test('保活上限：超过 HUB_KEEPALIVE_MAX 时先收最久没活动的进程', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const seen: StartSpec[] = [];
   const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime(seen)], keepAliveMax: 1 });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
 
   assert.ok((await gateway.gateway.dispatch(start('s1', 'w1'))).ok);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '一' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: '一' });
   await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's1' && frame.status === 'idle'));
 
   // 第二条会话保活起来就超限了：先收 s1（最久没活动）
   assert.ok((await gateway.gateway.dispatch(start('s2', 'w1'))).ok);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s2'), text: '二' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s2'), text: '二' });
   await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's2' && frame.status === 'idle'));
-  await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's1' && frame.status === 'ended'));
+  await rec.until(() => rec.startsEnded.some((frame) => frame.sessionId === 's1'));
 
   // s2 还活着：接着问不会重新 spawn
-  const again = await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s2'), text: '三' });
+  const again = await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s2'), text: '三' });
   assert.ok(again.ok, JSON.stringify(again));
   await rec.until(() => rec.events.filter((event) => event.kind === 'text').length === 3);
   assert.equal(seen.length, 2);
   assert.deepEqual(
-    rec.statusFrames.filter((frame) => frame.status === 'ended').map((frame) => frame.sessionId),
+    rec.startsEnded.map((frame) => frame.sessionId),
     ['s1']
   );
   await stop(link);
 });
 
-test('常驻上限：超过 pinMax 的新 pinned 启动直接 ended + diagnostic，不 spawn', async () => {
+test('常驻上限：超过 pinMax 的 managed pinned 启动报 configuration，不 spawn', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const seen: StartSpec[] = [];
   const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime(seen)], pinMax: 1 });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
 
   assert.ok((await gateway.gateway.dispatch({ ...start('s1', 'w1'), pinned: true })).ok);
   await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's1' && frame.status === 'running'));
 
   assert.ok((await gateway.gateway.dispatch({ ...start('s2', 'w1'), pinned: true })).ok);
-  await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's2' && frame.status === 'ended'));
-  assert.ok(
-    rec.events.some((event) => event.kind === 'diagnostic' && /常驻会话已达上限（1）/.test(event.text)),
-    '要给出上限提示'
-  );
+  await rec.until(() => gateway.gateway.sessionStartReadiness!(asSessionId('s2'), 'w1').state === 'failed');
+  assert.deepEqual(gateway.gateway.sessionStartReadiness!(asSessionId('s2'), 'w1'), { state: 'failed', reason: 'configuration' });
+  assert.ok(rec.startsChanged.some((frame) => frame.sessionId === 's2'));
   assert.equal(seen.length, 1, '被拒的 pinned 会话不 spawn');
   await stop(link);
+});
+
+test('旧 Hub 未协商 readiness：pinMax 拒绝保留 ended 和上限诊断', async (t) => {
+  const { WebSocketServer } = await import('ws');
+  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise((resolve) => wss.once('listening', resolve));
+  const url = `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
+  const frames: Record<string, unknown>[] = [];
+  wss.on('connection', (socket) => socket.on('message', (data) => {
+    const frame = JSON.parse(String(data)) as Record<string, unknown>;
+    frames.push(frame);
+    if (frame['type'] === 'hello') {
+      socket.send(JSON.stringify({ kind: 'welcome', accepts: [] }));
+      socket.send(JSON.stringify({ ...start('s1', 'w1'), pinned: true }));
+    } else if (frame['type'] === 'status' && frame['sessionId'] === 's1' && frame['status'] === 'running') {
+      socket.send(JSON.stringify({ ...start('s2', 'w1'), pinned: true }));
+    }
+  }));
+  const seen: StartSpec[] = [];
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', reconnect: false, runtimes: [echoRuntime(seen)], pinMax: 1 });
+  t.after(async () => { await link.close(); for (const client of wss.clients) client.terminate(); await new Promise((resolve) => wss.close(resolve)); });
+  await waitFor(async () => frames.some((frame) => frame['type'] === 'event' && frame['sessionId'] === 's2'));
+  assert.ok(frames.some((frame) => frame['type'] === 'status' && frame['sessionId'] === 's2' && frame['status'] === 'ended'));
+  const diagnostic = frames.find((frame) => frame['type'] === 'event' && frame['sessionId'] === 's2')?.['event'] as SessionEvent;
+  assert.ok(diagnostic.kind === 'diagnostic' && /常驻会话已达上限（1）/.test(diagnostic.text));
+  assert.equal(seen.length, 1);
 });
 
 test('专属凭据：hello 带上凭据交给 authenticate 判；吊销后收到 4401、不重连、从列表里消失', async () => {
@@ -1202,10 +1318,11 @@ test('资源（ADR 0014）：带 metrics 能力的 worker 被 welcome 接受后�
   await stop(old);
 });
 
-test('可靠送达（#269）：带 deliveryId 的 prompt 只发给声明 durable_delivery 的 Worker；老 Worker 在线但一个字节都收不到', async () => {
+test('可靠送达（#269）：带 deliveryId 的 prompt 只发给声明 durable_delivery 的 Worker；老 Worker 在线但一个字节都收不到', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   // 裸 hello：不声明任何能力（老 Worker），也不带 build。
   const legacy = await rawHello(url, { workerId: 'old', origin: 'remote' });
+  t.after(async () => { legacy.socket.terminate(); await stop(); });
   const frames: Record<string, unknown>[] = [];
   legacy.socket.on('message', (data) => frames.push(JSON.parse(String(data)) as Record<string, unknown>));
   await rec.until(() => rec.hellos.length === 1);
@@ -1215,8 +1332,8 @@ test('可靠送达（#269）：带 deliveryId 的 prompt 只发给声明 durable
   const refused = await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '带键', deliveryId: 'delivery-1' });
   assert.equal(refused.ok, false);
   assert.equal(!refused.ok && refused.error.code, 'conflict');
-  assert.match(!refused.ok ? refused.error.message : '', /durable_delivery/);
-  assert.match(!refused.ok ? refused.error.message : '', /更新/);
+  assert.equal(!refused.ok && refused.error.deliveryDeferred, true);
+  assert.deepEqual(gateway.gateway.sessionStartReadiness!(asSessionId('s1'), 'old'), { state: 'upgrade_required' });
   assert.equal(gateway.workers().find((w) => w.workerId === 'old')?.state, 'online', '拒发不能把老 Worker 踢下线');
 
   // 无键的既有指令照旧送到，且带键那帧确实没发出去。
@@ -1232,22 +1349,32 @@ test('可靠送达（#269）：带 deliveryId 的 prompt 只发给声明 durable
   await stop();
 });
 
-test('可靠送达（#269）：声明后带键 prompt 原样下发；同一 workerId 重连不再声明就重新拒发', async () => {
+test('可靠送达（#269）：声明后带键 prompt 原样下发；同一 workerId 重连不再声明就重新拒发', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
-  const first = await rawHello(url, { workerId: 'flip', origin: 'remote', capabilities: ['durable_delivery'] });
+  const first = await rawHello(url, { workerId: 'flip', origin: 'remote', capabilities: ['durable_delivery', 'session_start_ready'] });
+  let second: Awaited<ReturnType<typeof rawHello>> | undefined;
+  t.after(async () => { first.socket.terminate(); second?.socket.terminate(); await stop(); });
   const firstFrames: Record<string, unknown>[] = [];
   first.socket.on('message', (data) => firstFrames.push(JSON.parse(String(data)) as Record<string, unknown>));
   await rec.until(() => rec.hellos.length === 1);
 
   assert.equal((await gateway.gateway.dispatch(start('s1', 'flip'))).ok, true);
-  assert.equal((await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '带键', deliveryId: 'delivery-7' })).ok, true);
+  await waitFor(async () => firstFrames.some((frame) => frame['kind'] === 'start_session'));
+  const attempt = firstFrames.find((frame) => frame['kind'] === 'start_session')?.['startAttemptId'];
+  assert.equal(typeof attempt, 'string');
+  const pending = await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '带键', deliveryId: 'delivery-7', startAttemptId: attempt as string });
+  assert.equal(!pending.ok && pending.error.deliveryDeferred, true);
+  assert.equal(firstFrames.filter((frame) => frame['kind'] === 'prompt').length, 0);
+  first.socket.send(JSON.stringify({ type: 'session_start_result', sessionId: 's1', startAttemptId: attempt, state: 'ready' }));
+  await rec.until(() => gateway.gateway.sessionStartReadiness!(asSessionId('s1'), 'flip').state === 'ready');
+  assert.equal((await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '带键', deliveryId: 'delivery-7', startAttemptId: attempt as string })).ok, true);
   await waitFor(async () => firstFrames.some((frame) => frame['kind'] === 'prompt'));
   assert.equal(firstFrames.find((frame) => frame['kind'] === 'prompt')?.['deliveryId'], 'delivery-7');
 
   // 能力跟这条新连接走：同一个 workerId 重连时不声明，就按老 Worker 对待。
   first.socket.terminate();
   await rec.until(() => rec.gone.includes('flip'));
-  const second = await rawHello(url, { workerId: 'flip', origin: 'remote' });
+  second = await rawHello(url, { workerId: 'flip', origin: 'remote', capabilities: ['durable_delivery'] });
   const secondFrames: Record<string, unknown>[] = [];
   second.socket.on('message', (data) => secondFrames.push(JSON.parse(String(data)) as Record<string, unknown>));
   await rec.until(() => rec.hellos.length === 2);
@@ -1256,6 +1383,9 @@ test('可靠送达（#269）：声明后带键 prompt 原样下发；同一 work
   const refused = await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s2'), text: '带键', deliveryId: 'delivery-8' });
   assert.equal(refused.ok, false);
   assert.equal(!refused.ok && refused.error.code, 'conflict');
+  assert.equal(!refused.ok && refused.error.deliveryDeferred, true);
+  assert.deepEqual(gateway.gateway.sessionStartReadiness!(asSessionId('s2'), 'flip'), { state: 'upgrade_required' });
+  await waitFor(async () => secondFrames.some((frame) => frame['kind'] === 'start_session'));
   assert.equal(secondFrames.filter((frame) => frame['kind'] === 'prompt').length, 0);
 
   second.socket.terminate();
@@ -1343,42 +1473,44 @@ test('能力（ADR 0030 D3）：Worker 自己也把关——welcome 说只读，
   await new Promise((resolve) => wss.close(resolve));
 });
 
-test('常驻：pinned 的会话闲置到点也不回收', async () => {
+test('常驻：pinned 的会话闲置到点也不回收', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime([])], sessionIdleMs: 120 });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
 
   assert.ok((await gateway.gateway.dispatch({ ...start('s1', 'w1'), pinned: true })).ok);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: 'hi' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: 'hi' });
   await rec.until(() => rec.statuses.includes('idle'));
 
   // 普通会话到这个点已经该收了；常驻的一直留着。
   await new Promise((resolve) => setTimeout(resolve, 400));
-  assert.equal(rec.statusFrames.some((frame) => frame.status === 'ended'), false, '常驻会话不该被闲置回收');
+  assert.equal(rec.startsEnded.length, 0, '常驻会话不该被闲置回收');
 
   // 还能继续用同一进程
-  const again = await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '再来' });
+  const again = await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: '再来' });
   assert.ok(again.ok);
   await rec.until(() => rec.events.filter((event) => event.kind === 'text').length === 2);
   await stop(link);
 });
 
-test('常驻：不占保活上限，超限时先收普通的', async () => {
+test('常驻：不占保活上限，超限时先收普通的', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const seen: StartSpec[] = [];
   const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime(seen)], keepAliveMax: 1 });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
 
   assert.ok((await gateway.gateway.dispatch({ ...start('s1', 'w1'), pinned: true })).ok);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '一' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: '一' });
   await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's1' && frame.status === 'idle'));
 
   // 第二条普通会话起来：上限只有 1，但能收的只有它自己（常驻不算），所以 s1 必须还活着。
   assert.ok((await gateway.gateway.dispatch(start('s2', 'w1'))).ok);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s2'), text: '二' });
+  await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s2'), text: '二' });
   await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's2' && frame.status === 'idle'));
   assert.equal(
-    rec.statusFrames.some((frame) => frame.sessionId === 's1' && frame.status === 'ended'),
+    rec.startsEnded.some((frame) => frame.sessionId === 's1'),
     false,
     '常驻会话不被保活上限挤掉'
   );

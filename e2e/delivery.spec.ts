@@ -7,13 +7,13 @@ import { loginByApi } from './login.ts';
 import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
- * 送达状态（ADR 0031 P2）：Worker 断开时发的消息在气泡下显示「未送达 · 第 n 次重试 · 立即重试 · 撤回」，
- * 后面那条显示「排队中 · 等上一条送达」；撤回后标「已撤回」；Worker 回来后送达，气泡下什么都不显示。用假 ACP agent。
+ * 送达状态（ADR 0031 P2）：Worker 断开时接受 durable 排队并可撤回，不扣发送重试预算，
+ * 后面那条说明前面还有消息；撤回后标「已撤回」；Worker 回来后送达，气泡下什么都不显示。用假 ACP agent。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'];
 const FAKE = resolve('packages/adapters/acp/test-fixtures/fake-agent.mjs');
 
-test('送达状态：未送达 / 排队中 / 撤回 / 重连后送达', async ({ page, baseURL }) => {
+test('送达状态：离线排队 / 撤回 / 重连后送达', async ({ page, baseURL }) => {
   test.setTimeout(180_000);
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
@@ -53,14 +53,24 @@ test('送达状态：未送达 / 排队中 / 撤回 / 重连后送达', async ({
     const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: 'fakeacp', model: '' }, headers });
     expect(derived.ok(), await derived.text()).toBe(true);
     const session = (await derived.json()) as { id: string };
-    const say = async (text: string) => expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text }, headers })).ok()).toBe(true);
-    await say('第一句');
+    const say = async (text: string) => {
+      const response = await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text }, headers });
+      expect(response.ok(), await response.text()).toBe(true);
+      return await response.json() as { deliveryId: string };
+    };
+    const deliveries = async () => (await (await page.request.get(`/api/sessions/${session.id}/deliveries`)).json()) as Array<{ id: string; state: string; attempt: number }>;
+    const waitDelivered = async (deliveryId: string) => {
+      await expect.poll(async () => (await deliveries()).find((row) => row.id === deliveryId)?.state, { timeout: 90_000 }).toBe('delivered');
+      const events = (await (await page.request.get(`/api/sessions/${session.id}/events`)).json()) as Array<{ event: { kind: string; deliveryId?: string; outcome?: string } }>;
+      expect(events.filter(({ event }) => event.kind === 'ended' && event.deliveryId === deliveryId).map(({ event }) => event.outcome)).toEqual(['done']);
+    };
+    const first = await say('第一句');
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto(`/#/p/${project.id}/focus/${session.id}`);
     const log = page.getByRole('log', { name: '会话记录' });
     await expect(log.getByText('第一句')).toBeVisible({ timeout: 30_000 });
-    await page.waitForTimeout(1_500);
-    await expect(log.getByTestId('delivery-note')).toHaveCount(0); // 送达了就安静
+    await waitDelivered(first.deliveryId);
+    await expect(log.getByTestId('delivery-note')).toHaveCount(0); // 确认自己的 ended 后才应安静
 
     // 发送即时反馈：API 慢时，用户气泡先贴上，journal 回来后再让位给真实事件。
     let delayPrompt = true;
@@ -72,43 +82,50 @@ test('送达状态：未送达 / 排队中 / 撤回 / 重连后送达', async ({
     });
     const composer = page.getByLabel('发送消息');
     await composer.fill('乐观反馈第四句');
-    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const promptResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith(`/api/sessions/${session.id}/prompt`));
+    await page.getByRole('button', { name: /^(发送|排队发送)$/ }).click();
     await expect(page.getByTestId('pending-prompts')).toContainText('乐观反馈第四句', { timeout: 600 });
+    const response = await promptResponse;
+    expect(response.ok(), await response.text()).toBe(true);
+    const optimistic = await response.json() as { deliveryId: string };
     await expect(page.getByTestId('pending-prompts')).toHaveCount(0, { timeout: 15_000 });
     await expect(log.getByText('乐观反馈第四句')).toBeVisible({ timeout: 15_000 });
+    // 气泡落入 journal 不等于运行结束：断线前必须等这一条自己的 ended。
+    await waitDelivered(optimistic.deliveryId);
 
     worker.kill();
     worker = null;
     await online(false);
-    await say('离线时发的第二句');
-    await say('离线时发的第三句');
+    const second = await say('离线时发的第二句');
+    const third = await say('离线时发的第三句');
     const notes = page.getByTestId('delivery-note');
-    await expect(notes.nth(0)).toContainText(/未送达 · 第 \d+ 次重试 \d+ 秒后/, { timeout: 30_000 });
-    await expect(notes.nth(0).getByRole('button', { name: '立即重试' })).toBeVisible();
-    await expect(notes.nth(1)).toHaveText('排队中 · 等上一条送达');
+    await expect(page.getByTestId('session-startup-status')).toHaveAttribute('data-state', 'offline');
+    await expect(notes).toHaveCount(2);
+    await expect(notes.nth(0)).toContainText('已排队 · 等待投递');
+    await expect(notes.nth(1)).toContainText('前面还有消息');
+    await expect(notes.getByRole('button', { name: '立即重试' })).toHaveCount(0);
+    const pending = await deliveries();
+    expect(pending.filter((row) => row.state === 'queued').map((row) => row.attempt)).toEqual([0, 0]);
     // 排队的消息留在时间线原位（不再有独立排队区），靠状态字认出来
     await expect(log.getByText('离线时发的第二句')).toBeVisible();
     await expect(log.getByText('离线时发的第三句')).toBeVisible();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/delivery-pending-1280.png` });
     await page.setViewportSize({ width: 390, height: 844 });
-    // 窄屏只留一条进度：排在后面的那条不再在气泡下重复，改成对话末尾那一条；
-    // 未送达（带「立即重试 / 撤回」）仍然留在气泡下面，那是要人动手的。
-    await expect(page.getByTestId('delivery-note')).toHaveCount(1);
-    await expect(page.getByTestId('turn-hint')).toContainText('排队中');
+    // 每条排队消息都保留自己的撤回入口，桌面和手机一样。
+    await expect(notes.getByRole('button', { name: '撤回' })).toHaveCount(2);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/delivery-pending-390.png` });
     await page.setViewportSize({ width: 1280, height: 800 });
 
-    // 「立即重试」：机器还不在，仍然没送到，但不报错
-    await notes.nth(0).getByRole('button', { name: '立即重试' }).click();
-    await expect(notes.nth(0)).toContainText('未送达');
     // 撤回第二句：标「已撤回」，第三句顶上来
     await notes.nth(0).getByRole('button', { name: '撤回' }).click();
     await expect(notes.nth(0)).toHaveText('已撤回 · 没有发给 agent');
-    await expect(notes.nth(1)).toContainText(/未送达|排队中|发送中/);
+    await expect(notes.nth(1)).toContainText('已排队');
+    await expect.poll(async () => (await deliveries()).find((row) => row.id === second.deliveryId)?.state).toBe('cancelled');
 
     // Worker 回来：第三句送达，气泡下只剩「已撤回」
     worker = start();
     await online(true);
+    await waitDelivered(third.deliveryId);
     await expect(notes).toHaveCount(1, { timeout: 90_000 });
     await expect(notes.first()).toHaveText('已撤回 · 没有发给 agent');
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/delivery-done-1280.png` });
@@ -183,21 +200,23 @@ test('排序：A 还在跑时 B 只排队，A 真的结束后 B 才进运行时'
 
     // A 卡在运行时里（只在 .started 落盘后才继续），B 这才发出去。
     const a = await say('第一轮 A please-hold:a');
-    expect(a.state).toBe('sending');
+    expect(['queued', 'sending']).toContain(a.state); // 初始化可能仍未确认；先等直接运行时证据。
     await expect.poll(() => starts('hold-a'), { timeout: 60_000, message: 'A 没有进运行时' }).toBe(1);
     const b = await say('第二轮 B please-mark:b');
     expect(b.state, 'A 还在跑，B 只能排队').toBe('queued');
 
-    // 界面上：A 发送中，B 排队等上一条。
+    // A 已有输出，B 有独立撤回入口。
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto(`/#/p/${project.id}/focus/${session.id}`);
     const log = page.getByRole('log', { name: '会话记录' });
     await expect(log.getByText('hold:a 开始')).toBeVisible({ timeout: 30_000 });
     await expect(log.getByText('第二轮 B please-mark:b')).toBeVisible();
-    const notes = page.getByTestId('delivery-note');
-    await expect(notes).toHaveCount(2);
-    await expect(notes.nth(0)).toHaveText('发送中…');
-    await expect(notes.nth(1)).toHaveText('排队中 · 等上一条送达');
+    const aNote = log.getByTestId('msg-user').filter({ hasText: '第一轮 A please-hold:a' }).getByTestId('delivery-note');
+    const bNote = log.getByTestId('msg-user').filter({ hasText: '第二轮 B please-mark:b' }).getByTestId('delivery-note');
+    await expect(aNote).toHaveAttribute('data-state', 'sending');
+    await expect(bNote).toHaveAttribute('data-state', 'queued');
+    await expect(bNote).toContainText('已排队 · 等待投递 · 前面还有消息');
+    await expect(bNote.getByRole('button', { name: '撤回' })).toBeVisible();
 
     // 队列事实：A sending、B queued；B 的 nextAt 还是 null（泵没把它当到期项）。
     type Dto = { id: string; seq: number; state: string; nextAt: number | null };
@@ -215,7 +234,8 @@ test('排序：A 还在跑时 B 只排队，A 真的结束后 B 才进运行时'
     await page.waitForTimeout(3_000);
     expect(starts('mark-b'), 'B 在 A 结束前就进了运行时').toBe(0);
     expect(starts('hold-a'), 'A 被重复派发').toBe(1);
-    await expect(notes.nth(1)).toHaveText('排队中 · 等上一条送达');
+    await expect(aNote).toHaveAttribute('data-state', 'sending');
+    await expect(bNote).toHaveAttribute('data-state', 'queued');
 
     // 让 A 真的结束：此后 B 才能进入运行时。
     writeFileSync(join(gate, 'hold-a.go'), 'go\n');

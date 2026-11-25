@@ -38,6 +38,7 @@ export type WorkerCommand =
       readonly branch?: BranchSpec;
       /** 与持久分叉尝试绑定，只在协商支持时随原生启动发送。 */
       readonly branchAttemptId?: string;
+      readonly startAttemptId?: string;
       /** 能力层：agent 用它连 hub 的工具（MCP）。没有 = 这次不给工具，行为同旧版。令牌不进日志。 */
       readonly tools?: ToolAccess;
       /** MCP 资产（hub 在发出前才填，见 sessionMcpLaunch）。stdio 的 env 含密钥明文：不落库、不进日志。 */
@@ -71,6 +72,7 @@ export type WorkerCommand =
       readonly parts: readonly PromptPart[];
       /** 送达队列里的 id（ADR 0031）：Worker 按它去重，重试不会让 agent 收到两遍。 */
       readonly deliveryId?: string;
+      readonly startAttemptId?: string;
     }
   | { readonly kind: 'interrupt'; readonly sessionId: SessionId }
   /** 手动压缩上下文（ADR 0020）。老 worker 不认，只记一条日志。 */
@@ -90,6 +92,12 @@ export type WorkerCommand =
  * 这个版本由 domain 的启动入口统一落库。`void` 只为兼容「只关心成败」的旧调用方与测试替身。
  */
 export type DispatchOutcome = void | { readonly environmentRevision?: string | null };
+
+/** Readiness belongs to a particular session and worker connection/start attempt. */
+export type SessionStartReadiness =
+  | { readonly state: 'untracked' | 'offline' | 'upgrade_required' | 'starting' }
+  | { readonly state: 'ready'; readonly startAttemptId: string }
+  | { readonly state: 'failed'; readonly reason: 'runtime' | 'configuration' | 'timed_out' };
 
 /** 交给 Worker 启动一条服务的参数（docs/design/session-service.md §5）。 */
 export interface ServiceStartInput {
@@ -130,6 +138,8 @@ export interface ProcessInfo {
 }
 
 export interface NodeGateway {
+  sessionStartReadiness?(sessionId: SessionId, workerId?: string | null): SessionStartReadiness;
+  retrySessionStart?(sessionId: SessionId, workerId?: string | null): void;
   status(): Promise<WorkerStatus[]>;
   dispatch(command: WorkerCommand): Promise<Result<DispatchOutcome, DomainError>>;
   /**

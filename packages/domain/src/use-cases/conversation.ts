@@ -227,7 +227,7 @@ async function promptSessionAdmitted(
     const ack: PromptAck = {
       seq: logged.value.lastSeq,
       deliveryId: claimed.delivery.id,
-      state: claimed.send ? 'sending' : 'queued',
+      state: 'queued',
       turn: logged.value.turn
     };
     if (!claimed.send) return ok(ack);

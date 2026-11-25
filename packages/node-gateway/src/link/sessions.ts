@@ -28,6 +28,7 @@ export interface Sessions {
   readonly mcpEndpoint: McpEndpoint;
   /** 一条会话指令：`start_session` 与它的后续帧按会话串行。 */
   run(command: SessionCommand): Promise<void>;
+  refuse(command: Extract<ServerToWorker, { kind: 'start_session' | 'prompt' }>): boolean;
   /** 清掉这条会话的活动记录与计时器（进程已经交出去 / 已经收掉）。 */
   forget(sessionId: string): void;
   /** 链路关闭：停计时器与补洞循环，dispose 所有会话，清空视图。 */
@@ -49,6 +50,79 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
    * 否则 ACP 会留着启动时的旧 URL / 旧令牌继续跑。
    */
   const startupWiring = new Map<string, string>();
+  type StartCommand = Extract<ServerToWorker, { kind: 'start_session' }>;
+  type Generation = { sessionId: string; startAttemptId?: string; origin?: object; session?: RuntimeSession; ready: boolean; reused?: boolean };
+  // A start fences immediately, not when its serialized work eventually begins.
+  const generations = new Map<string, Generation>();
+  const activePrompts = new Map<string, number>();
+  // Active attempts cannot age out of the bounded recent-delivery cache.
+  const activeDeliveries = new Set<string>();
+  // A bounded dedup cache alone cannot prove a delivery was never attempted
+  // after eviction. A monotone Bloom filter may conservatively suppress a
+  // refusal on a false positive, but never emits false negative evidence.
+  const attemptedBits = new Uint8Array(1 << 20);
+  // Conservative tombstones keep late legacy commands from emitting a bare
+  // gone after a managed generation is removed. False positives only suppress
+  // an ordinary missing-session status; they never authorize a prompt.
+  const managedBits = new Uint8Array(1 << 17);
+  function managed(sessionId: string, record = false): boolean {
+    const hash = createHash('sha256').update(sessionId).digest();
+    let present = true;
+    for (let i = 0; i < 4; i++) {
+      const bit = hash.readUInt32BE(i * 4) % (managedBits.length * 8);
+      const index = bit >>> 3, mask = 1 << (bit & 7);
+      if (!(managedBits[index]! & mask)) present = false;
+      if (record) managedBits[index]! |= mask;
+    }
+    return present;
+  }
+  function attempted(deliveryId: string, record = false): boolean {
+    const hash = createHash('sha256').update(deliveryId).digest();
+    let present = true;
+    for (let i = 0; i < 4; i++) {
+      const bit = hash.readUInt32BE(i * 4) % (attemptedBits.length * 8);
+      const index = bit >>> 3;
+      const mask = 1 << (bit & 7);
+      if (!(attemptedBits[index]! & mask)) present = false;
+      if (record) attemptedBits[index]! |= mask;
+    }
+    return present;
+  }
+  const closeTails = new Map<string, Promise<void>>();
+  function closeOwnedTerminals(sessionId: string): Promise<void> {
+    const previous = closeTails.get(sessionId);
+    const work = previous ? previous.catch(() => undefined).then(() => closeTerminals(ctx, sessionId)) : closeTerminals(ctx, sessionId);
+    const tail = work.catch(() => undefined);
+    closeTails.set(sessionId, tail);
+    void tail.then(() => { if (closeTails.get(sessionId) === tail) closeTails.delete(sessionId); });
+    return work;
+  }
+  const keyed = (command: StartCommand): boolean => command.startAttemptId !== undefined;
+  const managedGeneration = (generation: Generation): boolean => generation.startAttemptId !== undefined;
+  function newGeneration(command: StartCommand): Generation {
+    if (keyed(command)) managed(command.sessionId, true);
+    return { sessionId: command.sessionId, startAttemptId: command.startAttemptId, ...(keyed(command) ? { origin: transport.originOf(command) } : {}), ready: false };
+  }
+  function result(generation: Generation, state: 'ready' | 'failed' | 'ended', reason?: 'runtime' | 'configuration'): void {
+    const { sessionId, startAttemptId, origin } = generation;
+    if (startAttemptId === undefined || !origin) return;
+    transport.sendOnOrigin(origin, { type: 'session_start_result', sessionId, startAttemptId, state, ...(reason ? { reason } : {}) });
+  }
+  function ended(sessionId: string, session: RuntimeSession, reason?: string): void {
+    const generation = generations.get(sessionId);
+    if (generation && managedGeneration(generation)) {
+      if (generation.ready && generation.session === session) {
+        generation.ready = false;
+        result(generation, 'ended');
+        generations.delete(sessionId);
+      } else if (!generation.ready && !starting.has(sessionId)) {
+        generations.delete(sessionId);
+      }
+    } else if ((!generation && !managed(sessionId)) || (generation && generation.session === session)) {
+      send({ type: 'status', sessionId, status: 'ended', ...(reason ? { reason } : {}) });
+      if (generation) generations.delete(sessionId);
+    }
+  }
 
   channel.handle(assetsSync, async ({ entries, retain, sessions: liveSessions }) => {
     if (!options.assets) throw new RpcFailure('unsupported', '这台 Worker 不支持资产同步');
@@ -282,9 +356,9 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     sessions.delete(sessionId);
     workspaces.delete(sessionId);
     forget(sessionId);
-    await closeTerminals(ctx, sessionId);
-    send({ type: 'status', sessionId, status: 'ended', reason });
+    ended(sessionId, session, reason);
     ctx.providerRelay.close(sessionId);
+    await closeOwnedTerminals(sessionId);
     options.onLog?.(`会话 ${sessionId} 回收：${reason}`);
     await session.dispose().catch(() => undefined);
   }
@@ -359,9 +433,57 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     return createHash('sha256').update(JSON.stringify(wiring)).digest('hex');
   }
 
-  async function startSession(command: Extract<ServerToWorker, { kind: 'start_session' }>): Promise<void> {
+  function watchSession(eventSessionId: string, session: RuntimeSession): void {
+    void (async () => {
+      try {
+        for await (const event of session.events()) {
+          if (sessions.get(eventSessionId) !== session) break;
+          touch(eventSessionId);
+          const enriched = await withBytes(eventSessionId, event);
+          if (sessions.get(eventSessionId) !== session) break;
+          transport.send({ type: 'event', sessionId: eventSessionId, event: enriched as SessionEventDto });
+          // ended 只是**这一轮**结束：进程留着（保活），下一句 prompt 直接发，只告诉 hub 它还活着。
+          // 真结束（进程退出 / dispose_session / 空闲回收）才发 status:'ended'。
+          if (event.kind === 'ended' && sessions.get(eventSessionId) === session) {
+            transport.send({ type: 'status', sessionId: eventSessionId, status: 'idle' });
+            // 回合结束了但后台子代理还在跑：opencode 之后不再推任何 update，
+            // 只能周期性重放历史把完成总结拉回来（收到全部 end / 回收时循环自己停）。
+            if (pendingSubagents(session) > 0) startResync(eventSessionId, session);
+          }
+        }
+      } finally {
+        // 已被同 id 的新 start 顶掉 / 已被回收：新的那份才是这条会话，旧的不许再报 ended
+        // （否则 server 会撤掉新会话的托管和刚签的工具令牌）；dispose 由顶替方做过了。
+        if (sessions.get(eventSessionId) === session) {
+          sessions.delete(eventSessionId);
+          workspaces.delete(eventSessionId);
+          forget(eventSessionId);
+          ended(eventSessionId, session);
+          ctx.providerRelay.close(eventSessionId);
+          await closeOwnedTerminals(eventSessionId);
+          // 必须报「结束了」：不报的话 server 会一直以为这条会话还有人托管，
+          // 下次提问就不再拉起 agent，只把 prompt 发给一个不存在的会话。
+          await session.dispose();
+          // 会话真结束了：删掉它的视图（版本目录仍由 retain / 其它视图引用决定去留）。
+          if (!sessions.has(eventSessionId) && !starting.has(eventSessionId)) await options.assets?.dropSession(eventSessionId).catch(() => false);
+        }
+      }
+    })();
+  }
+
+  async function startSession(command: StartCommand, generation: Generation): Promise<void> {
+    const fail = (reason: 'runtime' | 'configuration'): void => {
+      if (keyed(command)) result(generation, 'failed', reason);
+      generation.session = undefined;
+      generation.origin = undefined;
+      if (!sessions.has(command.sessionId) && generations.get(command.sessionId) === generation) generations.delete(command.sessionId);
+    };
+    const send = (frame: Parameters<Transport['send']>[0]): void => {
+      if (generations.get(command.sessionId) === generation) transport.send(frame);
+    };
     const runtime = options.runtimes.find((candidate) => candidate.descriptor.id === command.agentId);
     if (!runtime) {
+      if (keyed(command)) return fail('configuration');
       send({
         type: 'event',
         sessionId: command.sessionId,
@@ -369,16 +491,18 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       });
       return;
     }
-    if (command.branchAttemptId !== undefined && (!command.branch || command.resume !== null || !runtime.startBranchAttempt || !allowsFor(runtime.descriptor.capabilities, 'branch_at_turn'))) return;
+    if (command.branchAttemptId !== undefined && (!command.branch || command.resume !== null || !runtime.startBranchAttempt || !allowsFor(runtime.descriptor.capabilities, 'branch_at_turn'))) { fail('configuration'); return; }
 
     const outside = options.files ? await options.files.check(command.workspaceRoot) : null;
     if (outside !== null) {
+      if (keyed(command)) return fail('configuration');
       send({ type: 'event', sessionId: command.sessionId, event: { kind: 'ended', outcome: 'failed', reason: outside } });
       return;
     }
 
     // 常驻会话每台机器有上限；到顶了新 pinned 启动直接拒，不 spawn、不进保活。
     if (command.pinned === true && pinnedAtCapacity(command.sessionId)) {
+      if (keyed(command)) return fail('configuration');
       const reason = `这台机器的常驻会话已达上限（${PIN_MAX}）`;
       send({ type: 'status', sessionId: command.sessionId, status: 'ended', reason });
       send({ type: 'event', sessionId: command.sessionId, event: { kind: 'diagnostic', level: 'warn', text: reason } });
@@ -391,6 +515,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       workspaceRoot: command.workspaceRoot,
       resume: command.resume,
       options: command.options,
+      ...(keyed(command) ? { requirePromptReady: true } : {}),
       ...(command.branch && command.resume === null ? { branch: command.branch } : {}),
       ...(command.tools ? { tools: await toolAccess(command.tools) } : {}),
       ...(command.tools && command.mcp && command.mcp.length > 0 ? { mcp: await mcpAccess(command.mcp) } : {})
@@ -398,6 +523,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     if (command.provider) {
       const grant = command.provider;
       if (!runtime.descriptor.providers?.includes(grant.protocol)) {
+        if (keyed(command)) return fail('configuration');
         send({ type: 'event', sessionId: command.sessionId, event: { kind: 'ended', outcome: 'failed', reason: `${command.agentId} 不支持 ${grant.protocol} 协议的模型提供商` } });
         return;
       }
@@ -442,18 +568,29 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
         && sessionProviders.get(command.sessionId) === providerKey;
       const reusable = !spec.branch && sameRuntime && !wiringChanged;
       if (reusable) {
+        generation.session = previous;
+        generation.reused = true;
         // 复用也要把这次 start 带来的选项（模型等）落上去，别沿用进程里上一轮的
         for (const [optionId, value] of Object.entries(spec.options ?? {})) {
           const changed = await previous.changeOption(optionId, value).catch(() => null);
+          if (keyed(command) && (!changed || !changed.ok)) return fail('configuration');
           if (changed && !changed.ok) options.onLog?.(`复用会话 ${command.sessionId} 时选项 ${optionId} 没落上：${changed.error.message}`);
           else if (changed) send({ type: 'options', sessionId: command.sessionId, options: [...changed.value] });
         }
+        if (keyed(command) && generations.get(command.sessionId) === generation) {
+          const prepared = await previous.prepareForPrompt?.();
+          if (prepared && !prepared.ok) return fail('configuration');
+        }
+        if (generations.get(command.sessionId) !== generation || sessions.get(command.sessionId) !== previous) return;
+        generation.session = previous;
+        generation.ready = true;
         touch(command.sessionId);
         send({
           type: 'status',
           sessionId: command.sessionId,
           status: 'running'
         });
+        if (keyed(command)) result(generation, 'ready');
         return;
       }
       // hub 撤销旧 bearer 后会用新令牌 / 新清单再发一次 start：接线不同（含被移除）
@@ -489,11 +626,13 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
         ctx.providerRelay.close(command.sessionId);
         void options.assets?.dropSession(command.sessionId).catch(() => {});
         transport.sendOnOrigin(command, { type: 'branch_attempt_result', sessionId: command.sessionId, attemptId: command.branchAttemptId, outcome: 'both_failed' });
+        fail('runtime');
         return;
       }
       if (result.state !== 'started') {
         ctx.providerRelay.close(command.sessionId);
         void options.assets?.dropSession(command.sessionId).catch(() => {});
+        // The branch contract defines unknown as ambiguous, not proof of failure.
         return;
       }
       if (!branchAgentSessionRefSchema.safeParse(result.agentSessionRef).success
@@ -502,6 +641,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
         await result.session.dispose().catch(() => {});
         ctx.providerRelay.close(command.sessionId);
         void options.assets?.dropSession(command.sessionId).catch(() => {});
+        // A malformed attestation is ambiguous even if the local handle closed.
         return;
       }
       attested = { outcome: result.outcome, agentSessionRef: result.agentSessionRef };
@@ -532,6 +672,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       options.onLog?.(`${command.agentId} 启动失败：${started.error.message}`);
       // 视图白建了：删掉，别留着一个没人用的会话目录（retain 仍按 hub 的清单管版本）。
       void options.assets?.dropSession(command.sessionId).catch(() => {});
+      if (keyed(command)) return fail('runtime');
       send({
         type: 'event',
         sessionId: command.sessionId,
@@ -541,6 +682,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     }
 
     const session = started.value;
+    generation.session = session;
     sessions.set(command.sessionId, session);
     workspaces.set(command.sessionId, command.workspaceRoot);
     sessionAgents.set(command.sessionId, command.agentId);
@@ -548,54 +690,39 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     else pinnedSessions.delete(command.sessionId);
     sessionProviders.set(command.sessionId, spec.provider ? `${spec.provider.slug}|${spec.provider.baseUrl}|${spec.provider.token}` : '');
     startupWiring.set(command.sessionId, wiringKey);
+    watchSession(command.sessionId, session);
+    if (keyed(command) && generations.get(command.sessionId) === generation) {
+      let ready = false;
+      try { const prepared = await session.prepareForPrompt?.(); ready = !prepared || prepared.ok; } catch { /* classified below */ }
+      if (!ready) {
+        if (sessions.get(command.sessionId) === session) {
+          sessions.delete(command.sessionId);
+          workspaces.delete(command.sessionId);
+          forget(command.sessionId);
+          ctx.providerRelay.close(command.sessionId);
+        }
+        await session.dispose().catch(() => undefined);
+        return fail('configuration');
+      }
+    }
     if (attested && command.branchAttemptId !== undefined) {
       transport.sendOnOrigin(command, { type: 'branch_attempt_result', sessionId: command.sessionId, attemptId: command.branchAttemptId, ...attested });
     }
+    if (generations.get(command.sessionId) !== generation) return;
+    if (sessions.get(command.sessionId) !== session) return fail('runtime');
+    generation.session = session;
+    generation.ready = true;
     send({
       type: 'status',
       sessionId: command.sessionId,
       status: 'running'
     });
+    if (keyed(command)) result(generation, 'ready');
     // 保活上限：新进程起来后如果超了，先收最久没活动的那个（同样报 ended）。
     await trimKeepAlive(command.sessionId);
     // 空闲计时从现在起算；之后每个事件 / 每句 prompt 都刷新。
     touch(command.sessionId);
 
-    void (async () => {
-      try {
-        for await (const event of session.events()) {
-          if (sessions.get(command.sessionId) !== session) break;
-          touch(command.sessionId);
-          const enriched = await withBytes(command.sessionId, event);
-          if (sessions.get(command.sessionId) !== session) break;
-          send({ type: 'event', sessionId: command.sessionId, event: enriched as SessionEventDto });
-          // ended 只是**这一轮**结束：进程留着（保活），下一句 prompt 直接发，只告诉 hub 它还活着。
-          // 真结束（进程退出 / dispose_session / 空闲回收）才发 status:'ended'。
-          if (event.kind === 'ended' && sessions.get(command.sessionId) === session) {
-            send({ type: 'status', sessionId: command.sessionId, status: 'idle' });
-            // 回合结束了但后台子代理还在跑：opencode 之后不再推任何 update，
-            // 只能周期性重放历史把完成总结拉回来（收到全部 end / 回收时循环自己停）。
-            if (pendingSubagents(session) > 0) startResync(command.sessionId, session);
-          }
-        }
-      } finally {
-        // 已被同 id 的新 start 顶掉 / 已被回收：新的那份才是这条会话，旧的不许再报 ended
-        // （否则 server 会撤掉新会话的托管和刚签的工具令牌）；dispose 由顶替方做过了。
-        if (sessions.get(command.sessionId) === session) {
-          sessions.delete(command.sessionId);
-          workspaces.delete(command.sessionId);
-          forget(command.sessionId);
-          await closeTerminals(ctx, command.sessionId);
-          // 必须报「结束了」：不报的话 server 会一直以为这条会话还有人托管，
-          // 下次提问就不再拉起 agent，只把 prompt 发给一个不存在的会话。
-          send({ type: 'status', sessionId: command.sessionId, status: 'ended' });
-          ctx.providerRelay.close(command.sessionId);
-          await session.dispose();
-          // 会话真结束了：删掉它的视图（版本目录仍由 retain / 其它视图引用决定去留）。
-          await options.assets?.dropSession(command.sessionId).catch(() => false);
-        }
-      }
-    })();
   }
 
   /**
@@ -609,17 +736,38 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
   async function run(command: SessionCommand): Promise<void> {
     if (command.kind === 'start_session') {
       const sessionId = command.sessionId;
+      const generation = newGeneration(command);
+      generations.set(sessionId, generation);
       const previous = starting.get(sessionId);
       const start = async (): Promise<void> => {
-        if (command.branchAttemptId === undefined) return startSession(command);
+        const closing = closeTails.get(sessionId);
+        if (closing) await closing;
         try {
-          await startSession(command);
-        } catch {
-          // Setup/transport exceptions are ambiguous too; never turn them into a
-          // legacy ended event or a keyed failure claim.
-          ctx.providerRelay.close(command.sessionId);
-          void options.assets?.dropSession(command.sessionId).catch(() => {});
-          options.onLog?.('带键分叉启动结果未知');
+          await startSession(command, generation);
+        } catch (error) {
+          // Before readiness a managed start exception is a failed start;
+          // after readiness it cannot retroactively become a startup failure.
+          // Branch attestation exceptions remain ambiguous.
+          if (keyed(command)) {
+            if (generation.ready) {
+              options.onLog?.('会话就绪后的清理失败');
+              return;
+            }
+            const installed = generation.session;
+            if (installed && !generation.reused && sessions.get(sessionId) === installed) {
+              sessions.delete(sessionId);
+              workspaces.delete(sessionId);
+              forget(sessionId);
+              ctx.providerRelay.close(sessionId);
+              await installed.dispose().catch(() => undefined);
+            } else if (!sessions.has(sessionId)) ctx.providerRelay.close(sessionId);
+            result(generation, 'failed', 'runtime');
+            generation.session = undefined;
+          } else if (command.branchAttemptId !== undefined) {
+            ctx.providerRelay.close(sessionId);
+            void options.assets?.dropSession(sessionId).catch(() => {});
+          } else throw error;
+          options.onLog?.(keyed(command) ? '带键会话启动失败' : '带键分叉启动结果未知');
         }
       };
       const work = previous
@@ -631,6 +779,17 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       try {
         await work;
       } finally {
+        if (!generation.ready) {
+          generation.session = undefined;
+          generation.origin = undefined;
+          // Keep a minimal mode fence only while an older runtime remains live.
+          if (!sessions.has(sessionId) && generations.get(sessionId) === generation) generations.delete(sessionId);
+        } else if (generations.get(sessionId) !== generation) {
+          // A newer start owns the fence; its work must not retain this runtime
+          // or the old socket while callers still hold this completed promise.
+          generation.session = undefined;
+          generation.origin = undefined;
+        }
         // A 的 finally 可能在 B 已经登记链尾之后才跑：只清自己那条，别删掉 B 的等待点。
         if (starting.get(sessionId) === tail) starting.delete(sessionId);
       }
@@ -641,54 +800,66 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     const pendingStart = starting.get(sessionId);
     if (pendingStart) await pendingStart;
     const session = sessions.get(sessionId);
+    const generation = generations.get(sessionId);
+    if (command.kind === 'prompt') {
+      const matches = (): boolean => {
+        const current = generations.get(sessionId);
+        if (command.startAttemptId !== undefined) return !!session && current === generation && !!current?.ready && current.session === session && current.startAttemptId === command.startAttemptId && sessions.get(sessionId) === session;
+        return !!session && sessions.get(sessionId) === session && (!current || (!managedGeneration(current) && current.ready && current.session === session));
+      };
+      const refuse = (): void => {
+        if (command.startAttemptId !== undefined && command.deliveryId && !attempted(command.deliveryId)) {
+          transport.sendOnOrigin(command, { type: 'prompt_start_refused', sessionId, startAttemptId: command.startAttemptId, deliveryId: command.deliveryId });
+        }
+      };
+      // Exact active/recent dedup controls execution; Bloom positives are only
+      // evidence to withhold refusal, never grounds to drop a fresh prompt.
+      // Beyond the recent horizon, Hub must not replay ambiguous attempts.
+      if (command.deliveryId && (seenDeliveries.has(command.deliveryId) || activeDeliveries.has(command.deliveryId))) return;
+      if (!matches()) {
+        refuse();
+        if (!session && command.startAttemptId === undefined && (generation ? !managedGeneration(generation) : !managed(sessionId))) send({ type: 'status', sessionId, status: 'gone' });
+        return;
+      }
+      try {
+        await persistParts(command.parts);
+        await pauseResync(sessionId);
+      } catch (error) {
+        refuse();
+        if (command.startAttemptId === undefined) throw error;
+        return;
+      }
+      if (command.deliveryId && (seenDeliveries.has(command.deliveryId) || activeDeliveries.has(command.deliveryId))) return;
+      if (!matches()) { refuse(); return; }
+      if (command.deliveryId) {
+        seenDeliveries.add(command.deliveryId);
+        activeDeliveries.add(command.deliveryId);
+        attempted(command.deliveryId, true);
+        if (seenDeliveries.size > 1000) seenDeliveries.delete(seenDeliveries.values().next().value as string);
+      }
+      activePrompts.set(sessionId, (activePrompts.get(sessionId) ?? 0) + 1);
+      prompting.add(sessionId);
+      touch(sessionId);
+      try {
+        const result = await session!.prompt({ text: command.text, parts: command.parts, ...(command.deliveryId ? { deliveryId: command.deliveryId } : {}) });
+        if (!result.ok && sessions.get(sessionId) === session && generations.get(sessionId) === generation) {
+          send({ type: 'event', sessionId, event: { kind: 'diagnostic', level: 'error', text: result.error.message } });
+          if (!command.deliveryId) send({ type: 'event', sessionId, event: { kind: 'ended', outcome: 'failed', reason: `发送失败：${result.error.message}` } });
+        }
+      } finally {
+        if (command.deliveryId) activeDeliveries.delete(command.deliveryId);
+        const remaining = (activePrompts.get(sessionId) ?? 1) - 1;
+        if (remaining > 0) activePrompts.set(sessionId, remaining);
+        else { activePrompts.delete(sessionId); prompting.delete(sessionId); }
+        if (sessions.has(sessionId)) touch(sessionId);
+      }
+      return;
+    }
     if (!session) {
       // server 以为这条会话还活着（它只在收到 ended 时才忘掉）。
       // 主动告诉它「已经不在了」，它下一次点击就会重新拉起，而不是又一次撞空。
       options.onLog?.(`未知会话：${sessionId}`);
-      send({ type: 'status', sessionId, status: 'gone' });
-      return;
-    }
-    if (command.kind === 'prompt') {
-      // ADR 0031：hub 重试同一条消息时按 deliveryId 去重，agent 不会收到两遍
-      if (command.deliveryId) {
-        if (seenDeliveries.has(command.deliveryId)) {
-          options.onLog?.(`重复的消息 ${command.deliveryId}，跳过`);
-          return;
-        }
-        seenDeliveries.add(command.deliveryId);
-        if (seenDeliveries.size > 1000) seenDeliveries.delete(seenDeliveries.values().next().value as string);
-      }
-      await persistParts(command.parts);
-      // session/load 和 session/prompt 并发会让两边的 session/update 交错：先停补洞、等在途的重放落地。
-      await pauseResync(sessionId);
-      prompting.add(sessionId);
-      touch(sessionId);
-      try {
-        const result = await session.prompt({
-          text: command.text,
-          parts: command.parts,
-          ...(command.deliveryId ? { deliveryId: command.deliveryId } : {})
-        });
-        if (!result.ok) {
-          send({
-            type: 'event',
-            sessionId,
-            event: { kind: 'diagnostic', level: 'error', text: result.error.message }
-          });
-          // 通用错误不区分「没提交」和「提交后失联」；有投递 ID 时不能把它当停止证据。
-          if (!command.deliveryId) {
-            send({
-              type: 'event',
-              sessionId,
-              event: { kind: 'ended', outcome: 'failed', reason: `发送失败：${result.error.message}` }
-            });
-          }
-        }
-      } finally {
-        prompting.delete(sessionId);
-        // 这一轮结束了：空闲从此刻起算（事件循环收到 ended 时也会再刷新一次）
-        touch(sessionId);
-      }
+      if (generation ? !managedGeneration(generation) : !managed(sessionId)) send({ type: 'status', sessionId, status: 'gone' });
       return;
     }
     if (command.kind === 'interrupt') {
@@ -728,17 +899,35 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       send({ type: 'options', sessionId, options: [...changed.value] });
       return;
     }
-    await session.dispose();
+    if (sessions.get(sessionId) !== session) return;
     sessions.delete(sessionId);
     workspaces.delete(sessionId);
     forget(sessionId);
+    ended(sessionId, session);
     ctx.providerRelay.close(sessionId);
-    await closeTerminals(ctx, sessionId);
+    await closeOwnedTerminals(sessionId);
+    await session.dispose();
   }
 
   return {
     mcpEndpoint,
     run,
+    refuse(command): boolean {
+      if (command.kind === 'start_session') {
+        const generation = newGeneration(command);
+        generations.set(command.sessionId, generation);
+        if (keyed(command)) {
+          result(generation, 'failed', 'configuration');
+          generation.origin = undefined;
+          if (!sessions.has(command.sessionId)) generations.delete(command.sessionId);
+          return true;
+        }
+      } else if (command.startAttemptId !== undefined) {
+        if (command.deliveryId && !attempted(command.deliveryId)) transport.sendOnOrigin(command, { type: 'prompt_start_refused', sessionId: command.sessionId, startAttemptId: command.startAttemptId, deliveryId: command.deliveryId });
+        return true;
+      }
+      return false;
+    },
     forget,
     async closeAll(): Promise<void> {
       for (const timer of idleTimers.values()) clearTimeout(timer);
@@ -750,6 +939,8 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       sessionAgents.clear();
       sessionProviders.clear();
       startupWiring.clear();
+      generations.clear();
+      activePrompts.clear();
       lastActivity.clear();
       prompting.clear();
     }

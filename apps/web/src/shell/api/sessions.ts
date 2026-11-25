@@ -3,6 +3,15 @@ import { call, post, sq } from './http.ts';
 
 export type { DeliveryDto, JournalEntryDto, PreviewLinkDto, SessionDto, SessionEventDto } from '@agent-hub/contract';
 
+/** A live runtime observation, not evidence of model availability. */
+export type SessionStartupDto =
+  | { readonly state: 'untracked' | 'offline' | 'upgrade_required' | 'starting' | 'ready' }
+  | { readonly state: 'failed'; readonly reason: 'runtime' | 'configuration' | 'timed_out' };
+
+export const sessionStartupApi = {
+  get: (sessionId: string) => call<SessionStartupDto>(`${sq(sessionId)}/startup`, { cache: 'no-store' })
+};
+
 /** 会话详情里的「谁做了什么」。 */
 export interface SessionActivityDto {
   readonly action: 'session.start' | 'session.fork' | 'session.interrupt' | 'session.continue';

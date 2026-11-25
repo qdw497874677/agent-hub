@@ -34,6 +34,8 @@ process.stderr.write('fake agent booting\n');
 // 用文件而不是 sleep：测试能确定「这一轮开始了没有」，也能自己决定它什么时候结束。
 const gateFlag = process.argv.indexOf('--gate-dir');
 const GATE_DIR = gateFlag >= 0 ? process.argv[gateFlag + 1] : null;
+const startupGateFlag = process.argv.indexOf('--startup-gate');
+const STARTUP_GATE = startupGateFlag >= 0 ? process.argv[startupGateFlag + 1] : null;
 
 let model = 'a';
 let mode = 'default';
@@ -98,6 +100,15 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
     case 'authenticate':
       return send({ id: msg.id, result: {} });
     case 'session/new':
+      if (STARTUP_GATE) {
+        appendFileSync(`${STARTUP_GATE}.started`, 'start\n');
+        while (!existsSync(`${STARTUP_GATE}.go`) && !existsSync(`${STARTUP_GATE}.fail`)) {
+          await new Promise((resolve) => setTimeout(resolve, 15));
+        }
+        if (existsSync(`${STARTUP_GATE}.fail`)) {
+          return send({ id: msg.id, error: { code: -32603, message: 'synthetic ACP startup failure' } });
+        }
+      }
       if (typeof msg.params?.cwd === 'string') cwd = msg.params.cwd;
       if (Array.isArray(msg.params?.mcpServers)) mcpServers = msg.params.mcpServers;
       if (LEGACY) model = 'custom:a';

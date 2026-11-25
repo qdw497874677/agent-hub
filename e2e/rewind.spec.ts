@@ -15,7 +15,7 @@ import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 const SHOTS = join(tmpdir(), 'shots/git-workflow/4-rollback');
 const FAKE = resolve('packages/adapters/acp/test-fixtures/fake-agent.mjs');
 
-type Entry = { seq: number; kind?: string; event?: { kind?: string } };
+type Entry = { seq: number; kind?: string; event?: { kind?: string; delta?: string; deliveryId?: string; outcome?: string } };
 const kindOf = (entry: Entry) => entry.kind ?? entry.event?.kind;
 async function events(page: Page, sid: string): Promise<Entry[]> {
   return (await (await page.request.get(`/api/sessions/${sid}/events`)).json()) as Entry[];
@@ -109,7 +109,36 @@ test('从这里重来：只回滚对话，文件不变；非 git 临时目录有
     await expect(d0.getByTestId('rewind-files')).toBeDisabled();
     await expect(d0.getByTestId('rewind-files-note')).toContainText('临时工作目录');
     await page.screenshot({ path: join(SHOTS, 'dialog-long-lived-390.png') });
-    await page.keyboard.press('Escape');
+    // 第一条消息之前的 fork 点是 0；通过真实点击创建，并验证子会话能实际送达一轮。
+    expect(p0).toBe(1);
+    const firstRewind = page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith('/rewind'));
+    await d0.getByTestId('rewind-go').click();
+    const firstResponse = await firstRewind;
+    expect(firstResponse.status(), await firstResponse.text()).toBe(201);
+    const firstChild = (await firstResponse.json() as { session: { id: string; origin: unknown } }).session;
+    const expectedOrigin = { kind: 'fork', fromSessionId: s0, atSeq: 0 };
+    expect(firstChild.origin).toEqual(expectedOrigin);
+    const fetched = await page.request.get(`/api/sessions/${firstChild.id}`);
+    expect(fetched.status(), await fetched.text()).toBe(200);
+    expect((await fetched.json() as { origin: unknown }).origin).toEqual(expectedOrigin);
+    const canvasResponse = await page.request.get(`/api/projects/${project.id}/canvas`);
+    expect(canvasResponse.status(), await canvasResponse.text()).toBe(200);
+    const canvas = await canvasResponse.json() as { edges: unknown[] };
+    expect(canvas.edges).toContainEqual({ kind: 'fork', fromSessionId: s0, toSessionId: firstChild.id, atSeq: 0 });
+    const sent = await page.request.post(`/api/sessions/${firstChild.id}/prompt`, { data: { text: 'please-history' }, headers });
+    expect(sent.ok(), await sent.text()).toBe(true);
+    const delivery = await sent.json() as { deliveryId: string };
+    expect(delivery.deliveryId).toBeTruthy();
+    await expect.poll(async () => (await events(page, firstChild.id)).some((entry) => entry.event?.kind === 'ended' && entry.event.deliveryId === delivery.deliveryId && entry.event.outcome === 'done'), { timeout: 30_000 }).toBe(true);
+    const childEvents = await events(page, firstChild.id);
+    expect(childEvents.some((entry) => entry.event?.kind === 'text' && entry.event.delta?.includes('history:forked-at='))).toBe(true);
+    await expect.poll(async () => {
+      const response = await page.request.get(`/api/sessions/${firstChild.id}/deliveries`);
+      expect(response.ok(), await response.text()).toBe(true);
+      const rows = await response.json() as { id: string; state: string }[];
+      return rows.find((row) => row.id === delivery.deliveryId)?.state;
+    }, { timeout: 30_000 }).toBe('delivered');
+    expect(readFileSync(join(dir, 'long.txt'), 'utf8')).toBe('one\n');
 
     // ── 2. 临时工作目录：文件回滚被服务端拒绝，但仍可从第二条重来 ──
     const t1 = await newTask(project.id, '临时');

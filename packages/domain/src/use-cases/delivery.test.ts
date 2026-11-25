@@ -9,9 +9,9 @@ import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 import { ingestWorkerEvent, promptSessionUseCase } from './conversation.ts';
-import { cancelDelivery, attemptDelivery, findDeliveryEnded, pumpDeliveries, reconcileInFlightDelivery, reconcileSendingDeliveries, recoverOrphanedTurns, releaseAfterTurn, resolveOrphanTurnMs, retryDeliveryNow, turnInProgress, ORPHAN_TURN_MARKER, ORPHAN_TURN_MS, TURN_STALE_MS, TURN_WAIT_MS } from './delivery.ts';
+import { cancelDelivery, attemptDelivery, findDeliveryEnded, pumpDeliveries, reconcileInFlightDelivery, reconcileSendingDeliveries, recoverOrphanedTurns, releaseAfterTurn, requeueRefusedPrompt, resolveOrphanTurnMs, retryDeliveryNow, turnInProgress, ORPHAN_TURN_MARKER, ORPHAN_TURN_MS, TURN_STALE_MS, TURN_WAIT_MS } from './delivery.ts';
 import { recordEvent } from './sessions.ts';
-import type { WorkerCommand } from '../ports/node-gateway.ts';
+import type { SessionStartReadiness, WorkerCommand } from '../ports/node-gateway.ts';
 import type { SessionQueue } from '../ports/session-queue.ts';
 
 /**
@@ -84,6 +84,110 @@ async function world(overrides: Parameters<typeof inMemoryDeps>[0] = {}) {
 }
 
 type World = Awaited<ReturnType<typeof world>>;
+
+test('readiness keeps two prompts queued until ready, then preserves exact turn order', async () => {
+  const w = await world({ queue: serialQueue() });
+  w.online();
+  let state: SessionStartReadiness = { state: 'starting' };
+  const deps = { ...w.deps, gateway: { ...w.deps.gateway, sessionStartReadiness: () => state } };
+  const a = await promptSessionUseCase(deps, { sessionId: w.sid, text: 'A' });
+  const b = await promptSessionUseCase(deps, { sessionId: w.sid, text: 'B' });
+  assert.ok(a.ok && b.ok && a.value.deliveryId && b.value.deliveryId);
+  assert.equal(a.value.state, 'queued');
+  await settle();
+  assert.deepEqual((await w.deliveries.pendingFor(w.sid)).map(d => [d.state, d.attempt]), [['queued', 0], ['queued', 0]]);
+  assert.equal(w.sent.length, 0);
+  state = { state: 'ready', startAttemptId: 'start-1' };
+  w.tick(TURN_WAIT_MS);
+  await pumpDeliveries(deps);
+  assert.equal(w.sent.length, 1);
+  assert.ok(w.sent[0]?.kind === 'prompt' && w.sent[0].deliveryId === a.value.deliveryId && w.sent[0].startAttemptId === 'start-1');
+  await pumpDeliveries(deps);
+  assert.equal(w.sent.length, 1);
+  await ingestWorkerEvent(deps, w.sid, { kind: 'ended', outcome: 'done', deliveryId: a.value.deliveryId });
+  await releaseAfterTurn(deps, w.sid, a.value.deliveryId);
+  assert.ok(w.sent[1]?.kind === 'prompt' && w.sent[1].deliveryId === b.value.deliveryId && w.sent[1].startAttemptId === 'start-1');
+});
+
+test('failed and upgrade readiness wait without attempts; explicit retry starts fresh', async () => {
+  const w = await world({ queue: serialQueue() });
+  w.online();
+  let state: SessionStartReadiness = { state: 'upgrade_required' };
+  let starts = 0;
+  const dispatch = w.deps.gateway.dispatch;
+  const deps = { ...w.deps, gateway: { ...w.deps.gateway,
+    sessionStartReadiness: () => state,
+    retrySessionStart: () => { state = { state: 'untracked' }; },
+    dispatch: async (command: WorkerCommand) => {
+      if (command.kind === 'start_session') { starts++; state = { state: 'starting' }; }
+      return dispatch(command);
+    }
+  } };
+  const a = await promptSessionUseCase(deps, { sessionId: w.sid, text: 'A' });
+  assert.ok(a.ok && a.value.deliveryId);
+  await settle();
+  state = { state: 'failed', reason: 'runtime' };
+  w.tick(TURN_WAIT_MS);
+  await pumpDeliveries(deps);
+  assert.equal(starts, 0);
+  assert.equal((await w.deliveries.byId(a.value.deliveryId))?.attempt, 0);
+  assert.equal((await w.deps.sessions.tail(w.sid, 20)).filter(e => e.event.kind === 'ended').length, 0);
+  assert.ok((await retryDeliveryNow(deps, a.value.deliveryId)).ok);
+  assert.equal(starts, 1);
+  assert.equal((await w.deliveries.byId(a.value.deliveryId))?.state, 'queued');
+  state = { state: 'ready', startAttemptId: 'retry' };
+  w.tick(TURN_WAIT_MS);
+  await pumpDeliveries(deps);
+  assert.ok(w.sent[0]?.kind === 'prompt' && w.sent[0].startAttemptId === 'retry');
+});
+
+test('proved unsent dispatch and exact refusal requeue without overwriting stale turns', async () => {
+  const w = await world({ queue: serialQueue() });
+  w.online();
+  let deferred = true;
+  const dispatch = w.deps.gateway.dispatch;
+  const deps = { ...w.deps, gateway: { ...w.deps.gateway,
+    sessionStartReadiness: (): SessionStartReadiness => ({ state: 'ready', startAttemptId: 'start' }),
+    dispatch: async (command: WorkerCommand) => command.kind === 'prompt' && deferred
+      ? err({ code: 'unavailable' as const, message: 'checkpoint changed', deliveryDeferred: true as const })
+      : dispatch(command)
+  } };
+  const a = await promptSessionUseCase(deps, { sessionId: w.sid, text: 'A' });
+  assert.ok(a.ok && a.value.deliveryId);
+  await settle();
+  assert.equal((await w.deliveries.byId(a.value.deliveryId))?.state, 'queued');
+  assert.equal((await w.deliveries.byId(a.value.deliveryId))?.attempt, 0);
+  assert.equal((await w.deps.sessions.tail(w.sid, 20)).filter(e => e.event.kind === 'ended').length, 0);
+  deferred = false;
+  w.tick(TURN_WAIT_MS);
+  await pumpDeliveries(deps);
+  assert.equal(await requeueRefusedPrompt(deps, w.sid, 'stale'), false);
+  assert.equal((await w.deliveries.inFlight(w.sid))?.id, a.value.deliveryId);
+  assert.equal(await requeueRefusedPrompt(deps, w.sid, a.value.deliveryId), true);
+  assert.equal((await w.deliveries.byId(a.value.deliveryId))?.state, 'queued');
+  assert.equal(await requeueRefusedPrompt(deps, w.sid, a.value.deliveryId), false);
+});
+
+test('unproved prompt dispatch error remains in flight without replay', async () => {
+  const w = await world({ queue: serialQueue() });
+  w.online();
+  let calls = 0;
+  const dispatch = w.deps.gateway.dispatch;
+  const deps = { ...w.deps, gateway: { ...w.deps.gateway,
+    sessionStartReadiness: (): SessionStartReadiness => ({ state: 'ready', startAttemptId: 'start' }),
+    dispatch: async (command: WorkerCommand) => {
+      if (command.kind === 'prompt') { calls++; return err(unavailable('uncertain')); }
+      return dispatch(command);
+    }
+  } };
+  const a = await promptSessionUseCase(deps, { sessionId: w.sid, text: 'A' });
+  assert.ok(a.ok && a.value.deliveryId);
+  await settle();
+  w.tick(TURN_WAIT_MS * 2);
+  await pumpDeliveries(deps);
+  assert.equal(calls, 1);
+  assert.equal((await w.deliveries.inFlight(w.sid))?.id, a.value.deliveryId);
+});
 
 test('worker first-output tag requires exact open in-flight delivery and nonempty top-level text', async () => {
   const w = await world();

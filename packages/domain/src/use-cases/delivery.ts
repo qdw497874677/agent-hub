@@ -144,19 +144,50 @@ async function attemptClaimed(deps: DeliveryDeps, delivery: Delivery): Promise<R
   }
   const session = await deps.sessions.byId(sessionId);
   return withActiveTask(deps, session?.taskId ?? null, async () => {
+    // With readiness-aware gateways, starting a runtime precedes claiming the durable head.
+    // A missing readiness method keeps the legacy dispatch behavior for older ports.
+    let failure: DomainError | null = null;
+    let startAttemptId: string | undefined;
+    const readiness = deps.gateway.sessionStartReadiness?.bind(deps.gateway);
+    if (readiness && session) {
+      const head = (await deps.deliveries.pendingFor(sessionId))[0];
+      if (!head || head.id !== delivery.id || (head.state !== 'queued' && head.state !== 'undelivered')) return ok(undefined);
+      const before = readiness(sessionId, session.workerId);
+      if (before.state === 'offline' || before.state === 'upgrade_required' || before.state === 'starting' || before.state === 'failed') {
+        const now = deps.now();
+        await deps.deliveries.reschedule(delivery.id, now, now + TURN_WAIT_MS);
+        return ok(undefined);
+      }
+      const hosted = await ensureHosted(deps, session, { requireFresh: before.state === 'untracked' && deps.hosting.has(sessionId) });
+      if (!hosted.ok) {
+        // No prompt has been claimed or sent. Start failures are not delivery failures.
+        const now = deps.now();
+        await deps.deliveries.reschedule(delivery.id, now, now + TURN_WAIT_MS);
+        return ok(undefined);
+      } else {
+        // ensureHosted may have changed placement or initiated a new start.
+        const placed = await deps.sessions.byId(sessionId);
+        const after = readiness(sessionId, placed?.workerId ?? session.workerId);
+        if (after.state !== 'ready') {
+          const now = deps.now();
+          await deps.deliveries.reschedule(delivery.id, now, now + TURN_WAIT_MS);
+          return ok(undefined);
+        }
+        startAttemptId = after.startAttemptId;
+      }
+    }
     // 条件认领：定时泵、回合结束放行、立即重试可能同时看见这条，
     // 只有把状态原子翻成 sending 的那一个才派发，避免同一句话投递两次。
     if (!(await deps.deliveries.claimSend(delivery.id, deps.now()))) return ok(undefined);
-    let failure: DomainError | null = null;
     if (!session) failure = notFound('会话不存在');
-    else {
+    else if (!failure && !readiness) {
       const hosted = await ensureHosted(deps, session);
       if (!hosted.ok) failure = hosted.error;
-      else {
-        const payload = delivery.payload as PromptPayload;
-        const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text: payload.text, parts: payload.parts, deliveryId: delivery.id });
-        if (!sent.ok) failure = sent.error;
-      }
+    }
+    if (!failure && session) {
+      const payload = delivery.payload as PromptPayload;
+      const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text: payload.text, parts: payload.parts, deliveryId: delivery.id, ...(startAttemptId === undefined ? {} : { startAttemptId }) });
+      if (!sent.ok) failure = sent.error;
     }
     const now = deps.now();
     if (!failure) {
@@ -164,6 +195,13 @@ async function attemptClaimed(deps: DeliveryDeps, delivery: Delivery): Promise<R
       // 只有持久化的、带同一个 deliveryId 的 ended 才能通过 finishSending 收掉它。
       return ok(undefined);
     }
+    if (failure.deliveryDeferred) {
+      await requeueRefusedPromptClaimed(deps, sessionId, delivery.id);
+      return ok(undefined);
+    }
+    // Readiness-aware dispatch without an explicit unsent proof is uncertain: it may
+    // already have reached the worker. Keep sending until exact ended/refusal evidence.
+    if (readiness && startAttemptId !== undefined) return ok(undefined);
     const next = failure.code === 'unavailable'
       ? afterFailure(delivery, failure.message, now, deps.random)
       : { ...delivery, attempt: delivery.attempt + 1, state: 'undelivered' as const, nextAt: null, lastError: failure.message, updatedAt: now };
@@ -175,6 +213,21 @@ async function attemptClaimed(deps: DeliveryDeps, delivery: Delivery): Promise<R
     }
     return ok(undefined);
   });
+}
+
+/** Only call after the gateway/worker has proved this exact prompt was never accepted. */
+export async function requeueRefusedPrompt(deps: DeliveryDeps, sessionId: SessionId, deliveryId: string): Promise<boolean> {
+  return deps.queue.run(sessionId, () => requeueRefusedPromptClaimed(deps, sessionId, deliveryId));
+}
+
+async function requeueRefusedPromptClaimed(deps: DeliveryDeps, sessionId: SessionId, deliveryId: string): Promise<boolean> {
+  const current = await deps.deliveries.inFlight(sessionId);
+  if (!current || current.sessionId !== sessionId || current.id !== deliveryId || await findDeliveryEnded(deps, current)) return false;
+  const fresh = await deps.deliveries.byId(deliveryId);
+  if (!fresh || fresh.sessionId !== sessionId || fresh.state !== 'sending' || (await deps.deliveries.inFlight(sessionId))?.id !== deliveryId) return false;
+  const now = deps.now();
+  await deps.deliveries.save({ ...fresh, state: 'queued', nextAt: now + TURN_WAIT_MS, updatedAt: now });
+  return true;
 }
 
 /**
@@ -444,10 +497,22 @@ export async function recoverOrphanedTurns(
 /** 人点「立即重试」：只对未送达、或排队中的会话队首有效；重新给满 10 次。 */
 export async function retryDeliveryNow(deps: DeliveryDeps, id: string): Promise<Result<void, DomainError>> {
   const d = await deps.deliveries.byId(id);
-  if (!d || (d.state !== 'undelivered' && d.state !== 'queued')) return err(notFound('没有这条待送达的消息'));
-  const head = (await deps.deliveries.pendingFor(d.sessionId))[0];
-  if (head?.id !== d.id) return err({ code: 'conflict', message: '前面还有消息没送达，先处理前面的' });
-  return attemptDelivery(deps, { ...d, attempt: 0 });
+  if (!d) return err(notFound('没有这条待送达的消息'));
+  const sessionId = d.sessionId as SessionId;
+  return deps.queue.run(sessionId, async () => {
+    const current = await deps.deliveries.byId(id);
+    if (!current || (current.state !== 'undelivered' && current.state !== 'queued')) return err(notFound('没有这条待送达的消息'));
+    const head = (await deps.deliveries.pendingFor(sessionId))[0];
+    if (head?.id !== id) return err({ code: 'conflict', message: '前面还有消息没送达，先处理前面的' });
+    // Do not clear/start anything while an older turn is still uncertain.
+    if (!(await turnInProgress(deps, sessionId))) {
+      const session = await deps.sessions.byId(sessionId);
+      if (deps.gateway.sessionStartReadiness?.(sessionId, session?.workerId).state === 'failed') {
+        deps.gateway.retrySessionStart?.(sessionId, session?.workerId);
+      }
+    }
+    return attemptClaimed(deps, { ...current, attempt: 0 });
+  });
 }
 
 /** 人点「撤回」：不再送；journal 里那句话保留，另记一条说明。 */

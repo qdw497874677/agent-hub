@@ -1079,6 +1079,15 @@ export function createApp(options: AppOptions): Hono {
   }
   );
 
+  // Runtime startup is a live observation, not a session status or model-inference check.
+  app.get('/api/sessions/:sessionId/startup', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const session = await deps.sessions.byId(asSessionId(c.req.param('sessionId')));
+    if (!session) return fail(c, notFound('会话不存在'));
+    const startup = deps.gateway.sessionStartReadiness?.(session.id, session.workerId) ?? { state: 'untracked' as const };
+    return c.json(startup.state === 'failed' ? { state: startup.state, reason: startup.reason } : { state: startup.state });
+  });
+
   // 送达状态（ADR 0031 D2）：气泡下的「排队中 / 发送中 / 未送达 · 立即重试 · 撤回」。不回 payload。
   app.get('/api/sessions/:sessionId/deliveries', async (c) => {
     if (!deps.deliveries) return c.json([]);

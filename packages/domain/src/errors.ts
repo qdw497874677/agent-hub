@@ -10,6 +10,8 @@ export type DomainErrorCode =
 export interface DomainError {
   readonly code: DomainErrorCode;
   readonly message: string;
+  /** Gateway proved synchronously that the command was never sent. */
+  readonly deliveryDeferred?: true;
 }
 
 export const invalid = (message: string): DomainError => ({ code: 'invalid', message });

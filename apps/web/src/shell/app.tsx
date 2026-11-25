@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AttachmentInputDto, CanvasDto, ProjectDto, PromptAckDto, SessionDto, TaskDto } from './api.ts';
-import { api } from './api.ts';
+import { api, RequestFailed } from './api.ts';
 import { projectKeys } from './query-keys.ts';
 import { HomePage } from '../surfaces/workbench/home.tsx';
 import { AdminPage } from './admin/page.tsx';
@@ -168,7 +168,7 @@ function Workspace() {
   }, [canvas, projects]);
 
   // 内存里的会话流：先用画布投影的历史播种，之后只吃比它新的帧；断线重连后补帧并刷新画布。
-  const { live, seed, loadHistory, state: stream } = useLiveStream(refresh);
+  const { live, seed, loadHistory, history, state: stream } = useLiveStream(refresh);
 
   const seedRef = useRef(seed);
   seedRef.current = seed;
@@ -346,7 +346,7 @@ function Workspace() {
   const sideSession = useQuery({
     queryKey: ['session', selected],
     queryFn: () => api.session(selected ?? ''),
-    enabled: selected !== null && inCanvas === null,
+    enabled: selected !== null && canvas.data !== undefined && inCanvas === null,
     retry: false,
     staleTime: 5_000
   });
@@ -527,11 +527,13 @@ function Workspace() {
           />
         </div>
 
-      {canvas.data && view === 'focus' && selectedSession ? (
+      {view === 'focus' ? canvas.data && selectedSession ? (
         <FocusView
           canvas={canvas.data}
           session={selectedSession}
           live={resolveLive(selectedSession, canvas.data.previews[selectedSession.id] ?? [], live[selectedSession.id])}
+          historyState={history[selectedSession.id] ?? 'loading'}
+          onRetryHistory={() => void loadHistory(selectedSession)}
           draft={drafts[selectedSession.id] ?? ''}
           onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
           onBack={backFromFocus}
@@ -543,6 +545,17 @@ function Workspace() {
             changeOption(selectedSession.id, optionId, value)
           }
         />
+      ) : (
+        <div className="flex min-h-0 flex-1 items-center justify-center px-6" data-testid="session-route-state">
+          <div className="max-w-sm space-y-3 text-center" role={canvas.isError || sideSession.isError || !selected ? 'alert' : 'status'}>
+            <p className="text-body text-primary">{!selected ? '没有指定会话' : canvas.isError ? '项目内容读取失败' : !canvas.data || sideSession.isPending ? '正在读取会话…' : sideSession.error instanceof RequestFailed && sideSession.error.status === 403 ? '没有权限查看这条会话' : sideSession.error instanceof RequestFailed && sideSession.error.status === 404 ? '找不到这条会话' : '会话读取失败'}</p>
+            <p className="text-meta text-tertiary">{!canvas.data && !canvas.isError ? '请稍候，确认会话后才能发送消息。' : '确认会话后才能发送消息。'}</p>
+            <div className="flex flex-wrap justify-center gap-3 text-sub">
+              <button type="button" onClick={backFromFocus} className="min-h-11 text-tertiary hover:text-primary">返回</button>
+              {(canvas.isError || sideSession.isError) ? <button type="button" onClick={() => void (canvas.isError ? canvas.refetch() : sideSession.refetch())} className="min-h-11 text-sage underline underline-offset-2">重试</button> : null}
+            </div>
+          </div>
+        </div>
       ) : (
       <div className="flex min-h-0 min-w-0 flex-1">
         {/* min-w-0：不然行里截断的长标题会按 min-content 把这一栏撑出屏（390 宽下整页能横滑 200px） */}
@@ -564,6 +577,8 @@ function Workspace() {
             <CanvasView
               canvas={{ ...display.canvas, layout: display.canvas.layout }}
               live={live}
+              history={history}
+              onRetryHistory={(session) => void loadHistory(session)}
               onDerive={setDeriveFor}
               onOpen={openSession}
               onChanged={refresh}

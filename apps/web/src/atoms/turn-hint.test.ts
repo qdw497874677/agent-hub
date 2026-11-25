@@ -49,16 +49,16 @@ test('有回执（带 seq）就改用服务端的送达状态：投递在途', (
     deliveries: [delivery(4, 'sending')],
     progress: null
   });
-  assert.equal(hint?.text, '正在发送…');
+  assert.equal(hint?.text, '等待模型首次回应');
   assert.equal(hint?.stage, 'delivery');
-  assert.match(hint?.detail ?? '', /还没看到它的输出/);
+  assert.match(hint?.detail ?? '', /还没有看到本轮输出/);
 });
 
 test('交出去但一个字都没吐：还是送达层，不因为「没有块」说运行时在动', () => {
   const sent = delivery(4, 'sending');
   const hint = turnHint({ pending: [], delivery: sent, deliveries: [sent], progress: starting });
   assert.equal(hint?.stage, 'delivery');
-  assert.equal(hint?.text, '正在发送…');
+  assert.equal(hint?.text, '等待模型首次回应');
   assert.equal(hint?.phase, 'sending');
 });
 
@@ -66,7 +66,7 @@ test('只有登记块（附件 / 批准卡这类）：也不算 agent 在动', (
   const sent = delivery(4, 'sending');
   const hint = turnHint({ pending: [], delivery: sent, deliveries: [sent], progress: waiting });
   assert.equal(hint?.stage, 'delivery');
-  assert.equal(hint?.text, '正在发送…');
+  assert.equal(hint?.text, '等待模型首次回应');
 });
 
 test('当前这句还在排队，上一句在输出：说排队，不把上一句的输出算到它头上', () => {
@@ -75,7 +75,7 @@ test('当前这句还在排队，上一句在输出：说排队，不把上一�
   const hint = turnHint({ pending: [queued], delivery: running, deliveries: [running], progress: writing });
   assert.equal(hint?.stage, 'delivery');
   assert.equal(hint?.phase, 'queued');
-  assert.equal(hint?.text, '排队中 · 还没交给 agent');
+  assert.equal(hint?.text, '已排队 · 等待投递');
 });
 
 test('回执到了但还没写进对话：仍说自己在发，不借上一句的输出', () => {
@@ -89,7 +89,7 @@ test('回执到了但还没写进对话：仍说自己在发，不借上一句�
 test('排在别人后面：说排队，不说在发', () => {
   const all = [delivery(1, 'undelivered'), delivery(2, 'queued')];
   const hint = turnHint({ pending: [], delivery: all[1], deliveries: all, progress: null });
-  assert.equal(hint?.text, '排队中 · 还没交给 agent');
+  assert.equal(hint?.text, '已排队 · 等待投递');
   assert.equal(hint?.stage, 'delivery');
   assert.equal(hint?.phase, 'queued');
 });
@@ -115,7 +115,7 @@ test('超时只是「不确定」：不推成失败，也不自己编一行状�
 test('时间过去多久都不改口：sending 一直是在发', () => {
   const old = delivery(5, 'sending', { createdAt: T0 - 3_600_000, updatedAt: T0 - 3_600_000 });
   const hint = turnHint({ pending: [], delivery: old, deliveries: [old], progress: null });
-  assert.equal(hint?.text, '正在发送…');
+  assert.equal(hint?.text, '等待模型首次回应');
   assert.equal(hint?.stage, 'delivery');
 });
 

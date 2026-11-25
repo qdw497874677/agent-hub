@@ -24,6 +24,8 @@ export interface StartSpec {
   readonly branch?: BranchSpec;
   /** 开跑前就要定下的可调项（键是 option id）。空对象 = 全部用 agent 的默认。 */
   readonly options: Readonly<Record<string, string | boolean>>;
+  /** Require a prompt-readiness barrier for managed startup; does not prove inference will succeed. */
+  readonly requirePromptReady?: boolean;
   /** hub 能力层（MCP）。运行时按自己的方式注入：ACP 走 session/new.mcpServers，Pi 走环境变量。 */
   readonly tools?: ToolAccess;
   /** hub 下发到这台 Worker 的技能与指令（专属目录里的绝对路径）。运行时按自己的启动参数指过去，不碰全局目录。 */
@@ -61,6 +63,8 @@ export interface SessionAssets {
 
 export interface RuntimeSession {
   readonly sessionId: SessionId;
+  /** Await actual runtime initialization and requested startup configuration, when supported. */
+  prepareForPrompt?(): Promise<Result<void, DomainError>>;
   /** 文本 + 附件。附件不认识的 agent 要返回带原因的错误，不许静默丢掉。 */
   prompt(input: PromptInput): Promise<Result<void, DomainError>>;
   interrupt(): Promise<void>;

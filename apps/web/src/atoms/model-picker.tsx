@@ -190,7 +190,7 @@ function ModelSheet({
               取消
             </button>
           </div>
-          {narrow && note !== undefined ? (
+          {note !== undefined ? (
             // 窄屏：抽屉一打开就在搜索框下面，还没选模型就先看见「换提供方会重启进程」。
             // 放在列表外面，滚动候选时也不会被推走。
             <p
@@ -233,20 +233,6 @@ function ModelSheet({
                 ))}
               </Command.Group>
             ))}
-            {note === undefined || narrow ? null : (
-              // 说明行不是候选项：disabled 让 cmdk 跳过它（键盘不聚焦、点了也不选），
-              // value 用不可能跟模型 id 撞的值，免得它被当成「当前选中」。
-              <Command.Item
-                value="scope-note"
-                disabled
-                className="flex min-h-[40px] items-center gap-2 px-3 pt-1 text-meta text-tertiary sm:min-h-0"
-              >
-                <span aria-hidden className="w-4 shrink-0 text-center">
-                  ·
-                </span>
-                <span className="min-w-0 flex-1">{note}</span>
-              </Command.Item>
-            )}
           </Command.List>
         </Command>
   );

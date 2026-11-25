@@ -31,6 +31,9 @@ export function installFrames(ctx: LinkCtx, sessions: Sessions, transport: Trans
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       options.onLog?.(`${command.kind} 指令失败：${reason}`);
+      // A prompt failure after adapter invocation is ambiguous; never tear down
+      // a runtime that may already have been replaced while awaiting it.
+      if (command.kind === 'prompt') return;
       send({
         type: 'event',
         sessionId: command.sessionId,
@@ -49,8 +52,9 @@ export function installFrames(ctx: LinkCtx, sessions: Sessions, transport: Trans
     options.onLog?.(`拒绝越权指令 ${command.kind}：${reason}`);
     if (command.kind === 'update') send({ type: 'update_status', state: 'refused', message: reason, logTail: '' });
     else if (command.kind === 'runtime_job') send({ type: 'runtime_job_status', jobId: command.jobId, state: 'refused', message: reason, lines: [] });
-    else if (command.kind === 'start_session' || command.kind === 'prompt')
-      send({ type: 'event', sessionId: command.sessionId, event: { kind: 'ended', outcome: 'failed', reason } });
+    else if (command.kind === 'start_session' || command.kind === 'prompt') {
+      if (!sessions.refuse(command)) send({ type: 'event', sessionId: command.sessionId, event: { kind: 'ended', outcome: 'failed', reason } });
+    }
   }
 
   async function update(commit: string): Promise<void> {

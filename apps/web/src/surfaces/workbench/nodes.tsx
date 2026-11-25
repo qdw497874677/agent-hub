@@ -13,7 +13,7 @@ import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
 import { PinnedMark } from '../../atoms/pinned-mark.tsx';
 import { CardComposer } from './card-composer.tsx';
 import { OptionControls } from '../../atoms/options.tsx';
-import { HubSwitchNote, useSessionOptions } from '../../atoms/session-options.tsx';
+import { useSessionOptions } from '../../atoms/session-options.tsx';
 import { PHASE_DOT, phaseLabel, phaseTone, sessionPhase, type SessionPhase } from './session-status.ts';
 import {
   cardBlocks,
@@ -540,10 +540,6 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             onChange={(optionId, value) => run(() => onChangeOption(optionId, value))}
             compact
           />
-          {/* 卡片宽 320px：提醒单独一行，宁可多一行也不压模型下拉。 */}
-          <div className="mt-1 empty:hidden">
-            <HubSwitchNote note={sessionOptions.note} testId="hub-switch-note-card" />
-          </div>
         </div>
       )}
 

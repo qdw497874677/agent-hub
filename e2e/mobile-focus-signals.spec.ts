@@ -74,6 +74,13 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     expect(derived.ok(), await derived.text()).toBe(true);
     const session = (await derived.json()) as { id: string };
 
+    // 原生模型之间切换不涉及重新托管，不显示跨提供商提醒。
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/#/p/${project.id}/focus/${session.id}`);
+    await page.getByRole('button', { name: /^(模型|Model)：/ }).click();
+    await expect(page.getByTestId('model-scope-note')).toHaveCount(0);
+    await page.getByRole('button', { name: '取消' }).click();
+
     // hub 提供商：清单里 hub 模型与原生模型并存，才该出现「换提供商会重启进程」的提醒。
     const seeded = await page.request.post('/api/providers', {
       data: {
@@ -93,15 +100,21 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/#/p/${project.id}/focus/${session.id}`);
+    // 同地址的 hash 导航不会刷新之前的模型缓存；重新载入后读取新建提供商。
+    await page.reload();
     const log = page.getByRole('log', { name: '会话记录' });
     const hint = page.getByTestId('turn-hint');
 
     // —— 发送中：文案只有一条，且在对话末尾（不在输入框上方，也不在气泡下面重复）
     let delayPrompt = true;
+    let releaseFirst: (() => void) | undefined;
+    const promptIds: string[] = [];
     await page.route('**/api/sessions/*/prompt', async (route) => {
+      const payload = route.request().postDataJSON() as { clientMessageId?: string };
+      if (payload.clientMessageId) promptIds.push(payload.clientMessageId);
       if (!delayPrompt) return route.continue();
       delayPrompt = false;
-      await new Promise((done) => setTimeout(done, 2_000));
+      await new Promise<void>((done) => { releaseFirst = done; });
       await route.continue();
     });
     await page.getByLabel('发送消息').fill('please-hold:h1');
@@ -112,6 +125,24 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     await expect(page.getByTestId('pending-state')).toHaveCount(0); // 窄屏不再在气泡下补一行
     await expect(page.getByTestId('delivery-note')).toHaveCount(0);
     await expect(page.getByTestId('turn-progress')).toHaveCount(0); // 输入框上方不再重复
+    for (const width of [1280, 1440, 320, 390]) {
+      await page.setViewportSize({ width, height: 800 });
+      await expect(hint).toHaveAttribute('data-stage', 'delivery');
+      await expect(page.getByTestId('pending-state')).toHaveCount(0);
+      await expect(page.getByTestId('turn-progress')).toHaveCount(0);
+    }
+    await expect(page.getByTestId('pending-unknown')).toBeVisible({ timeout: 12_000 });
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 800 });
+      await expect(page.getByTestId('pending-unknown')).toContainText('未收到回执');
+      await expect(page.getByTestId('pending-unknown')).toContainText('重试会沿用同一消息');
+      await expect(page.getByTestId('pending-unknown')).toContainText('不会取消消息');
+      await expect(hint).toHaveCount(0);
+    }
+    await page.getByTestId('pending-retry').click();
+    await expect.poll(() => promptIds.length).toBe(2);
+    expect(promptIds[1]).toBe(promptIds[0]);
+    releaseFirst?.();
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'mobile-signal-sending.png') });
 
     // —— 进了运行时：只说运行时的事实（假 agent 进门控后先吐一句再等放行），
@@ -157,20 +188,32 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     expect(overflow, '320 宽不该横向滚动').toBeLessThanOrEqual(1);
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'mobile-signal-320.png') });
 
-    // —— 桌面回归：进度回到输入框上方，分支平铺可见，工作区和模型抽屉都不出现
+    // —— 桌面回归：进度与手机一致，分支仍平铺，模型提示只在选择器中出现
     await page.setViewportSize({ width: 1280, height: 800 });
-    await expect(page.getByTestId('turn-hint')).toHaveCount(0);
-    await expect(page.getByTestId('turn-progress')).toBeVisible();
-    await expect(page.getByTestId('turn-progress-phase')).toHaveText('正在输出…');
+    await expect(page.getByTestId('turn-hint')).toHaveAttribute('data-stage', 'runtime');
+    await expect(page.getByTestId('turn-hint')).toHaveText('正在输出…');
+    await expect(page.getByTestId('turn-progress')).toHaveCount(0);
+    await expect(page.getByTestId('delivery-note')).toHaveCount(0);
     await expect(page.getByTestId('git-branch')).toBeVisible();
     await expect(page.getByTestId('workspace-entry')).toHaveCount(0);
-    await expect(page.getByTestId('hub-switch-note')).toBeVisible();
+    await expect(page.getByTestId('hub-switch-note')).toHaveCount(0);
+    await page.getByRole('button', { name: /^(模型|Model)：/ }).click();
+    await expect(page.getByTestId('model-scope-note')).toContainText('当前回合未结束时不能切换');
+    await page.getByRole('button', { name: '取消' }).click();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(hint).toHaveAttribute('data-stage', 'runtime');
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'mobile-signal-1280.png') });
 
     // —— 放开这一轮：进度自己消失，不残留一行「在等」
     await page.setViewportSize({ width: 390, height: 844 });
     writeFileSync(join(gate, 'hold-h1.go'), '');
     await expect(page.getByTestId('turn-hint')).toHaveCount(0, { timeout: 30_000 });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`/#/p/${project.id}/canvas`);
+    await expect(page.locator('.react-flow__node-session').first()).toBeVisible();
+    await expect(page.getByTestId('hub-switch-note-card')).toHaveCount(0);
+    await page.locator('.react-flow__node-session').first().getByRole('button', { name: /^(模型|Model)：/ }).click();
+    await expect(page.getByTestId('model-scope-note')).toContainText('当前回合未结束时不能切换');
   } finally {
     worker.kill();
     await page.request.delete(`/api/workers/${encodeURIComponent(workerId)}`, { headers }).catch(() => undefined);

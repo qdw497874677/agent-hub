@@ -28,7 +28,7 @@ export function ActionDot({
           <button
             aria-label="排队发送"
             className={`grid ${box} shrink-0 place-items-center rounded-full border border-strong text-primary hover:bg-hover`}
-            title="排队发送：这一轮结束后自动发出（⌘↵）"
+            title="排队发送：先交给服务器等待投递（⌘↵）"
             onClick={onSend}
           >
             <Icon name="queue" size={icon} />

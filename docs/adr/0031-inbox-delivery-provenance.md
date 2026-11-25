@@ -62,6 +62,11 @@ nextRetryAt(attempt, now) = now + min(2s · 2^(attempt-1), 60s) ± 10% 抖动
 - 混合版本部署：先更新 Worker，再更新 Hub。新 Hub 只向当前连接声明 `durable_delivery` 的 Worker 发送带投递号的 prompt；老 Worker 仍可保持在线，但该条 prompt 会在发出前被拒绝，更新 Worker 后可重试。此声明是协议兼容性信号，不是权限授权。
 - 运行时也必须能确认回合归属。例如 Pi 的 RPC `prompt` 回执需提供 `data.disposition`；旧版回执缺少该字段时，不会把之后任意一条 `agent_settled` 当成该投递的终态。升级前先在测试会话验证实际运行时的回执；若结束证据缺失，后续消息会保持排队，不安全地自动重送并非恢复手段。
 
+**运行时就绪门**：新的 Hub 还要求当前连接声明 `session_start_ready`。会话资料和历史可以先加载，Hub 可以先收下消息并持久化排队；启动、离线或需要升级时不占用 `sending`，也不扣重试次数。同一连接上的同一次启动报告就绪后才会派发。这里的「就绪」指运行时完成初始化及适用的配置准备，不代表模型服务已通过推理验证。
+
+- Hub 在发送前发现启动已换代，可以把未发送的消息退回队列。同一连接、同一启动和投递号的 Worker 拒收回执，则必须证明尚未交给适配器；当前启动上的这类拒收会暂停队列，队首可以显式重试（启动新一代运行时）或撤回。准备失败不伪造回合结束，断线或不确定是否已执行也不自动重送。
+- 部署先更新 Worker，再更新 Hub。若要从启用了就绪门的新 Hub 回滚到不支持它的旧 Hub，先停止接收新消息并核对在途回合，再重启相关 Worker 后恢复业务；不支持保留新协议的活跃运行时直接热回连旧 Hub。重启不会把没有结束证据的 `sending` 自动改回待发。
+
 **端口** `ports/delivery-queue.ts`：`enqueue / claimDue(now) / markDelivered / markFailed(nextAt, error) / cancel / pendingFor(sessionId)`。
 
 **存储**（新表，迁移只加不改）：

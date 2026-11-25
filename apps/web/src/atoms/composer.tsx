@@ -5,7 +5,7 @@ import { checkAdd, filterCommands, formatBytes, mentionDraft, toInput, triggerAt
 import { readDraft } from './commands.ts';
 import { growField } from './composer-grow.ts';
 import { OptionControls } from './options.tsx';
-import { HubSwitchNote, useSessionOptions } from './session-options.tsx';
+import { useSessionOptions } from './session-options.tsx';
 import { coarsePointer } from '../shell/device.ts';
 import { useOfflineNotice } from '../shell/workers.tsx';
 import { ActionDot, OfflineNotice } from './composer-parts.tsx';
@@ -34,6 +34,8 @@ interface Props {
   readonly awaiting: boolean;
   /** 专注对话里盒子更大、能长高；画布右栏里它受限于 320px 宽。 */
   readonly large?: boolean;
+  /** 已授权的专注页可让服务端持久排队，即使 Worker 离线。 */
+  readonly allowOfflineSend?: boolean;
   /** agent 自己报上来的可调项（模型、思考强度、模式…），原样渲染。 */
   readonly onChangeOption: (optionId: string, value: string | boolean) => void | Promise<unknown>;
   /** 这个 agent 收不收附件：denied 时按钮灰掉并说原因，limited 时提示怎么降级。 */
@@ -75,6 +77,7 @@ export function Composer({
   error,
   awaiting,
   large = false,
+  allowOfflineSend = false,
   onChangeOption,
   capability,
   commands,
@@ -211,7 +214,7 @@ export function Composer({
 
   const running = awaiting;
   const offline = useOfflineNotice(session.workerId);
-  const canSend = (filled || items.length > 0) && !busy && offline === null;
+  const canSend = (filled || items.length > 0) && !busy && (allowOfflineSend || offline === null);
 
   function refreshTrigger(): void {
     const element = area.current;
@@ -306,8 +309,9 @@ export function Composer({
   async function dispatch(action: (text: string, attachments: readonly AttachmentInputDto[]) => Promise<boolean>): Promise<boolean> {
     const element = area.current;
     const value = element?.value.trim() ?? '';
-    if ((value === '' && items.length === 0) || busy || offline !== null) return false;
+    if ((value === '' && items.length === 0) || busy || (!allowOfflineSend && offline !== null)) return false;
     if (element) element.value = '';
+    onDraftChange('');
     setFilled(false);
     setTrigger(null);
     const sent = await action(value, items.map(toInput));
@@ -317,6 +321,7 @@ export function Composer({
     } else if (element && element.value === '') {
       element.value = value;
       setFilled(value !== '');
+      onDraftChange(value);
       fitArea();
     }
     return sent;
@@ -344,7 +349,7 @@ export function Composer({
   return (
     <div className="relative">
       {error ? <p className="mb-1 text-meta text-rust">{error}</p> : null}
-      <OfflineNotice text={offline} />
+      <OfflineNotice text={allowOfflineSend ? null : offline} />
       {options.length > 0 ? (
         <ul
           role="listbox"
@@ -530,13 +535,6 @@ export function Composer({
             size={large ? 'md' : 'sm'}
           />
         </div>
-        {/* 「换提供商会重启进程」：桌面独占一行放在底栏下面。窄屏把它移到模型选择器里
-            （换提供方这件事是在那里发生的），输入区只留一行模型芯片。 */}
-        {sessionOptions.note === undefined ? null : (
-          <div className="mt-1 hidden md:block">
-            <HubSwitchNote note={sessionOptions.note} />
-          </div>
-        )}
       </div>
     </div>
   );

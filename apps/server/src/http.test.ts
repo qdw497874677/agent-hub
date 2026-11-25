@@ -375,7 +375,7 @@ test('MS-2：接上送达队列后，派发失败仍然是 202；失败落在 de
   });
   assert.equal(prompted.status, 202, JSON.stringify(prompted.body));
   const ack = prompted.body as { ok: boolean; seq: number; deliveryId: string | null; state: string };
-  assert.equal(ack.state, 'sending', 'ack 先回执，不等派发');
+  assert.equal(ack.state, 'queued', 'ack 确认落盘排队，不等运行时接收');
   assert.ok(ack.deliveryId);
 
   // 后台那一段微任务跑完后，失败只落在 delivery 上。

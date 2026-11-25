@@ -3,7 +3,7 @@ import type { PendingPrompt } from './pending-prompt.ts';
 import type { TurnPhase, TurnProgress } from './turn-progress.ts';
 
 /**
- * 窄屏对话末尾的那**一条**进度：现在到底到哪一步了。
+ * 专注对话两端共用的那**一条**进度：现在到底到哪一步了。
  *
  * 原来同一件事有三处说法：气泡下面的「发送中…」、输入框上方的「正在启动 …」、还有一个「⋯」，
  * 手机上三条叠在一起，读起来像三件不同的事。这里只挑一条，而且只挑有证据的：
@@ -39,10 +39,10 @@ export function queuedBehind(delivery: DeliveryDto, all: Iterable<DeliveryDto>):
  * 是的话它就是这件事唯一的说法，对话末尾不再重复一条进度；不是的话（纯等待）
  * 由 `turnHint` 那一条承担，气泡下面保持安静。
  */
-export function deliveryNeedsAction(delivery: DeliveryDto, all: Iterable<DeliveryDto>): boolean {
-  if (delivery.state === 'undelivered' || delivery.attempt > 0) return true;
+export function deliveryNeedsAction(delivery: DeliveryDto, all: Iterable<DeliveryDto>, withdrawQueued = false): boolean {
+  if (delivery.state === 'undelivered' || (delivery.state === 'queued' && delivery.attempt > 0)) return true;
   // 排在别人后面时只写「等上一条送达」，没有按钮；轮到它自己才有「撤回」。
-  return delivery.state === 'queued' && !queuedBehind(delivery, all);
+  return delivery.state === 'queued' && (withdrawQueued || !queuedBehind(delivery, all));
 }
 
 /** 这一条进度说的是哪一层的事：送达（服务端）还是运行时（agent 进程）。 */
@@ -66,12 +66,13 @@ export interface TurnHintInput {
   readonly deliveries: Iterable<DeliveryDto>;
   /** 这一轮的运行时进度（`turnProgress`）；回合没在跑时是 null。 */
   readonly progress: TurnProgress | null;
+  readonly withdrawQueued?: boolean;
 }
 
 /** 能算作「agent 真的在动」的相位：要么有输出，要么在等工具。空窗和只有登记块都不算。 */
 const RUNTIME_ACTIVITY: ReadonlySet<TurnPhase> = new Set<TurnPhase>(['writing', 'tool']);
 
-export function turnHint({ pending, delivery, deliveries, progress }: TurnHintInput): TurnHint | null {
+export function turnHint({ pending, delivery, deliveries, progress, withdrawQueued = false }: TurnHintInput): TurnHint | null {
   // 1. 本地还有一条比 `delivery` 更晚的消息（没回执，或已有回执但还没写进对话）：
   //    当前这一句是它，运行时进度属于上一句，不能借来说它。
   const newest = pending[pending.length - 1];
@@ -80,8 +81,8 @@ export function turnHint({ pending, delivery, deliveries, progress }: TurnHintIn
     if (newest.state === 'unknown') return null;
     if (newest.state === 'queued') {
       return {
-        text: '排队中 · 还没交给 agent',
-        detail: '服务器已经收下这条消息，前面那条还没送完',
+        text: '已排队 · 等待投递',
+        detail: '服务器已经收下这条消息，正在等待投递',
         stage: 'delivery',
         phase: 'queued'
       };
@@ -98,21 +99,21 @@ export function turnHint({ pending, delivery, deliveries, progress }: TurnHintIn
   //    `sending` 会一直占到这一轮真的结束（结束证据才写 delivered，ADR 0031 D2），
   //    所以它压不住**有证据**的运行时；但「还没有块」只是没证据，送达层怎么说就怎么说。
   if (delivery !== undefined && HELD_DELIVERY_STATES.has(delivery.state)) {
-    if (deliveryNeedsAction(delivery, deliveries)) return null;
+    if (deliveryNeedsAction(delivery, deliveries, withdrawQueued)) return null;
     if (delivery.state === 'sending') {
       if (progress !== null && RUNTIME_ACTIVITY.has(progress.phase)) {
         return { text: progress.label, detail: progress.detail, stage: 'runtime', phase: progress.phase };
       }
       return {
-        text: '正在发送…',
-        detail: '服务器正在把这条消息交给 agent，还没看到它的输出',
+        text: '等待模型首次回应',
+        detail: '服务器正在投递这条消息，还没有看到本轮输出',
         stage: 'delivery',
         phase: 'sending'
       };
     }
     return {
-      text: '排队中 · 还没交给 agent',
-      detail: '服务器已经存下这条消息，前面那条还没送完',
+      text: '已排队 · 等待投递',
+      detail: '服务器已经存下这条消息，正在等待投递',
       stage: 'delivery',
       phase: 'queued'
     };

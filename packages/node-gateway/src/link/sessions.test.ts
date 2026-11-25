@@ -15,6 +15,7 @@ import {
   type SessionEvent
 } from '@agent-hub/domain';
 import { createLinkCtx } from './ctx.ts';
+import type { WorkerLinkOptions } from './ctx.ts';
 import { installSessions, type Sessions } from './sessions.ts';
 import type { Transport } from './transport.ts';
 
@@ -71,7 +72,7 @@ function fakeSession(sessionId: string, tag: string, log: string[]): TaggedSessi
   };
 }
 
-function setup(runtime: AgentRuntime): { ctx: ReturnType<typeof createLinkCtx>; sessions: Sessions; frames: WorkerToServer[] } {
+function setup(runtime: AgentRuntime, extra: Partial<WorkerLinkOptions> = {}): { ctx: ReturnType<typeof createLinkCtx>; sessions: Sessions; frames: WorkerToServer[] } {
   const ctx = createLinkCtx({
     url: 'ws://127.0.0.1:9/worker',
     token: 't',
@@ -80,7 +81,8 @@ function setup(runtime: AgentRuntime): { ctx: ReturnType<typeof createLinkCtx>; 
     runtimes: [runtime],
     // 测试里不要空闲回收 / 保活上限：只观察 start 的串行关系。
     sessionIdleMs: 0,
-    keepAliveMax: 0
+    keepAliveMax: 0,
+    ...extra
   });
   const channel = {
     request: async () => ({ ok: false as const, error: { code: 'closed', message: '测试没有 hub' } }),
@@ -90,6 +92,7 @@ function setup(runtime: AgentRuntime): { ctx: ReturnType<typeof createLinkCtx>; 
   const transport = {
     channel: channel as unknown as Transport['channel'],
     send: (frame: WorkerToServer) => frames.push(frame),
+    originOf: () => ({}),
     sendOnOrigin: (_command: ServerToWorker, frame: WorkerToServer) => {
       if (frame.type === 'branch_attempt_result' && frame.outcome !== 'both_failed') assert.equal(ctx.sessions.has(frame.sessionId), true);
       frames.push(frame);
@@ -161,6 +164,198 @@ async function until(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+const promptCommand = (sessionId: string, deliveryId: string, startAttemptId?: string): Extract<ServerToWorker, { kind: 'prompt' }> => ({
+  kind: 'prompt', sessionId: asSessionId(sessionId), text: 'hello', parts: [], deliveryId,
+  ...(startAttemptId === undefined ? {} : { startAttemptId })
+});
+
+test('keyed starts fence immediately, serialize, prepare and reject stale prompts without replay', async () => {
+  const log: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const runtime: AgentRuntime = {
+    descriptor: descriptor(),
+    async start(spec) {
+      log.push(`start:${spec.workspaceRoot}:${spec.requirePromptReady}`);
+      if (spec.workspaceRoot === '/a') await gate;
+      const session = fakeSession(spec.sessionId, spec.workspaceRoot, log);
+      session.prompt = async () => { log.push(`prompt:${spec.workspaceRoot}`); return { ok: true, value: undefined }; };
+      session.prepareForPrompt = async () => { log.push(`prepare:${spec.workspaceRoot}`); return { ok: true, value: undefined }; };
+      return { ok: true, value: session };
+    }
+  };
+  const { sessions, frames } = setup(runtime);
+  const a = sessions.run(startCommand('s', '/a', { startAttemptId: 'a' }));
+  await until(() => log.includes('start:/a:true'));
+  const b = sessions.run(startCommand('s', '/b', { startAttemptId: 'b' }));
+  const stale = sessions.run(promptCommand('s', 'old', 'a'));
+  release();
+  await Promise.all([a, b, stale]);
+  assert.deepEqual(frames.filter((f) => f.type === 'session_start_result').map((f) => [f.startAttemptId, f.state]), [['b', 'ready']]);
+  assert.deepEqual(frames.filter((f) => f.type === 'prompt_start_refused'), [{ type: 'prompt_start_refused', sessionId: 's', startAttemptId: 'a', deliveryId: 'old' }]);
+  await sessions.run(promptCommand('s', 'ok', 'b'));
+  await sessions.run(promptCommand('s', 'ok', 'a'));
+  assert.deepEqual(log.filter((s) => s.startsWith('prompt:')), ['prompt:/b']);
+  assert.equal(frames.filter((f) => f.type === 'prompt_start_refused').length, 1);
+  await sessions.closeAll();
+});
+
+test('failed keyed replacement retains old runtime but fences it; legacy can re-adopt', async () => {
+  const log: string[] = [];
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start(spec) {
+    const session = fakeSession(spec.sessionId, 'old', log);
+    session.prompt = async () => { log.push('prompt'); return { ok: true, value: undefined }; };
+    session.changeOption = async () => ({ ok: false, error: { code: 'invalid', message: 'bad option' } } as Awaited<ReturnType<RuntimeSession['changeOption']>>);
+    return { ok: true, value: session };
+  } };
+  const { ctx, sessions, frames } = setup(runtime);
+  await sessions.run(startCommand('s', '/tmp', { startAttemptId: 'old' }));
+  await sessions.run(startCommand('s', '/tmp', { startAttemptId: 'new', options: { model: 'bad' } }));
+  assert.equal(ctx.sessions.has('s'), true);
+  await sessions.run(promptCommand('s', 'stale', 'old'));
+  await sessions.run(promptCommand('s', 'legacy'));
+  assert.equal(log.includes('prompt'), false);
+  assert.ok(frames.some((f) => f.type === 'session_start_result' && f.startAttemptId === 'new' && f.state === 'failed' && f.reason === 'configuration'));
+  await sessions.run(startCommand('s', '/tmp'));
+  await sessions.run(promptCommand('s', 'legacy-ok'));
+  assert.equal(log.filter((s) => s === 'prompt').length, 1);
+  await sessions.closeAll();
+});
+
+test('replacement during attachment persistence refuses before adapter boundary', async () => {
+  const log: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start(spec) {
+    const session = fakeSession(spec.sessionId, spec.workspaceRoot, log);
+    session.prompt = async () => { log.push(`prompt:${spec.workspaceRoot}`); return { ok: true, value: undefined }; };
+    return { ok: true, value: session };
+  } };
+  const files = { check: async () => null, writeFile: async () => { log.push('writing'); await gate; } } as unknown as WorkerLinkOptions['files'];
+  const { sessions, frames } = setup(runtime, { files });
+  await sessions.run(startCommand('s', '/a', { startAttemptId: 'a' }));
+  const prompt = { ...promptCommand('s', 'd', 'a'), parts: [{ kind: 'file' as const, path: '/tmp/.agent-hub/attachments/x', data: 'eA==', mimeType: 'text/plain', name: 'x' }] };
+  const sending = sessions.run(prompt);
+  await until(() => log.includes('writing'));
+  await sessions.run(startCommand('s', '/b', { startAttemptId: 'b' }));
+  release();
+  await sending;
+  assert.equal(log.some((s) => s.startsWith('prompt:')), false);
+  assert.ok(frames.some((f) => f.type === 'prompt_start_refused' && f.deliveryId === 'd'));
+  await sessions.closeAll();
+});
+
+test('managed startup failures and runtime exit use origin-bound classified results', async () => {
+  const log: string[] = [];
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start(spec) {
+    if (spec.workspaceRoot === '/throw') throw new Error('secret');
+    const session = fakeSession(spec.sessionId, 'live', log);
+    session.prepareForPrompt = async () => ({ ok: true, value: undefined });
+    return { ok: true, value: session };
+  } };
+  const { ctx, sessions, frames } = setup(runtime);
+  await sessions.run(startCommand('bad', '/throw', { startAttemptId: 'f' }));
+  assert.ok(frames.some((f) => f.type === 'session_start_result' && f.state === 'failed' && f.reason === 'runtime'));
+  assert.equal(JSON.stringify(frames).includes('secret'), false);
+  await sessions.run(startCommand('s', '/ok', { startAttemptId: 'a' }));
+  await ctx.sessions.get('s')!.dispose();
+  await until(() => frames.some((f) => f.type === 'session_start_result' && f.sessionId === 's' && f.state === 'ended'));
+  assert.equal(frames.some((f) => f.type === 'status' && f.sessionId === 's' && (f.status === 'ended' || f.status === 'gone')), false);
+  await sessions.closeAll();
+});
+
+test('separate branch and start keys both yield origin results', async () => {
+  const log: string[] = [];
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start() { throw new Error('unexpected'); }, async startBranchAttempt(spec) {
+    return { state: 'started', outcome: 'native', session: fakeSession(spec.sessionId, 'branch', log), agentSessionRef: 'child' };
+  } };
+  const { sessions, frames } = setup(runtime);
+  await sessions.run(startCommand('s', '/tmp', { startAttemptId: 'start', branchAttemptId: 'branch', branch: { fromAgentSessionRef: 'parent', turnRef: null, previousTurnRef: null } }));
+  assert.ok(frames.some((f) => f.type === 'branch_attempt_result' && f.attemptId === 'branch'));
+  assert.ok(frames.some((f) => f.type === 'session_start_result' && f.startAttemptId === 'start' && f.state === 'ready'));
+  await sessions.closeAll();
+});
+
+test('evicted delivery dedup cannot produce a false never-attempted refusal', async () => {
+  const log: string[] = [];
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start(spec) { return { ok: true, value: fakeSession(spec.sessionId, 'live', log) }; } };
+  const { sessions, frames } = setup(runtime);
+  await sessions.run(startCommand('s', '/tmp', { startAttemptId: 'a' }));
+  for (let i = 0; i < 1002; i++) await sessions.run(promptCommand('s', `d-${i}`, 'a'));
+  await sessions.run(promptCommand('s', 'd-0', 'stale'));
+  assert.equal(frames.some((f) => f.type === 'prompt_start_refused' && f.deliveryId === 'd-0'), false);
+  await sessions.closeAll();
+});
+
+test('a bloom collision with four attempted deliveries neither suppresses a fresh prompt nor asserts refusal', async () => {
+  const calls: string[] = [];
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start(spec) {
+    const session = fakeSession(spec.sessionId, 'live', []);
+    session.prompt = async (prompt) => { calls.push(prompt.deliveryId!); return { ok: true, value: undefined }; };
+    return { ok: true, value: session };
+  } };
+  const { sessions, frames } = setup(runtime);
+  await sessions.run(startCommand('s', '/tmp', { startAttemptId: 'a' }));
+  // Each SHA-256 digest contributes one of collision-target's four Bloom bits;
+  // none of these exact delivery IDs equals collision-target.
+  for (const id of ['collision-filler-399684', 'collision-filler-2280224', 'collision-filler-2617470', 'collision-filler-5530307']) {
+    await sessions.run(promptCommand('s', id, 'a'));
+  }
+  await sessions.run(promptCommand('s', 'collision-target', 'stale'));
+  assert.equal(frames.some((f) => f.type === 'prompt_start_refused' && f.deliveryId === 'collision-target'), false);
+  await sessions.run(promptCommand('s', 'collision-target', 'a'));
+  await sessions.run(promptCommand('s', 'collision-target', 'a'));
+  assert.equal(calls.filter((id) => id === 'collision-target').length, 1);
+  await sessions.closeAll();
+});
+
+test('an in-flight delivery remains exactly deduplicated after recent cache eviction', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const calls: string[] = [];
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start(spec) {
+    const session = fakeSession(spec.sessionId, 'live', []);
+    session.prompt = async (prompt) => { calls.push(prompt.deliveryId!); if (prompt.deliveryId === 'active') await gate; return { ok: true, value: undefined }; };
+    return { ok: true, value: session };
+  } };
+  const { sessions } = setup(runtime);
+  await sessions.run(startCommand('s', '/tmp', { startAttemptId: 'a' }));
+  const active = sessions.run(promptCommand('s', 'active', 'a'));
+  await until(() => calls.includes('active'));
+  for (let i = 0; i < 1001; i++) await sessions.run(promptCommand('s', `recent-${i}`, 'a'));
+  await sessions.run(promptCommand('s', 'active', 'a'));
+  assert.equal(calls.filter((id) => id === 'active').length, 1);
+  release();
+  await active;
+  await sessions.closeAll();
+});
+
+test('failed and retired managed sessions refuse stale keyed prompts without bare gone; legacy re-adopts normally', async () => {
+  const calls: string[] = [];
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start(spec) {
+    if (spec.sessionId === 'failed') throw new Error('failed');
+    const session = fakeSession(spec.sessionId, 'live', []);
+    session.prompt = async (prompt) => { calls.push(prompt.deliveryId!); return { ok: true, value: undefined }; };
+    return { ok: true, value: session };
+  } };
+  const { sessions, frames } = setup(runtime);
+  await sessions.run(startCommand('failed', '/tmp', { startAttemptId: 'f' }));
+  await sessions.run(promptCommand('failed', 'failure-prompt', 'f'));
+  await sessions.run(promptCommand('failed', 'failure-legacy'));
+  assert.equal(frames.some((f) => f.type === 'status' && f.sessionId === 'failed' && f.status === 'gone'), false);
+  assert.equal(frames.some((f) => f.type === 'prompt_start_refused' && f.deliveryId === 'failure-prompt'), true);
+  await sessions.run(startCommand('retired', '/tmp', { startAttemptId: 'r' }));
+  await sessions.run({ kind: 'dispose', sessionId: asSessionId('retired') });
+  await sessions.run(promptCommand('retired', 'retired-prompt', 'r'));
+  await sessions.run(promptCommand('retired', 'retired-legacy'));
+  assert.equal(frames.some((f) => f.type === 'status' && f.sessionId === 'retired' && f.status === 'gone'), false);
+  assert.equal(frames.some((f) => f.type === 'prompt_start_refused' && f.deliveryId === 'retired-prompt'), true);
+  await sessions.run(startCommand('retired', '/tmp'));
+  await sessions.run(promptCommand('retired', 'new-legacy'));
+  assert.deepEqual(calls, ['new-legacy']);
+  await sessions.closeAll();
+});
 
 test('同一会话的 start 串行：B 不能抢在被阻塞的 A 前面安装，A 落地后 B 先 dispose 再替换', async () => {
   const log: string[] = [];

@@ -91,6 +91,8 @@ test('画布卡片：弱网超时变未送达，重试不产生重复消息', as
 
   await expect(page.getByTestId('card-pending-prompts')).toBeVisible();
   await expect(page.getByTestId('card-pending-unknown')).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByTestId('card-pending-unknown')).toContainText('未收到回执');
+  await expect(page.getByTestId('card-pending-unknown')).toContainText('不会取消消息');
   await page.getByTestId('card-pending-retry').click();
 
   await expect.poll(async () => promptCount(page, headers, sessionId, text), { timeout: 20_000 }).toBe(1);

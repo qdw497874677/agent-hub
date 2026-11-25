@@ -2,9 +2,8 @@
  * 模型清单有两套来源：agent 自己报的原生模型（`my-codex/zp-glm-5.3-flash`），
  * 和 hub 统一配置的提供商模型（`hub-<slug>/<modelId>`）。它们在同一个 `model` 选项里混着来。
  *
- * 后端的规矩（apps/server/src/providers.ts 的 optionAllowed）：换 hub 提供商 = 新开会话，
- * 同一提供商里换模型可以；原生模型之间随意换。所以候选项得按当前值的类别先收口，
- * 别让人先选一个、再收到「换模型提供商需新开会话」的报错。
+ * 同一 hub 提供商或原生模型之间切换无需重新托管；跨提供商切换会重新托管，
+ * 当前回合未结束时后端会拒绝切换。
  *
  * 拆分规则与 packages/domain/src/provider.ts 的 parseHubModel 一致；web 只允许依赖
  * @agent-hub/contract（scripts/check-import-boundaries.mjs），所以这里照抄一份最小实现。
@@ -49,5 +48,10 @@ export function filterModelsByScope<T extends { readonly value: string }>(
 
 /** 换提供商会重启进程：在需要提醒的地方用它，而不是把模型藏起来。 */
 export function scopeNote(_current: string): string {
-  return '换提供商会重启这条会话的进程（对话历史保留，正在跑的回合会中断）';
+  return '换提供商会重启会话进程并接回对话历史；当前回合未结束时不能切换。';
+}
+
+/** 仅在确有可选择的跨提供商选项时提醒。 */
+export function hasSelectableCrossScope(items: readonly { readonly value: string; readonly disabled?: boolean }[], current: string): boolean {
+  return items.some((item) => item.disabled !== true && !sameModelScope(item.value, current));
 }
