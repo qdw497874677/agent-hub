@@ -33,6 +33,18 @@ export function queuedBehind(delivery: DeliveryDto, all: Iterable<DeliveryDto>):
   return false;
 }
 
+export function uncertainSending(delivery: DeliveryDto, ids: readonly string[]): boolean {
+  return delivery.state === 'sending' && ids.includes(delivery.id);
+}
+
+export function queuedBehindUncertain(delivery: DeliveryDto, all: Iterable<DeliveryDto>, ids: readonly string[]): boolean {
+  if (delivery.state !== 'queued') return false;
+  for (const other of all) {
+    if (other.seq < delivery.seq && uncertainSending(other, ids)) return true;
+  }
+  return false;
+}
+
 /**
  * 气泡下面那行是不是「要人动手」：报错、重试倒计时、撤回。
  *
@@ -67,12 +79,13 @@ export interface TurnHintInput {
   /** 这一轮的运行时进度（`turnProgress`）；回合没在跑时是 null。 */
   readonly progress: TurnProgress | null;
   readonly withdrawQueued?: boolean;
+  readonly uncertainDeliveryIds?: readonly string[];
 }
 
 /** 能算作「agent 真的在动」的相位：要么有输出，要么在等工具。空窗和只有登记块都不算。 */
 const RUNTIME_ACTIVITY: ReadonlySet<TurnPhase> = new Set<TurnPhase>(['writing', 'tool']);
 
-export function turnHint({ pending, delivery, deliveries, progress, withdrawQueued = false }: TurnHintInput): TurnHint | null {
+export function turnHint({ pending, delivery, deliveries, progress, withdrawQueued = false, uncertainDeliveryIds = [] }: TurnHintInput): TurnHint | null {
   // 1. 本地还有一条比 `delivery` 更晚的消息（没回执，或已有回执但还没写进对话）：
   //    当前这一句是它，运行时进度属于上一句，不能借来说它。
   const newest = pending[pending.length - 1];
@@ -101,6 +114,9 @@ export function turnHint({ pending, delivery, deliveries, progress, withdrawQueu
   if (delivery !== undefined && HELD_DELIVERY_STATES.has(delivery.state)) {
     if (deliveryNeedsAction(delivery, deliveries, withdrawQueued)) return null;
     if (delivery.state === 'sending') {
+      if (uncertainSending(delivery, uncertainDeliveryIds)) {
+        return { text: '暂未确认这一轮的结果', detail: '暂未确认这一轮的结果', stage: 'delivery', phase: 'sending' };
+      }
       if (progress !== null && RUNTIME_ACTIVITY.has(progress.phase)) {
         return { text: progress.label, detail: progress.detail, stage: 'runtime', phase: progress.phase };
       }

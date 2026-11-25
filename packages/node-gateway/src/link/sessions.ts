@@ -57,6 +57,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
   const activePrompts = new Map<string, number>();
   // Active attempts cannot age out of the bounded recent-delivery cache.
   const activeDeliveries = new Set<string>();
+  const optionTails = new Map<string, Promise<void>>();
   // A bounded dedup cache alone cannot prove a delivery was never attempted
   // after eviction. A monotone Bloom filter may conservatively suppress a
   // refusal on a false positive, but never emits false negative evidence.
@@ -840,12 +841,24 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       activePrompts.set(sessionId, (activePrompts.get(sessionId) ?? 0) + 1);
       prompting.add(sessionId);
       touch(sessionId);
+      const uncertain = (): void => {
+        if (command.deliveryId && matches()) transport.sendOnOrigin(command, {
+          type: 'event', sessionId,
+          event: { kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId: command.deliveryId }
+        });
+      };
       try {
         const result = await session!.prompt({ text: command.text, parts: command.parts, ...(command.deliveryId ? { deliveryId: command.deliveryId } : {}) });
         if (!result.ok && sessions.get(sessionId) === session && generations.get(sessionId) === generation) {
-          send({ type: 'event', sessionId, event: { kind: 'diagnostic', level: 'error', text: result.error.message } });
-          if (!command.deliveryId) send({ type: 'event', sessionId, event: { kind: 'ended', outcome: 'failed', reason: `发送失败：${result.error.message}` } });
+          if (command.deliveryId) uncertain();
+          else {
+            send({ type: 'event', sessionId, event: { kind: 'diagnostic', level: 'error', text: result.error.message } });
+            send({ type: 'event', sessionId, event: { kind: 'ended', outcome: 'failed', reason: `发送失败：${result.error.message}` } });
+          }
         }
+      } catch (error) {
+        if (!command.deliveryId) throw error;
+        uncertain();
       } finally {
         if (command.deliveryId) activeDeliveries.delete(command.deliveryId);
         const remaining = (activePrompts.get(sessionId) ?? 1) - 1;
@@ -887,16 +900,37 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       return;
     }
     if (command.kind === 'set_option') {
-      const changed = await session.changeOption(command.optionId, command.value);
-      if (!changed.ok) {
-        send({
-          type: 'event',
-          sessionId,
-          event: { kind: 'diagnostic', level: 'error', text: changed.error.message }
-        });
-        return;
-      }
-      send({ type: 'options', sessionId, options: [...changed.value] });
+      const previous = optionTails.get(sessionId) ?? Promise.resolve();
+      const operation = previous.catch(() => undefined).then(async () => {
+        if (sessions.get(sessionId) !== session || generations.get(sessionId) !== generation) return;
+        const known = session.options().find((option) => option.id === command.optionId);
+        if (command.requestId && known && ((known.kind === 'boolean') !== (typeof command.value === 'boolean'))) {
+          transport.sendOnOrigin(command, { type: 'option_receipt', sessionId, requestId: command.requestId, optionId: command.optionId, outcome: 'rejected' });
+          return;
+        }
+        const changed = await session.changeOption(command.optionId, command.value).catch(() => null);
+        if (sessions.get(sessionId) !== session || generations.get(sessionId) !== generation) return;
+        if (command.requestId) {
+          transport.sendOnOrigin(command, {
+            type: 'option_receipt', sessionId, requestId: command.requestId, optionId: command.optionId,
+            outcome: changed?.ok ? 'applied' : 'unknown',
+            ...(changed?.ok ? { options: [...changed.value] } : {})
+          });
+          return;
+        }
+        if (!changed) return;
+        if (!changed.ok) {
+          send({
+            type: 'event',
+            sessionId,
+            event: { kind: 'diagnostic', level: 'error', text: changed.error.message }
+          });
+          return;
+        }
+        send({ type: 'options', sessionId, options: [...changed.value] });
+      });
+      optionTails.set(sessionId, operation);
+      try { await operation; } finally { if (optionTails.get(sessionId) === operation) optionTails.delete(sessionId); }
       return;
     }
     if (sessions.get(sessionId) !== session) return;

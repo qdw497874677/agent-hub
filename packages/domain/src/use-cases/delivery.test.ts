@@ -109,6 +109,32 @@ test('readiness keeps two prompts queued until ready, then preserves exact turn 
   assert.ok(w.sent[1]?.kind === 'prompt' && w.sent[1].deliveryId === b.value.deliveryId && w.sent[1].startAttemptId === 'start-1');
 });
 
+test('an exact unknown outcome is a safe notice only; terminal A cannot label B', async () => {
+  const w = await world({ queue: serialQueue() });
+  w.online();
+  const a = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'A' });
+  const b = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'B' });
+  assert.ok(a.ok && b.ok && a.value.deliveryId && b.value.deliveryId);
+  await settle();
+  const notice = (id: string) => ingestWorkerEvent(w.deps, w.sid, {
+    kind: 'diagnostic', level: 'error', text: 'private fixture payload', uncertainDeliveryId: id
+  });
+  await notice(b.value.deliveryId);
+  await notice(a.value.deliveryId);
+  assert.deepEqual((await w.deliveries.pendingFor(w.sid)).map(d => d.state), ['sending', 'queued']);
+  assert.equal(await releaseAfterTurn(w.deps, w.sid, a.value.deliveryId), false);
+  assert.equal(w.sent.length, 1);
+  await ingestWorkerEvent(w.deps, w.sid, { kind: 'ended', outcome: 'failed', deliveryId: a.value.deliveryId });
+  await notice(a.value.deliveryId);
+  assert.equal(await releaseAfterTurn(w.deps, w.sid, a.value.deliveryId), true);
+  await notice(a.value.deliveryId);
+  assert.equal((await w.deliveries.inFlight(w.sid))?.id, b.value.deliveryId);
+  const markers = (await w.deps.sessions.eventsAfter(w.sid, 0))
+    .map(row => row.event)
+    .filter(event => event.kind === 'diagnostic' && event.uncertainDeliveryId !== undefined);
+  assert.deepEqual(markers, [{ kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId: a.value.deliveryId }]);
+});
+
 test('failed and upgrade readiness wait without attempts; explicit retry starts fresh', async () => {
   const w = await world({ queue: serialQueue() });
   w.online();

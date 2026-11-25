@@ -100,7 +100,7 @@ export type SessionEvent =
        */
       readonly deliveryId?: string;
     }
-  | { readonly kind: 'diagnostic'; readonly level: 'info' | 'warn' | 'error'; readonly text: string }
+  | { readonly kind: 'diagnostic'; readonly level: 'info' | 'warn' | 'error'; readonly text: string; /** Exact still-open delivery; never terminal proof. */ readonly uncertainDeliveryId?: string }
   /**
    * 运行时报上来的上下文用量（ADR 0020 L1）。旁路状态：不进卡片、不改会话状态。
    * `usedTokens` / `percent` 为 null = 刚压缩完、运行时还没有新数。

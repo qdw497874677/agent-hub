@@ -14039,6 +14039,11 @@
                                   },
                                   "text": {
                                     "type": "string"
+                                  },
+                                  "uncertainDeliveryId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
                                   }
                                 },
                                 "required": [

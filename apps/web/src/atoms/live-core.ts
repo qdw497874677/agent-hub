@@ -133,6 +133,31 @@ export interface LiveSession {
   readonly contextUsage: ContextUsage | null;
   /** 运行时当前可用的斜杠命令；没有运行时或还没报过就是空数组。 */
   readonly commands: readonly RuntimeCommand[];
+  /** Diagnostic evidence only; delivery state determines whether it still applies. */
+  readonly uncertainDeliveryIds?: readonly string[];
+  readonly endedDeliveryIds?: readonly string[];
+}
+
+function uncertainId(event: SessionEventDto | null): string | undefined {
+  if (event?.kind !== 'diagnostic') return undefined;
+  // Additive wire field; older servers simply omit it.
+  const id = (event as typeof event & { readonly uncertainDeliveryId?: unknown }).uncertainDeliveryId;
+  return typeof id === 'string' && id !== '' ? id : undefined;
+}
+
+function endedId(event: SessionEventDto | null): string | undefined {
+  if (event?.kind !== 'ended') return undefined;
+  const id = (event as typeof event & { readonly deliveryId?: unknown }).deliveryId;
+  return typeof id === 'string' && id !== '' ? id : undefined;
+}
+
+function endedFromEntries(entries: readonly JournalEntryDto[]): readonly string[] {
+  return [...new Set(entries.map((entry) => endedId(entry.event)).filter((id): id is string => id !== undefined))];
+}
+
+function uncertainFromEntries(entries: readonly JournalEntryDto[]): readonly string[] {
+  const ended = endedFromEntries(entries);
+  return [...new Set(entries.map((entry) => uncertainId(entry.event)).filter((id): id is string => id !== undefined && !ended.includes(id)))];
 }
 
 export type LiveMap = Readonly<Record<string, LiveSession>>;
@@ -156,6 +181,7 @@ export function compactionText(event: Extract<SessionEventDto, { kind: 'compacti
 
 export function applyBlocks(blocks: readonly Block[], event: SessionEventDto, seq: number): readonly Block[] {
   if (event.kind === 'diagnostic') {
+    if (uncertainId(event)) return blocks;
     return event.text.startsWith(STALL_NOTICE_MARKER)
       ? [...withoutStall(blocks), { kind: 'stall', text: event.text, seq }]
       : blocks;
@@ -369,7 +395,9 @@ export function resolveLive(
     reason: reasonFromEntries(preview),
     awaiting: awaitingFromHistory(preview, session.status),
     contextUsage: contextUsageFromEntries(preview),
-    commands: commandsFromEntries(preview) ?? []
+    commands: commandsFromEntries(preview) ?? [],
+    uncertainDeliveryIds: uncertainFromEntries(preview),
+    endedDeliveryIds: endedFromEntries(preview)
   };
 }
 
@@ -397,6 +425,10 @@ export function applyFrame(current: LiveMap, frame: Frame): LiveMap {
       ? { usedTokens: frame.event.usedTokens, windowTokens: frame.event.windowTokens, percent: frame.event.percent }
       : (previous?.contextUsage ?? null);
   const commands = frame.event?.kind === 'commands' ? frame.event.commands : (previous?.commands ?? []);
+  const id = uncertainId(frame.event);
+  const end = endedId(frame.event);
+  const endedDeliveryIds = previous?.endedDeliveryIds ?? [];
+  const uncertainDeliveryIds = (previous?.uncertainDeliveryIds ?? []).filter((item) => item !== end);
   const next: LiveSession = {
     blocks: frame.event ? applyBlocks(blocks, frame.event, frame.seq) : blocks,
     status: frame.status,
@@ -406,7 +438,9 @@ export function applyFrame(current: LiveMap, frame: Frame): LiveMap {
     lastSeq: frame.event ? frame.seq : (previous?.lastSeq ?? 0),
     reason,
     contextUsage,
-    commands
+    commands,
+    uncertainDeliveryIds: id && !endedDeliveryIds.includes(id) && !uncertainDeliveryIds.includes(id) ? [...uncertainDeliveryIds, id] : uncertainDeliveryIds,
+    endedDeliveryIds: end && !endedDeliveryIds.includes(end) ? [...endedDeliveryIds, end] : endedDeliveryIds
   };
   return { ...current, [frame.sessionId]: next };
 }
@@ -461,7 +495,9 @@ export function withFullHistory(current: LiveMap, session: SessionDto, entries: 
       reason: reasonFromEntries(entries),
       awaiting: previous?.awaiting ?? awaitingFromHistory(entries, session.status),
       contextUsage: contextUsageFromEntries(entries) ?? previous?.contextUsage ?? null,
-      commands: commandsFromEntries(entries) ?? previous?.commands ?? []
+      commands: commandsFromEntries(entries) ?? previous?.commands ?? [],
+      uncertainDeliveryIds: [...new Set([...(previous?.uncertainDeliveryIds ?? []), ...uncertainFromEntries(entries)])].filter((id) => ![...(previous?.endedDeliveryIds ?? []), ...endedFromEntries(entries)].includes(id)),
+      endedDeliveryIds: [...new Set([...(previous?.endedDeliveryIds ?? []), ...endedFromEntries(entries)])]
     }
   };
 }

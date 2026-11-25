@@ -443,6 +443,8 @@ export interface ChangeOptionCommand {
   readonly sessionId: string;
   readonly id: string;
   readonly value: string | boolean;
+  readonly requestId?: string;
+  readonly onSaved?: () => void;
 }
 
 /**
@@ -462,7 +464,11 @@ export async function changeSessionOption(
   // 会话没在跑（这一轮已经结束）时，改选项是给「下一轮」预备的：
   // 不为了写一个值把 agent 进程拉起来（拉起也会被下一轮启动冲掉），直接落库并改本地的
   // optionSpec.current，界面立刻能看到新值，下次启动按 session.options 应用。
-  if (session.status !== 'running') return changeSavedOption(deps, session, command);
+  if (session.status !== 'running') {
+    const saved = await changeSavedOption(deps, session, command);
+    if (saved.ok) command.onSaved?.();
+    return saved;
+  }
 
   // 改模型也是在改一条会话的运行状态；它没在跑就先拉起来，否则指令会打空。
   const hosted = await ensureHosted(deps, session);
@@ -472,7 +478,8 @@ export async function changeSessionOption(
     kind: 'set_option',
     sessionId: session.id,
     optionId: command.id,
-    value: command.value
+    value: command.value,
+    ...(command.requestId ? { requestId: command.requestId } : {})
   });
   if (!changed.ok) return err(changed.error);
 

@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { deliveryApi, type DeliveryDto } from '../shell/api.ts';
-import { deliveryNeedsAction, HELD_DELIVERY_STATES, queuedBehind } from './turn-hint.ts';
+import { deliveryNeedsAction, HELD_DELIVERY_STATES, queuedBehind, queuedBehindUncertain, uncertainSending } from './turn-hint.ts';
 
 /**
  * 送达状态（ADR 0031 D2）：按 prompt 的 seq 查。送达了就什么都不显示（安静）。
@@ -15,6 +15,7 @@ export const DeliveryContext = createContext<{
   quietSeq?: number;
   withdrawQueued?: boolean;
   startupFailed?: boolean;
+  uncertainDeliveryIds?: readonly string[];
 } | null>(null);
 
 /**
@@ -80,6 +81,7 @@ export function DeliveryNote({ seq }: { seq: number }) {
   const retry = <button type="button" className="min-h-11 underline underline-offset-2 disabled:opacity-50 md:min-h-0" disabled={busy} onClick={act(deliveryApi.retry)}>立即重试</button>;
   const cancel = <button type="button" className="min-h-11 underline underline-offset-2 disabled:opacity-50 md:min-h-0" disabled={busy} onClick={act(deliveryApi.cancel)}>撤回</button>;
   const behind = queuedBehind(d, ctx.bySeq.values());
+  const uncertain = ctx.uncertainDeliveryIds ?? [];
   const actions = (
     <>
       {' · '}
@@ -88,11 +90,11 @@ export function DeliveryNote({ seq }: { seq: number }) {
     </>
   );
   let body;
-  if (d.state === 'sending') body = <span className="text-tertiary">发送中…</span>;
+  if (d.state === 'sending') body = <span className="text-tertiary">{uncertainSending(d, uncertain) ? '暂未确认这一轮的结果' : '发送中…'}</span>;
   else if (d.state === 'undelivered')
     body = <span className="text-rust" title={d.lastError ?? undefined}>未送达{d.lastError ? `：${d.lastError}` : ''}{actions}</span>;
   else if (d.attempt === 0) {
-    body = <span className="text-tertiary">已排队 · 等待投递{behind ? ' · 前面还有消息' : ''}{ctx.startupFailed && !behind ? <> · {retry}</> : null}{(!behind || ctx.withdrawQueued) ? <> · {cancel}</> : null}</span>;
+    body = <span className="text-tertiary">{queuedBehindUncertain(d, ctx.bySeq.values(), uncertain) ? '已排队 · 等待上一轮状态确认' : <>已排队 · 等待投递{behind ? ' · 前面还有消息' : ''}</>}{ctx.startupFailed && !behind ? <> · {retry}</> : null}{(!behind || ctx.withdrawQueued) ? <> · {cancel}</> : null}</span>;
   }
   else {
     const secs = Math.max(0, Math.ceil(((d.nextAt ?? now) - now) / 1000));

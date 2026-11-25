@@ -101,6 +101,33 @@ function setup(runtime: AgentRuntime, extra: Partial<WorkerLinkOptions> = {}): {
   return { ctx, sessions: installSessions(ctx, transport), frames };
 }
 
+test('keyed option receipts serialize mutations, classify uncertain errors and fence replacement', async () => {
+  const log: string[] = [];
+  const session = fakeSession('s', 'first', log);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  session.options = () => [{ id: 'effort', label: 'Effort', category: 'thought_level', kind: 'select', current: 'low', choices: [] }];
+  session.changeOption = async (_id, value) => {
+    log.push(String(value));
+    if (value === 'high') await gate;
+    if (value === 'error') return { ok: false, error: { code: 'unavailable', message: 'unknown' } };
+    return { ok: true, value: [{ ...session.options()[0]!, current: value }] };
+  };
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start() { return { ok: true, value: session }; } };
+  const { sessions, frames } = setup(runtime);
+  await sessions.run(startCommand('s', '/tmp'));
+  const one = sessions.run({ kind: 'set_option', sessionId: 's', optionId: 'effort', value: 'high', requestId: 'one' });
+  const two = sessions.run({ kind: 'set_option', sessionId: 's', optionId: 'effort', value: 'error', requestId: 'two' });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(log, ['high']);
+  release();
+  await Promise.all([one, two]);
+  assert.deepEqual(frames.filter((f) => f.type === 'option_receipt').map((f) => f.type === 'option_receipt' && [f.requestId, f.outcome]), [['one', 'applied'], ['two', 'unknown']]);
+  await sessions.run({ kind: 'set_option', sessionId: 's', optionId: 'effort', value: true, requestId: 'three' });
+  assert.equal(frames.filter((f) => f.type === 'option_receipt').find((f) => f.requestId === 'three')?.outcome, 'rejected');
+  await sessions.closeAll();
+});
+
 test('attested branch installs exact session before result; unknown never falls back', async () => {
   const log: string[] = [];
   let fallbackCalls = 0;
@@ -199,6 +226,25 @@ test('keyed starts fence immediately, serialize, prepare and reject stale prompt
   assert.deepEqual(log.filter((s) => s.startsWith('prompt:')), ['prompt:/b']);
   assert.equal(frames.filter((f) => f.type === 'prompt_start_refused').length, 1);
   await sessions.closeAll();
+});
+
+test('keyed adapter errors report sanitized uncertainty on origin, not completion or refusal', async (t) => {
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start(spec) {
+    const session = fakeSession(spec.sessionId, 'test', []);
+    session.prompt = async ({ deliveryId }) => {
+      if (deliveryId === 'throw') throw new Error('raw adapter exception');
+      return { ok: false, error: { code: 'unavailable', message: 'raw adapter failure' } };
+    };
+    return { ok: true, value: session };
+  } };
+  const { sessions, frames } = setup(runtime);
+  t.after(() => sessions.closeAll());
+  await sessions.run(startCommand('s', '/tmp', { startAttemptId: 'a' }));
+  for (const deliveryId of ['result', 'throw', 'throw']) await sessions.run(promptCommand('s', deliveryId, 'a'));
+  assert.deepEqual(frames.filter(f => f.type === 'event'), ['result', 'throw'].map(uncertainDeliveryId => ({
+    type: 'event', sessionId: 's', event: { kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId }
+  })));
+  assert.equal(frames.some(f => f.type === 'prompt_start_refused'), false);
 });
 
 test('failed keyed replacement retains old runtime but fences it; legacy can re-adopt', async () => {

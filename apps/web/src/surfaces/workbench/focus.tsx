@@ -573,6 +573,7 @@ export function FocusView({
           : lastPrompt === undefined ? undefined : deliveriesBySeq.get(lastPrompt),
         deliveries: deliveriesBySeq.values(),
         progress,
+        uncertainDeliveryIds: live?.uncertainDeliveryIds,
         withdrawQueued: true
       });
   /**
@@ -1231,7 +1232,7 @@ export function FocusView({
               <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
             ) : null : (
               <FileLinksContext.Provider value={fileLinks}>
-              <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: hint && delivery.pending.length === 0 ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed' }}>
+              <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: hint && delivery.pending.length === 0 ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed', uncertainDeliveryIds: live?.uncertainDeliveryIds }}>
               {timelineItems.map((item) => {
                 const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }) => (
                   <ChatBlock
@@ -1297,7 +1298,7 @@ export function FocusView({
                   title={hint.detail}
                   aria-label={hint.detail}
                 >
-                  <TurnWave />
+                  {hint.text === '暂未确认这一轮的结果' ? null : <TurnWave />}
                   <span className="min-w-0 truncate">{hint.text}</span>
                 </p>
               ) : null}
@@ -1458,7 +1459,9 @@ export function FocusView({
             busy={busy}
             error={error}
             awaiting={turnRunning}
-            onChangeOption={(optionId, value) => run(() => onChangeOption(optionId, value), false)}
+            onChangeOption={(optionId, value) => session.optionSpec.find((option) => option.id === optionId)?.category === 'model'
+              ? run(() => onChangeOption(optionId, value), false)
+              : onChangeOption(optionId, value)}
             capability={attachmentsCapability(agent?.capabilities)}
             commands={sessionCommands(session, runtimeCommands, forkHint)}
             projectId={canvas.project.id}

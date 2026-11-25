@@ -9,6 +9,7 @@ import { createStreamHub } from './stream-hub.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
 import { createTaskGate } from './task-gate.ts';
+import { createOptionWaiters } from './option-waiters.ts';
 
 test('archive route refuses competing work and unknown publication, then archives and restores without dispatch', async () => {
   const taskGate = createTaskGate();
@@ -142,6 +143,52 @@ function harness(token: string | null = null, environment?: EnvironmentPlanner, 
 
   return { deps, app, call, dispatched, sessions, hub, live };
 }
+
+test('option confirmation route distinguishes saved, exact runtime receipt, timeout and legacy response', async () => {
+  const { deps, call } = harness();
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
+  const project = await call('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'options', rootPath: '/tmp/options' }) });
+  const task = await call('/api/tasks', { method: 'POST', body: JSON.stringify({ projectId: (project.body as { id: string }).id, title: 'options' }) });
+  const derived = await call('/api/sessions/derive', { method: 'POST', body: JSON.stringify({ taskId: (task.body as { id: string }).id, agentId: 'fake', model: 'fake-1' }) });
+  assert.equal(derived.status, 201);
+  const id = asSessionId((derived.body as { id: string }).id);
+  const original = await deps.sessions.byId(id);
+  assert.ok(original);
+  await deps.sessions.save({ ...original, status: 'stopped', optionSpec: descriptor.options });
+  const confirmations = createOptionWaiters(15);
+  let receipt: 'applied' | 'rejected' | 'none' = 'applied';
+  const gateway = { ...deps.gateway, async dispatch(command: Parameters<typeof deps.gateway.dispatch>[0]) {
+    if (command.kind === 'set_option' && command.requestId && receipt !== 'none') {
+      confirmations.receipt(id, command.requestId, command.optionId, receipt, receipt === 'applied' ? descriptor.options : undefined);
+    }
+    return ok(undefined);
+  } };
+  const app = createApp({ deps: { ...deps, gateway }, hub: createStreamHub(), token: null, optionConfirmations: confirmations });
+  const post = (input: object) => app.request(`/api/sessions/${id}/options`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
+  const saved = await post({ optionId: 'thinking', value: 'off', confirm: true });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.headers.get('cache-control'), 'no-store');
+  assert.equal((await saved.json() as { state: string }).state, 'saved');
+  const stopped = await deps.sessions.byId(id);
+  assert.ok(stopped);
+  await deps.sessions.save({ ...stopped, status: 'running' });
+  const confirmed = await post({ optionId: 'thinking', value: 'low', confirm: true });
+  assert.equal((await confirmed.json() as { state: string }).state, 'confirmed');
+  receipt = 'rejected';
+  const rejected = await post({ optionId: 'thinking', value: 'low', confirm: true });
+  assert.equal((await rejected.json() as { state: string }).state, 'rejected');
+  receipt = 'none';
+  const unknown = await post({ optionId: 'thinking', value: 'low', confirm: true });
+  assert.equal((await unknown.json() as { state: string }).state, 'unconfirmed');
+  const legacy = await post({ optionId: 'thinking', value: 'low' });
+  const legacyBody = await legacy.json() as { id: string; state?: string };
+  assert.equal(legacyBody.id, id);
+  assert.equal(legacyBody.state, undefined);
+  const model = await post({ optionId: 'model', value: 'fake-1', confirm: true });
+  const modelBody = await model.json() as { id: string; state?: string };
+  assert.equal(modelBody.id, id);
+  assert.equal(modelBody.state, undefined);
+});
 
 test('元数据搜索路由：q / 可选 limit 接线，返回三组稳定 DTO', async () => {
   const calls: MetadataSearchQuery[] = [];

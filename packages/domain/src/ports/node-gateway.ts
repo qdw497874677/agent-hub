@@ -64,6 +64,7 @@ export type WorkerCommand =
       readonly sessionId: SessionId;
       readonly optionId: string;
       readonly value: string | boolean;
+      readonly requestId?: string;
     }
   | {
       readonly kind: 'prompt';

@@ -131,7 +131,7 @@ import { wirePreviews } from './wire-preview.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
 import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
-import { createOptionWaiters } from './option-waiters.ts';
+import { createOptionWaiters, ingestOptionReceipt } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createTerminalBridge, type TerminalBridge } from './terminal-bridge.ts';
 import { seedTestAccount } from './account-setup.ts';
@@ -624,10 +624,10 @@ if (testAccount !== 'off') {
  * 核对是异步的（要查库），串成一条链才能保证 ingest 的调用顺序和帧到达的顺序一致。
  */
 let inbound: Promise<unknown> = Promise.resolve();
-function fromWorker(workerId: string, sessionId: SessionId, ingest: () => void): void {
+function fromWorker(workerId: string, sessionId: SessionId, ingest: () => void | Promise<void>): void {
   inbound = inbound
     .then(async () => {
-      if (await frameAccepted(deps, workerId, sessionId)) ingest();
+      if (await frameAccepted(deps, workerId, sessionId)) await ingest();
       else log(`忽略 ${workerId} 发来的会话帧：会话 ${sessionId} 不在它身上`);
     })
     .catch((failure: unknown) => log(`处理 worker 帧失败：${(failure as Error).message}`));
@@ -952,6 +952,9 @@ serverGateway = createServerGateway({
       })
     );
   },
+  onOptionReceipt(workerId, sessionId, requestId, optionId, outcome, options, isCurrent) {
+    fromWorker(workerId, sessionId, () => ingestOptionReceipt(deps, optionWaiters, sessionId, requestId, optionId, outcome, options, isCurrent));
+  },
   onTurnRef(workerId, sessionId, turnRef, deliveryId) {
     fromWorker(workerId, sessionId, () => void rewindService.recordTurnRef(sessionId, turnRef, workerId, deliveryId).catch((e) => log(`记录原生标识失败：${String(e)}`)));
   },
@@ -1201,7 +1204,7 @@ const projectGitProbe = await setupProjectGitProbe({
   db: store.db,
   secretKey
 });
-const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, guard,
+const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, optionConfirmations: optionWaiters, guard,
   ...(projectGitProbe ? { projectGitProbe: {
     projects: deps.projects, secrets: projectGitProbe.vault, access: deps.access, probe: projectGitProbe.probe, now: deps.now,
     allows: projectGitProbe.allows

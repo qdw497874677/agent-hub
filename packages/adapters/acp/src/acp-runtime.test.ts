@@ -50,6 +50,124 @@ function keyed(text: string, deliveryId: string): PromptInput & { readonly deliv
   return { text, parts: [], deliveryId };
 }
 
+test('OpenCode prompt failure requires the first exact wire response and preserves the process', async (t) => {
+  const scenarios = [
+    { name: 'proof with prior output', mode: 'proof', codec: true, keyed: true, handled: true },
+    { name: 'proof before any output', mode: 'no-output', codec: true, keyed: true, handled: true },
+    { name: 'other agent', mode: 'proof', codec: false, keyed: true, handled: false },
+    { name: 'unkeyed', mode: 'proof', codec: true, keyed: false, handled: false },
+    { name: 'wrong code', mode: 'code', codec: true, keyed: true, handled: false },
+    { name: 'missing structured data', mode: 'data', codec: true, keyed: true, handled: false },
+    { name: 'wrong name', mode: 'name', codec: true, keyed: true, handled: false },
+    { name: 'wrong id followed by unrelated error', mode: 'foreign', codec: true, keyed: true, handled: false },
+    { name: 'malformed first response poisons duplicate', mode: 'malformed', codec: true, keyed: true, handled: false },
+    { name: 'method-bearing error poisons duplicate', mode: 'method', codec: true, keyed: true, handled: false },
+    { name: 'malformed method-only frame poisons duplicate', mode: 'method-only', codec: true, keyed: true, handled: false },
+    { name: 'valid reverse request does not poison proof', mode: 'reverse', codec: true, keyed: true, handled: true },
+    { name: 'interrupt invalidates evidence', mode: 'interrupt', codec: true, keyed: true, handled: false },
+    { name: 'disposed turn cannot be ended by response', mode: 'dispose', codec: true, keyed: true, handled: false }
+  ] as const;
+  for (const scenario of scenarios) await t.test(scenario.name, async (t) => {
+    const script = `
+      const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
+      const response = (id,error) => send({jsonrpc:'2.0',id,error});
+      const error = {code:-32603,message:'SECRET provider details',data:{errorName:'provider.invalid-request',secret:'SECRET'}};
+      let pending, previous;
+      require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') return send({jsonrpc:'2.0',id:msg.id,result:{protocolVersion:1}});
+        if (msg.method === 'session/new') return send({jsonrpc:'2.0',id:msg.id,result:{sessionId:'s1'}});
+        if (msg.method === 'session/cancel') { if (pending) response(pending,error); return; }
+        if (msg.method !== 'session/prompt') return;
+        if (msg.params.prompt[0].text === 'next') {
+          if (previous !== undefined) response(previous,error);
+          send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'s1',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'next output'}}}});
+          return send({jsonrpc:'2.0',id:msg.id,result:{stopReason:'end_turn'}});
+        }
+        const mode = ${JSON.stringify(scenario.mode)};
+        previous = msg.id;
+        if (mode === 'proof') send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'s1',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'prior output'}}}});
+        if (mode === 'interrupt' || mode === 'dispose') { pending = msg.id; return; }
+        if (mode === 'code') error.code = -32602;
+        if (mode === 'data') delete error.data;
+        if (mode === 'name') error.data.errorName = 'other';
+        if (mode === 'foreign') { response(msg.id + 1000,error); error.data.errorName = 'other'; }
+        if (mode === 'malformed') send({jsonrpc:'2.0',id:msg.id,result:{},error});
+        if (mode === 'method') send({jsonrpc:'2.0',id:msg.id,method:'bogus',error});
+        if (mode === 'method-only') send({jsonrpc:'2.0',id:msg.id,method:42});
+        if (mode === 'reverse') send({jsonrpc:'2.0',id:msg.id,method:'unrecognized',params:{}});
+        response(msg.id,error);
+      });`;
+    const runtime = createAcpRuntime({ id: 'fake', label: 'Fake', command: process.execPath, args: ['-e', script], ...(scenario.codec ? { codec: opencodeCodec } : {}) });
+    const started = await runtime.start(await spec(t));
+    assert.ok(started.ok);
+    const session = started.value;
+    t.after(() => session.dispose());
+    const prompt = session.prompt(scenario.keyed ? keyed('first', 'd-first') : { text: 'first', parts: [] });
+    if (scenario.mode === 'interrupt') await session.interrupt();
+    if (scenario.mode === 'dispose') await session.dispose();
+    const result = await prompt;
+    assert.equal(result.ok, scenario.handled);
+    if (scenario.mode === 'dispose') return;
+    assert.ok((await session.prompt(keyed('next', 'd-next'))).ok);
+    const events: SessionEvent[] = [];
+    for await (const event of session.events()) {
+      events.push(event);
+      if (event.kind === 'ended' && event.deliveryId === 'd-next') break;
+    }
+    const ended = events.filter((event) => event.kind === 'ended');
+    assert.equal(ended.length, scenario.handled ? 2 : 1);
+    if (scenario.handled) {
+      assert.deepEqual(ended[0], { kind: 'ended', outcome: 'failed', reason: 'OpenCode 的模型服务拒绝了本轮请求。', deliveryId: 'd-first' });
+      if (scenario.mode === 'proof') assert.ok(events.some((event) => event.kind === 'text' && event.delta === 'prior output'));
+      assert.ok(!JSON.stringify(events).includes('SECRET'));
+    }
+  });
+});
+
+test('OpenCode EOF with a living child and a foreign response is not a turn outcome', async (t) => {
+  const script = `
+    const send = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value}) + '\\n');
+    require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+      const msg = JSON.parse(line);
+      if (msg.method === 'initialize') return send({id:msg.id,result:{protocolVersion:1}});
+      if (msg.method === 'session/new') return send({id:msg.id,result:{sessionId:'s1'}});
+      if (msg.method === 'session/prompt') {
+        send({id:msg.id + 999,error:{code:-32603,message:'bad',data:{errorName:'provider.invalid-request'}}});
+        process.stdout.end();
+      }
+    });`;
+  const runtime = createAcpRuntime({ id: 'fake', label: 'Fake', command: process.execPath, args: ['-e', script], codec: opencodeCodec });
+  const started = await runtime.start(await spec(t));
+  assert.ok(started.ok);
+  const session = started.value;
+  t.after(() => session.dispose());
+  assert.equal((await session.prompt(keyed('first', 'd-first'))).ok, false);
+  await session.dispose();
+  const events: SessionEvent[] = [];
+  for await (const event of session.events()) events.push(event);
+  assert.ok(!events.some((event) => event.kind === 'ended' && event.deliveryId === 'd-first'));
+});
+
+test('OpenCode proven failure closes the event queue when keepAlive is false', async (t) => {
+  const script = `
+    const send = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value}) + '\\n');
+    require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+      const msg = JSON.parse(line);
+      if (msg.method === 'initialize') return send({id:msg.id,result:{protocolVersion:1}});
+      if (msg.method === 'session/new') return send({id:msg.id,result:{sessionId:'s1'}});
+      if (msg.method === 'session/prompt') return send({id:msg.id,error:{code:-32603,message:'bad',data:{errorName:'provider.invalid-request'}}});
+    });`;
+  const runtime = createAcpRuntime({ id: 'fake', label: 'Fake', command: process.execPath, args: ['-e', script], codec: opencodeCodec }, { keepAlive: false });
+  const started = await runtime.start(await spec(t));
+  assert.ok(started.ok);
+  t.after(() => started.value.dispose());
+  assert.equal((await started.value.prompt(keyed('first', 'd-first'))).ok, true);
+  const events: SessionEvent[] = [];
+  for await (const event of started.value.events()) events.push(event);
+  assert.deepEqual(events.filter((event) => event.kind === 'ended'), [{ kind: 'ended', outcome: 'failed', reason: 'OpenCode 的模型服务拒绝了本轮请求。', deliveryId: 'd-first' }]);
+});
+
 test('acp branch attempt: only proven fork or method-not-found can start a session', async (t) => {
   const branch = { fromAgentSessionRef: 'source', turnRef: 'turn', previousTurnRef: 'previous' };
   const scenarios = [

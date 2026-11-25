@@ -187,6 +187,32 @@ test('送达放行在收件箱之后，并带本条 ended 的 deliveryId', async
   assert.deepEqual(w.calls, [`fake:${sid}`, `feishu:${sid}`, `files:${sid}`, `inbox:${sid}:done:`, `release:${sid}:d9`]);
 });
 
+test('匹配失败结束后，队首仍占用到回程完成；迟到结果不放行下一条', async () => {
+  let wake!: () => void;
+  const gate = new Promise<void>((resolve) => { wake = resolve; });
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let active = 'a';
+  const released: Array<string | undefined> = [];
+  const w = world({
+    inFlight: async () => ({ id: active, sessionId: sid }),
+    feishuReplies: { finish: async () => { entered(); await gate; return null; } },
+    releaseDelivery: async (_id, deliveryId) => { released.push(deliveryId); active = 'b'; }
+  });
+  const finisher = createTurnFinisher(w.deps);
+  const failed = { sessionId: sid, seq: 4, outcome: 'failed', deliveryId: 'a' } as const;
+  const result = finisher.finish(failed);
+  await started;
+  assert.equal(active, 'a');
+  assert.deepEqual(released, []);
+  wake();
+  assert.equal(await result, true);
+  assert.ok(w.calls.includes(`inbox:${sid}:failed:`));
+  assert.equal(active, 'b');
+  assert.equal(await finisher.finish({ ...failed, seq: 5 }), false);
+  assert.deepEqual(released, ['a']);
+});
+
 test('有在途投递时，无 key / 错 key 的 ended 不收尾且不推进去重水位', async () => {
   const seenDeliveryIds: Array<string | undefined> = [];
   const seenReleases: Array<string | undefined> = [];

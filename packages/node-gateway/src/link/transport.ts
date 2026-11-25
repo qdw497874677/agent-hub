@@ -8,6 +8,7 @@ import {
   WORKER_CAPABILITY_NATIVE_BRANCH,
   WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT,
   WORKER_CAPABILITY_SESSION_START_READY,
+  WORKER_CAPABILITY_OPTION_RECEIPT,
   createRpcChannel,
   linkEcho,
   serverToWorkerSchema
@@ -271,6 +272,7 @@ export function installTransport(ctx: LinkCtx): Transport {
             ...(options.gitBundleImport ? [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] : []),
             WORKER_CAPABILITY_DURABLE_DELIVERY,
             WORKER_CAPABILITY_SESSION_START_READY,
+            WORKER_CAPABILITY_OPTION_RECEIPT,
             ...(branchAttemptAgents.length > 0 ? [WORKER_CAPABILITY_BRANCH_ATTEMPT] : [])
           ],
           ...(branchAttemptAgents.length > 0 ? { branchAttemptAgents } : {}),

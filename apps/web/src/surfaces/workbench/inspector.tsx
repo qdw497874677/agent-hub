@@ -343,6 +343,7 @@ export function eventLabel(event: JournalEntryDto['event']): string {
             ? '中断了'
             : `出错：${event.reason ?? '没有说原因'}`;
     case 'diagnostic':
+      if (typeof (event as typeof event & { uncertainDeliveryId?: unknown }).uncertainDeliveryId === 'string') return '暂未确认这一轮的结果';
       return `${event.level === 'error' ? '出错' : event.level === 'warn' ? '提醒' : '提示'}：${event.text}`;
     case 'context_usage':
       return event.usedTokens === null ? '上下文用量：刚压缩完，等下一轮' : `上下文用量 ${event.usedTokens.toLocaleString()} / ${event.windowTokens.toLocaleString()} token`;

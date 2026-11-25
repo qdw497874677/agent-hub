@@ -555,7 +555,7 @@ test('provider_update：会话进行中热更新 extra，下一个请求立刻�
   upstream.close();
 });
 
-test('带键 prompt 被 agent 拒掉：发诊断，不伪造 ended', async (t) => {
+test('带键 prompt 未确认终态：只发对应投递的安全诊断，不伪造 ended', async (t) => {
   const { rec, gateway, url, stop } = await harness(null);
   const base = echoRuntime([]);
   const rejecting: AgentRuntime = {
@@ -570,10 +570,10 @@ test('带键 prompt 被 agent 拒掉：发诊断，不伪造 ended', async (t) =
   t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
   assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
-  assert.ok((await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: '你好' })).ok);
+  assert.ok((await managedPrompt(gateway, rec, { parts: [], sessionId: asSessionId('s1'), text: '你好', deliveryId: 'uncertain-1' })).ok);
   await rec.until(() => rec.events.some((event) => event.kind === 'diagnostic'));
   assert.deepEqual(rec.events, [
-    { kind: 'diagnostic', level: 'error', text: 'agent 没响应' }
+    { kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId: 'uncertain-1' }
   ]);
   await stop(link);
 });

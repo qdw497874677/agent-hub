@@ -15,6 +15,7 @@ import {
   WORKER_CAPABILITY_NATIVE_BRANCH,
   WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT,
   WORKER_CAPABILITY_SESSION_START_READY,
+  WORKER_CAPABILITY_OPTION_RECEIPT,
   assetsSync,
   providerTest,
   createRpcChannel,
@@ -144,6 +145,7 @@ export interface GatewayHooks {
   onEvent(workerId: string, sessionId: SessionId, event: SessionEvent): void;
   onAgentSession(workerId: string, sessionId: SessionId, agentSessionRef: string): void;
   onOptions(workerId: string, sessionId: SessionId, options: readonly RuntimeOption[]): void;
+  onOptionReceipt?(workerId: string, sessionId: SessionId, requestId: string, optionId: string, outcome: 'applied' | 'rejected' | 'unknown', options: readonly RuntimeOption[] | undefined, isCurrent: () => boolean): void;
   /** ADR 0028：这一轮的原生标识 / 带 branch 的启动结果。 */
   onTurnRef?(workerId: string, sessionId: SessionId, turnRef: string, deliveryId?: string): void;
   onBranchResult?(workerId: string, sessionId: SessionId, outcome: 'native' | 'failed', reason?: string): void;
@@ -294,6 +296,7 @@ interface Registered {
   /** 这条连接的 Worker 声明了 durable_delivery 没有（#269）；每次 hello 重建。 */
   durableDelivery: boolean;
   sessionStartReady: boolean;
+  optionReceipt: boolean;
   branchAttempt: boolean;
   branchAttemptAgents: Set<string>;
   helloAgents: AgentDto[];
@@ -444,6 +447,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   const placement = new Map<string, string>();
   // Readiness is bound to the socket and generation, never inferred from hello/adopt.
   const starts = new Map<string, { workerId: string; socket: WebSocket; attemptId: string; startedAt: number; state: 'starting' | 'ready' | 'failed'; reason?: 'runtime' | 'configuration'; deliveries: Map<string, number>; seen: Uint8Array }>();
+  const optionRequests = new Map<string, { requestId: string; optionId: string; socket: WebSocket; workerId: string; start: unknown; consumed: boolean }>();
   const endedStarts = new Map<string, { workerId: string; socket: WebSocket }>();
   // Cleanly ended generations may still have attachment preparation in flight.
   // This proof is independent of the end-cleanup guard and never survives its socket.
@@ -811,6 +815,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
 
   function dispatchTo(command: WorkerCommand): Result<void, DomainError> {
     if (command.kind === 'start_session') {
+      optionRequests.delete(command.sessionId);
       endedStarts.delete(command.sessionId);
       const old = starts.get(command.sessionId);
       if (old && online(old.workerId)?.socket === old.socket) retireStart(command.sessionId, old);
@@ -836,9 +841,25 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       return { ok: false, error: unavailable('这条会话此刻没有托管在任何 Worker 上') };
     }
     if (command.kind === 'dispose') {
+      optionRequests.delete(command.sessionId);
       const old = starts.get(command.sessionId);
       if (old && online(old.workerId)?.socket === old.socket) retireStart(command.sessionId, old);
       starts.delete(command.sessionId);
+    }
+    if (command.kind === 'set_option') {
+      optionRequests.delete(command.sessionId);
+      const entry = online(workerId);
+      const wire = toWire(command);
+      if (wire.kind !== 'set_option') throw new Error('invalid option command');
+      if (command.requestId && entry?.socket && entry.optionReceipt) {
+        const request = { requestId: command.requestId, optionId: command.optionId, socket: entry.socket, workerId, start: starts.get(command.sessionId), consumed: false };
+        optionRequests.set(command.sessionId, request);
+        const timer = setTimeout(() => { if (optionRequests.get(command.sessionId) === request) optionRequests.delete(command.sessionId); }, 30_000);
+        timer.unref();
+        return sendTo(workerId, wire);
+      }
+      const { requestId: _requestId, ...legacy } = wire;
+      return sendTo(workerId, legacy);
     }
     return sendTo(workerId, toWire(command));
   }
@@ -1021,6 +1042,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           capabilities: verdict.capabilities ?? null,
           durableDelivery: frame.capabilities?.includes(WORKER_CAPABILITY_DURABLE_DELIVERY) === true,
           sessionStartReady: frame.capabilities?.includes(WORKER_CAPABILITY_SESSION_START_READY) === true,
+          optionReceipt: frame.capabilities?.includes(WORKER_CAPABILITY_OPTION_RECEIPT) === true,
           branchAttempt: frame.capabilities?.includes(WORKER_CAPABILITY_BRANCH_ATTEMPT) === true,
           branchAttemptAgents: new Set(frame.branchAttemptAgents ?? []),
           helloAgents: frame.agents,
@@ -1245,6 +1267,12 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         hooks.onPromptStartRefused?.(from, frame.sessionId as SessionId, frame.deliveryId);
       } else if (frame.type === 'options') {
         hooks.onOptions(from, frame.sessionId as SessionId, frame.options);
+      } else if (frame.type === 'option_receipt') {
+        const request = optionRequests.get(frame.sessionId);
+        const current = () => optionRequests.get(frame.sessionId) === request && request?.socket === socket && request.workerId === from && placement.get(frame.sessionId) === from && starts.get(frame.sessionId) === request.start && entry?.socket === socket;
+        if (!request || request.consumed || !current() || request.requestId !== frame.requestId || request.optionId !== frame.optionId) return;
+        request.consumed = true;
+        hooks.onOptionReceipt?.(from, frame.sessionId as SessionId, frame.requestId, frame.optionId, frame.outcome, frame.options, current);
       } else if (frame.type === 'status') {
         if ((frame.status === 'ended' || frame.status === 'gone') && managedSessions.has(frame.sessionId)) return;
         // 路由只由 start_session / adopt 建立；一台 Worker 报「running」不能把别人的会话改道到自己身上，
@@ -1648,6 +1676,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     adopt(workerId: string, sessionIds: readonly string[]): void {
       if (!online(workerId)) return;
       for (const sessionId of sessionIds) {
+        optionRequests.delete(sessionId);
         endedStarts.delete(sessionId);
         if (placement.get(sessionId) !== workerId) starts.delete(sessionId);
         placement.set(sessionId, workerId);
@@ -1769,7 +1798,8 @@ function toWire(command: WorkerCommand): ServerToWorker {
         kind: 'set_option',
         sessionId: command.sessionId,
         optionId: command.optionId,
-        value: command.value
+        value: command.value,
+        ...(command.requestId ? { requestId: command.requestId } : {})
       };
   }
 }

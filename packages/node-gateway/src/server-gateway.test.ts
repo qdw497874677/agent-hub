@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
 import type { RpcChannel, ServerToWorker } from '@agent-hub/contract';
-import { PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_BRANCH_ATTEMPT, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, WORKER_CAPABILITY_SESSION_START_READY, createRpcChannel, serverToWorkerSchema, workerToServerSchema, wsImportProjectGitBundle } from '@agent-hub/contract';
+import { PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_BRANCH_ATTEMPT, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_OPTION_RECEIPT, createRpcChannel, serverToWorkerSchema, workerToServerSchema, wsImportProjectGitBundle } from '@agent-hub/contract';
 import { CAPABILITY_NAMES, asSessionId, available } from '@agent-hub/domain';
 import { createServerGateway, type GatewayHooks, type GatewayOptions, type WorkerConnectionObservation } from './server-gateway.ts';
 import { serveProjectGitBundleImport } from './worker-fs-rpc.ts';
@@ -34,6 +34,7 @@ interface HarnessOptions {
   readonly onSessionStartEnded?: GatewayHooks['onSessionStartEnded'];
   readonly onPromptStartRefused?: GatewayHooks['onPromptStartRefused'];
   readonly onStatus?: GatewayHooks['onStatus'];
+  readonly onOptionReceipt?: GatewayHooks['onOptionReceipt'];
   readonly agentConfig?: GatewayHooks['agentConfig'];
   readonly onTerminalData?: GatewayHooks['onTerminalData'];
   readonly onTerminalExit?: GatewayHooks['onTerminalExit'];
@@ -65,6 +66,7 @@ async function harness(options: HarnessOptions = {}) {
     onEvent: () => {},
     onAgentSession: () => {},
     onOptions: () => {},
+    ...(options.onOptionReceipt ? { onOptionReceipt: options.onOptionReceipt } : {}),
     onStatus: options.onStatus ?? (() => {}),
     onWorkerGone: () => {},
     ...(options.onTerminalData ? { onTerminalData: options.onTerminalData } : {}),
@@ -124,6 +126,38 @@ async function harness(options: HarnessOptions = {}) {
   };
   return { gateway, url, connect, stop };
 }
+
+test('option receipts require negotiated socket, key and current generation; old workers receive unkeyed commands', async () => {
+  const received: string[] = [];
+  const guards: (() => boolean)[] = [];
+  const h = await harness({ onOptionReceipt: (_worker, _session, requestId, _option, _outcome, _options, current) => { assert.equal(current(), true); guards.push(current); received.push(requestId); }, gateway: { echoMs: 0 } });
+  const wire = await h.connect('w1', { capabilities: [WORKER_CAPABILITY_OPTION_RECEIPT] });
+  let old: Wire | undefined;
+  try {
+    h.gateway.adopt('w1', ['s']);
+    const command = { kind: 'set_option' as const, sessionId: asSessionId('s'), optionId: 'effort', value: 'high', requestId: 'r1' };
+    assert.equal((await h.gateway.gateway.dispatch(command)).ok, true);
+    await until(() => wire.frames.some((frame) => frame.kind === 'set_option'));
+    const send = (requestId: string, optionId = 'effort') => wire.ws.send(JSON.stringify({ type: 'option_receipt', sessionId: 's', requestId, optionId, outcome: 'unknown' }));
+    send('wrong'); send('r1', 'other'); send('r1'); send('r1');
+    await until(() => received.length === 1);
+    assert.deepEqual(received, ['r1']);
+    assert.equal((await h.gateway.gateway.dispatch({ ...command, requestId: 'r2' })).ok, true);
+    assert.equal(guards[0]?.(), false, 'newer option dispatch invalidates even an accepted receipt');
+    send('r2');
+    await until(() => received.length === 2);
+    assert.equal(guards[1]?.(), true);
+    old = await h.connect('w1');
+    h.gateway.adopt('w1', ['s']);
+    assert.equal(guards[1]?.(), false, 'socket replacement invalidates accepted receipt');
+    send('r2');
+    assert.equal((await h.gateway.gateway.dispatch({ ...command, requestId: 'r3' })).ok, true);
+    await until(() => old!.frames.some((frame) => frame.kind === 'set_option'));
+    const legacy = old.frames.find((frame) => frame.kind === 'set_option');
+    assert.equal(legacy?.kind === 'set_option' && legacy.requestId, undefined);
+    assert.deepEqual(received, ['r1', 'r2']);
+  } finally { await h.stop(wire, ...(old ? [old] : [])); }
+});
 
 test('first-prompt fork projects only worker origin for legacy compatibility', async () => {
   const h = await harness({ gateway: { echoMs: 0 } });

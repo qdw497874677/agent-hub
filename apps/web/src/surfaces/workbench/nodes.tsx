@@ -12,7 +12,7 @@ import { ResourceBadge, SessionUsage } from '../../shell/resources.tsx';
 import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
 import { PinnedMark } from '../../atoms/pinned-mark.tsx';
 import { CardComposer } from './card-composer.tsx';
-import { OptionControls } from '../../atoms/options.tsx';
+import { OptionControls, OptionFeedbackNotice } from '../../atoms/options.tsx';
 import { useSessionOptions } from '../../atoms/session-options.tsx';
 import { PHASE_DOT, phaseLabel, phaseTone, sessionPhase, type SessionPhase } from './session-status.ts';
 import {
@@ -535,9 +535,12 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
       {session.optionSpec.length === 0 ? null : (
         <div className="nodrag mb-2">
           <OptionControls
+            sessionId={session.id}
             options={sessionOptions.options}
             values={session.options}
-            onChange={(optionId, value) => run(() => onChangeOption(optionId, value))}
+            onChange={(optionId, value) => session.optionSpec.find((option) => option.id === optionId)?.category === 'model'
+              ? run(() => onChangeOption(optionId, value))
+              : onChangeOption(optionId, value)}
             compact
           />
         </div>
@@ -589,6 +592,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         <ScrollToEnd visible={!nearEnd} onClick={() => scrollToEnd()} />
       </div>
 
+      <OptionFeedbackNotice sessionId={session.id} options={session.optionSpec} />
       <CardComposer
         session={{ ...session, status }}
         awaiting={waitingForReply(live, status)}

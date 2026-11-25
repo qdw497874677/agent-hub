@@ -25,6 +25,7 @@ import { agentSchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema,
 export const PROTOCOL_VERSION = 7;
 export const PROTOCOL_MISMATCH_CLOSE = 4426;
 export const WORKER_CAPABILITY_SESSION_START_READY = 'session_start_ready';
+export const WORKER_CAPABILITY_OPTION_RECEIPT = 'option_receipt';
 
 /** 一份代码的身份：package 版本 + git 提交（不在 git 仓库里就是 null）+ 协议版本。 */
 export const buildInfoSchema = z.object({
@@ -143,6 +144,13 @@ export const workerOptionsSchema = z.object({
   type: z.literal('options'),
   sessionId: id,
   options: z.array(runtimeOptionSchema)
+});
+
+export const workerOptionReceiptSchema = z.object({
+  type: z.literal('option_receipt'), sessionId: id,
+  requestId: z.string().min(1).max(128), optionId: z.string().min(1),
+  outcome: z.enum(['applied', 'rejected', 'unknown']),
+  options: z.array(runtimeOptionSchema).optional()
 });
 
 /**
@@ -365,6 +373,7 @@ export const workerToServerSchema = z.union([
   workerSessionStartResultSchema,
   workerPromptStartRefusedSchema,
   workerOptionsSchema,
+  workerOptionReceiptSchema,
   workerStatusSchema,
   workerUpdateStatusSchema,
   workerRuntimeJobStatusSchema,
@@ -521,7 +530,8 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
     kind: z.literal('set_option'),
     sessionId: id,
     optionId: z.string(),
-    value: z.union([z.string(), z.boolean()])
+    value: z.union([z.string(), z.boolean()]),
+    requestId: z.string().min(1).max(128).optional()
   }),
   /**
    * 会话进行中热更新模型定义（只换 extra 这类请求参数，不重启 agent）。

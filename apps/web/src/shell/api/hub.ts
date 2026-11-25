@@ -263,6 +263,10 @@ export const api = {
   interrupt: (sessionId: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/interrupt`, {}),
   changeOption: (sessionId: string, optionId: string, value: string | boolean) =>
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),
+  changeOptionWithReceipt: (sessionId: string, optionId: string, value: string | boolean) =>
+    post<{ state: 'confirmed' | 'saved' | 'unconfirmed' | 'rejected'; session: SessionDto }>(
+      `/api/sessions/${sessionId}/options`, { optionId, value, confirm: true }
+    ),
   sessionAssets: (sessionId: string) => call<SessionAssetsDto>(`/api/sessions/${sessionId}/assets`),
   /**
    * 会话环境（资产 / MCP / 启动配置）是否改过但还没生效：只读、很轻。

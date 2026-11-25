@@ -31,6 +31,7 @@ import { TaskDetail } from '../surfaces/workbench/task-detail.tsx';
 import { UndoToast } from '../atoms/undo-toast.tsx';
 import { splitArchivedTasks } from '../atoms/task-display.ts';
 import { patchCanvasSessionConfig, patchSessionConfig, patchCanvasTask } from './confirmed-patch.ts';
+import { clearOptionFeedback, optionFeedbackIsCurrent, setOptionFeedback } from '../atoms/option-feedback.tsx';
 import type { View } from './route.ts';
 
 const LAST_PROJECT = 'agent-hub:last-project';
@@ -204,7 +205,17 @@ function Workspace() {
   );
 
   // 同一会话连点两下：只认最后一次请求的回执，别让先到的旧配置盖住后选的。
-  const optionRequests = useRef(new Map<string, number>());
+  const optionRequests = useRef(new Map<string, symbol>());
+  const optionLifetime = useRef({ active: true });
+  useEffect(() => {
+    const lifetime = { active: true };
+    optionLifetime.current = lifetime;
+    return () => {
+      lifetime.active = false;
+      optionRequests.current.clear();
+      clearOptionFeedback();
+    };
+  }, []);
 
   /**
    * 改可调项：回执是服务端落库后的快照，可能仍是旧值（agent 超时没确认）。
@@ -213,28 +224,82 @@ function Workspace() {
   const changeOption = useCallback(
     async (sessionId: string, optionId: string, value: string | boolean) => {
       const projectId = project?.id;
-      const request = (optionRequests.current.get(sessionId) ?? 0) + 1;
-      optionRequests.current.set(sessionId, request);
-
-      const confirmed = await api.changeOption(sessionId, optionId, value);
-
-      // 两个取消都要等完：等的过程中可能又发起了下一次修改，落地前再认一次「我是不是最新的」。
-      await Promise.all([
-        projectId ? queryClient.cancelQueries({ queryKey: projectKeys.canvas(projectId) }) : undefined,
-        queryClient.cancelQueries({ queryKey: ['session', sessionId] })
-      ]);
-      if (optionRequests.current.get(sessionId) !== request) return;
-
-      // 中间没有 await：旧回执不会在这里插进来。
-      if (projectId) {
-        queryClient.setQueryData<CanvasDto>(projectKeys.canvas(projectId), (current) =>
-          current ? patchCanvasSessionConfig(current, confirmed) : current
-        );
+      const snapshot = queryClient.getQueryData<SessionDto>(['session', sessionId]) ??
+        (projectId ? queryClient.getQueryData<CanvasDto>(projectKeys.canvas(projectId))?.sessions.find((item) => item.id === sessionId) : undefined);
+      const option = snapshot?.optionSpec.find((item) => item.id === optionId);
+      if (option && option.category !== 'model') {
+        const request = Symbol();
+        const lifetime = optionLifetime.current;
+        const original = snapshot?.options[optionId] ?? option.current ?? '';
+        const latest = () => lifetime.active && optionFeedbackIsCurrent(sessionId, optionId, request);
+        let readSequence = 0;
+        const recheck = () => {
+          if (!latest()) return;
+          const read = ++readSequence;
+          void api.session(sessionId).then((observed) => {
+            if (!latest() || read !== readSequence) return;
+            setOptionFeedback(sessionId, optionId, { state: 'unconfirmed', target: value, original, observed: observed.options[optionId] ?? observed.optionSpec.find((item) => item.id === optionId)?.current, recheck, requestToken: request });
+          }).catch(() => {
+            if (latest() && read === readSequence) setOptionFeedback(sessionId, optionId, { state: 'unconfirmed', target: value, original, recheck, requestToken: request });
+          });
+        };
+        setOptionFeedback(sessionId, optionId, { state: 'pending', target: value, original, requestToken: request });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const receipt = await Promise.race([
+            api.changeOptionWithReceipt(sessionId, optionId, value),
+            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 12000); })
+          ]);
+          if (!latest()) return;
+          if (receipt.state === 'confirmed' || receipt.state === 'saved') {
+            await Promise.all([
+              projectId ? queryClient.cancelQueries({ queryKey: projectKeys.canvas(projectId) }) : undefined,
+              queryClient.cancelQueries({ queryKey: ['session', sessionId] })
+            ]);
+            if (!latest()) return;
+            // Only merge this option, and never replace a newer session projection.
+            const patch = (current: SessionDto) => current.updatedAt > receipt.session.updatedAt ? current : {
+              ...current,
+              options: { ...current.options, [optionId]: receipt.session.options[optionId] ?? value },
+              optionSpec: current.optionSpec.map((item) => item.id === optionId ? (receipt.session.optionSpec.find((candidate) => candidate.id === optionId) ?? item) : item)
+            };
+            if (projectId) queryClient.setQueryData<CanvasDto>(projectKeys.canvas(projectId), (current) => current ? { ...current, sessions: current.sessions.map((item) => item.id === sessionId ? patch(item) : item) } : current);
+            queryClient.setQueryData<SessionDto>(['session', sessionId], (current) => current ? patch(current) : current);
+          }
+          setOptionFeedback(sessionId, optionId, { state: receipt.state, target: value, original, requestToken: request, ...(receipt.state === 'unconfirmed' ? { recheck } : {}) });
+        } catch {
+          if (latest()) setOptionFeedback(sessionId, optionId, { state: 'unconfirmed', target: value, original, recheck, requestToken: request });
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
+        return;
       }
-      // 侧聊不进画布，单条会话缓存也要跟回执对齐。
-      queryClient.setQueryData<SessionDto>(['session', sessionId], (current) =>
-        current ? patchSessionConfig(current, confirmed) : current
-      );
+      const request = Symbol();
+      const lifetime = optionLifetime.current;
+      optionRequests.current.set(sessionId, request);
+      try {
+        const confirmed = await api.changeOption(sessionId, optionId, value);
+
+        // 两个取消都要等完：等的过程中可能又发起了下一次修改，落地前再认一次「我是不是最新的」。
+        await Promise.all([
+          projectId ? queryClient.cancelQueries({ queryKey: projectKeys.canvas(projectId) }) : undefined,
+          queryClient.cancelQueries({ queryKey: ['session', sessionId] })
+        ]);
+        if (!lifetime.active || optionRequests.current.get(sessionId) !== request) return;
+
+        // 中间没有 await：旧回执不会在这里插进来。
+        if (projectId) {
+          queryClient.setQueryData<CanvasDto>(projectKeys.canvas(projectId), (current) =>
+            current ? patchCanvasSessionConfig(current, confirmed) : current
+          );
+        }
+        // 侧聊不进画布，单条会话缓存也要跟回执对齐。
+        queryClient.setQueryData<SessionDto>(['session', sessionId], (current) =>
+          current ? patchSessionConfig(current, confirmed) : current
+        );
+      } finally {
+        if (optionRequests.current.get(sessionId) === request) optionRequests.current.delete(sessionId);
+      }
     },
     [project, queryClient]
   );

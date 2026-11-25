@@ -3,6 +3,7 @@ import type { RuntimeOptionDto } from '../shell/api.ts';
 import { ModelPicker } from './model-picker.tsx';
 import type { ModelItem } from './model-list.ts';
 import { filterModelsByScope, hasSelectableCrossScope, scopeNote } from './model-scope.ts';
+import { useOptionFeedback } from './option-feedback.tsx';
 
 interface Props {
   readonly options: readonly RuntimeOptionDto[];
@@ -11,6 +12,7 @@ interface Props {
   /** 卡片里空间只有 320px：只留模型、Agent、模式与思考强度，其余在检查器里。 */
   readonly compact?: boolean;
   readonly disabled?: boolean;
+  readonly sessionId: string;
 }
 
 const COMPACT_CATEGORIES: readonly string[] = ['model', 'agent', 'mode', 'thought_level'];
@@ -35,7 +37,8 @@ export function currentOf(
 /** 输入框底栏里的可调项画成小胶囊：透明底、细边、悬停才加深（参照 t3code 的 composer chips）。 */
 const CHIP = 'rounded-full border border-hair bg-transparent px-2.5 hover:bg-hover';
 
-export function OptionControls({ options, values, onChange, compact = false, disabled = false }: Props) {
+export function OptionControls({ options, values, onChange, sessionId, compact = false, disabled = false }: Props) {
+  const feedback = useOptionFeedback(sessionId);
   // 一次请求没回来之前，这个可调项显示“切换中…”，但绝不显示还没被确认的目标值。
   const [pending, setPending] = useState<Readonly<Record<string, true>>>({});
   const runChange = (optionId: string, value: string | boolean) => {
@@ -67,13 +70,14 @@ export function OptionControls({ options, values, onChange, compact = false, dis
       className={`flex min-w-0 items-center gap-0.5 ${compact ? 'flex-wrap sm:flex-nowrap' : 'flex-wrap'}`}
     >
       {visible.map((option) => {
-        const current = currentOf(options, values, option);
-        const waiting = pending[option.id] === true;
+        const status = feedback[option.id];
+        const current = status?.state === 'pending' ? status.original : currentOf(options, values, option);
+        const waiting = pending[option.id] === true || status?.state === 'pending';
         if (option.kind === 'boolean') {
           return (
             <label
               key={option.id}
-              className="flex items-center gap-1 text-meta text-tertiary"
+              className="flex min-h-[44px] min-w-[44px] items-center gap-1 text-meta text-tertiary md:min-h-0"
               title={option.description ?? option.label}
             >
               <input
@@ -120,7 +124,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
             aria-label={option.label}
             title={title}
             data-category={option.category}
-            className={`${compact ? 'shrink-0' : ''} ${option.category === 'agent' ? 'max-w-[112px]' : 'max-w-[72px] sm:max-w-[132px]'} ${compact ? `option-control appearance-none ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} truncate text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
+            className={`${compact ? 'shrink-0' : ''} ${option.category === 'agent' ? 'max-w-[112px]' : 'max-w-[72px] sm:max-w-[132px]'} ${compact ? `option-control appearance-none ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} min-h-[44px] min-w-[44px] md:min-h-0 truncate text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
             value={String(current)}
             disabled={disabled || waiting}
             aria-busy={waiting || undefined}
@@ -152,6 +156,27 @@ export function OptionControls({ options, values, onChange, compact = false, dis
       })}
     </div>
   );
+}
+
+/** 与输入区相邻：不阻止发送，但不把未确认的设置说成已生效。 */
+export function OptionFeedbackNotice({ sessionId, options }: { sessionId: string; options: readonly RuntimeOptionDto[] }) {
+  const feedback = useOptionFeedback(sessionId);
+  const label = (option: RuntimeOptionDto, value: string | boolean) =>
+    typeof value === 'boolean' ? (value ? '开启' : '关闭') : (flatChoices(option).find((item) => item.value === value)?.label ?? value);
+  return <div className="space-y-1">{options.map((option) => {
+    const item = feedback[option.id];
+    if (!item) return null;
+    const target = label(option, item.target);
+    const text = item.state === 'pending' ? `${option.label}：正在切换到 ${target}，当前仍显示 ${label(option, item.original)}。发送时设置可能尚未生效。`
+      : item.state === 'confirmed' ? `${option.label}：已确认切换到 ${target}。`
+      : item.state === 'saved' ? `${option.label}：已保存 ${target}，下次启动时生效。`
+      : item.state === 'rejected' ? `${option.label}：切换未被接受，原设置保留。`
+      : `${option.label}：未能确认是否切换到 ${target}，发送时使用的设置可能不同。`;
+    return <div key={option.id} role="status" data-testid="option-feedback" data-state={item.state} className="flex flex-wrap items-center gap-x-2 text-meta text-secondary">
+      <span>{text}{item.observed !== undefined ? ` 最近读取到：${label(option, item.observed)}。这不能确认之前发送的消息使用了什么设置。` : ''}</span>
+      {item.recheck ? <button type="button" className="min-h-[44px] rounded-sm text-link underline focus-visible:outline-2 focus-visible:outline-ring md:min-h-0" onClick={item.recheck}>重新查看设置</button> : null}
+    </div>;
+  })}</div>;
 }
 
 /** agent 报的候选项可能分了组也可能没分：摊平成一列，分组名带上，模型选择器按它分组。 */

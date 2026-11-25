@@ -414,6 +414,12 @@ export function ingestWorkerEvent(
     // 才精确收掉 sending 并放行下一句；否则 1s 泵可能在钩子完成前就送出 B。
     // Worker 事件不可信：不能让它写入 Hub 的发起类别。
     let safeEvent = event.kind === 'prompt' ? (({ promptActor: _ignored, ...rest }) => rest)(event) : event;
+    if (safeEvent.kind === 'diagnostic' && safeEvent.uncertainDeliveryId !== undefined) {
+      const inFlight = await deliveries?.inFlight(sessionId);
+      if (!inFlight || inFlight.sessionId !== sessionId || inFlight.id !== safeEvent.uncertainDeliveryId
+        || await findDeliveryEnded(deps, inFlight)) return ok(session);
+      safeEvent = { kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId: inFlight.id };
+    }
     if (safeEvent.kind === 'text' && safeEvent.firstOutputDeliveryId !== undefined) {
       let valid = false;
       try {

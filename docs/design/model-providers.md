@@ -51,6 +51,18 @@ interface ProviderAssignment { providerId; scope: 'team' | 'project' | 'worker';
 - 不支持该 protocol 的 runtime 置灰并给原因（能力矩阵新增 `hub_providers` 能力：pi/opencode `available`，grok `limited: 私有 GROK_HOME，看不到本机规则/插件`）。
 - 选了 hub 模型 ⇒ `StartSpec.options.model = 'hub-cliproxy/grok-3-mini-fast'` + `StartSpec.providers = [grant]`；中途换到另一个 hub 提供商要求它在开会话时已下发（v1：开会话时下发「该会话可用的全部 hub 提供商」，见待决 D3）。
 
+### 后续设计：Agent 与模型共用一个入口
+
+会话里的选择器显示 **Agent · 模型**。目标由 `(agentId, model)` 表示：OpenCode、Codex 是运行时；本机和 Hub 提供商是各运行时下的模型来源，不能用提供商名称推断运行时。可选项以当前机器已验证的运行时、模型及当前权限为准；选择另一运行时不自动换机器或工作目录。参考 [Orca 的模型控件](https://github.com/stablyai/orca/blob/46aae50d7748d7d0f9bf6e4df311a2074636b14a/src/renderer/src/components/native-chat/session/options/controls/NativeChatModelCombobox.tsx#L25-L36) 的可搜索、当前值和切换反馈，以及它[单独确认跨 Agent 交接](https://github.com/stablyai/orca/blob/46aae50d7748d7d0f9bf6e4df311a2074636b14a/src/renderer/src/lib/agent-session/launch/continuation/launch-agent-session-continuation.ts#L100-L138) 的做法。Orca 后者新开标签页，不是模型下拉框直接替换原会话。
+
+| 选择 | 执行动作 |
+|---|---|
+| 同运行时、可原地改模型 | 改当前运行时的选项；按实际回执区分已确认、已保存和未确认。 |
+| 同运行时、目标要求重启 | 显式说明需要重启；只有已证明兼容的目标才尝试原生恢复，不把启动就绪说成模型已成功推理。 |
+| 换运行时 | 明示「换 Agent，带上下文继续」。等在途回合有确切终态后，以来源游标生成 [交接文档](../adr/0029-context-handoff.md#跨运行时前置抽象交接文档)，启动目标运行时的**新原生会话**；不传原生会话引用，不搬旧附件、工具状态或审批。 |
+
+Agent Hub 如需保留同一可见会话和时间线，应先增加独立的运行时代际记录与过渡状态：过渡期间不派发排队消息，验证目标就绪并确认交接投递后才启用新代；拒绝旧代迟到事件，结果不确定时停在待核对而非自动重放。作业已明确失败且未触发不确定副作用时，仍保留原会话和已确认配置。验收分别覆盖原地换模型、同运行时重启、跨运行时新原生会话、旧帧隔离和交接超时；桌面与手机共用语义。本节是后续设计，不是当前能力。
+
 ## 4. 下发协议与密钥生命周期
 
 ```ts

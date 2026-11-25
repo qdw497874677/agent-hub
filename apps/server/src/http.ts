@@ -22,6 +22,7 @@ import type { ContextService, WorkspaceFilesService, GitWorkflowService, RewindS
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { Hono } from 'hono';
+import { z } from 'zod';
 import type { Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { bodyLimit } from 'hono/body-limit';
@@ -245,6 +246,7 @@ export interface AppOptions {
    * 这里等它的全量回报，而不是把用户选的值直接当成结果显示出去。
    */
   readonly waitOptions?: (sessionId: string) => Promise<void>;
+  readonly optionConfirmations?: Pick<ReturnType<typeof import('./option-waiters.ts').createOptionWaiters>, 'serialize' | 'register'>;
   /** agent 间通信（ADR 0018）。 */
   readonly messaging?: Omit<MessagingRouteDeps, 'deps'>;
   readonly memory?: Omit<MemoryRouteDeps, 'deps'>;
@@ -1126,7 +1128,7 @@ export function createApp(options: AppOptions): Hono {
    * 真正认不认由 agent 说了算，它不认就会报错，然后我们什么都不写。
    */
   app.post('/api/sessions/:sessionId/options', async (c) => {
-    const input = await body(c, changeOptionRequest);
+    const input = await body(c, changeOptionRequest.extend({ confirm: z.boolean().optional() }));
     if (!input.ok) return input.response;
     const sessionId = c.req.param('sessionId');
     const current = await deps.sessions.byId(asSessionId(sessionId));
@@ -1148,6 +1150,29 @@ export function createApp(options: AppOptions): Hono {
     if (options.providers) {
       const allowed = options.providers.optionAllowed(current?.model ?? '', input.value.optionId, input.value.value);
       if (!allowed.ok) return fail(c, allowed.error);
+    }
+    if (input.value.confirm === true && input.value.optionId !== 'model') {
+      c.header('Cache-Control', 'no-store');
+      const run = async () => {
+        const pending = options.optionConfirmations?.register(sessionId, input.value.optionId, input.value.value);
+        let saved = false;
+        const changed = await changeSessionOption(deps, {
+          sessionId, id: input.value.optionId, value: input.value.value,
+          ...(pending ? { requestId: pending.requestId } : {}),
+          onSaved: () => { saved = true; }
+        });
+        if (!changed.ok) {
+          pending?.cancel();
+          if (changed.error.code === 'invalid' || changed.error.code === 'not_found' || changed.error.code === 'forbidden') return fail(c, changed.error);
+          const observed = await deps.sessions.byId(asSessionId(sessionId));
+          if (!observed) return fail(c, changed.error);
+          return c.json({ state: 'unconfirmed' as const, session: observed });
+        }
+        if (saved) pending?.cancel();
+        const state = saved ? 'saved' as const : pending ? await pending.result : 'unconfirmed' as const;
+        return c.json({ state, session: (await deps.sessions.byId(asSessionId(sessionId))) ?? changed.value });
+      };
+      return options.optionConfirmations ? options.optionConfirmations.serialize(sessionId, run) : run();
     }
     const changed = await changeSessionOption(deps, {
       sessionId,

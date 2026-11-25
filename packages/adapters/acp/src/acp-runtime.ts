@@ -22,6 +22,7 @@ import { StderrTail, endedFromStopReason, mapAcpUpdate, mcpServersFor, readMcpCa
 import type { AcpPromptCapabilities } from './map-acp.ts';
 import type { AcpChildUpdate, AcpSessionCodec } from './codec.ts';
 import { legacyAcpOptions, mapAcpOptions } from './map-options.ts';
+import { PromptResponseObserver } from './prompt-response-observer.ts';
 
 type Json = Record<string, unknown>;
 
@@ -60,6 +61,8 @@ class AcpSession implements RuntimeSession {
   private readonly codec: AcpSessionCodec | null;
   private codecWarned = false;
   private readonly connection: ClientConnection;
+  private readonly promptResponses: PromptResponseObserver | null;
+  private interruptGeneration = 0;
   private agentSessionId = '';
   /** open() 记下的工作目录：resync 重放时要原样带上（ACP 没有单独的 history 接口）。 */
   private cwd = '';
@@ -120,6 +123,7 @@ class AcpSession implements RuntimeSession {
     this.onOptions = onOptions;
     this.keepAlive = keepAlive;
     this.codec = config.codec?.session() ?? null;
+    this.promptResponses = config.codec?.id === 'opencode' ? new PromptResponseObserver() : null;
     // 一定要读 stderr：不读会写满管道把 agent 卡住；最后几行留着给空回合当线索（已脱敏）。
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => this.stderr.push(chunk));
@@ -138,12 +142,11 @@ class AcpSession implements RuntimeSession {
           ? { outcome: { outcome: 'selected' as const, optionId: allow.optionId } }
           : { outcome: { outcome: 'cancelled' as const } };
       });
-    this.connection = app.connect(
-      ndJsonStream(
-        Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
-        Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>
-      )
+    const stream = ndJsonStream(
+      Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
+      Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>
     );
+    this.connection = app.connect(this.promptResponses ? this.promptResponses.wrap(stream) : stream);
     // 只有子进程真的退出才是会话终态。connection.closed 也会在 stdout 关掉而进程还活着时触发，
     // 单凭事件流断掉推 ended 等于替 agent 编造一个它没给的终态（更不能挂 deliveryId）。
     child.once('exit', () => this.finish());
@@ -663,41 +666,57 @@ class AcpSession implements RuntimeSession {
     const activeTurn = { deliveryId: input.deliveryId && input.deliveryId.length > 0 ? input.deliveryId : null, lastMessageId: null as string | null, lastMessageOwned: false, messageIds: new Set<string>() };
     this.turn = activeTurn;
     this.produced = false;
+    const generation = this.interruptGeneration;
+    const observation = activeTurn.deliveryId ? this.promptResponses?.begin() : undefined;
+    let result: Json;
     try {
-      const result = await this.request('session/prompt', {
+      result = await this.request('session/prompt', {
         sessionId: this.agentSessionId,
         prompt: blocks.value
       });
-      // 拿到这一条 session/prompt 的应答 = 这一轮的确切终态：现在才清 turn，并把它的 deliveryId 带下去。
-      const turn = this.turn === activeTurn ? activeTurn : null;
-      const lastMessageId = turn?.lastMessageId ?? null;
-      const produced = this.produced;
-      if (turn) this.turn = null;
-      // 空回合时 agent 往往刚在 stderr 上写了原因：等一小会儿让管道里的那几行到齐
-      if (!produced) await new Promise((resolve) => setTimeout(resolve, 200));
-      if (lastMessageId) this.onTurnRef?.(lastMessageId, turn?.lastMessageOwned ? turn.deliveryId ?? undefined : undefined);
-      // 保活时不要在这一轮收尾 codec：子代理可能还在跑（后台 task），
-      // 让它们的 end 由真实信号（child_update 终态 / 父工具终态内容）决定。
-      if (!this.keepAlive) this.finishCodec('completed');
-      // ended 是**回合**事件：提示这一轮完了，不是进程完了。
-      this.queue.push(
-        endedFromStopReason(result['stopReason'], {
-          produced,
-          stderrTail: produced ? [] : this.stderr.tail(),
-          ...(turn?.deliveryId ? { deliveryId: turn.deliveryId } : {})
-        })
-      );
-      // 保活（默认）：队列不关，后续 session/update（比如后台子代理的进展）继续产出事件。
-      // dispose() 仍是唯一真正关闭的路径；要回到「一轮一个进程」的老行为才传 keepAlive: false。
-      if (!this.keepAlive) this.queue.close();
-      return { ok: true, value: undefined };
     } catch (error) {
+      const deliveryId = activeTurn.deliveryId;
+      const proven = deliveryId !== null && observation !== undefined &&
+        this.turn === activeTurn && !this.disposed && this.interruptGeneration === generation &&
+        this.child.exitCode === null && this.child.signalCode === null && this.promptResponses?.proven(observation);
+      if (observation) this.promptResponses?.end(observation);
       if (this.turn === activeTurn) this.turn = null;
+      if (proven && deliveryId !== null) {
+        if (!this.keepAlive) this.finishCodec('failed');
+        this.queue.push({ kind: 'ended', outcome: 'failed', reason: 'OpenCode 的模型服务拒绝了本轮请求。', deliveryId });
+        if (!this.keepAlive) this.queue.close();
+        return { ok: true, value: undefined };
+      }
       return { ok: false, error: unavailable((error as Error).message) };
     }
+    if (observation) this.promptResponses?.end(observation);
+    // 拿到这一条 session/prompt 的应答 = 这一轮的确切终态：现在才清 turn，并把它的 deliveryId 带下去。
+    const turn = this.turn === activeTurn ? activeTurn : null;
+    const lastMessageId = turn?.lastMessageId ?? null;
+    const produced = this.produced;
+    if (turn) this.turn = null;
+    // 空回合时 agent 往往刚在 stderr 上写了原因：等一小会儿让管道里的那几行到齐
+    if (!produced) await new Promise((resolve) => setTimeout(resolve, 200));
+    if (lastMessageId) this.onTurnRef?.(lastMessageId, turn?.lastMessageOwned ? turn.deliveryId ?? undefined : undefined);
+    // 保活时不要在这一轮收尾 codec：子代理可能还在跑（后台 task），
+    // 让它们的 end 由真实信号（child_update 终态 / 父工具终态内容）决定。
+    if (!this.keepAlive) this.finishCodec('completed');
+    // ended 是**回合**事件：提示这一轮完了，不是进程完了。
+    this.queue.push(
+      endedFromStopReason(result['stopReason'], {
+        produced,
+        stderrTail: produced ? [] : this.stderr.tail(),
+        ...(turn?.deliveryId ? { deliveryId: turn.deliveryId } : {})
+      })
+    );
+    // 保活（默认）：队列不关，后续 session/update（比如后台子代理的进展）继续产出事件。
+    // dispose() 仍是唯一真正关闭的路径；要回到「一轮一个进程」的老行为才传 keepAlive: false。
+    if (!this.keepAlive) this.queue.close();
+    return { ok: true, value: undefined };
   }
 
   async interrupt(): Promise<void> {
+    this.interruptGeneration += 1;
     await this.connection.agent.notify('session/cancel', { sessionId: this.agentSessionId });
   }
 

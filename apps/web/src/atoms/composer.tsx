@@ -4,7 +4,7 @@ import { api } from '../shell/api.ts';
 import { checkAdd, filterCommands, formatBytes, mentionDraft, toInput, triggerAt, type Draft, type SlashCommand } from './attachments.ts';
 import { readDraft } from './commands.ts';
 import { growField } from './composer-grow.ts';
-import { OptionControls } from './options.tsx';
+import { OptionControls, OptionFeedbackNotice } from './options.tsx';
 import { useSessionOptions } from './session-options.tsx';
 import { coarsePointer } from '../shell/device.ts';
 import { useOfflineNotice } from '../shell/workers.tsx';
@@ -350,6 +350,7 @@ export function Composer({
     <div className="relative">
       {error ? <p className="mb-1 text-meta text-rust">{error}</p> : null}
       <OfflineNotice text={allowOfflineSend ? null : offline} />
+      <OptionFeedbackNotice sessionId={session.id} options={session.optionSpec} />
       {options.length > 0 ? (
         <ul
           role="listbox"
@@ -521,6 +522,7 @@ export function Composer({
             />
             <span className="hidden shrink-0 text-meta text-tertiary sm:inline">{agentLabel}</span>
             <OptionControls
+              sessionId={session.id}
               options={sessionOptions.options}
               values={session.options}
               onChange={onChangeOption}
