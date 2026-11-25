@@ -11,7 +11,7 @@ import { WorkspaceChooser, choiceReady, longLivedRequest, useWorkspaceViews, typ
 /**
  * 换个地方继续（docs/design/workspaces.md §7）。说法要诚实：agent 自己的会话状态搬不走，
  * 搬过去的是平台记下的对话摘要和任务工作日志——在目标工作目录开一条新会话，挂成这条的分叉。
- * 代码不会自己过去：git 工作目录可以先提交 WIP 并推送分支，否则改动留在原处。
+ * 代码不会自己过去，改动留在原来的工作目录。
  */
 /** 没说过话的会话没有可搬的上下文。 */
 export function canContinueElsewhere(session: Pick<SessionDto, 'lastSeq'>): boolean {
@@ -36,7 +36,6 @@ export function ContinueDialog({
   const views = useWorkspaceViews(canvas.project.id);
   const [machine, setMachine] = useState<string | null>(null);
   const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
-  const [saveWip, setSaveWip] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -76,7 +75,7 @@ export function ContinueDialog({
         // 组合工作目录只在派生时能选（这里 groups=false 不显示），防御一下
         return;
       }
-      const created = await api.continueElsewhere(session.id, { target, saveWip: saveWip && from?.isGit === true });
+      const created = await api.continueElsewhere(session.id, { target, saveWip: false });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: projectKeys.canvas(canvas.project.id) }),
         queryClient.invalidateQueries({ queryKey: ['workspaces', canvas.project.id] })
@@ -108,11 +107,11 @@ export function ContinueDialog({
       />
       {from?.isGit ? (
         <label className="mb-3 flex items-start gap-2 text-meta text-secondary">
-          <input type="checkbox" className="mt-0.5" checked={saveWip} onChange={(event) => setSaveWip(event.target.checked)} />
+          <input type="checkbox" className="mt-0.5" disabled checked={false} readOnly aria-describedby="continue-wip-reason" data-testid="continue-wip" />
           <span>
             先提交 WIP 并推送分支{from.branch ? <span className="font-mono"> {from.branch}</span> : null}
-            <span className="block text-tertiary">
-              新开临时工作目录时会直接检出这个分支。不勾：代码改动留在原来的工作目录里。
+            <span id="continue-wip-reason" className="block text-tertiary" data-testid="continue-wip-reason">
+              暂时无法确认原目录可以安全保存 WIP，代码改动会留在原来的工作目录里。
             </span>
           </span>
         </label>
@@ -140,7 +139,7 @@ export function ContinueDialog({
           disabled={busy || !choiceReady(choice) || machine === null || same || blocked !== null}
           onClick={() => void go()}
         >
-          {busy ? '交接中…' : '继续'}
+          {busy ? '交接中…' : '不保存 WIP，继续'}
         </button>
       </div>
     </DialogShell>

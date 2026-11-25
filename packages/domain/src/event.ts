@@ -55,7 +55,7 @@ export type SessionEvent =
        */
       readonly clientMessageId?: string;
     }
-  | { readonly kind: 'text'; readonly delta: string; readonly subagentId?: string; readonly firstOutputDeliveryId?: string }
+  | { readonly kind: 'text'; readonly delta: string; readonly subagentId?: string; readonly firstOutputDeliveryId?: string; /** 缺省表示来源未知，不代表主助手。 */ readonly textOrigin?: 'main_assistant' | 'other' }
   /** 模型的思考过程（推理文字）。只进专注对话，默认折叠；卡片不渲染。 */
   | { readonly kind: 'thinking'; readonly delta: string; readonly subagentId?: string }
   | { readonly kind: 'tool_call'; readonly name: string; readonly input: string; readonly subagentId?: string }

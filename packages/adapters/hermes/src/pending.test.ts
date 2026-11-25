@@ -48,8 +48,8 @@ test('fresh runs mark only their first assistant text, never child text or unkey
         { event: 'message.delta', delta: 'child', child_session_id: 'child-1' },
         { event: 'message.delta', delta: 'user', role: 'user' },
         { event: 'message.delta', delta: '' },
-        { event: 'message.delta', delta: 'first' },
-        { event: 'message.interim', text: 'second' },
+        { event: 'message.delta', delta: 'first', ...(run === 2 ? { role: 'assistant' } : {}) },
+        { event: 'message.interim', text: 'second', role: 'assistant' },
         { event: 'run.completed' }
       ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''));
       return;
@@ -62,10 +62,10 @@ test('fresh runs mark only their first assistant text, never child text or unkey
       assert.equal((await s.prompt({ text: 'hi', parts: [], ...(deliveryId ? { deliveryId } : {}) })).ok, true);
       const events = await take(s.events(), (e) => e.kind === 'ended');
       assert.deepEqual(events.filter((e) => e.kind === 'text'), [
-        { kind: 'text', delta: 'child' },
-        { kind: 'text', delta: 'user' },
-        { kind: 'text', delta: 'first', ...(deliveryId ? { firstOutputDeliveryId: deliveryId } : {}) },
-        { kind: 'text', delta: 'second' }
+        { kind: 'text', delta: 'child', textOrigin: 'other' },
+        { kind: 'text', delta: 'user', textOrigin: 'other' },
+        { kind: 'text', delta: 'first', ...(run === 2 ? { textOrigin: 'main_assistant' } : {}), ...(deliveryId ? { firstOutputDeliveryId: deliveryId } : {}) },
+        { kind: 'text', delta: 'second', textOrigin: 'main_assistant' }
       ]);
       assert.deepEqual(events.at(-1), { kind: 'ended', outcome: 'done', ...(deliveryId ? { deliveryId } : {}) });
     }
@@ -85,7 +85,7 @@ test('reconnect and reconciliation never mark replayed text', async () => {
     if (req.url === '/v1/runs/r1/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       if (++streams === 1) return res.end('data: {"event":"reasoning.delta","delta":"thinking"}\n\n');
-      return res.end('data: {"event":"message.delta","delta":"replayed"}\n\ndata: {"event":"run.completed"}\n\n');
+      return res.end('data: {"event":"message.delta","delta":"replayed","role":"assistant"}\n\ndata: {"event":"message.delta","delta":"child","subagent_id":"c"}\n\ndata: {"event":"run.completed"}\n\n');
     }
     if (req.url === '/v1/runs/r1') return res.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"running"}');
     res.writeHead(404).end();
@@ -94,7 +94,7 @@ test('reconnect and reconciliation never mark replayed text', async () => {
     const s = session(hermes.baseUrl, home);
     assert.equal((await s.prompt({ text: 'hi', parts: [], deliveryId: 'delivery-r' })).ok, true);
     const events = await take(s.events(), (e) => e.kind === 'ended');
-    assert.deepEqual(events.filter((e) => e.kind === 'text'), [{ kind: 'text', delta: 'replayed' }]);
+    assert.deepEqual(events.filter((e) => e.kind === 'text'), [{ kind: 'text', delta: 'replayed', textOrigin: 'main_assistant' }, { kind: 'text', delta: 'child', textOrigin: 'other' }]);
     assert.deepEqual(events.at(-1), { kind: 'ended', outcome: 'done', deliveryId: 'delivery-r' });
 
     const resumedHome = await mkdtemp(join(tmpdir(), 'hermes-first-resume-'));
@@ -102,7 +102,7 @@ test('reconnect and reconciliation never mark replayed text', async () => {
     const resumed = session(hermes.baseUrl, resumedHome);
     await resumed.reconcile();
     const resumedEvents = await take(resumed.events(), (e) => e.kind === 'ended');
-    assert.deepEqual(resumedEvents.filter((e) => e.kind === 'text'), [{ kind: 'text', delta: 'replayed' }]);
+    assert.deepEqual(resumedEvents.filter((e) => e.kind === 'text'), [{ kind: 'text', delta: 'replayed', textOrigin: 'main_assistant' }, { kind: 'text', delta: 'child', textOrigin: 'other' }]);
     assert.deepEqual(resumedEvents.at(-1), { kind: 'ended', outcome: 'done', deliveryId: 'delivery-resumed' });
   } finally {
     await hermes.close();
@@ -143,7 +143,7 @@ test('a successful idempotency replay response cannot mark its first stream', as
       return res.writeHead(202, { 'content-type': 'application/json', 'Idempotency-Replayed': 'true' }).end('{"run_id":"r1","status":"started"}');
     }
     if (req.url === '/v1/runs/r1/events') {
-      return res.writeHead(200, { 'content-type': 'text/event-stream' }).end('data: {"event":"message.delta","delta":"replayed"}\n\ndata: {"event":"message.delta","delta":" text"}\n\ndata: {"event":"run.completed"}\n\n');
+      return res.writeHead(200, { 'content-type': 'text/event-stream' }).end('data: {"event":"message.delta","delta":"replayed","role":"assistant"}\n\ndata: {"event":"message.delta","delta":" text","role":"user"}\n\ndata: {"event":"run.completed"}\n\n');
     }
     res.writeHead(404).end();
   });
@@ -152,7 +152,7 @@ test('a successful idempotency replay response cannot mark its first stream', as
     assert.equal((await s.prompt({ text: 'hi', parts: [], deliveryId: 'delivery-replay' })).ok, true);
     const events = await take(s.events(), (e) => e.kind === 'ended');
     assert.equal(posts, 1);
-    assert.deepEqual(events.filter((e) => e.kind === 'text'), [{ kind: 'text', delta: 'replayed' }, { kind: 'text', delta: ' text' }]);
+    assert.deepEqual(events.filter((e) => e.kind === 'text'), [{ kind: 'text', delta: 'replayed', textOrigin: 'main_assistant' }, { kind: 'text', delta: ' text', textOrigin: 'other' }]);
     assert.deepEqual(events.at(-1), { kind: 'ended', outcome: 'done', deliveryId: 'delivery-replay' });
   } finally {
     await hermes.close();

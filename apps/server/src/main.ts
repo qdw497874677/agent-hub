@@ -240,9 +240,20 @@ const deps: Deps = {
       if (command.kind === 'dispose') providerWiring.revoke(command.sessionId);
       // hub 模型提供商：只给选中的那一个（ADR 0013 D3）；不能用就让这次启动失败，不静默换模型
       // 回合检查点（ADR 0027 D2）：问话发给 agent 之前先给工作区拍一张；最多等 5 秒，拍不成也照发
-      if (command.kind === 'prompt') {
-        const seq = (await store.sessions.byId(command.sessionId))?.lastSeq ?? 0;
-        await Promise.race([filesService.beginTurn(command.sessionId, seq).catch(() => null), new Promise((r) => setTimeout(r, 5_000))]);
+      if (command.kind === 'prompt' && command.deliveryId !== undefined) {
+        const claimed = await store.deliveries.inFlight(command.sessionId);
+        if (claimed?.id === command.deliveryId) {
+          const cutoff = new AbortController();
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              filesService.beginTurn(command.sessionId, claimed.seq, claimed.id, cutoff.signal).catch(() => null),
+              new Promise<void>((resolve) => { timer = setTimeout(() => { cutoff.abort(); resolve(); }, 5_000); })
+            ]);
+          } finally {
+            if (timer !== undefined) clearTimeout(timer);
+          }
+        }
       }
       const granted = await providerWiring.grantFor(command);
       if (!granted.ok) return granted;
@@ -315,6 +326,7 @@ const deps: Deps = {
   queue: createSessionQueue(),
   now: () => Date.now(),
   deliveries: store.deliveries,
+  branchAttempts: store.branchAttempts,
   // 授权（ADR 0011）：can() 要的团队 / 本机授权从这里拿；机器状态延迟到调用时再读 deps.gateway。
   access: createAccessPolicy({
     users: store.users,
@@ -356,7 +368,10 @@ const filesService = createWorkspaceFilesService({
   git: deps.git,
   now: () => Date.now()
 });
-const rewindService = createRewindService({ ...deps, files: filesService, turnRefs: store.turnRefs });
+const rewindService = createRewindService({
+  ...deps, files: filesService, turnRefs: store.turnRefs, branchAttemptWriter: store.branchAttempts,
+  supportsNativeBranch: (workerId, agentId) => serverGateway?.supportsBranchAttempt(workerId, agentId) === true
+});
 /**
  * 一轮结束的收尾总闸。回合结束（event `ended`）、进程保活（status `idle`）、
  * 卡顿巡检、送达回收都走这一处；同一回合的重复信号按 journal 末尾去重。
@@ -883,11 +898,13 @@ serverGateway = createServerGateway({
       })
     );
   },
-  onTurnRef(workerId, sessionId, turnRef) {
-    fromWorker(workerId, sessionId, () => void rewindService.recordTurnRef(sessionId, turnRef).catch((e) => log(`记录原生标识失败：${String(e)}`)));
+  onTurnRef(workerId, sessionId, turnRef, deliveryId) {
+    fromWorker(workerId, sessionId, () => void rewindService.recordTurnRef(sessionId, turnRef, workerId, deliveryId).catch((e) => log(`记录原生标识失败：${String(e)}`)));
   },
-  onBranchResult(workerId, sessionId, outcome, reason) {
-    fromWorker(workerId, sessionId, () => void rewindService.branchResult(sessionId, outcome, reason).catch((e) => log(`处理分叉结果失败：${String(e)}`)));
+  onBranchAttemptResult(workerId, sessionId, attemptId, outcome, agentSessionRef) {
+    // Gateway already verifies the exact socket/start attempt; the durable CAS checks it again against the staged child.
+    const receipt = outcome === 'both_failed' ? { outcome } as const : agentSessionRef === undefined ? null : { outcome, agentSessionRef };
+    if (receipt) void rewindService.branchResult(sessionId, attemptId, workerId, receipt).catch((e) => log(`处理分叉结果失败：${String(e)}`));
   },
   onAgentSession(workerId, sessionId, agentSessionRef) {
     fromWorker(workerId, sessionId, () => void ingestAgentSessionRef(deps, sessionId, agentSessionRef));

@@ -13776,6 +13776,13 @@
                                     "type": "string",
                                     "minLength": 1,
                                     "maxLength": 128
+                                  },
+                                  "textOrigin": {
+                                    "type": "string",
+                                    "enum": [
+                                      "main_assistant",
+                                      "other"
+                                    ]
                                   }
                                 },
                                 "required": [

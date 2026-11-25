@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,6 +49,261 @@ async function collectUntilEnded(session: RuntimeSession): Promise<SessionEvent[
 function keyed(text: string, deliveryId: string): PromptInput & { readonly deliveryId: string } {
   return { text, parts: [], deliveryId };
 }
+
+test('acp branch attempt: only proven fork or method-not-found can start a session', async (t) => {
+  const branch = { fromAgentSessionRef: 'source', turnRef: 'turn', previousTurnRef: 'previous' };
+  const scenarios = [
+    { name: 'native', fork: { result: { sessionId: 'forked' } }, expected: 'native', methods: ['initialize', 'session/fork'] },
+    { name: 'method unavailable', fork: { error: { code: -32601, message: 'not available' } }, expected: 'plain', methods: ['initialize', 'session/fork', 'session/new'] },
+    { name: 'plain returns source', fork: { error: { code: -32601, message: 'not available' } }, fresh: { result: { sessionId: 'source' } }, expected: 'unknown', methods: ['initialize', 'session/fork', 'session/new'] },
+    { name: 'ambiguous rejection', fork: { error: { code: -32603, message: 'source missing' } }, expected: 'unknown', methods: ['initialize', 'session/fork'] },
+    { name: 'malformed ref', fork: { result: { sessionId: 'pending' } }, expected: 'unknown', methods: ['initialize', 'session/fork'] },
+    { name: 'mixed-case padded placeholder', fork: { result: { sessionId: ' PENDING ' } }, expected: 'unknown', methods: ['initialize', 'session/fork'] },
+    { name: 'source ref', fork: { result: { sessionId: 'source' } }, expected: 'unknown', methods: ['initialize', 'session/fork'] },
+    { name: 'oversized utf8 ref', fork: { result: { sessionId: '界'.repeat(171) } }, expected: 'unknown', methods: ['initialize', 'session/fork'] },
+    { name: 'both unavailable', fork: { error: { code: -32601, message: 'not available' } }, fresh: { error: { code: -32601, message: 'not available' } }, expected: 'both_failed', methods: ['initialize', 'session/fork', 'session/new'] },
+    { name: 'fresh ambiguous', fork: { error: { code: -32601, message: 'not available' } }, fresh: { error: { code: -32603, message: 'failed' } }, expected: 'unknown', methods: ['initialize', 'session/fork', 'session/new'] }
+  ] as const;
+  for (const scenario of scenarios) await t.test(scenario.name, async (t) => {
+    const startSpec = await spec(t, { branch });
+    const log = join(startSpec.workspaceRoot, 'requests');
+    const script = `
+      const fs = require('node:fs');
+      const readline = require('node:readline');
+      const send = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0', ...value}) + '\\n');
+      readline.createInterface({input:process.stdin}).on('line', line => {
+        const msg = JSON.parse(line);
+        fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(msg) + '\\n');
+        if (msg.method === 'initialize') return send({id:msg.id,result:{protocolVersion:1,agentCapabilities:{sessionCapabilities:{fork:{}}}}});
+        if (msg.method === 'session/fork') return send({id:msg.id,...${JSON.stringify(scenario.fork)}});
+        if (msg.method === 'session/new') return send({id:msg.id,...${JSON.stringify('fresh' in scenario ? scenario.fresh : { result: { sessionId: 'fresh' } })}});
+        return send({id:msg.id,error:{code:-32601,message:'unexpected'}});
+      });`;
+    const refs: string[] = [];
+    const runtime = createAcpRuntime({ id: 'branch-fake', label: 'Fake', command: process.execPath, args: ['-e', script], branchAtTurn: 'jetbrains-air' }, {
+      onAgentSessionRef: (_id, ref) => refs.push(ref)
+    });
+    assert.ok(runtime.startBranchAttempt);
+    const result = await runtime.startBranchAttempt(startSpec);
+    if (scenario.expected === 'native' || scenario.expected === 'plain') {
+      assert.equal(result.state, 'started');
+      if (result.state !== 'started') return;
+      t.after(() => result.session.dispose());
+      assert.equal(result.outcome, scenario.expected);
+      assert.equal(result.agentSessionRef, scenario.expected === 'native' ? 'forked' : 'fresh');
+    } else assert.deepEqual(result, { state: scenario.expected });
+    assert.deepEqual(refs, []);
+    const requests = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(requests.map((request) => request.method), scenario.methods);
+    assert.equal(requests[1].params.sessionId, 'source');
+    assert.equal(requests[1].params._meta.jetbrains.air.fork.messageId, 'previous');
+  });
+});
+
+test('acp runtime: exact session identity gates anchors, replay and early notifications', async (t) => {
+  const script = `
+    const readline = require('node:readline');
+    const send = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0', ...value}) + '\\n');
+    const update = (sessionId, id, meta) => send({method:'session/update',params:{sessionId,update:{sessionUpdate:'agent_message_chunk',messageId:id,content:{type:'text',text:id}},...(meta ? {_meta:meta} : {})}});
+    let loads = 0;
+    readline.createInterface({input:process.stdin}).on('line', line => {
+      const msg = JSON.parse(line);
+      if (msg.method === 'initialize') return send({id:msg.id,result:{protocolVersion:1,agentCapabilities:{sessionCapabilities:{fork:{}}}}});
+      if (msg.method === 'session/new') { update('s1','early'); return send({id:msg.id,result:{sessionId:'s1'}}); }
+      if (msg.method === 'session/load') {
+        loads++;
+        update('foreign','foreign-replay');
+        update(msg.params.sessionId,loads === 1 ? 'baseline' : 'replay-main');
+        return send({id:msg.id,result:{}});
+      }
+      if (msg.method === 'session/prompt') {
+        const text = msg.params.prompt[0].text;
+        if (text === 'foreign') { update('foreign','foreign-live'); }
+        if (text === 'early') update('s1','early');
+        if (text === 'main') { update('s1','main'); update('foreign','foreign-after-main'); }
+        if (text === 'child') { update('s1','parent-before-child'); update('s1','child-ref',{'opencode/child-session':{id:'child',parentID:'s1',depth:1}}); }
+        if (text === 'child-only') update('s1','child-only-ref',{'opencode/child-session':{id:'child',parentID:'s1',depth:1}});
+        if (text === 'foreign-replay') update('s1','foreign-replay');
+        if (text === 'baseline') update('s1','baseline');
+        send({id:msg.id,result:{stopReason:'end_turn'}});
+      }
+    });`;
+  const refs: Array<[string, string | undefined]> = [];
+  const runtime = createAcpRuntime({ id: 'identity', label: 'Fake', command: process.execPath, args: ['-e', script], branchAtTurn: 'jetbrains-air', codec: opencodeCodec }, {
+    onTurnRef: (_session, ref, deliveryId) => refs.push([ref, deliveryId])
+  });
+  const started = await runtime.start(await spec(t));
+  assert.ok(started.ok);
+  const session = started.value as RuntimeSession & { resync(): Promise<readonly { event: SessionEvent }[]> };
+  t.after(() => session.dispose());
+  for (const name of ['foreign', 'early', 'main', 'child', 'child-only']) assert.ok((await session.prompt(keyed(name, `d-${name}`))).ok);
+  assert.deepEqual(refs, [['early', undefined], ['main', 'd-main'], ['parent-before-child', 'd-child']]);
+  const replay = await session.resync();
+  assert.deepEqual(replay.flatMap(({ event }) => event.kind === 'text' ? [event.delta] : []), ['baseline']);
+  assert.ok((await session.prompt(keyed('foreign-replay', 'd-foreign-replay'))).ok);
+  assert.ok((await session.prompt(keyed('baseline', 'd-baseline'))).ok);
+  assert.deepEqual(refs.slice(-2), [['foreign-replay', 'd-foreign-replay'], ['baseline', undefined]]);
+  const events: SessionEvent[] = [];
+  const iterator = session.events()[Symbol.asyncIterator]();
+  while (events.filter((event) => event.kind === 'ended').length < 7) {
+    const event = await iterator.next();
+    assert.ok(!event.done);
+    events.push(event.value);
+  }
+  assert.ok(events.some((event) => event.kind === 'text' && event.subagentId === 'child' && event.delta === 'child-ref'));
+  const texts = events.flatMap((event) => event.kind === 'text' ? [event.delta] : []);
+  assert.equal(texts.filter((text) => text === 'early').length, 1, 'the pre-response update was not displayed');
+  assert.ok(!texts.includes('foreign-live'));
+  assert.ok(!texts.includes('foreign-after-main'));
+});
+
+test('acp runtime: explicit child metadata cannot own a branch anchor without a codec', async (t) => {
+  const script = `
+    const send = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value}) + '\\n');
+    const update = (id, meta) => send({method:'session/update',params:{sessionId:'s1',update:{sessionUpdate:'agent_message_chunk',messageId:id,content:{type:'text',text:id}},...(meta ? {_meta:meta} : {})}});
+    const child = {'opencode/child-session':{id:'child',parentID:'s1',depth:1}};
+    require('node:readline').createInterface({input:process.stdin}).on('line',line => {
+      const msg = JSON.parse(line);
+      if (msg.method === 'initialize') return send({id:msg.id,result:{protocolVersion:1}});
+      if (msg.method === 'session/new') return send({id:msg.id,result:{sessionId:'s1'}});
+      if (msg.method === 'session/prompt') {
+        const text = msg.params.prompt[0].text;
+        if (text === 'parent-and-child') { update('parent'); update('child', child); }
+        if (text === 'child-only') update('child-only', child);
+        if (text === 'other-meta') update('ordinary', {other:'metadata'});
+        return send({id:msg.id,result:{stopReason:'end_turn'}});
+      }
+    });`;
+  const refs: Array<[string, string | undefined]> = [];
+  const runtime = createAcpRuntime({ id: 'generic-branch', label: 'Fake', command: process.execPath, args: ['-e', script], branchAtTurn: 'jetbrains-air' }, {
+    onTurnRef: (_id, ref, deliveryId) => refs.push([ref, deliveryId])
+  });
+  const started = await runtime.start(await spec(t));
+  assert.ok(started.ok);
+  t.after(() => started.value.dispose());
+  for (const text of ['parent-and-child', 'child-only', 'other-meta']) assert.ok((await started.value.prompt(keyed(text, `d-${text}`))).ok);
+  assert.deepEqual(refs, [['parent', 'd-parent-and-child'], ['ordinary', 'd-other-meta']]);
+  const events: SessionEvent[] = [];
+  const iterator = started.value.events()[Symbol.asyncIterator]();
+  while (events.filter((event) => event.kind === 'ended').length < 3) {
+    const event = await iterator.next();
+    assert.ok(!event.done);
+    events.push(event.value);
+  }
+  assert.deepEqual(events.flatMap((event) => event.kind === 'text' ? [event.delta] : []), ['parent', 'child', 'child-only', 'ordinary']);
+});
+
+test('acp runtime: initial load replay accepts only the exact requested session', async (t) => {
+  const script = `
+    const send = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value}) + '\\n');
+    const update = (sid,id) => send({method:'session/update',params:{sessionId:sid,update:{sessionUpdate:'agent_message_chunk',messageId:id,content:{type:'text',text:id}}}});
+    require('node:readline').createInterface({input:process.stdin}).on('line',line => {
+      const msg = JSON.parse(line);
+      if (msg.method === 'initialize') return send({id:msg.id,result:{protocolVersion:1}});
+      if (msg.method === 'session/load') { update('other','foreign'); update(msg.params.sessionId,'replayed'); return send({id:msg.id,result:{}}); }
+      if (msg.method === 'session/prompt') { update('s1',msg.params.prompt[0].text); return send({id:msg.id,result:{stopReason:'end_turn'}}); }
+    });`;
+  const refs: Array<[string, string | undefined]> = [];
+  const runtime = createAcpRuntime({ id: 'initial-load', label: 'Fake', command: process.execPath, args: ['-e', script], branchAtTurn: 'jetbrains-air' }, {
+    onTurnRef: (_id, ref, deliveryId) => refs.push([ref, deliveryId])
+  });
+  const started = await runtime.start(await spec(t, { resume: { agentSessionRef: 's1', cursor: 0 } }));
+  assert.ok(started.ok);
+  t.after(() => started.value.dispose());
+  assert.ok((await started.value.prompt(keyed('foreign', 'd1'))).ok);
+  assert.ok((await started.value.prompt(keyed('replayed', 'd2'))).ok);
+  assert.deepEqual(refs, [['foreign', 'd1'], ['replayed', undefined]]);
+});
+
+test('acp branch attempt: only supported dialect exposes it and invalid specs do not launch', async (t) => {
+  assert.equal(createAcpRuntime(config).startBranchAttempt, undefined);
+  let launches = 0;
+  const runtime = createAcpRuntime({ ...config, branchAtTurn: 'jetbrains-air', launch: () => { launches += 1; return {}; } });
+  assert.ok(runtime.startBranchAttempt);
+  assert.deepEqual(await runtime.startBranchAttempt(await spec(t)), { state: 'unknown' });
+  assert.deepEqual(await runtime.startBranchAttempt(await spec(t, { branch: { fromAgentSessionRef: 's', turnRef: null, previousTurnRef: 'p' }, resume: { agentSessionRef: 's', cursor: 0 } })), { state: 'unknown' });
+  assert.equal(launches, 0);
+});
+
+test('acp branch attempt: native session is returned only after options are applied', async (t) => {
+  const refs: string[] = [];
+  const runtime = createAcpRuntime({ ...config, args: [FAKE, '--fork'], branchAtTurn: 'jetbrains-air' }, {
+    onAgentSessionRef: (_id, ref) => refs.push(ref)
+  });
+  assert.ok(runtime.startBranchAttempt);
+  const result = await runtime.startBranchAttempt(await spec(t, {
+    branch: { fromAgentSessionRef: 'source', turnRef: 'turn', previousTurnRef: 'previous' },
+    options: { model: 'b' }
+  }));
+  assert.equal(result.state, 'started');
+  if (result.state !== 'started') return;
+  t.after(() => result.session.dispose());
+  assert.equal(result.outcome, 'native');
+  assert.equal(result.agentSessionRef, 'f-previous');
+  assert.equal(result.session.options()[0]?.current, 'b');
+  assert.deepEqual(refs, []);
+  const events = collectUntilEnded(result.session);
+  assert.ok((await result.session.prompt({ text: 'hi', parts: [] })).ok);
+  const text = (await events).find((event) => event.kind === 'text');
+  assert.ok(text && text.kind === 'text');
+  assert.match(text.delta, /^methods:initialize,authenticate,session\/fork.*session\/set_config_option,session\/prompt$/);
+});
+
+test('acp branch attempt: disconnect during fork is unknown and cannot trigger session/new', async (t) => {
+  const startSpec = await spec(t, { branch: { fromAgentSessionRef: 'source', turnRef: 'turn', previousTurnRef: 'previous' } });
+  const log = join(startSpec.workspaceRoot, 'requests');
+  const script = `
+    const fs = require('node:fs');
+    require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+      const msg = JSON.parse(line);
+      fs.appendFileSync(${JSON.stringify(log)}, msg.method + '\\n');
+      if (msg.method === 'initialize') process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:msg.id,result:{protocolVersion:1,agentCapabilities:{sessionCapabilities:{fork:{}}}}}) + '\\n');
+      else process.exit(0);
+    });`;
+  const runtime = createAcpRuntime({ id: 'disconnect', label: 'Fake', command: process.execPath, args: ['-e', script], branchAtTurn: 'jetbrains-air' });
+  assert.ok(runtime.startBranchAttempt);
+  assert.deepEqual(await runtime.startBranchAttempt(startSpec), { state: 'unknown' });
+  assert.deepEqual((await readFile(log, 'utf8')).trim().split('\n'), ['initialize', 'session/fork']);
+});
+
+test('acp runtime: turn refs belong to the completed prompt, never replayed or reused IDs', async (t) => {
+  const script = `
+    const readline = require('node:readline');
+    const out = (message) => process.stdout.write(JSON.stringify({jsonrpc:'2.0', ...message}) + '\\n');
+    const update = (id) => out({method:'session/update', params:{sessionId:'s1', update:{sessionUpdate:'agent_message_chunk', content:{type:'text',text:'ok'}, messageId:id}}});
+    readline.createInterface({input:process.stdin}).on('line', line => {
+      const msg = JSON.parse(line);
+      if (msg.method === 'initialize') return out({id:msg.id,result:{protocolVersion:1,agentCapabilities:{sessionCapabilities:{fork:{}}}}});
+      if (msg.method === 'session/load') { update('replayed'); return out({id:msg.id,result:{}}); }
+      if (msg.method === 'session/prompt') {
+        const text = msg.params.prompt[0].text;
+        if (text !== 'empty') { update(text); update(text); }
+        return out({id:msg.id,result:{stopReason:'end_turn'}});
+      }
+      out({id:msg.id,result:{}});
+    });`;
+  const refs: Array<[string, string | undefined]> = [];
+  const runtime = createAcpRuntime({ id: 'fake-fork', label: 'Fake', command: process.execPath, args: ['-e', script], branchAtTurn: 'jetbrains-air' }, {
+    onTurnRef: (_session, ref, deliveryId) => refs.push([ref, deliveryId])
+  });
+  const started = await runtime.start(await spec(t, { resume: { agentSessionRef: 's1', cursor: 0 } }));
+  assert.ok(started.ok);
+  const session = started.value;
+  t.after(() => session.dispose());
+  assert.ok((await session.prompt(keyed('fresh', 'd1'))).ok);
+  assert.ok((await session.prompt(keyed('replayed', 'd2'))).ok);
+  assert.ok((await session.prompt(keyed('fresh', 'd3'))).ok);
+  assert.ok((await session.prompt({ text: 'unkeyed', parts: [] })).ok);
+  assert.deepEqual(refs, [['fresh', 'd1'], ['replayed', undefined], ['fresh', undefined], ['unkeyed', undefined]]);
+
+  // An empty completion pauses for stderr; a subsequent turn must not leak into it.
+  const empty = session.prompt(keyed('empty', 'd4'));
+  while ((session as unknown as { turn: unknown }).turn !== null) await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.ok((await session.prompt(keyed('next', 'd5'))).ok);
+  assert.ok((await empty).ok);
+  assert.deepEqual(refs.at(-1), ['next', 'd5']);
+  assert.equal(refs.length, 5);
+});
 
 test('acp runtime: deliveryId 只挂在确认属于这一轮的 ended 上；无 key / dispose 的 ended 不带', async (t) => {
   const runtime = createAcpRuntime(config);

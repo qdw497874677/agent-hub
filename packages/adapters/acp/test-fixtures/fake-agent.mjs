@@ -48,6 +48,7 @@ const options = () => [
 ];
 const seen = [];
 let pendingPrompt;
+let pendingPromptSession;
 let cwd = process.cwd();
 // session/new 下发的 MCP server 清单（hub 的工具入口；--mcp-http 时才有用）。
 let mcpServers = [];
@@ -75,7 +76,7 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
   const msg = JSON.parse(line);
   if (msg.method === undefined) {
     // 我们发出的 request_permission 的回答
-    say('s1', `perm:${msg.result.outcome.optionId}`);
+    say(pendingPromptSession, `perm:${msg.result.outcome.optionId}`);
     send({ id: pendingPrompt, result: { stopReason: 'end_turn' } });
     return;
   }
@@ -500,11 +501,12 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
       say(msg.params.sessionId, `methods:${seen.join(',')}`);
       if (text !== 'ask') return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       pendingPrompt = msg.id;
+      pendingPromptSession = msg.params.sessionId;
       return send({
         id: 99,
         method: 'session/request_permission',
         params: {
-          sessionId: 's1',
+          sessionId: msg.params.sessionId,
           toolCall: { toolCallId: 't' },
           options: [
             { optionId: 'no', name: 'No', kind: 'reject_once' },

@@ -156,7 +156,7 @@ else log(`组合工作空间目录：${groupsDir}${groupsDirRaw ? '（WORKER_GRO
 // 先接住 adapter 的回调，等 link 就绪后转给它——adapter 在构造时就要拿到这个函数。
 let notifyAgentSessionRef: (sessionId: string, ref: string) => void = () => undefined;
 let notifyOptions: (sessionId: string, options: readonly RuntimeOption[]) => void = () => undefined;
-let notifyTurnRef: (sessionId: string, turnRef: string) => void = () => undefined;
+let notifyTurnRef: (sessionId: string, turnRef: string, deliveryId?: string) => void = () => undefined;
 
 /**
  * stdio MCP 垫片：和 worker 同一个 node、同样的启动参数（.ts 直接跑），
@@ -196,7 +196,7 @@ async function buildHarness(
         log,
         onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
         onOptions: (sessionId, reported) => notifyOptions(sessionId, reported),
-        onTurnRef: (sessionId, turnRef) => notifyTurnRef(sessionId, turnRef),
+        onTurnRef: (sessionId, turnRef, deliveryId) => notifyTurnRef(sessionId, turnRef, deliveryId),
         ...(componentsEnabled ? { components: (runtime: string) => hubComponentDirs(componentsRoot, runtime) } : {}),
         ...(aliasConfig && aliasConfig.length > 0 ? { aliases: aliasConfig } : {})
       }))
@@ -543,8 +543,8 @@ if (parentPid > 0) {
 notifyAgentSessionRef = (sessionId, ref) => {
   if (!sessionId.startsWith(SELF_CHECK_PREFIX)) link.notifyAgentSessionRef(sessionId, ref);
 };
-notifyTurnRef = (sessionId, turnRef) => {
-  if (!sessionId.startsWith(SELF_CHECK_PREFIX)) link.notifyTurnRef(sessionId, turnRef);
+notifyTurnRef = (sessionId, turnRef, deliveryId) => {
+  if (!sessionId.startsWith(SELF_CHECK_PREFIX)) link.notifyTurnRef(sessionId, turnRef, deliveryId);
 };
 notifyOptions = (sessionId, reported) => {
   if (!sessionId.startsWith(SELF_CHECK_PREFIX)) link.notifyOptions(sessionId, reported);

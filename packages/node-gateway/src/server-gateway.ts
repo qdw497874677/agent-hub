@@ -9,6 +9,7 @@ import type { AgentDto, RpcChannel, RpcOutcome, RpcPort, ServerToWorker, Session
 import {
   PROTOCOL_MISMATCH_CLOSE,
   PROTOCOL_VERSION,
+  WORKER_CAPABILITY_BRANCH_ATTEMPT,
   WORKER_CAPABILITY_DURABLE_DELIVERY,
   WORKER_CAPABILITY_METRICS,
   WORKER_CAPABILITY_NATIVE_BRANCH,
@@ -51,7 +52,7 @@ import {
   wsStatus,
   linkEcho
 } from '@agent-hub/contract';
-import { DEFAULT_HEARTBEAT, decideTrial, initialLink, linkIsDead, reduceLink } from '@agent-hub/domain';
+import { DEFAULT_HEARTBEAT, allowsFor, decideTrial, initialLink, linkIsDead, reduceLink } from '@agent-hub/domain';
 import type { HeartbeatPolicy, LinkEvent, LinkHealth } from '@agent-hub/domain';
 import type {
   AgentAlias,
@@ -143,8 +144,9 @@ export interface GatewayHooks {
   onAgentSession(workerId: string, sessionId: SessionId, agentSessionRef: string): void;
   onOptions(workerId: string, sessionId: SessionId, options: readonly RuntimeOption[]): void;
   /** ADR 0028：这一轮的原生标识 / 带 branch 的启动结果。 */
-  onTurnRef?(workerId: string, sessionId: SessionId, turnRef: string): void;
+  onTurnRef?(workerId: string, sessionId: SessionId, turnRef: string, deliveryId?: string): void;
   onBranchResult?(workerId: string, sessionId: SessionId, outcome: 'native' | 'failed', reason?: string): void;
+  onBranchAttemptResult?(workerId: string, sessionId: SessionId, attemptId: string, outcome: 'native' | 'plain' | 'both_failed', agentSessionRef?: string): void;
   onStatus(workerId: string, sessionId: SessionId, status: RuntimeStatus, reason?: string): void;
   onWorkerGone(workerId: string, reason: string): void;
   /**
@@ -285,6 +287,11 @@ interface Registered {
   capabilities: readonly string[] | null;
   /** 这条连接的 Worker 声明了 durable_delivery 没有（#269）；每次 hello 重建。 */
   durableDelivery: boolean;
+  branchAttempt: boolean;
+  branchAttemptAgents: Set<string>;
+  helloAgents: AgentDto[];
+  /** Attempts sent on this connection only; never restored on reconnect. */
+  branchAttempts: Map<string, { attemptId: string; sourceRef: string }>;
   /** 这条连接的 Worker 显式 opt-in 了项目 Git bundle 导入没有（hello 能力）；每次 hello 重建。 */
   projectGitBundleImport: boolean;
   /** 这条连接做过终端对账没有（重连 / inventory 只做一次）。 */
@@ -310,6 +317,7 @@ export interface TerminalOpened {
 
 export interface ServerGateway {
   readonly gateway: NodeGateway;
+  supportsBranchAttempt(workerId: string, agentId: string): boolean;
   workers(): WorkerStatus[];
   /** 把领域核对过落点的会话接回这台 Worker 的路由（重连后不必再 resume）。 */
   adopt(workerId: string, sessionIds: readonly string[]): void;
@@ -459,6 +467,14 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     const entry = registry.get(workerId);
     return entry?.socket && entry.socket.readyState === WebSocket.OPEN ? entry : null;
   };
+  const supportsBranchAttempt = (workerId: string, agentId: string): boolean => {
+    const entry = online(workerId);
+    const helloAgent = entry?.helloAgents.find((agent) => agent.id === agentId);
+    const currentAgent = entry?.agents.find((agent) => agent.id === agentId);
+    return !!entry && entry.branchAttempt && entry.branchAttemptAgents.has(agentId)
+      && !!helloAgent && !!currentAgent && allowsFor(helloAgent.capabilities, 'branch_at_turn')
+      && allowsFor(currentAgent.capabilities, 'branch_at_turn') && canInvoke(entry.capabilities, 'sessions');
+  };
 
   // 资源（ADR 0014）：每台一个环形缓冲 + 防抖状态，只在内存里
   const METRICS_RETENTION_MS = 60 * 60_000;
@@ -495,6 +511,11 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     if (!entry?.socket) return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」不在线`) };
     const needed = commandCapability(command.kind);
     if (!canInvoke(entry.capabilities, needed)) return { ok: false, error: forbidden(capabilityDenied(needed as WorkerCapability)) };
+    if (command.kind === 'start_session' && command.branchAttemptId !== undefined) {
+      if (!command.branch || command.resume !== null || !command.branchAttemptId || command.branchAttemptId.length > 128)
+        return { ok: false, error: invalid('branchAttemptId requires a valid branch and attempt id') };
+      if (!supportsBranchAttempt(workerId, command.agentId)) return { ok: false, error: conflict('Worker does not support branch_attempt; command not sent') };
+    }
     // #269：老 Worker 不会在回合结束时回传投递号，Hub 无法确认这条投递已结束。
     // 只拒这一帧（socket.send 之前返回，对端一个字节都收不到），连接与其它无键指令照常。
     if (command.kind === 'prompt' && command.deliveryId && !entry.durableDelivery) {
@@ -504,6 +525,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       };
     }
     entry.socket.send(JSON.stringify(command));
+    if (command.kind === 'start_session') {
+      entry.branchAttempts.delete(command.sessionId);
+      if (command.branchAttemptId !== undefined && command.branch) entry.branchAttempts.set(command.sessionId, { attemptId: command.branchAttemptId, sourceRef: command.branch.fromAgentSessionRef });
+    } else if (command.kind === 'dispose') entry.branchAttempts.delete(command.sessionId);
     return { ok: true, value: undefined };
   }
 
@@ -883,6 +908,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           channel: null,
           capabilities: verdict.capabilities ?? null,
           durableDelivery: frame.capabilities?.includes(WORKER_CAPABILITY_DURABLE_DELIVERY) === true,
+          branchAttempt: frame.capabilities?.includes(WORKER_CAPABILITY_BRANCH_ATTEMPT) === true,
+          branchAttemptAgents: new Set(frame.branchAttemptAgents ?? []),
+          helloAgents: frame.agents,
+          branchAttempts: new Map(),
           projectGitBundleImport: frame.capabilities?.includes(WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT) === true,
           terminalReconciled: false,
           serviceReconciled: false,
@@ -1042,15 +1071,24 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       else if (frame.type === 'agent_session') {
         hooks.onAgentSession(from, frame.sessionId as SessionId, frame.agentSessionRef);
       } else if (frame.type === 'turn_ref') {
-        hooks.onTurnRef?.(from, frame.sessionId as SessionId, frame.turnRef);
+        hooks.onTurnRef?.(from, frame.sessionId as SessionId, frame.turnRef, frame.deliveryId);
       } else if (frame.type === 'branch_result') {
         hooks.onBranchResult?.(from, frame.sessionId as SessionId, frame.outcome, frame.reason);
+      } else if (frame.type === 'branch_attempt_result') {
+        const attempt = entry.branchAttempts.get(frame.sessionId);
+        if (!attempt || attempt.attemptId !== frame.attemptId || placement.get(frame.sessionId) !== from) return;
+        if (frame.outcome !== 'both_failed' && frame.agentSessionRef === attempt.sourceRef) return;
+        entry.branchAttempts.delete(frame.sessionId);
+        hooks.onBranchAttemptResult?.(from, frame.sessionId as SessionId, frame.attemptId, frame.outcome, frame.outcome === 'both_failed' ? undefined : frame.agentSessionRef);
       } else if (frame.type === 'options') {
         hooks.onOptions(from, frame.sessionId as SessionId, frame.options);
       } else if (frame.type === 'status') {
         // 路由只由 start_session / adopt 建立；一台 Worker 报「running」不能把别人的会话改道到自己身上，
         // 报「结束」也只能划掉确实路由到它的那条。`idle` 是「这一轮结束了、进程还在」，路由得留着。
-        if ((frame.status === 'ended' || frame.status === 'gone') && placement.get(frame.sessionId) === from) placement.delete(frame.sessionId);
+        if ((frame.status === 'ended' || frame.status === 'gone') && placement.get(frame.sessionId) === from) {
+          placement.delete(frame.sessionId);
+          entry.branchAttempts.delete(frame.sessionId);
+        }
         hooks.onStatus(from, frame.sessionId as SessionId, frame.status, frame.reason);
       }
     };
@@ -1340,6 +1378,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
 
   return {
     gateway,
+    supportsBranchAttempt,
     assets,
     async testProvider(workerId, input) {
       const channel = channelOf(workerId);
@@ -1522,6 +1561,7 @@ function toWire(command: WorkerCommand): ServerToWorker {
         resume: command.resume,
         options: command.options,
         ...(command.branch ? { branch: { ...command.branch } } : {}),
+        ...(command.branchAttemptId === undefined ? {} : { branchAttemptId: command.branchAttemptId }),
         ...(command.tools ? { tools: command.tools } : {}),
         ...(command.mcp && command.mcp.length > 0
           ? { mcp: command.mcp.map((entry) => (entry.transport === 'stdio' ? { ...entry, args: [...entry.args], env: { ...entry.env } } : { ...entry })) }

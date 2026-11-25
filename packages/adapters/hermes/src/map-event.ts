@@ -20,6 +20,15 @@ export interface MappedHermes {
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
 
+/** Only explicit role evidence identifies a main assistant; omitted or malformed roles stay unknown. */
+function textOrigin(raw: HermesEvent): 'main_assistant' | 'other' | undefined {
+  if (raw['child_session_id'] || raw['subagent_id'] || raw['subagentId'] || raw['delegation_id']) return 'other';
+  const role = raw['role'];
+  if (role === 'assistant') return 'main_assistant';
+  if (typeof role === 'string' && role.length > 0) return 'other';
+  return undefined;
+}
+
 function preview(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value === undefined || value === null) return '';
@@ -41,7 +50,8 @@ export function createHermesEventMapper(now: () => number = Date.now) {
     switch (type) {
       case 'message.delta': {
         const delta = str(raw['delta']);
-        return { events: delta ? [{ kind: 'text', delta }] : [] };
+        const origin = textOrigin(raw);
+        return { events: delta ? [{ kind: 'text', delta, ...(origin ? { textOrigin: origin } : {}) }] : [] };
       }
       case 'reasoning.available':
       case 'reasoning.delta': {
@@ -51,7 +61,8 @@ export function createHermesEventMapper(now: () => number = Date.now) {
       case 'message.interim': {
         if (raw['already_streamed'] === true) return { events: [] };
         const text = str(raw['text']) || str(raw['message']) || str(raw['delta']);
-        return { events: text ? [{ kind: 'text', delta: text }] : [] };
+        const origin = textOrigin(raw);
+        return { events: text ? [{ kind: 'text', delta: text, ...(origin ? { textOrigin: origin } : {}) }] : [] };
       }
       case 'tool.started': {
         const name = str(raw['tool']) || str(raw['name']) || 'tool';

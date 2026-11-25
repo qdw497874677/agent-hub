@@ -19,7 +19,8 @@ export function startCommand(
   workspaceRoot: string,
   resume: StartCommand['resume'],
   inherited: Readonly<Record<string, string | boolean>> = session.options,
-  branch?: StartCommand['branch']
+  branch?: StartCommand['branch'],
+  branchAttemptId?: string
 ): StartCommand {
   const options = session.model === '' ? { ...inherited } : { ...inherited, model: session.model };
   return {
@@ -34,7 +35,7 @@ export function startCommand(
     options,
     // 常驻靠指令带下去：Worker 拿到才知道这条别按空闲回收。
     ...(session.pinned === true ? { pinned: true } : {}),
-    ...(branch ? { branch } : {})
+    ...(branch ? { branch, ...(branchAttemptId === undefined ? {} : { branchAttemptId }) } : {})
   };
 }
 
@@ -45,6 +46,7 @@ export interface StartPlan {
   readonly workspaceRoot: string;
   readonly resume: Extract<WorkerCommand, { kind: 'start_session' }>['resume'];
   readonly branch?: Extract<WorkerCommand, { kind: 'start_session' }>['branch'];
+  readonly branchAttemptId?: string;
   /** 分叉/倒带/迁移时沿用来源会话的 options；不传就按 session.options。 */
   readonly inheritedOptions?: Readonly<Record<string, string | boolean>>;
   /**
@@ -87,7 +89,8 @@ async function startSessionAdmitted(
     plan.workspaceRoot,
     plan.resume,
     plan.inheritedOptions ?? session.options,
-    plan.branch
+    plan.branch,
+    plan.branchAttemptId
   );
   const dispatched = await deps.gateway.dispatch(command);
   if (!dispatched.ok) {

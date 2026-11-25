@@ -163,6 +163,37 @@ function keyed(text: string, deliveryId: string): PromptInput & { readonly deliv
   return { text, parts: [], deliveryId };
 }
 
+test('pi runtime: history lookup is unkeyed and cannot report a later prompt as the settled turn', async (t) => {
+  const body = `
+    if (msg.type === 'prompt') {
+      globalThis.count = (globalThis.count ?? 0) + 1;
+      out({ id: msg.id, type: 'response', success: true, data: { disposition: 'started' } });
+      out({ type: 'agent_settled', aborted: false });
+      if (globalThis.pending) { globalThis.pending(); globalThis.pending = null; }
+      return;
+    }
+    if (msg.type === 'get_fork_messages') {
+      const snapshot = globalThis.count;
+      const respond = () => out({ id: msg.id, type: 'response', success: true, data: { messages: [{ entryId: 'entry-' + snapshot }] } });
+      if (snapshot === 1) { globalThis.pending = respond; process.stderr.write('lookup-started\\n'); }
+      else respond();
+      return;
+    }
+    out({ id: msg.id, type: 'response', success: true, data: {} });`;
+  const child = spawn(process.execPath, ['-e', fakePi(body)], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const refs: Array<[string, string | undefined]> = [];
+  const session = new PiSession(asSessionId('s-refs'), child, [], undefined, (ref, id) => refs.push([ref, id]));
+  t.after(() => child.kill('SIGKILL'));
+  const lookupStarted = new Promise<void>((resolve) => child.stderr.once('data', () => resolve()));
+  assert.ok((await session.prompt(keyed('one', 'd1'))).ok);
+  await lookupStarted;
+  assert.ok((await session.prompt(keyed('two', 'd2'))).ok);
+  const iterator = session.events()[Symbol.asyncIterator]();
+  assert.equal((await nextFrom(iterator)).kind, 'ended');
+  assert.equal((await nextFrom(iterator)).kind, 'ended');
+  assert.deepEqual(refs, [['entry-2', undefined]]);
+});
+
 test('pi runtime: agent_settled 是这一轮的确切终态 → ended 带回同一个 deliveryId；无 key 的轮不带', async (t) => {
   const child = spawn(process.execPath, ['-e', fakePi(TURN)], { stdio: ['pipe', 'pipe', 'pipe'] });
   const session = new PiSession(asSessionId('s-keyed'), child, []);

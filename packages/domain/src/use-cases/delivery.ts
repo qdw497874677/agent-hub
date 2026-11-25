@@ -10,6 +10,7 @@ import { ensureHosted } from './hosting.ts';
 import { recordEvent } from './sessions.ts';
 import { withActiveTask } from './task-admission.ts';
 import { readInFlightTurn, readJournalTail, readRecentTurnDeliveries, turnVerdictInTail } from './turn-evidence.ts';
+import { admitBranchSession } from './branch-admission.ts';
 
 /**
  * 送达（ADR 0031 D2）。只有「依赖不在线」（unavailable）才重试：
@@ -18,7 +19,7 @@ import { readInFlightTurn, readJournalTail, readRecentTurnDeliveries, turnVerdic
 export type DeliveryDeps = Pick<
   Deps,
   'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaces' | 'workspaceGroups' | 'bots'
-> & { readonly deliveries: DeliveryQueue; readonly random?: () => number };
+> & Pick<Deps, 'branchAttempts'> & { readonly deliveries: DeliveryQueue; readonly random?: () => number };
 
 export interface PromptPayload {
   readonly text: string;
@@ -133,6 +134,9 @@ export async function attemptDelivery(deps: DeliveryDeps, delivery: Delivery): P
 /** `attemptDelivery` 的队列内部分；调用方必须已经持有该会话的队列。 */
 async function attemptClaimed(deps: DeliveryDeps, delivery: Delivery): Promise<Result<void, DomainError>> {
   const sessionId = delivery.sessionId as SessionId;
+  // Do not claim, fail, reschedule, or dispatch while branch evidence is unresolved.
+  const admitted = await admitBranchSession(deps, sessionId);
+  if (!admitted.ok) return admitted;
   if (delivery.kind === 'prompt' && (await turnInProgress(deps, sessionId))) {
     const now = deps.now();
     await deps.deliveries.reschedule(delivery.id, now, now + TURN_WAIT_MS);

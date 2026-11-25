@@ -9,7 +9,7 @@ import type { TaskId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
 import { isUsable, type Workspace } from '../workspace.ts';
 import type { SaveWipOutcome } from '../ports/workspace-git.ts';
-import { gitFor, resolveMachine } from './machine-dirs.ts';
+import { resolveMachine } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
 import { prepareTemporaryWorkspaceUseCase } from './temporary-workspaces.ts';
 import { carryModelTo, placeSession } from '../worker.ts';
@@ -41,10 +41,17 @@ export interface ContinueElsewhereCommand {
 
 /** 摘要的字数上限：够交代来龙去脉，又不至于一开口就吃掉半个上下文窗口。 */
 
+/** Performs WIP only via a protected Worker operation that proves workspace quiescence. */
+export type GuardedSaveWip = (
+  source: Session,
+  workspace: Workspace,
+  message: string
+) => Promise<Result<SaveWipOutcome, DomainError>>;
+
 type ContinueElsewhereDeps = Pick<
   Deps,
   'agents' | 'artifacts' | 'bots' | 'fs' | 'gateway' | 'git' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaceGroups' | 'workspaces' | 'workLog' | 'access' | 'repoAuth'
->;
+> & { readonly guardedSaveWip?: GuardedSaveWip };
 
 export async function continueElsewhereUseCase(
   deps: ContinueElsewhereDeps,
@@ -89,15 +96,17 @@ async function continueElsewhereAdmitted(
   const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
   if (!allowed.ok) return allowed;
 
-  // 原会话还在跑就先停下，免得两边同时改
-  if (source.status === 'running') await interruptSessionUseCase(deps, source.id);
-
   let wip: SaveWipOutcome | null = null;
-  if (command.saveWip && from?.isGit) {
-    const auth = (await deps.repoAuth?.forPath(from.workerId, from.path)) ?? undefined;
-    const saved = await (await gitFor(deps, from.workerId)).saveWip(from.path, `WIP: ${task.title}（换个地方继续）`, auth);
+  if (command.saveWip) {
+    // 状态或中断请求成功都不能证明工作区已安静；只有持有保护的回调能执行 WIP。
+    if (!from?.isGit) return err(conflict('原工作空间不存在或不是已确认的 Git 工作空间，不能保存 WIP'));
+    if (!deps.guardedSaveWip) return err(unavailable('无法确认原工作空间安全，不能保存 WIP'));
+    const saved = await deps.guardedSaveWip(source, from, `WIP: ${task.title}（换个地方继续）`);
     if (!saved.ok) return saved;
     wip = saved.value;
+  } else if (source.status === 'running') {
+    // 不保存 WIP 时保留原有中断行为；它不是工作区静止的证明。
+    await interruptSessionUseCase(deps, source.id);
   }
 
   if (!chosen) {
@@ -143,7 +152,7 @@ async function continueElsewhereAdmitted(
   if (!started.ok) return started;
 
   const label = (id: string | null) => workers.find((w) => w.workerId === (id ?? placedLocal(workers)))?.label ?? id ?? '原来的机器';
-  const journal = await deps.sessions.eventsAfter(source.id, 0 as never);
+  const journal = (await deps.sessions.eventsAfter(source.id, 0 as never)).filter((entry) => entry.seq <= source.lastSeq);
   const brief = buildHandoff(
     journal,
     { from: `${label(source.workerId)}${from ? ` 的 ${from.path}` : ''}`, to: label(placed.value), root: target.path, code: codeNote(from, target, wip) },

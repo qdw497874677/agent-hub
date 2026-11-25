@@ -36,6 +36,8 @@ export type WorkerCommand =
       readonly options: Readonly<Record<string, string | boolean>>;
       /** ADR 0028 原生分叉（resume 为 null 时才有意义）。 */
       readonly branch?: BranchSpec;
+      /** 与持久分叉尝试绑定，只在协商支持时随原生启动发送。 */
+      readonly branchAttemptId?: string;
       /** 能力层：agent 用它连 hub 的工具（MCP）。没有 = 这次不给工具，行为同旧版。令牌不进日志。 */
       readonly tools?: ToolAccess;
       /** MCP 资产（hub 在发出前才填，见 sessionMcpLaunch）。stdio 的 env 含密钥明文：不落库、不进日志。 */

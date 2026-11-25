@@ -11,6 +11,9 @@ import { deriveSessionUseCase } from './sessions.ts';
 import { ingestWorkerEvent, promptSessionUseCase } from './conversation.ts';
 import { listProjectFiles } from './attachments.ts';
 import { continueElsewhereUseCase } from './continue-elsewhere.ts';
+import { conflict } from '../errors.ts';
+import { err } from '../result.ts';
+import { gitFor } from './machine-dirs.ts';
 
 const fake: AgentDescriptor = {
   id: asAgentId('fake'),
@@ -119,7 +122,7 @@ test('换个地方继续：先提交 WIP 并推送，目标新开临时工作空
   await w.deps.workspaces.save({ ...source, isGit: true, branch: 'feat/dark' });
   w.git.statuses.set('/tmp/demo', { dirty: true, untracked: 1, unpushed: 0, branch: 'feat/dark', upstream: null });
 
-  const moved = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'temporary', workerId: 'studio' }, saveWip: true, home: '/home/me' });
+  const moved = await continueElsewhereUseCase({ ...w.deps, guardedSaveWip: async (_source, workspace, message) => (await gitFor(w.deps, workspace.workerId)).saveWip(workspace.path, message) }, { sessionId: w.session.id, target: { kind: 'temporary', workerId: 'studio' }, saveWip: true, home: '/home/me' });
   assert.ok(moved.ok, JSON.stringify(moved));
   assert.ok(w.git.calls.some((c) => c.startsWith('local:save_wip:/tmp/demo:WIP')));
   assert.ok(w.git.calls.some((c) => c.startsWith('studio:worktree:') && c.includes('@feat/dark:existing')));
@@ -135,7 +138,7 @@ test('换个地方继续：同一台机器推送 WIP 后，新临时工作空间
   const [source] = await w.deps.workspaces.byProject(w.project.id);
   await w.deps.workspaces.save({ ...source!, isGit: true, branch: 'feat/dark' });
   w.git.statuses.set('/tmp/demo', { dirty: true, untracked: 0, unpushed: 0, branch: 'feat/dark', upstream: null });
-  const moved = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'temporary', workerId: null }, saveWip: true, home: '/home/me' });
+  const moved = await continueElsewhereUseCase({ ...w.deps, guardedSaveWip: async (_source, workspace, message) => (await gitFor(w.deps, workspace.workerId)).saveWip(workspace.path, message) }, { sessionId: w.session.id, target: { kind: 'temporary', workerId: null }, saveWip: true, home: '/home/me' });
   assert.ok(moved.ok, JSON.stringify(moved));
   const call = w.git.calls.find((c) => c.startsWith('local:worktree:'));
   assert.ok(call && !call.includes(':existing') && call.endsWith('<feat/dark'), call);
@@ -149,7 +152,9 @@ test('换个地方继续：非 git 项目新开临时目录；同一个工作空
   const same = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'workspace', workspaceId: source!.id }, home: '/home/me' });
   assert.ok(!same.ok && /已经在这个工作空间/.test(same.error.message));
 
-  const plain = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'temporary', workerId: 'studio' }, saveWip: true, home: '/home/me' });
+  const rejected = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'temporary', workerId: 'studio' }, saveWip: true, home: '/home/me' });
+  assert.ok(!rejected.ok && /不是已确认的 Git 工作空间/.test(rejected.error.message));
+  const plain = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'temporary', workerId: 'studio' }, home: '/home/me' });
   assert.ok(plain.ok, JSON.stringify(plain));
   const target = await w.deps.workspaces.byId(plain.value.workspaceId!);
   assert.equal(target?.source, 'created');
@@ -161,3 +166,81 @@ test('换个地方继续：非 git 项目新开临时目录；同一个工作空
   assert.ok(!offline.ok && offline.error.code === 'unavailable');
 });
 
+test('WIP 缺少保护或保护拒绝时不停止会话、不保存 Git、也不创建目标', async () => {
+  for (const guard of ['missing', 'reject'] as const) {
+    for (const status of ['running', 'done'] as const) {
+      const w = await world();
+      const [workspace] = await w.deps.workspaces.byProject(w.project.id);
+      assert.ok(workspace);
+      await w.deps.workspaces.save({ ...workspace, isGit: true });
+      const source = await w.deps.sessions.byId(w.session.id);
+      assert.ok(source);
+      await w.deps.sessions.save({ ...source, status });
+      const beforeSource = await w.deps.sessions.byId(source.id);
+      const beforeSessions = await w.deps.sessions.listByTask(source.taskId!);
+      const beforeWorkspaces = await w.deps.workspaces.byProject(w.project.id);
+      const beforeCommands = [...w.dispatched];
+      const beforeGit = [...w.git.calls];
+      let called = 0;
+      const deps = guard === 'missing' ? w.deps : { ...w.deps, guardedSaveWip: async () => { called++; return err(conflict('未能证明工作空间安静')); } };
+      const result = await continueElsewhereUseCase(deps, { sessionId: source.id, target: { kind: 'temporary', workerId: 'studio' }, saveWip: true, home: '/home/me' });
+      assert.ok(!result.ok);
+      assert.equal(result.error.code, guard === 'missing' ? 'unavailable' : 'conflict');
+      assert.equal(called, guard === 'missing' ? 0 : 1);
+      assert.deepEqual(await w.deps.sessions.byId(source.id), beforeSource);
+      assert.deepEqual(await w.deps.sessions.listByTask(source.taskId!), beforeSessions);
+      assert.deepEqual(await w.deps.workspaces.byProject(w.project.id), beforeWorkspaces);
+      assert.deepEqual(w.dispatched, beforeCommands);
+      assert.deepEqual(w.git.calls, beforeGit);
+    }
+  }
+});
+
+test('明确请求 WIP 但来源工作空间缺失或非 Git 时失败关闭', async () => {
+  for (const missing of [true, false]) {
+    const w = await world();
+    const source = await w.deps.sessions.byId(w.session.id);
+    assert.ok(source);
+    await w.deps.sessions.save({ ...source, status: 'running', ...(missing ? { workspaceId: null } : {}) });
+    const beforeSource = await w.deps.sessions.byId(source.id);
+    const beforeSessions = await w.deps.sessions.listByTask(source.taskId!);
+    const beforeWorkspaces = await w.deps.workspaces.byProject(w.project.id);
+    const beforeCommands = [...w.dispatched];
+    const beforeGit = [...w.git.calls];
+    let called = false;
+    const result = await continueElsewhereUseCase({ ...w.deps, guardedSaveWip: async () => { called = true; return err(conflict('unexpected')); } }, { sessionId: source.id, target: { kind: 'temporary', workerId: 'studio' }, saveWip: true, home: '/home/me' });
+    assert.ok(!result.ok && result.error.code === 'conflict');
+    assert.match(result.error.message, /原工作空间不存在或不是已确认的 Git 工作空间/);
+    assert.equal(called, false);
+    assert.deepEqual(await w.deps.sessions.byId(source.id), beforeSource);
+    assert.deepEqual(await w.deps.sessions.listByTask(source.taskId!), beforeSessions);
+    assert.deepEqual(await w.deps.workspaces.byProject(w.project.id), beforeWorkspaces);
+    assert.deepEqual(w.dispatched, beforeCommands);
+    assert.deepEqual(w.git.calls, beforeGit);
+  }
+});
+
+test('交接历史固定在来源游标，读取时迟到的事件不进入摘要', async () => {
+  const w = await world();
+  const there = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'studio', plan: { mode: 'link', path: '/srv/demo' }, home: '/home/me' });
+  assert.ok(there.ok);
+  const source = await w.deps.sessions.byId(w.session.id);
+  assert.ok(source);
+  let injected = false;
+  const sessions = { ...w.deps.sessions, eventsAfter: async (...args: Parameters<typeof w.deps.sessions.eventsAfter>) => {
+    if (args[0] === source.id && !injected) {
+      injected = true;
+      await ingestWorkerEvent(w.deps, source.id, { kind: 'text', delta: 'LATE_EVENT_MUST_NOT_APPEAR' });
+    }
+    return w.deps.sessions.eventsAfter(...args);
+  } };
+  const moved = await continueElsewhereUseCase({ ...w.deps, sessions }, { sessionId: source.id, target: { kind: 'workspace', workspaceId: there.value.id }, home: '/home/me' });
+  assert.ok(moved.ok, JSON.stringify(moved));
+  assert.ok(injected);
+  assert.deepEqual(moved.value.origin, { kind: 'fork', fromSessionId: source.id, atSeq: source.lastSeq });
+  const prompt = w.dispatched.at(-1);
+  assert.ok(prompt?.kind === 'prompt');
+  assert.match(prompt.text, /改了 login\.css/);
+  assert.doesNotMatch(prompt.text, /LATE_EVENT_MUST_NOT_APPEAR/);
+  assert.ok((await w.deps.sessions.eventsAfter(source.id, source.lastSeq)).some((entry) => entry.event.kind === 'text' && entry.event.delta === 'LATE_EVENT_MUST_NOT_APPEAR'));
+});

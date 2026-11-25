@@ -39,6 +39,7 @@ import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import type { SessionServiceRepository } from '../ports/session-service-repository.ts';
 import type { AgentDefaultsStore } from '../ports/agent-defaults.ts';
+import type { BranchAttemptStore } from '../ports/branch-attempt.ts';
 
 /**
  * 已装配的 agent。UI 只从这里拿能力矩阵，不认 agent 名字。
@@ -70,6 +71,8 @@ export interface Deps {
   /** 任务工作日志（只追加）。 */
   readonly workLog: WorkLogRepository;
   readonly sessions: SessionRepository;
+  /** Durable native-branch admission evidence, when native branching is enabled. */
+  readonly branchAttempts?: Pick<BranchAttemptStore, 'bySession'>;
   /** 工作空间登记（workspaces.md）。 */
   readonly workspaces: WorkspaceRepository;
   /** 组合工作空间（docs/design/multi-repo.md）。T4 已接线，必填。 */

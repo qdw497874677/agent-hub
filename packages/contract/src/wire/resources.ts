@@ -66,6 +66,8 @@ export const resourcePolicyRequest = z.object({ refuseWhenFull: z.boolean() });
 export const WORKER_CAPABILITY_METRICS = 'metrics';
 /** hub 认 turn_ref / branch_result 两种帧（ADR 0028 原生分叉）。老 hub 不认：worker 就不发。 */
 export const WORKER_CAPABILITY_NATIVE_BRANCH = 'native_branch';
+/** Worker understands keyed branch attempts and reports their results on the originating connection. */
+export const WORKER_CAPABILITY_BRANCH_ATTEMPT = 'branch_attempt';
 /**
  * Worker 认带 `deliveryId` 的 prompt（#269 可靠送达）：收到会去重，`ended` 回同一个 id。
  * 无条件声明；新 hub 见到才肯把投递队列的（带键）prompt 发给它，老 hub 会直接丢掉这个字符串。

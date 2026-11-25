@@ -89,10 +89,68 @@ function setup(runtime: AgentRuntime): { ctx: ReturnType<typeof createLinkCtx>; 
   const frames: WorkerToServer[] = [];
   const transport = {
     channel: channel as unknown as Transport['channel'],
-    send: (frame: WorkerToServer) => frames.push(frame)
+    send: (frame: WorkerToServer) => frames.push(frame),
+    sendOnOrigin: (_command: ServerToWorker, frame: WorkerToServer) => {
+      if (frame.type === 'branch_attempt_result' && frame.outcome !== 'both_failed') assert.equal(ctx.sessions.has(frame.sessionId), true);
+      frames.push(frame);
+    }
   } as unknown as Transport;
   return { ctx, sessions: installSessions(ctx, transport), frames };
 }
+
+test('attested branch installs exact session before result; unknown never falls back', async () => {
+  const log: string[] = [];
+  let fallbackCalls = 0;
+  const runtime: AgentRuntime = {
+    descriptor: descriptor(),
+    async start() { fallbackCalls++; throw new Error('unexpected fallback'); },
+    async startBranchAttempt(spec) {
+      if (spec.sessionId === 'unknown') return { state: 'unknown' };
+      if (spec.sessionId === 'failed') return { state: 'both_failed' };
+      if (spec.sessionId === 'invalid') return { state: 'started', outcome: 'plain', session: fakeSession(spec.sessionId, 'invalid', log), agentSessionRef: 'pending' };
+      return { state: 'started', outcome: 'native', session: fakeSession(spec.sessionId, 'exact', log), agentSessionRef: 'ref' };
+    }
+  };
+  const { ctx, sessions, frames } = setup(runtime);
+  const keyed = (id: string) => startCommand(id, '/tmp', { branch: { fromAgentSessionRef: 'parent', turnRef: null, previousTurnRef: null }, branchAttemptId: `attempt-${id}` });
+  await sessions.run(keyed('unknown'));
+  assert.equal(ctx.sessions.has('unknown'), false);
+  assert.equal(frames.some((f) => f.type === 'branch_attempt_result' || f.type === 'branch_result'), false);
+  await sessions.run(keyed('invalid'));
+  assert.equal(ctx.sessions.has('invalid'), false);
+  assert.equal(log.includes('dispose:invalid'), true);
+  assert.equal(frames.some((f) => f.type === 'branch_attempt_result' || f.type === 'branch_result'), false);
+  await sessions.run(keyed('failed'));
+  assert.deepEqual(frames.filter((f) => f.type === 'branch_attempt_result'), [{ type: 'branch_attempt_result', sessionId: 'failed', attemptId: 'attempt-failed', outcome: 'both_failed' }]);
+  await sessions.run(keyed('success'));
+  assert.equal((ctx.sessions.get('success') as TaggedSession).tag, 'exact');
+  assert.deepEqual(frames.filter((f) => f.type === 'branch_attempt_result').at(-1), { type: 'branch_attempt_result', sessionId: 'success', attemptId: 'attempt-success', outcome: 'native', agentSessionRef: 'ref' });
+  assert.equal(frames.some((f) => f.type === 'branch_result'), false);
+  assert.equal(fallbackCalls, 0);
+  await sessions.closeAll();
+});
+
+test('attested native and plain sessions cannot reuse the source reference', async () => {
+  const log: string[] = [];
+  let fallbackCalls = 0;
+  const runtime: AgentRuntime = {
+    descriptor: descriptor(),
+    async start() { fallbackCalls++; throw new Error('unexpected fallback'); },
+    async startBranchAttempt(spec) {
+      const outcome = spec.sessionId === 'native' ? 'native' as const : 'plain' as const;
+      return { state: 'started', outcome, session: fakeSession(spec.sessionId, outcome, log), agentSessionRef: 'parent' };
+    }
+  };
+  const { ctx, sessions, frames } = setup(runtime);
+  for (const outcome of ['native', 'plain']) {
+    await sessions.run(startCommand(outcome, '/tmp', { branch: { fromAgentSessionRef: 'parent', turnRef: null, previousTurnRef: null }, branchAttemptId: `attempt-${outcome}` }));
+    assert.equal(ctx.sessions.has(outcome), false);
+    assert.equal(log.includes(`dispose:${outcome}`), true);
+  }
+  assert.equal(frames.some((frame) => frame.type === 'branch_attempt_result' || frame.type === 'branch_result'), false);
+  assert.equal(fallbackCalls, 0);
+  await sessions.closeAll();
+});
 
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 

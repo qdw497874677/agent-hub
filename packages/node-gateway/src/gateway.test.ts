@@ -163,6 +163,57 @@ async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
 
 const brief = (workers: WorkerStatus[]) => workers.map((w) => `${w.workerId}:${w.state}`);
 
+test('worker without runtime attestation does not advertise or start keyed branches', async (t) => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const seen: StartSpec[] = [];
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'test', reconnect: false, runtimes: [echoRuntime(seen)] });
+  t.after(() => stop(link));
+  await rec.until(() => rec.hellos.length === 1);
+  assert.equal(gateway.supportsBranchAttempt('w1', 'echo'), false);
+  const result = await gateway.gateway.dispatch({ ...start('s1', 'w1'), branch: { fromAgentSessionRef: 'parent', turnRef: null, previousTurnRef: null }, branchAttemptId: 'attempt-1' });
+  assert.equal(result.ok, false);
+  assert.equal(seen.length, 0);
+});
+
+test('attested runtime reports on the origin socket and never replays after reconnect', async (t) => {
+  const { rec, gateway, url, server, stop } = await harness(null);
+  const results: unknown[][] = [];
+  rec.hooks.onBranchAttemptResult = (...args) => results.push(args);
+  const base = echoRuntime([]);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let entered = false;
+  const runtime: AgentRuntime = {
+    ...base,
+    async startBranchAttempt(spec) {
+      if (spec.sessionId === 'late') { entered = true; await gate; }
+      const started = await base.start(spec);
+      if (!started.ok) return { state: 'unknown' };
+      return { state: 'started', outcome: 'native', session: started.value, agentSessionRef: `ref-${spec.sessionId}` };
+    }
+  };
+  let accepted = 0;
+  let serverSocket: import('node:net').Socket | undefined;
+  server.on('connection', (socket) => { serverSocket = socket; });
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'test', runtimes: [runtime], initialBackoffMs: 10, maxBackoffMs: 20, onAccepted: () => { accepted++; } });
+  t.after(async () => { release(); await stop(link); });
+  await rec.until(() => accepted === 1);
+  assert.equal(gateway.supportsBranchAttempt('w1', 'echo'), true);
+  const keyed = (id: string) => ({ ...start(id, 'w1'), branch: { fromAgentSessionRef: 'parent', turnRef: null, previousTurnRef: null }, branchAttemptId: `attempt-${id}` });
+  assert.equal((await gateway.gateway.dispatch(keyed('same'))).ok, true);
+  await rec.until(() => results.length === 1);
+  assert.deepEqual(results[0], ['w1', 'same', 'attempt-same', 'native', 'ref-same']);
+  assert.equal((await gateway.gateway.dispatch(keyed('late'))).ok, true);
+  await rec.until(() => entered);
+  assert.ok(serverSocket);
+  serverSocket.destroy();
+  await rec.until(() => accepted >= 2);
+  release();
+  await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 'late' && frame.status === 'running'));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(results.length, 1);
+});
+
 test('握手：worker 带着 agent 清单、机器信息上线；断开后留在列表里标离线', async () => {
   const { rec, gateway, url, stop } = await harness('t0k');
   const link = connectWorkerLink({

@@ -128,6 +128,8 @@ export interface TurnCheckpoint {
   readonly sessionId: string;
   readonly turn: number;
   readonly promptSeq: number;
+  /** Verified delivery identity; absent on legacy, display-only checkpoints. */
+  readonly deliveryId?: string;
   readonly before: string;
   readonly after: string | null;
   readonly startedAt: number;
@@ -140,7 +142,8 @@ export interface TurnCheckpoint {
 
 export interface CheckpointStore {
   list(sessionId: string): Promise<readonly TurnCheckpoint[]>;
-  begin(row: { sessionId: string; turn: number; promptSeq: number; before: string; startedAt: number }): Promise<void>;
+  /** First write wins for a session/delivery. An aborted signal must not persist a row. */
+  begin(row: { sessionId: string; turn: number; promptSeq: number; before: string; startedAt: number; deliveryId?: string }, signal?: AbortSignal): Promise<void>;
   end(sessionId: string, turn: number, row: { after: string; endedAt: number; files: number; additions: number; deletions: number }): Promise<void>;
   /** 最后一个检查点早于 cutoff 的会话（保留期清理用）。 */
   staleSessions(cutoff: number): Promise<readonly string[]>;
@@ -149,9 +152,12 @@ export interface CheckpointStore {
 
 /** 每一轮在原生 agent 会话里的标识（ADR 0028）：pi 是这一轮用户消息的 entryId，Claude 是这一轮最后一条 assistant messageId。 */
 export interface TurnRefStore {
-  record(sessionId: string, promptSeq: number, turnRef: string): Promise<void>;
-  /** promptSeq → turnRef */
+  /** Only call with verified delivery evidence; the first verified value wins. */
+  record(sessionId: string, promptSeq: number, turnRef: string, deliveryId: string): Promise<void>;
+  /** Legacy-compatible display view, including unverified rows. */
   list(sessionId: string): Promise<ReadonlyMap<number, string>>;
+  /** Rows with delivery identity; absent implementation cannot attest native branching. */
+  listVerified?(sessionId: string): Promise<ReadonlyMap<number, { readonly turnRef: string; readonly deliveryId: string }>>;
 }
 
 export const CHECKPOINT_REF_PREFIX = 'refs/agent-hub/checkpoints/';

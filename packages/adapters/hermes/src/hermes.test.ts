@@ -68,6 +68,21 @@ test('事件映射：终态和控制事件', () => {
   assert.deepEqual(map({ event: 'something.new' }).events, []);
 });
 
+test('text provenance uses explicit role and child evidence without changing text', () => {
+  const map = createHermesEventMapper();
+  for (const event of ['message.delta', 'message.interim']) {
+    const base = { event, delta: '  unchanged\n' };
+    assert.deepEqual(map({ ...base, role: 'assistant' }).events, [{ kind: 'text', delta: '  unchanged\n', textOrigin: 'main_assistant' }]);
+    for (const field of ['child_session_id', 'subagent_id', 'subagentId', 'delegation_id']) {
+      assert.deepEqual(map({ ...base, role: 'assistant', [field]: 'child' }).events, [{ kind: 'text', delta: '  unchanged\n', textOrigin: 'other' }]);
+    }
+    assert.deepEqual(map({ ...base, role: 'user' }).events, [{ kind: 'text', delta: '  unchanged\n', textOrigin: 'other' }]);
+    for (const role of [undefined, null, '', 42, {}]) {
+      assert.deepEqual(map({ ...base, role }).events, [{ kind: 'text', delta: '  unchanged\n' }]);
+    }
+  }
+});
+
 test('worker 共用 profile：只有变量引用，记忆默认关，cwd 是中性目录，不配 MCP', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hermes-home-'));
   const { home, cwd } = await prepareWorkerHome(root);

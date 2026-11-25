@@ -43,7 +43,11 @@ function memoryCheckpoints(): CheckpointStore {
   const rows: TurnCheckpoint[] = [];
   return {
     list: async (id) => rows.filter((r) => r.sessionId === id),
-    begin: async (row) => void rows.push({ ...row, after: null, endedAt: null, files: null, additions: null, deletions: null }),
+    begin: async (row, signal) => {
+      if (!signal?.aborted && !rows.some((r) => r.sessionId === row.sessionId && (r.turn === row.turn || (!!row.deliveryId && r.deliveryId === row.deliveryId)))) {
+        rows.push({ ...row, after: null, endedAt: null, files: null, additions: null, deletions: null });
+      }
+    },
     end: async (id, turn, row) => {
       const i = rows.findIndex((r) => r.sessionId === id && r.turn === turn);
       if (i >= 0) rows[i] = { ...rows[i]!, ...row };
@@ -53,7 +57,7 @@ function memoryCheckpoints(): CheckpointStore {
   };
 }
 
-async function world(overrides: Partial<WorkspaceBrowser> = {}) {
+async function world(overrides: Partial<WorkspaceBrowser> = {}, checkpoints: CheckpointStore = memoryCheckpoints()) {
   const w = inMemoryDeps({ now: () => 1000 });
   w.agents.push(agent);
   const project = await createProjectUseCase(w.deps, { name: 'demo', rootPath: '/tmp/demo/' });
@@ -72,7 +76,7 @@ async function world(overrides: Partial<WorkspaceBrowser> = {}) {
     local: fakeBrowser('local', calls, overrides),
     remote: (id) => fakeBrowser(id, calls, overrides),
     bases: { get: async (id) => bases.get(id) ?? null, setIfAbsent: async (id, h) => void (bases.has(id) || bases.set(id, h)) },
-    checkpoints: memoryCheckpoints(),
+    checkpoints,
     now: () => clock
   });
   return { ...w, svc, calls, audits, bases, session: session.value, project: project.value, tick: (ms: number) => (clock += ms) };
@@ -315,18 +319,18 @@ test('限流：开头可连续 40 次，第 41 次拒绝；每秒补 20；watch 
   assert.deepEqual(w.calls.slice(-2), ['local:watch:,src', 'local:unwatch']);
 });
 
-test('回合检查点：开始 / 结束各拍一张，本轮 = 前 → 后，进行中 = 前 → 工作区；没收尾的上一轮先收掉', async () => {
+test('回合检查点：按 delivery 配对，未收尾的旧回合不自动关闭', async () => {
   const w = await world();
   const sid = w.session.id;
   assert.equal((await w.svc.changes(null, sid, 'turn')).ok, false); // 还没有回合
-  const first = await w.svc.beginTurn(sid, 1);
+  const first = await w.svc.beginTurn(sid, 1, 'delivery-1');
   assert.equal(first?.turn, 1);
   const live = await w.svc.changes(null, sid, 'turn');
   assert.ok(live.ok);
   assert.equal(live.value.target, null);
   assert.ok(w.calls.includes('local:changes:c0ffee1'));
   w.tick(10);
-  await w.svc.endTurn(sid);
+  await w.svc.endTurn(sid, 'delivery-1');
   const turns = await w.svc.turns(null, sid);
   assert.ok(turns.ok);
   assert.deepEqual(turns.value.map((t) => [t.turn, t.before, t.after, t.files, t.additions, t.deletions]), [[1, 'c0ffee1', 'c0ffee2', 1, 2, 1]]);
@@ -335,12 +339,15 @@ test('回合检查点：开始 / 结束各拍一张，本轮 = 前 → 后，进
   assert.equal(done.value.files.length, 1);
   assert.ok((await w.svc.diff(null, sid, 'a.ts', 'turn', 1)).ok);
   assert.ok(w.calls.includes('local:diff:a.ts:c0ffee1..c0ffee2'));
-  // 第二轮开了没收（ended 丢了），第三轮开始时先把第二轮收掉
-  await w.svc.beginTurn(sid, 5);
-  await w.svc.beginTurn(sid, 9);
+  // 第二轮没收尾，第三轮的结束不能误收第二轮。
+  await w.svc.beginTurn(sid, 5, 'delivery-2');
+  await w.svc.beginTurn(sid, 9, 'delivery-3');
+  await w.svc.endTurn(sid);
+  await w.svc.endTurn(sid, 'unknown');
+  await w.svc.endTurn(sid, 'delivery-3');
   const after = await w.svc.turns(null, sid);
   assert.ok(after.ok);
-  assert.deepEqual(after.value.map((t) => [t.turn, t.promptSeq, t.after !== null]), [[1, 1, true], [2, 5, true], [3, 9, false]]);
+  assert.deepEqual(after.value.map((t) => [t.turn, t.promptSeq, t.after !== null]), [[1, 1, true], [2, 5, false], [3, 9, true]]);
   assert.equal((await w.svc.changes(null, sid, 'turn', 42)).ok, false);
   // 从第二轮那条问话重来：恢复到第二轮开始前的检查点
   assert.equal((await w.svc.turnFor(sid, 5))?.turn, 2);
@@ -354,8 +361,8 @@ test('回合检查点：开始 / 结束各拍一张，本轮 = 前 → 后，进
 test('检查点保留期：30 天后连 ref 带行一起删；运行中的会话不动', async () => {
   const w = await world();
   const sid = w.session.id;
-  await w.svc.beginTurn(sid, 1);
-  await w.svc.endTurn(sid);
+  await w.svc.beginTurn(sid, 1, 'delivery-1');
+  await w.svc.endTurn(sid, 'delivery-1');
   assert.equal(await w.svc.sweepCheckpoints(), 0);
   w.tick(31 * 24 * 3600 * 1000);
   const running = await w.deps.sessions.byId(sid);
@@ -367,6 +374,59 @@ test('检查点保留期：30 天后连 ref 带行一起删；运行中的会话
   const turns = await w.svc.turns(null, sid);
   assert.ok(turns.ok);
   assert.equal(turns.value.length, 0);
+});
+
+test('delivery provenance: exact queued prompt, idempotence, legacy display only', async () => {
+  const store = memoryCheckpoints();
+  const w = await world({}, store);
+  const sid = w.session.id;
+  await store.begin({ sessionId: sid, turn: 1, promptSeq: 3, before: 'legacy', startedAt: 1 });
+  assert.equal(await w.svc.turnFor(sid, 3), null);
+  assert.equal((await w.svc.restoreTurn(sid, 3)).ok, false);
+  assert.equal((await w.svc.turns(null, sid)).ok, true);
+  assert.ok((await w.svc.changes(null, sid, 'turn', 1)).ok);
+  const row = await w.svc.beginTurn(sid, 19, 'delivery-queued');
+  assert.equal(row?.promptSeq, 19);
+  assert.equal((await w.svc.beginTurn(sid, 19, 'delivery-queued'))?.before, row?.before);
+  assert.equal(await w.svc.beginTurn(sid, 20, 'delivery-queued'), null);
+  await w.svc.endTurn(sid, 'delivery-queued');
+  assert.equal((await store.list(sid))[0]?.after, null);
+  assert.equal((await w.svc.turnFor(sid, 19))?.deliveryId, 'delivery-queued');
+});
+
+test('aborted checkpoint work never produces a usable row', async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const w = await world({ checkpoint: async () => { entered(); await waiting; return ok('late'); } });
+  const controller = new AbortController();
+  const pending = w.svc.beginTurn(w.session.id, 27, 'late-delivery', controller.signal);
+  await started;
+  controller.abort();
+  release();
+  assert.equal(await pending, null);
+  assert.equal(await w.svc.turnFor(w.session.id, 27), null);
+  assert.equal((await w.svc.restoreTurn(w.session.id, 27)).ok, false);
+});
+
+test('abort while listing checkpoints prevents browser work and persistence', async () => {
+  const store = memoryCheckpoints();
+  const list = store.list;
+  let release!: () => void;
+  let entered!: () => void;
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const delayed: CheckpointStore = { ...store, list: async (id) => { entered(); await waiting; return list(id); } };
+  const w = await world({}, delayed);
+  const controller = new AbortController();
+  const pending = w.svc.beginTurn(w.session.id, 33, 'delivery', controller.signal);
+  await started;
+  controller.abort();
+  release();
+  assert.equal(await pending, null);
+  assert.deepEqual(await list(w.session.id), []);
+  assert.ok(!w.calls.some((call) => call.includes(':checkpoint:')));
 });
 
 test('检查点 ref 规则：只认 refs/agent-hub/checkpoints/<会话>/<n>', () => {

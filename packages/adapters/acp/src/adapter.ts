@@ -120,7 +120,7 @@ export function acpAdapter(): RuntimeAdapter {
           toolShim: ctx.toolShim,
           onAgentSessionRef: (sessionId, ref) => ctx.onAgentSessionRef(sessionId, ref),
           onOptions: (sessionId, reported) => ctx.onOptions(sessionId, reported),
-          onTurnRef: (sessionId, turnRef) => ctx.onTurnRef?.(sessionId, turnRef)
+          onTurnRef: (sessionId, turnRef, deliveryId) => ctx.onTurnRef?.(sessionId, turnRef, deliveryId)
         }),
         readiness: acpReadiness(config),
         hint,

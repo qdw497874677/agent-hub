@@ -37,6 +37,7 @@ import { createSqliteContextSettings } from './context-settings.ts';
 import { createSqliteSessionBases } from './session-bases.ts';
 import { createSqliteCheckpoints, createSqliteTurnRefs } from './turn-checkpoints.ts';
 import { createSqliteDeliveries } from './deliveries.ts';
+import { createSqliteBranchAttempts, ensureBranchAttemptTable } from './branch-attempts.ts';
 import { createSqliteProvenance } from './provenance.ts';
 import { createSqliteConnectors } from './connectors.ts';
 import { createSqliteTaskDispatch } from './task-dispatch.ts';
@@ -89,6 +90,7 @@ export interface SqliteStore extends RepositorySet {
   readonly turnRefs: TurnRefStore;
   /** 送达队列（ADR 0031）。 */
   readonly deliveries: DeliveryQueue;
+  readonly branchAttempts: import('@agent-hub/domain').BranchAttemptStore;
   readonly provenance: ProvenanceStore;
   readonly connectors: import('@agent-hub/domain').ConnectorStore;
   readonly agentTasks: import('@agent-hub/domain').AgentTaskStore;
@@ -141,6 +143,7 @@ export interface SqliteStore extends RepositorySet {
 export function openSqliteStore(file: string): SqliteStore {
   const db = new DatabaseSync(file);
   const { taskCreations, operationReceipts } = runStartupMigrations(db);
+  ensureBranchAttemptTable(db);
 
   const insertProject = db.prepare(
     'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, primary_repo_id, description, worktree_config, preview_port, checks, asset_set_ids, default_agent, submodules, created_at, team_id, created_by, members, deleted_at) ' +
@@ -199,8 +202,11 @@ export function openSqliteStore(file: string): SqliteStore {
       // 状态跟着 last_seq 单调走：并发写回一个更旧的会话对象（比如上一轮读到的 running）
       // 不能把已经 done 的状态又翻回去，也不能把游标倒退。
       'status = CASE WHEN excluded.last_seq >= sessions.last_seq THEN excluded.status ELSE sessions.status END, ' +
-      'last_seq = MAX(sessions.last_seq, excluded.last_seq), turn = MAX(sessions.turn, excluded.turn), agent_session = excluded.agent_session, ' +
-      'options = excluded.options, option_spec = excluded.option_spec, worker_id = excluded.worker_id, workspace_id = excluded.workspace_id, ' +
+      'last_seq = MAX(sessions.last_seq, excluded.last_seq), turn = MAX(sessions.turn, excluded.turn), ' +
+      // 分叉子会话的落点和原生 ref 属于分叉回执，普通快照不能改写。
+      'agent_session = CASE WHEN EXISTS (SELECT 1 FROM branch_attempt WHERE session_id = sessions.id) THEN sessions.agent_session ELSE excluded.agent_session END, ' +
+      'worker_id = CASE WHEN EXISTS (SELECT 1 FROM branch_attempt WHERE session_id = sessions.id) THEN sessions.worker_id ELSE excluded.worker_id END, ' +
+      'options = excluded.options, option_spec = excluded.option_spec, workspace_id = excluded.workspace_id, ' +
       'environment_revision = excluded.environment_revision, settled_at = excluded.settled_at, group_id = excluded.group_id, ' +
       'kind = excluded.kind, parent_session_id = excluded.parent_session_id, ' +
       // 资产清单只在显式给的时候写：旧快照回写不能把用户的选择冲掉。
@@ -438,8 +444,7 @@ export function openSqliteStore(file: string): SqliteStore {
     }
   };
 
-  const sessions = {
-    async save(session: Session): Promise<void> {
+  const saveSession = (session: Session): void => {
       const [kind, from, seq] = originColumns(session);
       upsertSession.run(
         session.id,
@@ -472,7 +477,9 @@ export function openSqliteStore(file: string): SqliteStore {
         session.createdAt,
         session.updatedAt
       );
-    },
+  };
+  const sessions = {
+    async save(session: Session): Promise<void> { saveSession(session); },
     async byId(id: Parameters<typeof asSessionId>[0]): Promise<Session | null> {
       const row = selectSession.get(id);
       return row ? toSession(row) : null;
@@ -615,6 +622,7 @@ export function openSqliteStore(file: string): SqliteStore {
     checkpoints: createSqliteCheckpoints(db),
     turnRefs: createSqliteTurnRefs(db),
     deliveries: createSqliteDeliveries(db),
+    branchAttempts: createSqliteBranchAttempts(db, saveSession),
     provenance: createSqliteProvenance(db),
     ...createSqliteConnectors(db),
     dispatches: createSqliteTaskDispatch(db),

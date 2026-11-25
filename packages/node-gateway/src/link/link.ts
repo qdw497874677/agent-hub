@@ -12,7 +12,7 @@ export interface WorkerLink {
   /** agent 报上来的可调项当前值（模型、思考强度……）。 */
   notifyOptions(sessionId: string, options: readonly RuntimeOption[]): void;
   /** ADR 0028：这一轮的原生标识。hub 不认（老 hub）就不发。 */
-  notifyTurnRef(sessionId: string, turnRef: string): void;
+  notifyTurnRef(sessionId: string, turnRef: string, deliveryId?: string): void;
   /** 终端输出回传（base64 后进 `terminal_data`）。不进 outbox：断线期间的旧输出没有意义。 */
   sendTerminalData(terminalId: string, data: Uint8Array): void;
   /** 终端里的进程退出了。 */
@@ -58,8 +58,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     notifyOptions(sessionId: string, options: readonly RuntimeOption[]): void {
       transport.send({ type: 'options', sessionId, options: [...options] });
     },
-    notifyTurnRef(sessionId: string, turnRef: string): void {
-      if (ctx.nativeBranch) transport.send({ type: 'turn_ref', sessionId, turnRef });
+    notifyTurnRef(sessionId: string, turnRef: string, deliveryId?: string): void {
+      if (ctx.nativeBranch) transport.send({ type: 'turn_ref', sessionId, turnRef, ...(deliveryId === undefined ? {} : { deliveryId }) });
     },
     sendTerminalData(terminalId: string, data: Uint8Array): void {
       channels.sendTerminalData(terminalId, data);

@@ -4,7 +4,8 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
 import type { RpcChannel, ServerToWorker } from '@agent-hub/contract';
-import { PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, createRpcChannel, wsImportProjectGitBundle } from '@agent-hub/contract';
+import { PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_BRANCH_ATTEMPT, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, createRpcChannel, wsImportProjectGitBundle } from '@agent-hub/contract';
+import { CAPABILITY_NAMES, asSessionId, available } from '@agent-hub/domain';
 import { createServerGateway, type GatewayHooks, type GatewayOptions, type WorkerConnectionObservation } from './server-gateway.ts';
 import { serveProjectGitBundleImport } from './worker-fs-rpc.ts';
 import type { ProjectGitBundleImportInput, ProjectGitBundleImporter } from './project-git-bundle-import.ts';
@@ -28,6 +29,7 @@ interface HarnessOptions {
   readonly onConnectionObservation?: GatewayHooks['onConnectionObservation'];
   readonly onObservedRuntimeInstall?: GatewayHooks['onObservedRuntimeInstall'];
   readonly onRuntimeJob?: GatewayHooks['onRuntimeJob'];
+  readonly onBranchAttemptResult?: GatewayHooks['onBranchAttemptResult'];
   readonly agentConfig?: GatewayHooks['agentConfig'];
   readonly onTerminalData?: GatewayHooks['onTerminalData'];
   readonly onTerminalExit?: GatewayHooks['onTerminalExit'];
@@ -48,6 +50,7 @@ async function harness(options: HarnessOptions = {}) {
     ...(options.onConnectionObservation ? { onConnectionObservation: options.onConnectionObservation } : {}),
     ...(options.onObservedRuntimeInstall ? { onObservedRuntimeInstall: options.onObservedRuntimeInstall } : {}),
     ...(options.onRuntimeJob ? { onRuntimeJob: options.onRuntimeJob } : {}),
+    ...(options.onBranchAttemptResult ? { onBranchAttemptResult: options.onBranchAttemptResult } : {}),
     ...(options.agentConfig ? { agentConfig: options.agentConfig } : {}),
     onHello: () => {
       helloSeen = true;
@@ -114,6 +117,41 @@ async function harness(options: HarnessOptions = {}) {
   };
   return { gateway, url, connect, stop };
 }
+
+test('keyed branch transport requires current socket capability and correlates results to sent attempts', async () => {
+  const results: unknown[][] = [];
+  const h = await harness({ onBranchAttemptResult: (...args) => results.push(args), gateway: { echoMs: 0 } });
+  const old = await h.connect('w1');
+  const command = { kind: 'start_session' as const, sessionId: asSessionId('s1'), workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' as const }, resume: null, options: {}, branch: { fromAgentSessionRef: 'parent', turnRef: null, previousTurnRef: null }, branchAttemptId: 'attempt-1' };
+  const agent = { id: 'echo', label: 'Echo', capabilities: Object.fromEntries(CAPABILITY_NAMES.map((name) => [name, available])), models: [], defaultModel: '', options: [] };
+  const hello = { capabilities: [WORKER_CAPABILITY_BRANCH_ATTEMPT], branchAttemptAgents: ['echo'], agents: [agent] };
+  assert.equal(h.gateway.supportsBranchAttempt('w1', 'echo'), false);
+  assert.equal((await h.gateway.gateway.dispatch(command)).ok, false);
+  assert.equal(old.frames.some((f) => f.kind === 'start_session'), false);
+  const current = await h.connect('w1', hello);
+  assert.equal(h.gateway.supportsBranchAttempt('w1', 'echo'), true);
+  assert.equal(h.gateway.supportsBranchAttempt('w1', 'other'), false);
+  assert.equal((await h.gateway.gateway.dispatch({ ...command, agentId: 'other' })).ok, false);
+  const { branch: _branch, ...withoutBranch } = command;
+  assert.equal((await h.gateway.gateway.dispatch(withoutBranch)).ok, false);
+  assert.equal((await h.gateway.gateway.dispatch(command)).ok, true);
+  await until(() => current.frames.some((f) => f.kind === 'start_session'));
+  const sent = current.frames.find((f) => f.kind === 'start_session');
+  assert.equal(sent?.kind === 'start_session' && sent.branchAttemptId, 'attempt-1');
+  current.ws.send(JSON.stringify({ type: 'branch_attempt_result', sessionId: 's1', attemptId: 'wrong', outcome: 'native', agentSessionRef: 'ref' }));
+  current.ws.send(JSON.stringify({ type: 'branch_attempt_result', sessionId: 's1', attemptId: 'attempt-1', outcome: 'native', agentSessionRef: 'pending' }));
+  current.ws.send(JSON.stringify({ type: 'branch_attempt_result', sessionId: 's1', attemptId: 'attempt-1', outcome: 'native', agentSessionRef: 'parent' }));
+  current.ws.send(JSON.stringify({ type: 'branch_attempt_result', sessionId: 's1', attemptId: 'attempt-1', outcome: 'plain', agentSessionRef: 'parent' }));
+  current.ws.send(JSON.stringify({ type: 'branch_attempt_result', sessionId: 's1', attemptId: 'attempt-1', outcome: 'native', agentSessionRef: 'ref' }));
+  await until(() => results.length === 1);
+  assert.deepEqual(results, [['w1', 's1', 'attempt-1', 'native', 'ref']]);
+  current.ws.send(JSON.stringify({ type: 'branch_attempt_result', sessionId: 's1', attemptId: 'attempt-1', outcome: 'native', agentSessionRef: 'ref' }));
+  const replacement = await h.connect('w1', hello);
+  replacement.ws.send(JSON.stringify({ type: 'branch_attempt_result', sessionId: 's1', attemptId: 'attempt-1', outcome: 'native', agentSessionRef: 'ref' }));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(results.length, 1);
+  await h.stop(old, current, replacement);
+});
 
 test('connection observations bind authenticated identities and close replacement before new connection', async () => {
   const observations: WorkerConnectionObservation[] = [];

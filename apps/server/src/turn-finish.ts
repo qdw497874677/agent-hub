@@ -35,7 +35,7 @@ export interface TurnFinishHooks {
   /** 收件箱：各来源收这一轮（约定幂等）。 */
   readonly inbox: { end(sessionId: string, outcome: TurnOutcome, reason?: string): Promise<void> };
   /** 回合检查点：拍「之后」那张。 */
-  readonly files: { endTurn(sessionId: string): Promise<void> };
+  readonly files: { endTurn(sessionId: string, deliveryId?: string): Promise<void> };
   /** 假渠道回程（只在 HUB_FAKE_CHANNEL=1 时有）。 */
   readonly fakeReplies?: { finish(sessionId: string, end: TurnEnd): Promise<string | null> };
   /** 飞书回程。 */
@@ -108,7 +108,7 @@ export function createTurnFinisher(deps: TurnFinishDeps): TurnFinisher {
     const beforeInbox: Array<readonly [string, () => Promise<unknown>]> = [
       ...(deps.fakeReplies ? [['假渠道回程', () => deps.fakeReplies!.finish(sessionId, end)] as const] : []),
       ...(deps.feishuReplies ? [['飞书回程', () => deps.feishuReplies!.finish(sessionId, end)] as const] : []),
-      ['回合检查点', () => deps.files.endTurn(sessionId)]
+      ['回合检查点', () => deps.files.endTurn(sessionId, end.deliveryId)]
     ];
     await Promise.all(beforeInbox.map(([label, run]) => isolated(label, run)));
     // 收件箱：各来源按注册顺序收尾；delivery 来源只在这里保持占用判断，不再放行队列。

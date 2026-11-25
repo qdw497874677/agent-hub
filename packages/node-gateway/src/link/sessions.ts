@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ServerToWorker, SessionEventDto } from '@agent-hub/contract';
-import { RpcFailure, assetsFetch, assetsSync, providerTest } from '@agent-hub/contract';
-import { asSessionId, asTaskId, withExecutableArg } from '@agent-hub/domain';
+import { RpcFailure, assetsFetch, assetsSync, branchAgentSessionRefSchema, providerTest } from '@agent-hub/contract';
+import { allowsFor, asSessionId, asTaskId, withExecutableArg } from '@agent-hub/domain';
 import type { RuntimeSession, SessionEvent, StartSpec } from '@agent-hub/domain';
 import { authHeaders } from '../provider-proxy.ts';
 import { createMcpEndpoint, type McpEndpoint } from '../mcp-endpoint.ts';
@@ -369,6 +369,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       });
       return;
     }
+    if (command.branchAttemptId !== undefined && (!command.branch || command.resume !== null || !runtime.startBranchAttempt || !allowsFor(runtime.descriptor.capabilities, 'branch_at_turn'))) return;
 
     const outside = options.files ? await options.files.check(command.workspaceRoot) : null;
     if (outside !== null) {
@@ -479,8 +480,36 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
       if (view && view.assets.skills.length + view.assets.instructions.length > 0) spec = { ...spec, assets: view.assets };
     }
 
-    let started = await runtime.start(spec);
-    if (spec.branch) {
+    let attested: { outcome: 'native' | 'plain'; agentSessionRef: string } | undefined;
+    let started: Awaited<ReturnType<typeof runtime.start>>;
+    if (command.branchAttemptId !== undefined) {
+      // Throws, malformed refs and unknown outcomes are all ambiguous, never legacy fallback.
+      const result = await runtime.startBranchAttempt!(spec).catch(() => ({ state: 'unknown' as const }));
+      if (result.state === 'both_failed') {
+        ctx.providerRelay.close(command.sessionId);
+        void options.assets?.dropSession(command.sessionId).catch(() => {});
+        transport.sendOnOrigin(command, { type: 'branch_attempt_result', sessionId: command.sessionId, attemptId: command.branchAttemptId, outcome: 'both_failed' });
+        return;
+      }
+      if (result.state !== 'started') {
+        ctx.providerRelay.close(command.sessionId);
+        void options.assets?.dropSession(command.sessionId).catch(() => {});
+        return;
+      }
+      if (!branchAgentSessionRefSchema.safeParse(result.agentSessionRef).success
+        || result.agentSessionRef === command.branch?.fromAgentSessionRef
+        || result.session.sessionId !== command.sessionId) {
+        await result.session.dispose().catch(() => {});
+        ctx.providerRelay.close(command.sessionId);
+        void options.assets?.dropSession(command.sessionId).catch(() => {});
+        return;
+      }
+      attested = { outcome: result.outcome, agentSessionRef: result.agentSessionRef };
+      started = { ok: true, value: result.session };
+    } else {
+      started = await runtime.start(spec);
+    }
+    if (spec.branch && command.branchAttemptId === undefined) {
       // ADR 0028 Q5：原生分叉没成就退回「新开一条空会话」，告诉 hub 改用摘要交接——不能让用户卡在一条起不来的会话上
       let failure: string | null = null;
       if (!started.ok) {
@@ -519,6 +548,9 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     else pinnedSessions.delete(command.sessionId);
     sessionProviders.set(command.sessionId, spec.provider ? `${spec.provider.slug}|${spec.provider.baseUrl}|${spec.provider.token}` : '');
     startupWiring.set(command.sessionId, wiringKey);
+    if (attested && command.branchAttemptId !== undefined) {
+      transport.sendOnOrigin(command, { type: 'branch_attempt_result', sessionId: command.sessionId, attemptId: command.branchAttemptId, ...attested });
+    }
     send({
       type: 'status',
       sessionId: command.sessionId,
@@ -578,9 +610,21 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
     if (command.kind === 'start_session') {
       const sessionId = command.sessionId;
       const previous = starting.get(sessionId);
+      const start = async (): Promise<void> => {
+        if (command.branchAttemptId === undefined) return startSession(command);
+        try {
+          await startSession(command);
+        } catch {
+          // Setup/transport exceptions are ambiguous too; never turn them into a
+          // legacy ended event or a keyed failure claim.
+          ctx.providerRelay.close(command.sessionId);
+          void options.assets?.dropSession(command.sessionId).catch(() => {});
+          options.onLog?.('带键分叉启动结果未知');
+        }
+      };
       const work = previous
-        ? previous.catch(() => undefined).then(() => startSession(command))
-        : startSession(command);
+        ? previous.catch(() => undefined).then(start)
+        : start();
       // 先登记链尾再 await：之后到达的普通指令要等这（最近一次）start，而不是等前一条。
       const tail = work.catch(() => undefined);
       starting.set(sessionId, tail);

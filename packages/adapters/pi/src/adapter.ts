@@ -45,7 +45,7 @@ export function piAdapter(): RuntimeAdapter {
             toolShim: ctx.toolShim,
             ...(ctx.components ? { extensions: () => ctx.components?.('pi') ?? [] } : {}),
             onAgentSessionRef: (sessionId, ref) => ctx.onAgentSessionRef(sessionId, ref),
-            onTurnRef: (sessionId, turnRef) => ctx.onTurnRef?.(sessionId, turnRef),
+            onTurnRef: (sessionId, turnRef, deliveryId) => ctx.onTurnRef?.(sessionId, turnRef, deliveryId),
             onOptions: (sessionId, reported) => ctx.onOptions(sessionId, reported)
           }),
           readiness: piReadiness(pi.command, discovered.defaultModel),

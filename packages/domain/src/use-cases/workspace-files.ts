@@ -209,14 +209,17 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
   }
 
   /** 后台记账用的定位：不走权限（组合根在会话指令发出时调）。 */
-  async function locateSystem(sessionId: string): Promise<{ browser: WorkspaceBrowser; root: string; session: Session; group: SessionLocation['group'] } | null> {
+  async function locateSystem(sessionId: string, signal?: AbortSignal): Promise<{ browser: WorkspaceBrowser; root: string; session: Session; group: SessionLocation['group'] } | null> {
+    if (signal?.aborted) return null;
     const session = await deps.sessions.byId(asSessionId(sessionId));
+    if (signal?.aborted) return null;
     // 容器会话（#221 步骤 7）没有任务：按组合工作空间找回项目。
     const project = session ? await projectOfSession(deps, session) : null;
-    if (!session || !project) return null;
+    if (signal?.aborted || !session || !project) return null;
     const location = await locationsOf(deps, project, session);
-    if (location.root === '') return null;
+    if (signal?.aborted || location.root === '') return null;
     const workerId = await routeOf(deps, location.workerId);
+    if (signal?.aborted) return null;
     return { browser: workerId === null ? deps.local : deps.remote(workerId), root: location.root, session, group: location.group };
   }
 
@@ -224,7 +227,7 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
   const chains = new Map<string, Promise<unknown>>();
   const serial = <T>(sessionId: string, run: () => Promise<T>): Promise<T> => {
     const next = (chains.get(sessionId) ?? Promise.resolve()).then(run, run);
-    chains.set(sessionId, next.catch(() => undefined));
+    chains.set(sessionId, next);
     void next.finally(() => {
       if (chains.get(sessionId) === next) chains.delete(sessionId);
     }).catch(() => undefined);
@@ -379,33 +382,37 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
     },
     /**
      * 一轮开始前打检查点（ADR 0027 D2）。promptSeq = 这一轮问话的事件序号。
-     * 上一轮没收尾（崩了、没发 ended）就先把它收掉，免得「本轮」跨两轮。失败不影响会话。
+     * 只记录指定 delivery；未知来源的旧回合不能自动收尾。
      */
-    async beginTurn(sessionId: string, promptSeq: number): Promise<TurnCheckpoint | null> {
+    async beginTurn(sessionId: string, promptSeq: number, deliveryId: string, signal?: AbortSignal): Promise<TurnCheckpoint | null> {
       const store = deps.checkpoints;
-      if (!store) return null;
+      if (!store || !deliveryId || signal?.aborted) return null;
       return serial(sessionId, async () => {
-        const where = await locateSystem(sessionId);
-        if (!where) return null;
+        if (signal?.aborted) return null;
+        const where = await locateSystem(sessionId, signal);
+        if (signal?.aborted || !where) return null;
         // 组合工作空间（§12.3 v1）：容器不是 git 仓库，不做跨仓检查点。
         if (where.group !== null) return null;
         const turns = await store.list(sessionId);
-        const open = turns.at(-1);
-        if (open && open.after === null) await closeTurn(store, where, open);
+        if (signal?.aborted) return null;
+        const existing = turns.find((t) => t.deliveryId === deliveryId);
+        if (existing) return existing.promptSeq === promptSeq ? existing : null;
         const turn = (turns.at(-1)?.turn ?? 0) + 1;
         const before = await where.browser.checkpoint(where.root, checkpointRef(sessionId, turn * 2 - 1));
-        if (!before.ok || !before.value) return null;
-        const row = { sessionId, turn, promptSeq, before: before.value, startedAt: deps.now() };
-        await store.begin(row);
-        return { ...row, after: null, endedAt: null, files: null, additions: null, deletions: null };
+        if (signal?.aborted || !before.ok || !before.value) return null;
+        const row = { sessionId, turn, promptSeq, deliveryId, before: before.value, startedAt: deps.now() };
+        await store.begin(row, signal);
+        if (signal?.aborted) return null;
+        const saved = (await store.list(sessionId)).find((t) => t.deliveryId === deliveryId && t.promptSeq === promptSeq);
+        return signal?.aborted ? null : saved ?? null;
       });
     },
     /** 一轮结束后打检查点，顺手算好这一轮改了多少（卡片 / 列表直接用）。 */
-    async endTurn(sessionId: string): Promise<void> {
+    async endTurn(sessionId: string, deliveryId?: string): Promise<void> {
       const store = deps.checkpoints;
-      if (!store) return;
+      if (!store || !deliveryId) return;
       await serial(sessionId, async () => {
-        const open = (await store.list(sessionId)).at(-1);
+        const open = (await store.list(sessionId)).find((t) => t.deliveryId === deliveryId);
         if (!open || open.after !== null) return;
         const where = await locateSystem(sessionId);
         if (where && where.group === null) await closeTurn(store, where, open);
@@ -413,7 +420,7 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
     },
     /** 以这条问话开头的那一轮（「从这里重来」用）；没有检查点 = null。 */
     async turnFor(sessionId: string, promptSeq: number): Promise<TurnCheckpoint | null> {
-      return (await deps.checkpoints?.list(sessionId))?.find((t) => t.promptSeq === promptSeq) ?? null;
+      return (await deps.checkpoints?.list(sessionId))?.find((t) => t.promptSeq === promptSeq && !!t.deliveryId) ?? null;
     },
     /**
      * 连文件一起回滚（ADR 0027 阶段 4）：工作区恢复到这一轮开始前；恢复前的样子拍到同一会话前缀下的安全 ref，

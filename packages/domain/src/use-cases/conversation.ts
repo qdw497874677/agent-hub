@@ -21,6 +21,7 @@ import { otherEnd } from '../session-link.ts';
 import { taskBriefing, type BriefingRepo, type ProjectContext } from '../task-briefing.ts';
 import { groupLayout, groupSessionRoot, isPrimaryMember, memberBriefingPath, type WorkspaceGroup } from '../workspace-group.ts';
 import { withActiveTask } from './task-admission.ts';
+import { admitBranchSession } from './branch-admission.ts';
 
 /*
  * 「会话在跑」这一侧的用例：用户发话，以及 worker 回报的一切。
@@ -151,7 +152,7 @@ async function peerBriefingFor(
 type PromptSessionDeps = Pick<
   Deps,
   'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaces' | 'workspaceGroups' | 'bots'
-> & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links' | 'peerBriefing'>>;
+> & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links' | 'peerBriefing' | 'branchAttempts'>>;
 
 export async function promptSessionUseCase(
   deps: PromptSessionDeps,
@@ -170,6 +171,8 @@ export async function promptSessionUseCase(
     }
   }
 
+  const admitted = await admitBranchSession(deps, sessionId);
+  if (!admitted.ok) return admitted;
   return withActiveTask(deps, session.taskId, () => promptSessionAdmitted(deps, command, session, sessionId));
 }
 
@@ -449,13 +452,15 @@ export function ingestWorkerOptions(
 
 /** agent 自己的会话号：resume 时要原样还给它。 */
 export function ingestAgentSessionRef(
-  deps: Pick<Deps, 'sessions' | 'queue' | 'now'>,
+  deps: Pick<Deps, 'sessions' | 'queue' | 'now' | 'branchAttempts'>,
   sessionId: SessionId,
   agentSessionRef: string
 ): Promise<Result<Session, DomainError>> {
   return deps.queue.run(sessionId, async () => {
     const session = await deps.sessions.byId(sessionId);
     if (!session) return err(notFound('会话不存在'));
+    // 新分叉的原生引用只由带凭据的结果确定；普通帧不能取代它或替未决分叉确认。
+    if (await deps.branchAttempts?.bySession(sessionId)) return ok(session);
     const next = { ...session, agentSessionRef, updatedAt: deps.now() };
     await deps.sessions.save(next);
     return ok(next);
@@ -541,7 +546,7 @@ export async function workerGone(
  * 返回核对过的那些，组合根据此让网关恢复路由（网关自己不信 hello 里报的清单）。
  */
 export async function workerAttached(
-  deps: Pick<Deps, 'hosting' | 'sessions' | 'stream' | 'now'>,
+  deps: Pick<Deps, 'hosting' | 'sessions' | 'stream' | 'now' | 'branchAttempts'>,
   workerId: string,
   sessionIds: readonly string[]
 ): Promise<string[]> {
@@ -549,6 +554,7 @@ export async function workerAttached(
   for (const id of sessionIds) {
     const session = await deps.sessions.byId(id as SessionId);
     if (!session || (session.workerId !== null && session.workerId !== workerId)) continue;
+    if (!(await admitBranchSession(deps, session.id)).ok) continue;
     deps.hosting.add(session.id, workerId);
     // 刚才掉线时被降级成 interrupted 的，进程其实还活着：接回来，界面继续显示「正在回复」。
     if (session.status === 'interrupted') {

@@ -2,6 +2,7 @@ import { WebSocket } from 'ws';
 import type { ServerToWorker, WorkerToServer } from '@agent-hub/contract';
 import {
   PROTOCOL_MISMATCH_CLOSE,
+  WORKER_CAPABILITY_BRANCH_ATTEMPT,
   WORKER_CAPABILITY_DURABLE_DELIVERY,
   WORKER_CAPABILITY_METRICS,
   WORKER_CAPABILITY_NATIVE_BRANCH,
@@ -10,7 +11,7 @@ import {
   linkEcho,
   serverToWorkerSchema
 } from '@agent-hub/contract';
-import { RECONNECT_POLICY, commandCapability, reconnectDelay, workerWatchdogMs } from '@agent-hub/domain';
+import { RECONNECT_POLICY, allowsFor, commandCapability, reconnectDelay, workerWatchdogMs } from '@agent-hub/domain';
 import { agentToDto } from '@agent-hub/contract/codec';
 import { sameReadiness } from '../harness-registry.ts';
 import { serveWorkerFiles } from '../worker-fs-rpc.ts';
@@ -24,6 +25,8 @@ export interface Transport {
   attach(handlers: TransportHandlers): void;
   connect(): void;
   send(frame: WorkerToServer): void;
+  /** Never buffers: results are delivered only over the socket which received the command. */
+  sendOnOrigin(command: ServerToWorker, frame: WorkerToServer): void;
   /** agent 清单 = runtime 的描述 + 最近一次探测的就绪状态。 */
   probe(always: boolean): Promise<void>;
   selfCheck(): Promise<void>;
@@ -40,6 +43,7 @@ export function installTransport(ctx: LinkCtx): Transport {
   /** 老 hub 不发 welcome：等这么久没等到就照旧补发，别把输出永远憋在本地。 */
   const WELCOME_FALLBACK_MS = options.welcomeFallbackMs ?? 5_000;
   let handlers: TransportHandlers | null = null;
+  const origins = new WeakMap<ServerToWorker, WebSocket>();
 
   const stopMetrics = (): void => {
     if (ctx.metricsTimer) clearInterval(ctx.metricsTimer);
@@ -155,6 +159,7 @@ export function installTransport(ctx: LinkCtx): Transport {
   channel.handle(linkEcho, async ({ at }) => ({ at }));
 
   const send = (frame: WorkerToServer): void => {
+    if (frame.type === 'branch_attempt_result') return; // only sendOnOrigin may carry an attestation
     if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN && ctx.accepted) {
       ctx.socket.send(JSON.stringify(frame));
       return;
@@ -240,6 +245,7 @@ export function installTransport(ctx: LinkCtx): Transport {
       ctx.stableTimer.unref?.();
       ctx.droppedReported = ctx.dropped;
       const trial = options.trialUpdate?.() ?? null;
+      const branchAttemptAgents = options.runtimes.filter((runtime) => typeof runtime.startBranchAttempt === 'function' && allowsFor(runtime.descriptor.capabilities, 'branch_at_turn')).map((runtime) => runtime.descriptor.id);
       // hello 必须是第一帧：先于补发的积压事件，server 才知道这些事件是谁的。
       current.send(
         JSON.stringify({
@@ -260,8 +266,10 @@ export function installTransport(ctx: LinkCtx): Transport {
           capabilities: [
             ...(options.resources ? [WORKER_CAPABILITY_METRICS] : []),
             ...(options.gitBundleImport ? [WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT] : []),
-            WORKER_CAPABILITY_DURABLE_DELIVERY
+            WORKER_CAPABILITY_DURABLE_DELIVERY,
+            ...(branchAttemptAgents.length > 0 ? [WORKER_CAPABILITY_BRANCH_ATTEMPT] : [])
           ],
+          ...(branchAttemptAgents.length > 0 ? { branchAttemptAgents } : {}),
           ...(ctx.droppedReported > 0 ? { dropped: ctx.droppedReported } : {}),
           ...(trial ? { update: { id: trial.id, phase: 'trial' as const, inventory: trial.inventory } } : {})
         } satisfies WorkerToServer)
@@ -341,6 +349,7 @@ export function installTransport(ctx: LinkCtx): Transport {
         return;
       }
       const command = parsed.data as ServerToWorker;
+      origins.set(command, current);
       const wired = handlers;
       if (!wired) return;
       if (command.kind === 'rpc') channel.receive(command.frame);
@@ -377,6 +386,10 @@ export function installTransport(ctx: LinkCtx): Transport {
     },
     connect,
     send,
+    sendOnOrigin(command, frame): void {
+      const origin = origins.get(command);
+      if (origin && ctx.socket === origin && ctx.accepted && origin.readyState === WebSocket.OPEN) origin.send(JSON.stringify(frame));
+    },
     probe,
     selfCheck,
     reportInventory,

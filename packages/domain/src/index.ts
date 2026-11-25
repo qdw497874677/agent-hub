@@ -67,7 +67,7 @@ export type { SessionLinkRepository } from './ports/session-link-repository.ts';
 export type { AgentProfileRepository } from './ports/agent-profile-repository.ts';
 export type { BotRepository, PersistentAgentRepository } from './ports/bot-repository.ts';
 export type { WorkerAgentsRepository } from './ports/worker-agents.ts';
-export type { AgentRuntime, BranchSpec, RuntimeSession, SessionAssets, StartSpec } from './ports/agent-runtime.ts';
+export type { AgentRuntime, BranchSpec, RuntimeBranchStartResult, RuntimeSession, SessionAssets, StartSpec } from './ports/agent-runtime.ts';
 export type { SessionEventStream, SessionStreamFrame } from './ports/event-stream.ts';
 export type { ResourceProbe } from './ports/resource-probe.ts';
 export type { WorkerMetrics } from './ports/worker-metrics.ts';

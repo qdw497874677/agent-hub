@@ -7,6 +7,7 @@ import { placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
 import { startSessionUseCase } from './start-session.ts';
 import { withActiveTask } from './task-admission.ts';
+import { admitBranchSession } from './branch-admission.ts';
 
 
 /**
@@ -16,10 +17,13 @@ import { withActiveTask } from './task-admission.ts';
  */
 export async function ensureHosted(
   deps: Pick<Deps, 'hosting' | 'tasks' | 'taskGate' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'bots' | 'workspaceGroups' | 'now'> &
-    Partial<Pick<Deps, 'toolGrants' | 'environment'>>,
+    Partial<Pick<Deps, 'toolGrants' | 'environment' | 'branchAttempts'>>,
   session: Session
 ): Promise<Result<void, DomainError>> {
-  return withActiveTask(deps, session.taskId, () => ensureHostedAdmitted(deps, session));
+  const admitted = await admitBranchSession(deps, session.id);
+  if (!admitted.ok) return admitted;
+  const current = admitted.value ?? session;
+  return withActiveTask(deps, current.taskId, () => ensureHostedAdmitted(deps, current));
 }
 
 async function ensureHostedAdmitted(
@@ -85,5 +89,3 @@ async function ensureHostedAdmitted(
   // 环境版本由启动入口按 server 回执统一落库：失败时保留旧值，下一次还能重试。
   return started.ok ? ok(undefined) : err(started.error);
 }
-
-

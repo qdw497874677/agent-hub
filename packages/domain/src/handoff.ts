@@ -24,7 +24,7 @@ export interface HandoffStats {
   /** 原对话一共几轮、带过去几轮（这一轮至少有一条被带上）。 */
   readonly turns: number;
   readonly carriedTurns: number;
-  /** 带过去几条、省略几条。 */
+  /** 带过去几条、省略几条；截短的条目计入 carried，不计入 omitted。 */
   readonly carried: number;
   readonly omitted: number;
   /** 被整轮省略的轮次区间（含两端）。 */
@@ -69,7 +69,10 @@ function projectHandoffItems(entries: readonly JournalEntry[], policy: 'portable
     const seq = Number(rawSeq);
     switch (event.kind) {
       case 'text':
-        if (policy === 'portable' && event.subagentId) break;
+        if (policy === 'portable' && (event.textOrigin !== 'main_assistant' || event.subagentId !== undefined)) {
+          flush();
+          break;
+        }
         if (reply) {
           reply.lastSeq = seq;
           reply.text += event.delta;
@@ -159,13 +162,14 @@ export function handoffCapFromEnv(value: string | undefined): number {
 const cost = (item: HandoffItem): number => estimateTokens(item.text) + 4;
 
 /** 单条大到放不下：保留头尾，中间注明截掉多少字。 */
-function shrink(item: HandoffItem, tokens: number): HandoffItem {
+function shrinkDetail(item: HandoffItem, tokens: number): { item: HandoffItem; omittedChars: number } {
   const ratio = Math.max(0.0005, Math.min(1, tokens / Math.max(1, cost(item))));
   const keep = Math.max(80, Math.floor(item.text.length * ratio) - 40);
-  if (keep >= item.text.length) return item;
+  if (keep >= item.text.length) return { item, omittedChars: 0 };
   const head = item.text.slice(0, Math.floor(keep * 0.4));
   const end = item.text.slice(item.text.length - Math.floor(keep * 0.6));
-  return { ...item, text: `${head}\n……（这条太长，中间截掉 ${item.text.length - head.length - end.length} 字）……\n${end}` };
+  const omittedChars = item.text.length - head.length - end.length;
+  return { item: { ...item, text: `${head}\n……（这条太长，中间截掉 ${omittedChars} 字）……\n${end}` }, omittedChars };
 }
 
 /**
@@ -173,21 +177,30 @@ function shrink(item: HandoffItem, tokens: number): HandoffItem {
  * 同等条件下先丢旧的工具条目：最近 3 轮之外的工具条目最后才补。
  */
 export function selectHandoffItems(items: readonly HandoffItem[], budget: number): { kept: Map<number, HandoffItem>; used: number } {
+  const { kept, used } = selectItems(items, budget, 0);
+  return { kept, used };
+}
+
+function selectItems(items: readonly HandoffItem[], budget: number, perItemReserve: number): { kept: Map<number, HandoffItem>; used: number; partial: Map<number, number> } {
   const kept = new Map<number, HandoffItem>();
+  const partial = new Map<number, number>();
   let remaining = budget;
   const add = (index: number, pinned = false) => {
     const item = items[index];
     if (!item || kept.has(index)) return;
     let chosen = item;
-    if (cost(item) > remaining) {
-      if (!pinned || remaining < 200) return;
-      let target = remaining - 40;
-      chosen = shrink(item, target);
-      for (let tries = 0; cost(chosen) > remaining && tries < 6; tries++) chosen = shrink(item, (target = Math.floor(target * 0.8)));
-      if (cost(chosen) > remaining) return;
+    const available = remaining - perItemReserve;
+    if (cost(item) > available) {
+      if (!pinned || available < 200) return;
+      let target = available - 40;
+      let shortened = shrinkDetail(item, target);
+      for (let tries = 0; cost(shortened.item) > available && tries < 6; tries++) shortened = shrinkDetail(item, (target = Math.floor(target * 0.8)));
+      chosen = shortened.item;
+      if (cost(chosen) > available) return;
+      if (shortened.omittedChars) partial.set(index, shortened.omittedChars);
     }
     kept.set(index, chosen);
-    remaining -= cost(chosen);
+    remaining -= cost(chosen) + perItemReserve;
   };
   const lastUser = items.findLastIndex((i) => i.kind === 'user');
   add(lastUser, true);
@@ -197,7 +210,7 @@ export function selectHandoffItems(items: readonly HandoffItem[], budget: number
   const oldTool = (i: HandoffItem) => i.kind === 'tool' && i.turn <= lastTurn - 3;
   for (let i = items.length - 1; i >= 0; i--) if (!oldTool(items[i]!)) add(i);
   for (let i = items.length - 1; i >= 0; i--) if (oldTool(items[i]!)) add(i);
-  return { kept, used: budget - remaining };
+  return { kept, used: budget - remaining, partial };
 }
 
 export interface HandoffWhere {
@@ -235,8 +248,15 @@ export interface HandoffDocument {
   readonly sourceSessionId: string;
   /** Inclusive source boundary; null only for an empty legacy input. */
   readonly cursor: number | null;
+  /** Structured gaps describe all wholly omitted items, even if no history can be rendered. */
   readonly parts: readonly ({ readonly kind: 'entry'; readonly item: HandoffItem } | HandoffGap)[];
   readonly stats: HandoffStats;
+  /** Portable only: carried entries that were shortened, with omitted UTF-16 code units. */
+  readonly partialItems?: readonly { readonly firstSeq: number; readonly lastSeq: number; readonly omittedChars: number }[];
+  /** Actual estimated rendered token counts for the two supported hint modes, not structured metadata. */
+  readonly renderedTokens?: { readonly withoutHint: number; readonly withHint: number };
+  /** Conservative selection-time bound for either render mode. */
+  readonly renderedTokenUpperBound?: number;
 }
 
 export interface HandoffDocumentOptions {
@@ -254,7 +274,8 @@ export interface HandoffDocumentOptions {
 /**
  * Build a portable history artifact from a journal supplied in ascending sequence order.
  * Turns are positional labels, not authoritative causal grouping for queued prompts.
- * Tool data, artifacts and attachment references are excluded.
+ * Tool data, artifacts and attachment references are excluded. Assistant text
+ * is included only when explicitly identified as main-assistant output.
  */
 export function buildHandoffDocument(entries: readonly JournalEntry[], options: HandoffDocumentOptions): HandoffDocument {
   if (!Number.isSafeInteger(options.windowTokens) || options.windowTokens <= 0) throw new RangeError('windowTokens must be a positive safe integer');
@@ -267,7 +288,8 @@ function makeHandoffDocument(
   entries: readonly JournalEntry[],
   options: HandoffOptions & { readonly windowTokens: number },
   policy: 'portable' | 'legacy',
-  cursor: number | null
+  cursor: number | null,
+  forceEmpty = false
 ): HandoffDocument {
   const items = projectHandoffItems(entries, policy);
   const windowTokens = options.windowTokens;
@@ -276,7 +298,24 @@ function makeHandoffDocument(
   const budget = policy === 'legacy'
     ? handoffBudget({ windowTokens, currentTokens, ...(options.cap !== undefined ? { cap: options.cap } : {}) })
     : Math.max(0, Math.min(Math.max(0, options.cap ?? HANDOFF_TOKEN_CAP), windowTokens - currentTokens - Math.max(16_000, Math.ceil(windowTokens / 4))));
-  const { kept, used } = selectHandoffItems(items, budget);
+  // Each retained entry can introduce at most one additional gap. Reserve for
+  // those gaps, separators and the one optional hint *before* selection, rather
+  // than repeatedly rendering candidates (quadratic on fragmented journals).
+  // Count each possible numeric character as one token, including signs and
+  // exponent notation in malformed external seq values. Newlines are also
+  // reserved individually even though the current estimator ignores them.
+  const turnWidth = items.reduce((max, item) => Math.max(max, String(item.turn).length), 1);
+  const seqWidth = items.reduce((max, item) => Math.max(max, String(item.lastSeq).length), 1);
+  const gapReserve = estimateTokens('……（这里省略了第 – 轮里的  条）……') + 2 * turnWidth + String(items.length).length + 1;
+  const hintId = portableHintId(options.sourceSessionId);
+  const hintReserve = hintId === null ? 0 : estimateTokens(`，可用 session.read({session_id:${hintId}, after_seq:}) 查原文`) + seqWidth;
+  const fixedReserve = estimateTokens([HANDOFF_PREAMBLE, '', '--- 之前的对话 ---', '--- 历史结束 ---'].join('\n')) + 4 + gapReserve + hintReserve;
+  const selection = policy === 'legacy'
+    ? selectItems(items, budget, 0)
+    : selectItems(items, forceEmpty ? 0 : Math.max(0, budget - fixedReserve), gapReserve + 1);
+  const { kept, partial } = selection;
+  // Preserve the historical item-only statistic for both APIs.
+  const used = policy === 'legacy' ? selection.used : [...kept.values()].reduce((sum, item) => sum + cost(item), 0);
   const parts: ({ kind: 'entry'; item: HandoffItem } | HandoffGap)[] = [];
   let gap: HandoffItem[] = [];
   let lastKeptSeq = 0;
@@ -316,15 +355,38 @@ function makeHandoffDocument(
     tokens: used,
     budget
   };
-  return { version: 1, sourceSessionId: options.sourceSessionId, cursor, parts, stats };
+  const document: HandoffDocument = { version: 1, sourceSessionId: options.sourceSessionId, cursor, parts, stats,
+    ...(policy === 'portable' ? { partialItems: [...partial].map(([index, omittedChars]) => ({ firstSeq: items[index]!.seq, lastSeq: items[index]!.lastSeq, omittedChars })) } : {}) };
+  if (policy === 'legacy') return document;
+  const renderedTokens = {
+    withoutHint: estimateTokens(renderHandoffDocument(document)),
+    withHint: estimateTokens(renderHandoffDocument(document, { toolHint: true }))
+  };
+  const renderedTokenUpperBound = kept.size === 0 ? 0 : fixedReserve + selection.used;
+  if (renderedTokens.withoutHint > Math.min(budget, renderedTokenUpperBound) || renderedTokens.withHint > Math.min(budget, renderedTokenUpperBound)) {
+    // One bounded O(N) fallback, never iterative candidate re-rendering.
+    if (forceEmpty) throw new Error('empty portable handoff exceeded its budget');
+    return makeHandoffDocument(entries, options, policy, cursor, true);
+  }
+  return { ...document, renderedTokens, renderedTokenUpperBound };
+}
+
+// Very long identifiers cannot create unbounded optional hint lines.
+function portableHintId(sourceSessionId: string): string | null {
+  if (sourceSessionId.length > 256) return null;
+  const quoted = JSON.stringify(sourceSessionId);
+  return quoted.length <= 1024 ? quoted : null;
 }
 
 function renderParts(document: HandoffDocument, hint: boolean, safeHint = false): string[] {
+  let portableHintUsed = false;
   return document.parts.map((part) => {
     if (part.kind === 'entry') return part.item.text;
     const range = part.firstTurn === part.lastTurn ? `第 ${part.firstTurn} 轮` : `第 ${part.firstTurn}–${part.lastTurn} 轮`;
-    const sessionId = safeHint ? JSON.stringify(document.sourceSessionId) : `"${document.sourceSessionId}"`;
-    const read = hint ? `，可用 session.read({session_id:${sessionId}, after_seq:${part.afterSeq}}) 查原文` : '';
+    const sessionId = safeHint ? portableHintId(document.sourceSessionId) : `"${document.sourceSessionId}"`;
+    const showHint = hint && sessionId !== null && (!safeHint || !portableHintUsed);
+    if (showHint && safeHint) portableHintUsed = true;
+    const read = showHint ? `，可用 session.read({session_id:${sessionId}, after_seq:${part.afterSeq}}) 查原文` : '';
     return `……（这里省略了${range}里的 ${part.count} 条${read}）……`;
   });
 }

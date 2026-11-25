@@ -4,25 +4,27 @@ import type { TurnCheckpoint, RestoreOutcome, TurnRefStore } from '../ports/work
 import type { BranchSpec } from '../ports/agent-runtime.ts';
 import { allowsFor, unavailableReason } from '../capability.ts';
 import type { Workspace } from '../workspace.ts';
-import { asSessionId } from '../ids.ts';
+import { asSessionId, newId } from '../ids.ts';
 import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import { placeSession } from '../worker.ts';
-import { authorizeProject, authorizeSession, authorizeWorker } from './authorization.ts';
+import { authorizeSession, authorizeWorker } from './authorization.ts';
 import type { Deps } from './deps.ts';
 import { startSessionUseCase } from './start-session.ts';
 import { interruptSessionUseCase, recordEvent } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
-import { buildHandoff, type HandoffResult } from '../handoff.ts';
+import { buildHandoff } from '../handoff.ts';
+import type { BranchAttemptStore, BranchReceipt } from '../ports/branch-attempt.ts';
+export type { BranchAttempt, BranchAttemptStore, BranchOutcome, BranchReceipt, BranchSettlement } from '../ports/branch-attempt.ts';
 import { locationsOf, projectOfSession } from './workspaces.ts';
 import { withActiveTask } from './task-admission.ts';
+import { findDeliveryEnded } from './delivery.ts';
 
 /**
  * 回滚到某条消息（ADR 0027 阶段 4）：「⋯ → 从这里重来」。
  * - 只回滚对话：现在接入的 runtime 都没有原生 rewind（ACP 只有 list / resume / close），一律按 D8 从这条消息之前
  *   fork 一条新会话（ADR 0012 血缘，原会话一个字不删），之前的对话压成交接摘要发给新 agent，原消息回填到输入框。
- * - 连文件一起回滚（D9）：只限临时工作空间，且没被别的项目 / 任务共用、同目录（含父 / 子目录）没有别的会话在跑；
- *   权限 = 项目 session.create 且是会话发起人或能改项目的人。恢复前先拍一张安全检查点（可撤销）。
+ * - 连文件一起回滚：暂不可用；中断会话或检查目录并不能证明工作区不会被写入。
  */
 export interface RewindFiles {
   turnFor(sessionId: string, promptSeq: number): Promise<TurnCheckpoint | null>;
@@ -34,7 +36,7 @@ export interface RewindFiles {
 export type RewindDeps = Pick<
   Deps,
   'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaces' | 'workLog' | 'access' | 'deliveries' | 'workspaceGroups' | 'bots'
-> & { readonly files: RewindFiles; readonly turnRefs: TurnRefStore };
+> & { readonly files: RewindFiles; readonly turnRefs: TurnRefStore; readonly branchAttemptWriter?: BranchAttemptStore; readonly supportsNativeBranch?: (workerId: string, agentId: string) => boolean; readonly onBranchBriefReady?: () => void | Promise<void> };
 
 /** 对话怎么接上（ADR 0028）：native = 原生从这条消息分叉；summary = 新开会话 + 摘要交接；none = 第一条消息，不用交接。 */
 export type RewindMode = 'native' | 'summary' | 'none';
@@ -70,39 +72,17 @@ interface Found {
   readonly root: string;
 }
 
-interface Plan {
-  readonly mode: RewindMode;
-  readonly reason: string | null;
-  readonly branch: BranchSpec | null;
+type Plan =
+  | { readonly mode: 'native'; readonly reason: null; readonly branch: BranchSpec }
+  | { readonly mode: 'summary'; readonly reason: string; readonly branch: null }
+  | { readonly mode: 'none'; readonly reason: null; readonly branch: null };
+
+/** Native identifiers are untrusted and must match the receipt's bounded-ref rules. */
+function validNativeRef(ref: unknown): ref is string {
+  return typeof ref === 'string' && !!ref.trim() && ref.trim().toLowerCase() !== 'pending' && new TextEncoder().encode(ref).length <= 512;
 }
 
 export function createRewindService(deps: RewindDeps) {
-  /**
-   * 原生分叉已派发、等 worker 回 branch_result 的会话 → 万一失败要补发的交接摘要。
-   * 有送达队列（ADR 0031）就落库（held），hub 重启也不丢；没有才退回内存。
-   */
-  const memoryBriefs = new Map<string, HandoffResult>();
-  const pendingBriefs = {
-    async set(sessionId: string, brief: HandoffResult): Promise<void> {
-      if (!deps.deliveries) return void memoryBriefs.set(sessionId, brief);
-      const now = deps.now();
-      await deps.deliveries.save({
-        id: `brief_${sessionId}`, sessionId, seq: 0, kind: 'handoff_brief', payload: brief,
-        state: 'held', attempt: 0, nextAt: null, lastError: null, createdAt: now, updatedAt: now
-      });
-    },
-    async take(sessionId: string): Promise<HandoffResult | undefined> {
-      if (!deps.deliveries) {
-        const brief = memoryBriefs.get(sessionId);
-        memoryBriefs.delete(sessionId);
-        return brief;
-      }
-      const held = await deps.deliveries.held(sessionId, 'handoff_brief');
-      if (!held) return undefined;
-      await deps.deliveries.save({ ...held, state: 'delivered', updatedAt: deps.now() });
-      return held.payload as HandoffResult;
-    }
-  };
   const handoffCap = (deps as { handoffTokenCap?: number }).handoffTokenCap;
 
   async function plan(found: Found, workerId: string | null): Promise<Plan> {
@@ -114,11 +94,20 @@ export function createRewindService(deps: RewindDeps) {
     const descriptor = (session.workerId ? deps.agents.descriptorOn?.(session.workerId, session.agentId) : null) ?? deps.agents.descriptor(session.agentId);
     if (!descriptor) return summary('找不到这个 agent');
     if (!allowsFor(descriptor.capabilities, 'branch_at_turn')) return summary(unavailableReason(descriptor.capabilities, 'branch_at_turn') ?? '这个 agent 不能原生分叉');
-    if (!session.agentSessionRef) return summary('原会话没有记下 agent 自己的会话 id');
+    if (!validNativeRef(session.agentSessionRef)) return summary('原会话没有记下 agent 自己的会话 id');
     if (workerId !== null && workerId !== session.workerId) return summary('原会话所在的机器现在不可用，换机器只能摘要交接');
-    const refs = await deps.turnRefs.list(session.id);
-    const turnRef = refs.get(promptSeq) ?? null;
-    const previousTurnRef = refs.get(earlier[earlier.length - 1]!.seq) ?? null;
+    if (!session.workerId || !deps.branchAttemptWriter || !deps.deliveries || !deps.supportsNativeBranch?.(session.workerId, session.agentId)) return summary('这台机器上的 Agent 不支持可靠原生分叉，改用摘要交接');
+    const refs = await deps.turnRefs.listVerified?.(session.id);
+    const validated = async (seq: number): Promise<string | null> => {
+      const ref = refs?.get(seq);
+      if (!ref || !validNativeRef(ref.turnRef) || !ref.deliveryId) return null;
+      const delivery = await deps.deliveries!.byId(ref.deliveryId);
+      if (!delivery || delivery.id !== ref.deliveryId || delivery.sessionId !== session.id || delivery.kind !== 'prompt' || delivery.seq !== seq || !Number.isSafeInteger(seq) || seq < 1) return null;
+      if (delivery.state !== 'sending' && (delivery.state !== 'delivered' || !(await findDeliveryEnded(deps, delivery)))) return null;
+      return ref.turnRef;
+    };
+    const turnRef = await validated(promptSeq);
+    const previousTurnRef = await validated(earlier[earlier.length - 1]!.seq);
     if (!turnRef || !previousTurnRef) return summary('这条消息没有记下原生标识（功能上线之前的消息）');
     return { mode: 'native', reason: null, branch: { fromAgentSessionRef: session.agentSessionRef, turnRef, previousTurnRef } };
   }
@@ -137,35 +126,22 @@ export function createRewindService(deps: RewindDeps) {
     return ok({ session: seen.value, promptSeq, prompt: entry.event.text, projectId: project!.id, workspace, root: location.root });
   }
 
-  /** 连文件回滚为什么不行；null = 可以。 */
-  async function filesBlocked(actor: Subject | null, found: Found): Promise<string | null> {
+  /** 未有受保护的工作区操作，任何文件回滚都必须拒绝。 */
+  function filesBlocked(found: Found): string {
     const { session, workspace } = found;
     // 组合工作空间（§12.3 v1）：容器不是 git 仓库，不做跨仓回滚。
     if (session.groupId) return '组合工作目录暂不支持回滚，请在成员仓库里各自提交';
     if (!workspace) return '这条会话没有工作目录';
     if (workspace.kind !== 'temporary') return '只有临时工作目录能连文件一起回滚；持久工作目录请只回滚会话';
     if (!workspace.isGit) return '当前目录不是 git 仓库，不能恢复文件';
-    const project = await deps.projects.byId(found.projectId as never);
-    const canRun = await authorizeProject(deps.access, actor, project, 'session.create');
-    if (!canRun.ok) return '你没有在这个项目里跑任务的权限';
-    const mine = principalOfSubject(actor)?.user.id;
-    const isStarter = session.createdBy !== null && session.createdBy === mine;
-    if (!isStarter && !(await authorizeProject(deps.access, actor, project, 'project.update')).ok) return '只有会话发起人或项目 owner 能回滚文件';
-    if (workspace.ownerTaskId !== session.taskId) return '工作目录被别的任务共用';
-    if ((await deps.workspaces.linksOf(workspace.id)).some((link) => link.projectId !== found.projectId)) return '工作目录还关联着别的项目';
-    const near = (await deps.workspaces.onMachine(workspace.workerId)).filter((w) => overlaps(w.path, workspace.path));
-    for (const other of near) {
-      const running = (await deps.sessions.listByWorkspace(other.id)).some((s) => s.id !== session.id && s.status === 'running');
-      if (running) return '同一目录（或父 / 子目录）里有别的会话正在运行';
-    }
-    return (await deps.files.turnFor(session.id, found.promptSeq)) ? null : '这条消息没有检查点（检查点上线之前的消息），只能回滚对话';
+    return '暂不能安全回滚文件：无法保证工作目录不会被其他进程修改；请只回滚对话，或手动检查并恢复文件';
   }
 
   return {
     async preview(actor: Subject | null, sessionId: string, promptSeq: number): Promise<Result<RewindPreview, DomainError>> {
       const found = await find(actor, sessionId, promptSeq);
       if (!found.ok) return found;
-      const blocked = await filesBlocked(actor, found.value);
+      const blocked = filesBlocked(found.value);
       const turnsAfter = (await deps.files.turnsOf(found.value.session.id)).filter((t) => t.promptSeq >= promptSeq).length;
       const planned = await plan(found.value, null);
       return ok({ promptSeq, prompt: found.value.prompt, filesAllowed: blocked === null, filesBlocked: blocked, turnsAfter, mode: planned.mode, modeReason: planned.reason, agentLabel: deps.agents.descriptor(found.value.session.agentId)?.label ?? found.value.session.agentId });
@@ -174,12 +150,9 @@ export function createRewindService(deps: RewindDeps) {
     async rewind(actor: Subject | null, sessionId: string, promptSeq: number, withFiles: boolean): Promise<Result<RewindOutcome, DomainError>> {
       const found = await find(actor, sessionId, promptSeq);
       if (!found.ok) return found;
+      if (withFiles) return err(conflict(filesBlocked(found.value)));
       return withActiveTask(deps, found.value.session.taskId, async () => {
         const { session: source, workspace } = found.value;
-        if (withFiles) {
-          const blocked = await filesBlocked(actor, found.value);
-          if (blocked) return err(conflict(blocked));
-        }
         const workers = await deps.gateway.status();
         const placed = placeSession(workers, { agentId: source.agentId, requested: source.workerId, projectWorker: source.workerId, model: source.model });
         if (!placed.ok) return placed;
@@ -188,13 +161,6 @@ export function createRewindService(deps: RewindDeps) {
 
         // 原会话还在跑就先停下：不然它会接着改文件 / 接着说
         if (source.status === 'running') await interruptSessionUseCase(deps, source.id);
-
-        let files: RewindOutcome['files'] = null;
-        if (withFiles) {
-          const restored = await deps.files.restoreTurn(source.id, promptSeq);
-          if (!restored.ok) return restored;
-          files = restored.value;
-        }
 
         const created = forkSession({
           source,
@@ -210,8 +176,21 @@ export function createRewindService(deps: RewindDeps) {
         });
         if (!created.ok) return created;
         const session = { ...created.value, workerId: placed.value };
-        await deps.sessions.save(session);
         const planned = await plan(found.value, placed.value);
+        const earlier = planned.mode === 'none' ? [] : (await deps.sessions.eventsAfter(source.id, 0 as never)).filter((e) => e.seq < promptSeq);
+        const brief = planned.mode === 'none' ? null : buildHandoff(earlier, {
+          from: '同一会话（从一条消息处重来）', to: '同一个工作目录', root: found.value.root,
+          code: '注意：文件没有回滚，工作目录里可能还留着之后那几轮的改动。'
+        }, { sourceSessionId: source.id, ...(handoffCap ? { cap: handoffCap } : {}) });
+        let branchAttemptId: string | undefined;
+        if (planned.mode === 'native' && brief && deps.branchAttemptWriter) {
+          const now = deps.now();
+          branchAttemptId = newId();
+          const attempt = { id: branchAttemptId, sessionId: session.id, workerId: placed.value, brief, state: 'pending' as const, createdAt: now, updatedAt: now, sourceAgentSessionRef: planned.branch.fromAgentSessionRef };
+          await deps.branchAttemptWriter.stage(session, attempt);
+        } else {
+          await deps.sessions.save(session);
+        }
         // 原生分叉（ADR 0028）：worker 从原 agent 会话的这条消息之前分出去；不行就新开（resume = null），之前的对话用摘要交接
         // plan 留在保存之后、派发之前：plan 抛错时会话已在，但还不是 failed，也不托管。
         const started = await startSessionUseCase(deps, {
@@ -219,69 +198,58 @@ export function createRewindService(deps: RewindDeps) {
           workspaceRoot: found.value.root || workspace?.path || '',
           resume: null,
           ...(planned.branch ? { branch: planned.branch } : {}),
+          ...(branchAttemptId ? { branchAttemptId, markFailed: false } : {}),
           inheritedOptions: source.options
         });
         if (!started.ok) return started;
 
-        if (planned.mode !== 'none') {
-          const earlier = (await deps.sessions.eventsAfter(source.id, 0 as never)).filter((e) => e.seq < promptSeq);
-          const brief = buildHandoff(earlier, {
-            from: '同一会话（从一条消息处重来）',
-            to: '同一个工作目录',
-            root: found.value.root,
-            code: files
-              ? `文件已回滚到这条消息之前（第 ${files.turn} 轮开始前）的样子。`
-              : '注意：文件没有回滚，工作目录里可能还留着之后那几轮的改动。'
-          }, { sourceSessionId: source.id, ...(handoffCap ? { cap: handoffCap } : {}) });
-          if (planned.mode === 'native') {
-            await pendingBriefs.set(session.id, brief);
-          } else {
-            await recordEvent(deps, {
+        if (planned.mode === 'summary' && brief) {
+            await deps.queue.run(session.id, () => recordEvent(deps, {
               sessionId: session.id,
               event: { kind: 'diagnostic', level: 'warn', text: `没法原生分叉（${planned.reason}），改用摘要交接：agent 只看到之前对话的摘要` }
-            });
+            }));
             const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief.text, briefing: true, handoff: brief.stats });
             if (!seeded.ok) return err(seeded.error);
-          }
         }
         // 原会话留个记号（不删任何内容，ADR 0006）
-        await recordEvent(deps, {
+        await deps.queue.run(source.id, () => recordEvent(deps, {
           sessionId: source.id,
           event: {
             kind: 'diagnostic',
             level: 'info',
-            text: `已从第 ${promptSeq} 步那条消息重来${files ? `，文件已回滚（改回 ${files.restored} 个、删掉 ${files.removed} 个）` : '（文件未回滚）'} → 新会话 ${session.id.slice(0, 8)}`
+            text: `已从第 ${promptSeq} 步那条消息重来（文件未回滚） → 新会话 ${session.id.slice(0, 8)}`
           }
-        });
-        return ok({ session: (await deps.sessions.byId(session.id)) ?? session, prompt: found.value.prompt, files, mode: planned.mode });
+        }));
+        return ok({ session: (await deps.sessions.byId(session.id)) ?? session, prompt: found.value.prompt, files: null, mode: planned.mode });
       });
     },
 
-    /** worker 报来这一轮的原生标识：挂到最近一次 ended 之后的第一条消息上（标识在 ended 之前报，消息是立刻记的，不排队）。 */
-    async recordTurnRef(sessionId: string, turnRef: string): Promise<void> {
-      const events = await deps.sessions.eventsAfter(asSessionId(sessionId), 0 as never);
-      let lastEnded = 0;
-      for (const e of events) if (e.event.kind === 'ended') lastEnded = e.seq;
-      const prompts = events.filter((e) => e.event.kind === 'prompt');
-      const target = prompts.find((e) => e.seq > lastEnded) ?? prompts[prompts.length - 1];
-      if (target) await deps.turnRefs.record(sessionId, target.seq, turnRef);
+    /** A native ref is usable only with its exact worker and prompt delivery evidence. */
+    async recordTurnRef(sessionId: string, turnRef: string, workerId?: string, deliveryId?: string): Promise<void> {
+      if (!workerId || !deliveryId || !validNativeRef(turnRef) || !deps.deliveries) return;
+      await deps.queue.run(asSessionId(sessionId), async () => {
+        const session = await deps.sessions.byId(asSessionId(sessionId));
+        if (!session || session.workerId !== workerId) return;
+        const delivery = await deps.deliveries!.byId(deliveryId);
+        if (!delivery || delivery.id !== deliveryId || delivery.sessionId !== sessionId || delivery.kind !== 'prompt' || !Number.isSafeInteger(delivery.seq) || delivery.seq < 1) return;
+        const events = await deps.sessions.eventsAfter(asSessionId(sessionId), (delivery.seq - 1) as never);
+        if (!events.some((entry) => entry.seq === delivery.seq && entry.event.kind === 'prompt')) return;
+        if (delivery.state !== 'sending' && (delivery.state !== 'delivered' || !events.some((entry) => entry.seq > delivery.seq && entry.event.kind === 'ended' && entry.event.deliveryId === deliveryId))) return;
+        await deps.turnRefs.record(sessionId, delivery.seq, turnRef, deliveryId);
+      });
     },
 
-    /** worker 回报带 branch 的启动结果：失败就补发交接摘要（worker 已经退成新开会话）。 */
-    async branchResult(sessionId: string, outcome: 'native' | 'failed', reason?: string): Promise<void> {
-      const brief = await pendingBriefs.take(sessionId);
-      if (outcome === 'native') {
-        await recordEvent(deps, {
-          sessionId: asSessionId(sessionId),
-          event: { kind: 'diagnostic', level: 'info', text: '已原生分叉：agent 保留了这条消息之前的完整上下文' }
-        });
-        return;
-      }
-      await recordEvent(deps, {
-        sessionId: asSessionId(sessionId),
-        event: { kind: 'diagnostic', level: 'warn', text: `原生分叉失败（${reason ?? '原因不明'}），改用摘要交接：agent 只看到之前对话的摘要` }
+    /** Legacy result calls lack identity and deliberately cannot settle an attempt. */
+    async branchResult(sessionId: string, attemptId: string, workerId?: string, receipt?: BranchReceipt): Promise<void> {
+      const writer = deps.branchAttemptWriter;
+      if (!writer || !workerId || !receipt) return;
+      const settled = await deps.queue.run(asSessionId(sessionId), async () => {
+        const result = await writer.settle(sessionId, attemptId, workerId, receipt, deps.now());
+        if (result.kind === 'settled' && (result.event || receipt.outcome === 'both_failed')) deps.stream.publish({ sessionId: result.session.id, seq: result.session.lastSeq, event: result.event, status: result.session.status });
+        return result;
       });
-      if (brief) await promptSessionUseCase(deps, { sessionId: asSessionId(sessionId), text: brief.text, briefing: true, handoff: brief.stats });
+      if (settled.kind !== 'settled') return;
+      if (settled.delivery) await deps.onBranchBriefReady?.();
     }
   };
 }

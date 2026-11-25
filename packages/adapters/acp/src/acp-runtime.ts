@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
-import { client, ndJsonStream } from '@agentclientprotocol/sdk';
+import { client, ndJsonStream, RequestError } from '@agentclientprotocol/sdk';
 import type { ClientConnection } from '@agentclientprotocol/sdk';
 import { AsyncQueue } from '@agent-hub/contract';
 import type {
@@ -26,6 +26,10 @@ import { legacyAcpOptions, mapAcpOptions } from './map-options.ts';
 type Json = Record<string, unknown>;
 
 const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false }, terminal: false };
+
+function validAgentRef(ref: unknown): ref is string {
+  return typeof ref === 'string' && ref.trim().length > 0 && ref.trim().toLowerCase() !== 'pending' && Buffer.byteLength(ref, 'utf8') <= 512;
+}
 
 /**
  * 一条 ACP 会话 = 一个子进程 + 一条官方 SDK 的 JSON-RPC 连接。
@@ -64,6 +68,8 @@ class AcpSession implements RuntimeSession {
    * resync() 的回复进 `replayBuffer`，其余（open 的基线重放）只记去重指纹。
    */
   private replaying = false;
+  /** session/load's exact input, including during initial replay before open() completes. */
+  private replaySessionId: string | null = null;
   private replayBuffer: ResyncEntry[] | null = null;
   /** 一次重放里同一 messageId 的 chunk 序号；每次重放从 0 起（见 seenChunks）。 */
   private replayChunks: Map<string, number> | null = null;
@@ -84,11 +90,11 @@ class AcpSession implements RuntimeSession {
    * 正在飞的这一轮 session/prompt（没有就是 null）。ACP 一条会话同时只允许一轮；
    * 也用它把 ended 精确挂到这一条的 deliveryId 上，不按到达顺序猜。
    */
-  private turn: { readonly deliveryId: string | null } | null = null;
+  private turn: { readonly deliveryId: string | null; lastMessageId: string | null; lastMessageOwned: boolean; readonly messageIds: Set<string> } | null = null;
   private readonly stderr = new StderrTail();
-  /** 这一轮最后一条 assistant 消息的 id（ADR 0028）；一轮结束、推 ended 之前报给 hub。 */
-  private lastMessageId: string | null = null;
-  onTurnRef: ((turnRef: string) => void) | undefined = undefined;
+  /** 回放、空闲和先前回合见过的 id 不可归给新的投递。 */
+  private readonly seenMessageIds = new Set<string>();
+  onTurnRef: ((turnRef: string, deliveryId?: string) => void) | undefined = undefined;
   private init: Json = {};
 
   private readonly child: ChildProcessWithoutNullStreams;
@@ -118,7 +124,7 @@ class AcpSession implements RuntimeSession {
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => this.stderr.push(chunk));
     const app = client()
-      .onNotification('session/update', ({ params }) => this.onUpdate(params.update as unknown as Json, params._meta))
+      .onNotification('session/update', ({ params }) => this.onUpdate(params.sessionId, params.update as unknown as Json, params._meta))
       // OpenCode 的子会话更新是 ACP 扩展通知，不走 session/update。
       .onNotification<AcpChildUpdate>(
         'opencode/session/child_update',
@@ -164,14 +170,32 @@ class AcpSession implements RuntimeSession {
     this.queue.close();
   }
 
-  private onUpdate(update: Json, meta?: unknown): void {
-    // agent 自己也会推全量配置（比如换模型后思考强度的可选值跟着变）。
-    if (update['sessionUpdate'] === 'config_option_update') {
-      this.setOptions(update['configOptions']);
+  private onUpdate(sessionId: string, update: Json, meta?: unknown): void {
+    // session/new and session/fork may emit updates before their response reveals
+    // the new identity. Drop those rather than attributing them by timing.
+    const expected = this.replaying ? this.replaySessionId : this.agentSessionId;
+    if (!expected) {
+      if (typeof update['messageId'] === 'string' && update['messageId']) this.seenMessageIds.add(update['messageId']);
       return;
     }
+    if (sessionId !== expected) return;
+    const events = this.decode(update, meta, !this.replaying);
+    const childEvent = events.some((event) => ('subagentId' in event && !!event.subagentId) || event.kind === 'subagent');
+    // Explicit child metadata disqualifies an anchor even when the optional
+    // OpenCode codec is absent and the generic mapper emits untagged text.
+    const childMeta = typeof meta === 'object' && meta !== null && 'opencode/child-session' in meta;
+    // agent 自己也会推全量配置（比如换模型后思考强度的可选值跟着变）。
+    if (update['sessionUpdate'] === 'config_option_update') {
+      if (!childEvent && !(this.config.codec?.id === 'opencode' && childMeta)) this.setOptions(update['configOptions']);
+      return;
+    }
+    // Raw messageId is not proof of parentage: require decoded parent text or
+    // thinking evidence, and never promote a child-marked notification.
+    const mainKind = update['sessionUpdate'] === 'agent_message_chunk' ? 'text' : update['sessionUpdate'] === 'agent_thought_chunk' ? 'thinking' : null;
+    if (!childMeta && !childEvent && mainKind && events.some((event) => event.kind === mainKind && !event.subagentId)) this.noteMessageId(update);
+    else if (!childMeta && !childEvent && mainKind && !this.replaying && this.turn) this.turn.lastMessageOwned = false;
     if (this.replaying) {
-      const fresh = this.replayEvents(this.decode(update, meta, false), update);
+      const fresh = this.replayEvents(events, update);
       // session/load 会回放历史，但也会重新上报当前命令表；命令不是历史，恢复会话时不能一起丢。
       if (this.replayBuffer === null && update['sessionUpdate'] === 'available_commands_update') {
         for (const entry of fresh) this.push(entry.event);
@@ -179,7 +203,6 @@ class AcpSession implements RuntimeSession {
       return;
     }
 
-    const events = this.decode(update, meta, true);
     this.recordLive(events, update);
     for (const event of events) this.push(event);
   }
@@ -215,12 +238,12 @@ class AcpSession implements RuntimeSession {
         }
       }
     }
-    // 重放里不更新 lastMessageId：那是「当前这一轮」的概念，历史不属于这一轮。
-    if (reportErrors) this.noteMessageId(update);
     return mapAcpUpdate(update, this.toolNames);
   }
 
   private onChildUpdate(update: AcpChildUpdate): void {
+    const expected = this.replaying ? this.replaySessionId : this.agentSessionId;
+    if (!expected || update.rootSessionId !== expected) return;
     if (this.replaying) {
       this.replayEvents(this.decodeChild(update, false), update.update ?? {});
       return;
@@ -321,8 +344,21 @@ class AcpSession implements RuntimeSession {
   /** 最后一条 assistant 消息 id 只认父会话的正文/思考块；子会话不参与原生分叉。 */
   private noteMessageId(update: Json): void {
     const kind = update['sessionUpdate'];
+    if ((kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') && !this.replaying && this.turn && (typeof update['messageId'] !== 'string' || !update['messageId'])) {
+      // A later unidentified chunk might be a different message: the last known id
+      // remains useful to legacy consumers, but is no longer proven to be last.
+      this.turn.lastMessageOwned = false;
+    }
     if ((kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') && typeof update['messageId'] === 'string' && update['messageId']) {
-      this.lastMessageId = update['messageId'];
+      const id = update['messageId'];
+      const turn = this.replaying ? null : this.turn;
+      if (turn) {
+        const owned = turn.messageIds.has(id) || !this.seenMessageIds.has(id);
+        if (owned) turn.messageIds.add(id);
+        turn.lastMessageId = id;
+        turn.lastMessageOwned = owned;
+      }
+      this.seenMessageIds.add(id);
     }
   }
 
@@ -459,7 +495,7 @@ class AcpSession implements RuntimeSession {
       return;
     }
     this.replaying = true;
-    this.beginReplay(null);
+    this.beginReplay(null, agentSessionRef);
     try {
       const session = await this.request('session/load', { sessionId: agentSessionRef, ...this.sessionParams(cwd) });
       this.setReported(session);
@@ -468,6 +504,44 @@ class AcpSession implements RuntimeSession {
       this.replaying = false;
     }
     this.agentSessionId = agentSessionRef;
+  }
+
+  /** Only a JSON-RPC method-not-found response proves that fork was not executed. */
+  async openBranchAttempt(cwd: string, branch: BranchSpec): Promise<'native' | 'plain' | 'both_failed' | 'unknown'> {
+    try {
+      await this.handshake();
+      this.cwd = cwd;
+      const caps = (this.init['agentCapabilities'] as Json | undefined)?.['sessionCapabilities'] as Json | undefined;
+      if (!caps?.['fork'] || !branch.previousTurnRef) return 'unknown';
+      const params = this.sessionParams(cwd);
+      const meta = (params['_meta'] as Json | undefined) ?? {};
+      const jetbrains = (meta['jetbrains'] as Json | undefined) ?? {};
+      const air = (jetbrains['air'] as Json | undefined) ?? {};
+      let result: Json;
+      let outcome: 'native' | 'plain' = 'native';
+      try {
+        result = await this.request('session/fork', {
+          sessionId: branch.fromAgentSessionRef,
+          ...params,
+          _meta: { ...meta, jetbrains: { ...jetbrains, air: { ...air, fork: { version: 1, messageId: branch.previousTurnRef } } } }
+        });
+      } catch (error) {
+        if (!(error instanceof RequestError) || error.code !== -32601) return 'unknown';
+        outcome = 'plain';
+        try {
+          result = await this.request('session/new', params);
+        } catch (newError) {
+          return newError instanceof RequestError && newError.code === -32601 ? 'both_failed' : 'unknown';
+        }
+      }
+      const ref = result['sessionId'];
+      if (!validAgentRef(ref) || ref === branch.fromAgentSessionRef) return 'unknown';
+      this.agentSessionId = ref;
+      this.setReported(result);
+      return outcome;
+    } catch {
+      return 'unknown';
+    }
   }
 
   /**
@@ -484,9 +558,10 @@ class AcpSession implements RuntimeSession {
     if (this.resyncing) return this.resyncing;
     const run = (async (): Promise<readonly ResyncEntry[]> => {
       this.replaying = true;
-      this.beginReplay([]);
+      const sessionId = this.agentSessionId;
+      this.beginReplay([], sessionId);
       try {
-        await this.request('session/load', { sessionId: this.agentSessionId, ...this.sessionParams(this.cwd) });
+        await this.request('session/load', { sessionId, ...this.sessionParams(this.cwd) });
         return this.replayBuffer ? [...this.replayBuffer] : [];
       } finally {
         this.finishReplay();
@@ -501,12 +576,14 @@ class AcpSession implements RuntimeSession {
     }
   }
 
-  private beginReplay(buffer: ResyncEntry[] | null): void {
+  private beginReplay(buffer: ResyncEntry[] | null, sessionId: string): void {
+    this.replaySessionId = sessionId;
     this.replayBuffer = buffer;
     this.replayChunks = new Map();
   }
 
   private finishReplay(): void {
+    this.replaySessionId = null;
     this.replayBuffer = null;
     this.replayChunks = null;
   }
@@ -583,28 +660,30 @@ class AcpSession implements RuntimeSession {
     // 一条 ACP 会话同时只允许一轮 session/prompt：并发会把两轮的 update 混在一起，
     // 也会让「这条 ended 属于谁」重新变成按顺序猜。
     if (this.turn !== null) return { ok: false, error: unavailable(`${this.config.label} 上一轮还没结束，不能并发发送`) };
-    this.turn = { deliveryId: input.deliveryId && input.deliveryId.length > 0 ? input.deliveryId : null };
+    const activeTurn = { deliveryId: input.deliveryId && input.deliveryId.length > 0 ? input.deliveryId : null, lastMessageId: null as string | null, lastMessageOwned: false, messageIds: new Set<string>() };
+    this.turn = activeTurn;
     this.produced = false;
-    this.lastMessageId = null;
     try {
       const result = await this.request('session/prompt', {
         sessionId: this.agentSessionId,
         prompt: blocks.value
       });
       // 拿到这一条 session/prompt 的应答 = 这一轮的确切终态：现在才清 turn，并把它的 deliveryId 带下去。
-      const turn = this.turn;
-      this.turn = null;
+      const turn = this.turn === activeTurn ? activeTurn : null;
+      const lastMessageId = turn?.lastMessageId ?? null;
+      const produced = this.produced;
+      if (turn) this.turn = null;
       // 空回合时 agent 往往刚在 stderr 上写了原因：等一小会儿让管道里的那几行到齐
-      if (!this.produced) await new Promise((resolve) => setTimeout(resolve, 200));
-      if (this.lastMessageId) this.onTurnRef?.(this.lastMessageId);
+      if (!produced) await new Promise((resolve) => setTimeout(resolve, 200));
+      if (lastMessageId) this.onTurnRef?.(lastMessageId, turn?.lastMessageOwned ? turn.deliveryId ?? undefined : undefined);
       // 保活时不要在这一轮收尾 codec：子代理可能还在跑（后台 task），
       // 让它们的 end 由真实信号（child_update 终态 / 父工具终态内容）决定。
       if (!this.keepAlive) this.finishCodec('completed');
       // ended 是**回合**事件：提示这一轮完了，不是进程完了。
       this.queue.push(
         endedFromStopReason(result['stopReason'], {
-          produced: this.produced,
-          stderrTail: this.produced ? [] : this.stderr.tail(),
+          produced,
+          stderrTail: produced ? [] : this.stderr.tail(),
           ...(turn?.deliveryId ? { deliveryId: turn.deliveryId } : {})
         })
       );
@@ -613,7 +692,7 @@ class AcpSession implements RuntimeSession {
       if (!this.keepAlive) this.queue.close();
       return { ok: true, value: undefined };
     } catch (error) {
-      this.turn = null;
+      if (this.turn === activeTurn) this.turn = null;
       return { ok: false, error: unavailable((error as Error).message) };
     }
   }
@@ -652,7 +731,7 @@ export interface AcpRuntimeOptions {
   /** agent 报上来的可调项（含当前值），worker 用它告诉 server。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
   /** 每轮的原生标识（ADR 0028），只对能原生分叉的 agent 报。 */
-  readonly onTurnRef?: (sessionId: string, turnRef: string) => void;
+  readonly onTurnRef?: (sessionId: string, turnRef: string, deliveryId?: string) => void;
   /** stdio MCP 垫片（`node mcp-shim.ts`）：Pi 一直用；ACP agent 不会 HTTP MCP 时用。 */
   readonly toolShim?: { readonly command: string; readonly args: readonly string[] };
 }
@@ -664,6 +743,45 @@ export interface AcpRuntimeOptions {
 export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOptions = {}): AgentRuntime {
   return {
     descriptor: options.descriptor ?? acpDescriptor(config),
+
+    ...(acpBranchAtTurn(config) ? {
+      async startBranchAttempt(spec: StartSpec): Promise<Awaited<ReturnType<NonNullable<AgentRuntime['startBranchAttempt']>>>> {
+        if (!spec.branch || spec.resume !== null) return { state: 'unknown' };
+        let session: AcpSession | undefined;
+        try {
+          let launch: AcpLaunch = config.launch ? await config.launch(spec.assets) : {};
+          if (spec.provider && config.providerLaunch) launch = await config.providerLaunch(spec.sessionId, spec.provider, launch);
+          const child = spawn(config.command, [...(launch.args ?? config.args)], {
+            cwd: spec.workspaceRoot,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            ...(config.env || launch.env ? { env: { ...process.env, ...config.env, ...launch.env } } : {})
+          });
+          child.on('error', () => {});
+          session = new AcpSession(spec.sessionId, child, config, (reported) => options.onOptions?.(spec.sessionId, reported), options.keepAlive ?? true);
+          session.tools = spec.tools;
+          session.mcp = spec.mcp;
+          session.toolShim = options.toolShim;
+          session.launchMeta = launch.sessionMeta;
+          if (options.onTurnRef) session.onTurnRef = (turnRef, deliveryId) => options.onTurnRef?.(spec.sessionId, turnRef, deliveryId);
+          const outcome = await session.openBranchAttempt(spec.workspaceRoot, spec.branch);
+          if (outcome === 'unknown' || outcome === 'both_failed') {
+            await session.dispose();
+            return { state: outcome };
+          }
+          const entries = Object.entries(spec.options).sort(([left], [right]) => Number(right === 'model') - Number(left === 'model'));
+          for (const [id, value] of entries) {
+            if (!session.options().some((option) => option.id === id) || !(await session.changeOption(id, value)).ok) {
+              await session.dispose();
+              return { state: 'unknown' };
+            }
+          }
+          return { state: 'started', outcome, session, agentSessionRef: session.agentRef };
+        } catch {
+          await session?.dispose();
+          return { state: 'unknown' };
+        }
+      }
+    } : {}),
 
     async start(spec: StartSpec): Promise<Result<RuntimeSession, DomainError>> {
       let child: ChildProcessWithoutNullStreams;
@@ -691,7 +809,7 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
       session.toolShim = options.toolShim;
       session.launchMeta = launch.sessionMeta;
       const dialect = acpBranchAtTurn(config);
-      if (dialect && options.onTurnRef) session.onTurnRef = (turnRef) => options.onTurnRef?.(spec.sessionId, turnRef);
+      if (dialect && options.onTurnRef) session.onTurnRef = (turnRef, deliveryId) => options.onTurnRef?.(spec.sessionId, turnRef, deliveryId);
       if (spec.branch && !dialect) {
         await session.dispose();
         return { ok: false, error: unavailable(`${config.label} 不能从某条消息原生分叉`) };

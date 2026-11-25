@@ -82,8 +82,15 @@ export interface RuntimeSession {
   respondApproval?(id: string, decision: 'allow' | 'deny', author?: { readonly id: string; readonly name: string }): Promise<Result<void, DomainError>>;
 }
 
+/** A branch start is authoritative only when its agent reference is proven. */
+export type RuntimeBranchStartResult =
+  | { readonly state: 'started'; readonly outcome: 'native' | 'plain'; readonly session: RuntimeSession; readonly agentSessionRef: string }
+  | { readonly state: 'both_failed' }
+  | { readonly state: 'unknown' };
+
 /** 新增一个 agent = 实现这一个端口 + 填一张能力矩阵。 */
 export interface AgentRuntime {
   readonly descriptor: AgentDescriptor;
   start(spec: StartSpec): Promise<Result<RuntimeSession, DomainError>>;
+  startBranchAttempt?(spec: StartSpec): Promise<RuntimeBranchStartResult>;
 }

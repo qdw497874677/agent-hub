@@ -68,6 +68,8 @@ export const workerHelloSchema = z.object({
   build: buildInfoSchema.optional(),
   /** 这台 Worker 会发哪些可选帧（如 'metrics'）。老 Worker 不报 = 都不会。 */
   capabilities: z.array(z.string().max(64)).max(32).optional(),
+  /** Agent ids whose branch start returns exact runtime attestation on this connection. */
+  branchAttemptAgents: z.array(id).max(256).optional(),
   /** 上次断线期间 outbox 满了丢掉的帧数（ADR 0030 D1）；hub 记日志并在界面上提示。 */
   dropped: z.number().int().nonnegative().optional(),
   /** releases 布局下刚换上的新版本（ADR 0030 D2）：等 hub 观察后下发 update_commit / update_abort。 */
@@ -93,11 +95,12 @@ export const workerAgentSessionSchema = z.object({
   agentSessionRef: id
 });
 
-/** ADR 0028：agent 报上来的「这一轮」的原生标识（Pi 的用户消息 entryId、Claude 的最后一条助手消息 id）。hub 挂到当前这一轮上。 */
+/** ADR 0028：仅带可证实的 deliveryId 才能用于 Hub 原生分叉，旧帧保留解码。 */
 export const workerTurnRefSchema = z.object({
   type: z.literal('turn_ref'),
   sessionId: id,
-  turnRef: z.string().min(1).max(512)
+  turnRef: z.string().min(1).max(512),
+  deliveryId: z.string().min(1).max(128).optional()
 });
 
 /** ADR 0028：带 branch 的 start_session 结果。failed = 原生分叉没成，worker 已改成新开一条空会话，hub 补发摘要交接。 */
@@ -107,6 +110,18 @@ export const workerBranchResultSchema = z.object({
   outcome: z.enum(['native', 'failed']),
   reason: z.string().max(2000).optional()
 });
+
+export const branchAttemptIdSchema = z.string().min(1).max(128);
+export const branchAgentSessionRefSchema = z.string().refine(
+  (ref) => ref.trim().length > 0 && ref.trim().toLowerCase() !== 'pending' && new TextEncoder().encode(ref).length <= 512,
+  'invalid attested agent session ref'
+);
+const attemptResultBase = { type: z.literal('branch_attempt_result'), sessionId: id, attemptId: branchAttemptIdSchema };
+export const workerBranchAttemptResultSchema = z.discriminatedUnion('outcome', [
+  z.object({ ...attemptResultBase, outcome: z.literal('native'), agentSessionRef: branchAgentSessionRefSchema }).strict(),
+  z.object({ ...attemptResultBase, outcome: z.literal('plain'), agentSessionRef: branchAgentSessionRefSchema }).strict(),
+  z.object({ ...attemptResultBase, outcome: z.literal('both_failed') }).strict()
+]);
 
 /** worker 把 agent 报上来的可调项当前值交回 server，好让重开浏览器时选择器不空着。 */
 export const workerOptionsSchema = z.object({
@@ -317,7 +332,7 @@ export const workerServiceLogSchema = z.object({
   chunk: z.string().max(16_384)
 });
 
-export const workerToServerSchema = z.discriminatedUnion('type', [
+export const workerToServerSchema = z.union([
   workerInventoryFrameSchema,
   workerTerminalDataSchema,
   workerTerminalExitSchema,
@@ -331,6 +346,7 @@ export const workerToServerSchema = z.discriminatedUnion('type', [
   workerAgentSessionSchema,
   workerTurnRefSchema,
   workerBranchResultSchema,
+  workerBranchAttemptResultSchema,
   workerOptionsSchema,
   workerStatusSchema,
   workerUpdateStatusSchema,
@@ -390,6 +406,7 @@ export const startSessionCommandSchema = z.object({
       previousTurnRef: z.string().min(1).max(512).nullable()
     })
     .optional(),
+  branchAttemptId: branchAttemptIdSchema.optional(),
   /** 能力层（可选）：旧 worker 收不到就当没有工具。token 不许进日志。 */
   tools: toolAccessSchema.optional(),
   /** MCP 资产（旧 worker 忽略）。stdio 的 env 含密钥明文：只进 agent 进程，不落盘、不进日志。 */

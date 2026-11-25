@@ -70,7 +70,8 @@ export class PiSession implements RuntimeSession {
    * pump 里不能 await 响应（响应也是 pump 读的），所以推送串成一条链。
    */
   private tail: Promise<void> = Promise.resolve();
-  private readonly onTurnRef: ((turnRef: string) => void) | undefined;
+  private readonly onTurnRef: ((turnRef: string, deliveryId?: string) => void) | undefined;
+  private promptGeneration = 0;
 
   pid(): number | null {
     return this.child.pid ?? null;
@@ -81,7 +82,7 @@ export class PiSession implements RuntimeSession {
     child: ChildProcessWithoutNullStreams,
     modelChoices: readonly string[],
     onOptions?: (options: readonly RuntimeOption[]) => void,
-    onTurnRef?: (turnRef: string) => void,
+    onTurnRef?: (turnRef: string, deliveryId?: string) => void,
     workspaceRoot: string | null = null
   ) {
     this.onTurnRef = onTurnRef;
@@ -129,7 +130,10 @@ export class PiSession implements RuntimeSession {
         // settled 是 armed 那一轮（disposition=started）的确切终态：先把这一轮认下来（到点即清），
         // 之后再推的 ended 才带 deliveryId；空闲 / 归属不明的 settled 拿到 null，不编造归属。
         const settled = head['type'] === 'agent_settled' ? this.consumeTurn() : null;
-        if (head['type'] === 'agent_settled' && this.onTurnRef) this.tail = this.tail.then(() => this.reportTurnRef());
+        if (head['type'] === 'agent_settled' && this.onTurnRef) {
+          const generation = this.promptGeneration;
+          this.tail = this.tail.then(() => this.reportTurnRef(generation));
+        }
         this.tail = this.tail.then(() => {
           for (const event of mapped) {
             this.queue.push(
@@ -230,6 +234,7 @@ export class PiSession implements RuntimeSession {
     if (this.prompting || this.sending || this.heldDeliveryId !== null) {
       return { ok: false, error: unavailable('Pi 上一轮还没结束，不能并发发送') as DomainError };
     }
+    this.promptGeneration += 1;
     this.sending = true;
     try {
       const image = input.parts.find((part) => part.kind === 'image');
@@ -275,13 +280,16 @@ export class PiSession implements RuntimeSession {
   }
 
   /** 这一轮的用户消息在 Pi 会话树里的 entryId（get_fork_messages 最后一条）；从这里重来时 `fork` 它。 */
-  private async reportTurnRef(): Promise<void> {
-    if (this.disposed) return;
+  private async reportTurnRef(generation: number): Promise<void> {
+    if (this.disposed || generation !== this.promptGeneration) return;
     try {
       const response = await this.send({ type: 'get_fork_messages' });
       const messages = (response['data'] as { messages?: unknown } | undefined)?.messages;
       const last = Array.isArray(messages) ? (messages.at(-1) as { entryId?: unknown } | undefined) : undefined;
-      if (typeof last?.entryId === 'string' && last.entryId) this.onTurnRef?.(last.entryId);
+      // RPC returns the current history, not an entry tied to settled. Even without a
+      // later prompt this cannot prove ownership (extensions can mutate history), so
+      // retain the legacy untagged report only. Never report a later prompt's history.
+      if (!this.disposed && generation === this.promptGeneration && typeof last?.entryId === 'string' && last.entryId) this.onTurnRef?.(last.entryId);
     } catch {
       /* 老版本 Pi 没有 get_fork_messages：这一轮只能摘要交接 */
     }
@@ -515,7 +523,7 @@ export interface PiRuntimeOptions {
   /** 可调项当前值上报（模型、思考强度）。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
   /** 每轮的原生标识（ADR 0028）。 */
-  readonly onTurnRef?: (sessionId: string, turnRef: string) => void;
+  readonly onTurnRef?: (sessionId: string, turnRef: string, deliveryId?: string) => void;
   /** Pi 的 agent 目录（放 MCP 配置）；null = 不碰（测试）。默认 PI_CODING_AGENT_DIR 或 ~/.pi/agent。 */
   readonly piAgentDir?: string | null;
   /** worker 的 stdio MCP 垫片；不给就不写 mcp.json（Pi 拿不到工具）。 */
@@ -612,7 +620,7 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
         child,
         piSessionModelChoices(options.models ?? [], spec.provider),
         (reported) => options.onOptions?.(spec.sessionId, reported),
-        options.onTurnRef ? (turnRef) => options.onTurnRef?.(spec.sessionId, turnRef) : undefined,
+        options.onTurnRef ? (turnRef, deliveryId) => options.onTurnRef?.(spec.sessionId, turnRef, deliveryId) : undefined,
         spec.workspaceRoot
       );
 
