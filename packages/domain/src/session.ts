@@ -24,6 +24,8 @@ export type SessionOrigin =
   | { readonly kind: 'derive' }
   | { readonly kind: 'fork'; readonly fromSessionId: SessionId; readonly atSeq: Seq };
 
+export const MODEL_PINNED = Symbol.for('agent-hub.model-pinned');
+
 export interface Session {
   readonly id: SessionId;
   /**
@@ -36,6 +38,8 @@ export interface Session {
   readonly taskId: TaskId | null;
   readonly agentId: AgentId;
   readonly model: string;
+  /** Internal: explicit exact-model selection; observations must not change the desired model. */
+  readonly [MODEL_PINNED]?: boolean;
   /** 缺省 / 老数据 = `chat`。侧聊是 `side`，挂在 `parentSessionId` 上。 */
   readonly kind?: SessionKind;
   /** 侧聊的父会话；常规会话为 null。 */

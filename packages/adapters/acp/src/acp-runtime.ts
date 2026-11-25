@@ -110,6 +110,10 @@ class AcpSession implements RuntimeSession {
     return this.child.pid ?? null;
   }
 
+  nativeSessionRef(): string | null {
+    return validAgentRef(this.agentSessionId) ? this.agentSessionId : null;
+  }
+
   constructor(
     sessionId: RuntimeSession['sessionId'],
     child: ChildProcessWithoutNullStreams,

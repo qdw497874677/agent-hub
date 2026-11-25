@@ -3,7 +3,8 @@ import type { JournalEntry, SessionEvent } from '../event.ts';
 import type { Session } from '../session.ts';
 
 export interface SessionRepository {
-  save(session: Session): Promise<void>;
+  /** Intent is explicit and call-scoped; it must never be copied with a session snapshot. */
+  save(session: Session, intent?: { readonly modelWrite?: boolean; readonly optionSpecWrite?: boolean }): Promise<void>;
   byId(id: SessionId): Promise<Session | null>;
   listByTask(taskId: TaskId): Promise<Session[]>;
   listByProject(projectId: ProjectId): Promise<Session[]>;

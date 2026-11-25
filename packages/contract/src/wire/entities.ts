@@ -147,6 +147,7 @@ export const agentSchema = z.object({
   models: z.array(z.string()).readonly(),
   defaultModel: z.string(),
   options: z.array(runtimeOptionSchema),
+  nativeHandoff: z.literal(true).optional(),
   /** worker 探测的就绪状态。老 worker 不报 = 当作 ready。 */
   readiness: agentReadinessSchema.optional(),
   /** 运行时的来源与可否在线安装；老 worker 不报 = 不支持在线安装。 */

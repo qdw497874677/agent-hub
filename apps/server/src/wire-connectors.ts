@@ -85,6 +85,8 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
     projects: deps.projects,
     tasks: deps.tasks,
     messages: store.messages,
+    agentHandoffs: deps.agentHandoffs,
+    deliveries: store.deliveries,
     bots: store.bots,
     workspaces: deps.workspaces,
     workspaceGroups: store.workspaceGroups,

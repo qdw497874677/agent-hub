@@ -2,14 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { agentToDto } from '@agent-hub/contract/codec';
 import type { AgentDescriptor, DeliveryQueue, EnvironmentPlanner, JournalEntry, MetadataSearchGateway, MetadataSearchQuery, Session, SessionEvent, SessionId, Task } from '@agent-hub/domain';
-import { asAgentId, asProjectId, asSessionId, asTaskId, createProject, createTask, recordEvent, unavailable, withActiveTask, ok } from '@agent-hub/domain';
+import { asAgentId, asProjectId, asSessionId, asTaskId, createProject, createTask, recordEvent, recordSessionOptions, unavailable, withActiveTask, ok, startCommand, MODEL_PINNED } from '@agent-hub/domain';
 import { fakeHosting, fakeSessions, fakeTasks, inMemoryDeliveries, inMemoryDeps } from '@agent-hub/domain/testing';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
 import { createTaskGate } from './task-gate.ts';
-import { createOptionWaiters } from './option-waiters.ts';
+import { createOptionWaiters, ingestOptionReceipt } from './option-waiters.ts';
 
 test('archive route refuses competing work and unknown publication, then archives and restores without dispatch', async () => {
   const taskGate = createTaskGate();
@@ -185,9 +185,107 @@ test('option confirmation route distinguishes saved, exact runtime receipt, time
   assert.equal(legacyBody.id, id);
   assert.equal(legacyBody.state, undefined);
   const model = await post({ optionId: 'model', value: 'fake-1', confirm: true });
-  const modelBody = await model.json() as { id: string; state?: string };
-  assert.equal(modelBody.id, id);
-  assert.equal(modelBody.state, undefined);
+  const modelBody = await model.json() as { session: { id: string }; state: string };
+  assert.equal(modelBody.session.id, id);
+  assert.equal(modelBody.state, 'unconfirmed');
+});
+
+test('exact model: unhosted saves for fresh start, hosted idle dispatches; cross provider fails closed', async () => {
+  const { deps, call, dispatched } = harness();
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
+  const project = await call('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'model', rootPath: '/tmp/model' }) });
+  const task = await call('/api/tasks', { method: 'POST', body: JSON.stringify({ projectId: (project.body as { id: string }).id, title: 'model' }) });
+  const derived = await call('/api/sessions/derive', { method: 'POST', body: JSON.stringify({ taskId: (task.body as { id: string }).id, agentId: 'fake', model: '' }) });
+  assert.equal(derived.status, 201);
+  const id = asSessionId((derived.body as { id: string }).id);
+  const session = (await deps.sessions.byId(id))!;
+  await deps.sessions.save({ ...session, status: 'stopped', optionSpec: descriptor.options });
+  deps.hosting.drop(id);
+  const confirmations = createOptionWaiters(5);
+  const app = createApp({ deps, hub: createStreamHub(), token: null, optionConfirmations: confirmations });
+  const post = (value: string) => app.request(`/api/sessions/${id}/options`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ optionId: 'model', value, confirm: true }) });
+  const before = dispatched.length;
+  const saved = await post('fake-2');
+  assert.equal((await saved.json() as { state: string }).state, 'saved');
+  assert.equal(dispatched.length, before);
+  const stored = (await deps.sessions.byId(id))!;
+  assert.equal(stored.model, 'fake-2');
+  assert.equal(stored.options.model, 'fake-2');
+  assert.deepEqual(stored.optionSpec, descriptor.options);
+  const reloaded = await app.request(`/api/sessions/${id}`);
+  const reloadedSession = await reloaded.json() as Session;
+  assert.equal(reloadedSession.model, 'fake-2');
+  assert.equal(reloadedSession.options.model, 'fake-2');
+  assert.equal(reloadedSession.optionSpec[0]?.current, 'fake-1');
+  assert.equal(stored[MODEL_PINNED], true);
+  assert.equal(startCommand({ ...stored, workerId: stored.workerId! }, '/tmp', null).options.model, 'fake-2');
+  const cross = await post('hub-other/model');
+  assert.equal(cross.status, 400);
+  assert.equal((await deps.sessions.byId(id))?.model, 'fake-2');
+  deps.hosting.add(id, stored.workerId!);
+  const beforeInvalid = dispatched.length;
+  assert.equal((await post('not-advertised')).status, 400);
+  assert.equal(dispatched.length, beforeInvalid);
+  assert.equal((await deps.sessions.byId(id))?.model, 'fake-2');
+  const idle = await post('fake-1');
+  assert.equal((await idle.json() as { state: string }).state, 'unconfirmed');
+  assert.equal(dispatched.at(-1)?.kind, 'set_option');
+  assert.equal((await deps.sessions.byId(id))?.model, 'fake-2');
+  // Old callers can still make an explicit model selection on a pinned session.
+  const legacy = await app.request(`/api/sessions/${id}/options`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ optionId: 'model', value: 'fake-1' }) });
+  assert.equal(legacy.status, 200);
+  assert.equal((await deps.sessions.byId(id))?.[MODEL_PINNED], false);
+  await recordSessionOptions(deps, { sessionId: id, options: [{ ...descriptor.options[0]!, current: 'fake-1' }] });
+  assert.equal((await deps.sessions.byId(id))?.model, 'fake-1');
+});
+
+test('exact model request confirms only after an ingested receipt and preserves the transcript', async () => {
+  const { deps, call } = harness();
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
+  const project = await call('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'receipt', rootPath: '/tmp/receipt' }) });
+  const task = await call('/api/tasks', { method: 'POST', body: JSON.stringify({ projectId: (project.body as { id: string }).id, title: 'receipt' }) });
+  const derived = await call('/api/sessions/derive', { method: 'POST', body: JSON.stringify({ taskId: (task.body as { id: string }).id, agentId: 'fake', model: '' }) });
+  const id = asSessionId((derived.body as { id: string }).id);
+  const original = (await deps.sessions.byId(id))!;
+  await deps.sessions.save({ ...original, optionSpec: descriptor.options });
+  const waiters = createOptionWaiters(200);
+  const model = { ...descriptor.options[0]!, current: 'fake-2' };
+  const gateway = { ...deps.gateway, async dispatch(command: Parameters<typeof deps.gateway.dispatch>[0]) {
+    if (command.kind === 'set_option' && command.requestId) {
+      void ingestOptionReceipt(deps, waiters, id, command.requestId, command.optionId, 'applied', [model], () => true);
+    }
+    return ok(undefined);
+  } };
+  const app = createApp({ deps: { ...deps, gateway }, hub: createStreamHub(), token: null, optionConfirmations: waiters });
+  const response = await app.request(`/api/sessions/${id}/options`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ optionId: 'model', value: 'fake-2', confirm: true }) });
+  const body = await response.json() as { state: string; session: Session };
+  assert.equal(body.state, 'confirmed');
+  assert.equal(body.session.model, 'fake-2');
+  assert.equal(body.session.agentId, original.agentId);
+  assert.equal(body.session.lastSeq, original.lastSeq);
+  assert.equal(startCommand({ ...(await deps.sessions.byId(id))!, workerId: original.workerId! }, '/tmp', null).options.model, 'fake-2');
+});
+
+test('hosted same-provider Hub model absent from runtime candidates is policy checked but not presumed confirmed', async () => {
+  const { deps, call, dispatched } = harness();
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
+  const project = await call('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'hub-model', rootPath: '/tmp/hub-model' }) });
+  const task = await call('/api/tasks', { method: 'POST', body: JSON.stringify({ projectId: (project.body as { id: string }).id, title: 'hub-model' }) });
+  const derived = await call('/api/sessions/derive', { method: 'POST', body: JSON.stringify({ taskId: (task.body as { id: string }).id, agentId: 'fake', model: 'fake-1' }) });
+  assert.equal(derived.status, 201);
+  const id = asSessionId((derived.body as { id: string }).id);
+  const session = (await deps.sessions.byId(id))!;
+  await deps.sessions.save({ ...session, model: 'hub-gw/m1', optionSpec: [{ ...descriptor.options[0]!, current: 'hub-gw/m1' }] });
+  let checked = '';
+  const providers = { install() {}, async modelSwitchable(_actor: unknown, model: string) { checked = model; return ok(true as const); } } as unknown as NonNullable<Parameters<typeof createApp>[0]['providers']>;
+  const app = createApp({ deps, hub: createStreamHub(), token: null, providers, optionConfirmations: createOptionWaiters(5) });
+  const post = (value: string) => app.request(`/api/sessions/${id}/options`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ optionId: 'model', value, confirm: true }) });
+  const response = await post('hub-gw/m2');
+  assert.equal(response.status, 200);
+  assert.equal((await response.json() as { state: string }).state, 'unconfirmed');
+  assert.equal(checked, 'hub-gw/m2');
+  assert.equal(dispatched.at(-1)?.kind, 'set_option');
+  assert.equal((await deps.sessions.byId(id))?.model, 'hub-gw/m1');
 });
 
 test('元数据搜索路由：q / 可选 limit 接线，返回三组稳定 DTO', async () => {

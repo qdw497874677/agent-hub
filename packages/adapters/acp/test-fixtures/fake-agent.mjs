@@ -36,6 +36,8 @@ const gateFlag = process.argv.indexOf('--gate-dir');
 const GATE_DIR = gateFlag >= 0 ? process.argv[gateFlag + 1] : null;
 const startupGateFlag = process.argv.indexOf('--startup-gate');
 const STARTUP_GATE = startupGateFlag >= 0 ? process.argv[startupGateFlag + 1] : null;
+const sessionRefFlag = process.argv.indexOf('--session-ref');
+const SESSION_REF = sessionRefFlag >= 0 ? process.argv[sessionRefFlag + 1] : 's1';
 
 let model = 'a';
 let mode = 'default';
@@ -112,9 +114,10 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
       if (typeof msg.params?.cwd === 'string') cwd = msg.params.cwd;
       if (Array.isArray(msg.params?.mcpServers)) mcpServers = msg.params.mcpServers;
       if (LEGACY) model = 'custom:a';
-      return send({ id: msg.id, result: { sessionId: 's1', ...reported() } });
+      return send({ id: msg.id, result: { sessionId: SESSION_REF, ...reported() } });
     case 'session/load': {
       const sid = msg.params.sessionId;
+      if (STARTUP_GATE && sessionRefFlag >= 0) appendFileSync(`${STARTUP_GATE}.loaded`, `${sid}\n`);
       // 重新托管走 session/load；真实 ACP 会在 load 时重新注入 MCP server 清单，
       // fake 也要跟着换，否则还拿旧 token 的 URL 调工具。
       if (Array.isArray(msg.params?.mcpServers)) mcpServers = msg.params.mcpServers;
@@ -163,6 +166,10 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
       const text = msg.params.prompt[0].text;
       // hub 会在用户文字前面加上下文：魔法词用「包含」判断
       const all = msg.params.prompt.map((block) => block.text ?? '').join('\n');
+      if (all.includes('please-report-effective-model')) {
+        say(msg.params.sessionId, `effective-model:${model}`);
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
       if (EMPTY_ALL || all.includes('please-empty')) {
         process.stderr.write('Error: 401 Unauthorized from provider, api_key=sk-livesecret1234567890 Authorization: Bearer abcdefghijklmnop\n');
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });

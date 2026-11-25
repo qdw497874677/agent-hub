@@ -14,6 +14,7 @@ import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, useDisplaySettin
 import { groupTimeline } from '../../atoms/timeline-groups.ts';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
 import { Composer } from '../../atoms/composer.tsx';
+import { HandoffGate } from '../../atoms/agent-handoff.tsx';
 import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './continue-elsewhere.tsx';
 import { SessionDetails } from './inspector.tsx';
 import { useNarrow, useWide } from '../../shell/device.ts';
@@ -36,6 +37,7 @@ import { FilesBrowser, type Reveal } from '../../atoms/files-browser.tsx';
 import { appendRef } from '../../atoms/diff-selection.ts';
 import { GitDialog, PullRequestChips } from './git-dialog.tsx';
 import { RepoSwitcher, useSessionRepo } from './repo-switcher.tsx';
+import { useAddRepository } from './use-add-repository.ts';
 import { WorkspaceSheet } from './workspace-sheet.tsx';
 import { gitApi } from '../../shell/api.ts';
 import { FileLinksContext, type FileLinks } from '../../atoms/file-links.tsx';
@@ -243,34 +245,38 @@ export function FocusView({
   // 组合会话按当前选中的成员仓库取 git / 文件；单仓 member 为 null，行为与原来一样。
   const repo = useSessionRepo(session.id, session.workspaceId);
   const repoWorkspaceId = repo.selected ?? session.workspaceId;
-  const [addingRepo, setAddingRepo] = useState<string | null>(null);
-  const addableRepos = (canvas.project.repos ?? []).filter(
-    (item) => !repo.members.some((member) => member.repoId === item.id || member.name === item.name)
-  );
-  const addRepo = async (repoId: string) => {
-    if (groupId === null) return;
-    setAddingRepo(repoId);
-    try {
-      await api.addWorkspaceGroupMember(groupId, { repoId });
-      await Promise.all([
-        queries.invalidateQueries({ queryKey: ['files', session.id, 'combo-context'] }),
-        queries.invalidateQueries({ queryKey: ['workspace-group', groupId] })
-      ]);
-    } finally {
-      setAddingRepo(null);
-    }
-  };
-  const switcher = repo.isCombo || addableRepos.length > 0 ? (
+  const {
+    addingRepo,
+    addable,
+    notices,
+    addRepo,
+    recheckAdd,
+    repoHint: sheetRepoHint
+  } = useAddRepository({
+    sessionId: session.id,
+    groupId,
+    projectId: canvas.project.id,
+    repos: canvas.project.repos ?? [],
+    members: repo.members
+  });
+  const renderSwitcher = (inline: boolean) => repo.isCombo ? (
     <RepoSwitcher
       members={repo.members}
       selected={repo.selected}
       onSelect={repo.setSelected}
       statuses={repo.statuses}
-      addable={addableRepos}
+      addable={addable}
       onAdd={(id) => void addRepo(id)}
+      onRetry={(id) => void addRepo(id, true)}
+      onRecheck={(id) => void recheckAdd(id)}
       adding={addingRepo}
+      inline={inline}
+      notices={notices}
     />
   ) : null;
+  const switcher = renderSwitcher(false);
+  // 抽屉里用流式候选列表：抽屉内容区自己会滚，浮层下拉会被裁掉。
+  const sheetSwitcher = renderSwitcher(true);
   // 目录派生的文件 / git 状态按工作目录归一：同目录的多条会话共享缓存（见 query-keys.ts）。
   const fileKeys = filesKeys(repoWorkspaceId, session.id);
   // 切到文件 / 改动：先显示缓存（挂载着的面板原样在），同时后台重读一遍
@@ -534,7 +540,11 @@ export function FocusView({
   const gitState = shown(useQuery({
     queryKey: gitKeys.state(repoWorkspaceId, session.id),
     queryFn: () => gitApi.state(session.id, repo.selected),
-    enabled: repo.isCombo || (workspace !== undefined && workspace.isGit !== false),
+    // 组合工作空间的 git 接口必须带 ?member=：成员还没定下来时先别发，
+    // 否则这一条会被服务端拒成 400，而 retry:false 会让抽屉里一直停在「暂未确认」。
+    // 判据用会话自带的 groupId（一进页面就知道），不能等 context 把 isCombo 解析出来——
+    // 那之前 isCombo 是 false，会先发一条不带 member 的请求。
+    enabled: groupId === null ? workspace !== undefined && workspace.isGit !== false : repo.selected !== null,
     staleTime: 15_000,
     retry: false
   }));
@@ -1015,7 +1025,8 @@ export function FocusView({
           isGit={gitState === undefined ? (workspace?.isGit === false ? false : null) : gitState.isGit}
           ahead={gitState === undefined ? null : gitState.ahead}
           changes={gitState === undefined ? null : gitState.files.length}
-          switcher={switcher}
+          switcher={sheetSwitcher}
+          repoHint={sheetRepoHint}
           onOpenGit={() => {
             setWorkspaceOpen(false);
             setGitOpen(true);
@@ -1446,7 +1457,7 @@ export function FocusView({
               </button>
             </div>
           ) : null}
-          <Composer
+          <HandoffGate key={session.id} session={session} projectId={canvas.project.id} draft={draft} onDraftChange={onDraftChange}><Composer
             large
             allowOfflineSend
             session={{ ...session, status }}
@@ -1467,7 +1478,7 @@ export function FocusView({
             projectId={canvas.project.id}
             quote={quote}
             focusRequest={replyFocus}
-          />
+          /></HandoffGate>
         </div>
       </div>
     </div>

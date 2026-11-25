@@ -65,6 +65,8 @@ export interface RuntimeSession {
   readonly sessionId: SessionId;
   /** Await actual runtime initialization and requested startup configuration, when supported. */
   prepareForPrompt?(): Promise<Result<void, DomainError>>;
+  /** Native identity of this exact session, if the runtime can prove it. */
+  nativeSessionRef?(): string | null;
   /** 文本 + 附件。附件不认识的 agent 要返回带原因的错误，不许静默丢掉。 */
   prompt(input: PromptInput): Promise<Result<void, DomainError>>;
   interrupt(): Promise<void>;

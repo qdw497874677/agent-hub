@@ -98,6 +98,24 @@ function keyedPrompt(text: string, deliveryId: string): PromptInput {
   return { text, parts: [], deliveryId };
 }
 
+function nativeRef(session: RuntimeSession): string | null {
+  return (session as RuntimeSession & { nativeSessionRef(): string | null }).nativeSessionRef();
+}
+
+test('native ref follows the confirmed resumed thread and excludes placeholders', async () => {
+  const root = workdir();
+  try {
+    await withSession(makeRuntime(), spec(root, 'th_resumed'), async (session) => {
+      assert.equal(nativeRef(session), 'th_resumed');
+    });
+    await withSession(makeRuntime(), spec(root, ' PENDING '), async (session) => {
+      assert.equal(nativeRef(session), null);
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function endedEvents(events: readonly SessionEvent[]): Extract<SessionEvent, { kind: 'ended' }>[] {
   return events.filter((event): event is Extract<SessionEvent, { kind: 'ended' }> => event.kind === 'ended');
 }
@@ -128,6 +146,7 @@ test('端到端：握手 → 开会话 → 一轮（审批 accept）→ 文本 /
   try {
     await withSession(makeRuntime({ refs }), spec(root), async (session, _pid, events) => {
       assert.deepEqual(refs, ['th_fake_1'], 'thread/start 的 id 要报成 agentSessionRef');
+      assert.equal(nativeRef(session), 'th_fake_1');
       assert.ok((await session.prompt({ text: '看看目录', parts: [] })).ok);
 
       const request = await waitFor(events, '命令审批', (event) => event.kind === 'approval');

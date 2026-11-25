@@ -1,13 +1,14 @@
 import type { Session } from '../session.ts';
 import { defaultWorkspaceFor, locationOf, projectOfSession } from './workspaces.ts';
 import type { DomainError } from '../errors.ts';
-import { notFound } from '../errors.ts';
+import { conflict, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import { placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
 import { startSessionUseCase } from './start-session.ts';
 import { withActiveTask } from './task-admission.ts';
 import { admitBranchSession } from './branch-admission.ts';
+import { handoffFirstEnded, handoffRecord } from './handoff-admission.ts';
 
 
 /**
@@ -17,10 +18,13 @@ import { admitBranchSession } from './branch-admission.ts';
  */
 export async function ensureHosted(
   deps: Pick<Deps, 'hosting' | 'tasks' | 'taskGate' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'bots' | 'workspaceGroups' | 'now'> &
-    Partial<Pick<Deps, 'toolGrants' | 'environment' | 'branchAttempts'>>,
+    Partial<Pick<Deps, 'toolGrants' | 'environment' | 'branchAttempts' | 'agentHandoffs' | 'deliveries'>>,
   session: Session,
   options: { readonly requireFresh?: boolean } = {}
 ): Promise<Result<void, DomainError>> {
+  const handoff = await handoffRecord(deps, session.id);
+  if (!handoff.ok) return handoff;
+  if (handoff.value && !(await handoffFirstEnded(deps, handoff.value))) return err(conflict('交接首轮尚未完成，不能重新托管'));
   const admitted = await admitBranchSession(deps, session.id);
   if (!admitted.ok) return admitted;
   const current = admitted.value ?? session;

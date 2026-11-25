@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Command } from 'cmdk';
 import { Sheet } from '../shell/dialog-shell.tsx';
@@ -41,6 +41,7 @@ export function ModelPicker({
   id,
   short = false,
   note,
+  agentLabel,
   placeholder = '默认'
 }: {
   items: readonly ModelItem[];
@@ -58,32 +59,46 @@ export function ModelPicker({
   short?: boolean;
   /** 清单底部的一行说明：这轮有哪些模型被收起来了（不可选、也不能聚焦）。 */
   note?: string;
+  /** 仅会话入口显示 Hub Agent；其他调用方仍是普通模型选择器。 */
+  agentLabel?: string;
   /** 值为空时按钮上写什么（派生对话框里只能用 hub 模型时写「选择模型…」）。 */
   placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const restoreFocus = () => requestAnimationFrame(() => {
+    if (trigger.current && !trigger.current.disabled) trigger.current.focus({ preventScroll: true });
+  });
   const current = items.find((item) => item.value === value);
   const full = current?.label ?? value;
   const shown = short ? modelName(full) : full;
+  const display = agentLabel ? `${agentLabel} · ${shown || '当前模型未确认'}` : shown || placeholder;
   return (
     <>
       <button
+        ref={trigger}
         type="button"
         id={id}
-        aria-label={`${label}：${full || placeholder}${pending ? '（切换中…）' : ''}`}
+        aria-label={`${label}：${agentLabel ? `${agentLabel} · ` : ''}${full || (agentLabel ? '当前模型未确认' : placeholder)}${pending ? '（切换中…）' : ''}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-busy={pending || undefined}
-        disabled={disabled || pending}
-        title={pending ? `${full || placeholder} · 正在等 agent 确认` : full}
+        disabled={agentLabel ? undefined : disabled || pending}
+        aria-disabled={agentLabel && (disabled || pending) ? true : undefined}
+        title={`${agentLabel ? `${agentLabel} · ` : ''}${full || placeholder}${pending ? ' · 正在等 agent 确认' : ''}`}
         className={`flex min-w-0 items-center justify-between gap-1 text-left ${className}`}
         onClick={(event) => {
           event.stopPropagation();
+          if (disabled || pending) return;
           setOpen(true);
         }}
         onDoubleClick={(event) => event.stopPropagation()}
       >
-        <span className="min-w-0 truncate">{pending ? '切换中…' : shown || placeholder}</span>
+        {agentLabel ? <span className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
+          <span className="min-w-0 flex-1 truncate">{agentLabel}</span>
+          <span aria-hidden className="shrink-0">·</span>
+          <span className="min-w-0 flex-1 truncate">{shown || '当前模型未确认'}{pending ? ' · 切换中…' : ''}</span>
+        </span> : <span className="min-w-0 truncate">{display}{pending ? ' · 切换中…' : ''}</span>}
         <span aria-hidden className="shrink-0 text-tertiary">
           ▾
         </span>
@@ -96,9 +111,11 @@ export function ModelPicker({
               label={label}
               scope={scope}
               note={note}
-              onClose={() => setOpen(false)}
+              agentLabel={agentLabel}
+              onClose={() => { setOpen(false); restoreFocus(); }}
               onPick={(picked) => {
                 setOpen(false);
+                if (!picked.startsWith('handoff:')) restoreFocus();
                 if (picked !== value) onChange(picked);
               }}
             />,
@@ -115,6 +132,7 @@ function ModelSheet({
   label,
   scope,
   note,
+  agentLabel,
   onPick,
   onClose
 }: {
@@ -123,6 +141,7 @@ function ModelSheet({
   label: string;
   scope: string;
   note?: string;
+  agentLabel?: string;
   onPick: (value: string) => void;
   onClose: () => void;
 }) {
@@ -142,10 +161,12 @@ function ModelSheet({
   }, [groups, query]);
 
   const pick = (picked: string) => {
-    try {
-      localStorage.setItem(recentKey(scope), JSON.stringify(pushRecent(readRecent(scope), picked)));
-    } catch {
-      // 隐私模式等存不了就算了，只是少了「最近用过」
+    if (!picked.startsWith('handoff:')) {
+      try {
+        localStorage.setItem(recentKey(scope), JSON.stringify(pushRecent(readRecent(scope), picked)));
+      } catch {
+        // 隐私模式等存不了就算了，只是少了「最近用过」
+      }
     }
     onPick(picked);
   };
@@ -176,7 +197,7 @@ function ModelSheet({
               aria-label={`搜索${label}`}
               value={query}
               onValueChange={setQuery}
-              placeholder={`搜索${label}或提供方…（共 ${items.length} 个）`}
+              placeholder={agentLabel ? '搜索 Agent、模型或提供方…' : `搜索${label}或提供方…（共 ${items.length} 个）`}
               spellCheck={false}
               autoCapitalize="off"
               autoCorrect="off"
@@ -190,6 +211,7 @@ function ModelSheet({
               取消
             </button>
           </div>
+          {agentLabel ? <p className="shrink-0 px-3 py-2 text-meta text-secondary">当前：{agentLabel} · {items.find((item) => item.value === value)?.label ?? (value || '当前模型未确认')}</p> : null}
           {note !== undefined ? (
             // 窄屏：抽屉一打开就在搜索框下面，还没选模型就先看见「换提供方会重启进程」。
             // 放在列表外面，滚动候选时也不会被推走。
@@ -227,7 +249,7 @@ function ModelSheet({
                         </span>
                         {item.meta ? <span className="ml-auto shrink-0 text-meta text-tertiary">{item.meta}</span> : null}
                       </span>
-                      {item.description ? <span className="block truncate text-meta text-tertiary">{item.description}</span> : null}
+                      {item.description ? <span className="block text-meta text-tertiary">{item.description}</span> : null}
                     </span>
                   </Command.Item>
                 ))}

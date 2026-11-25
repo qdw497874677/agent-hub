@@ -39,6 +39,9 @@ export function runStartupMigrations(db: DatabaseSync): StartupMigrationResult {
   if (!columns.some((column) => column.name === 'option_spec')) {
     db.exec("ALTER TABLE sessions ADD COLUMN option_spec TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!columns.some((column) => column.name === 'model_pinned')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN model_pinned INTEGER NOT NULL DEFAULT 0');
+  }
   // 多机：会话绑在哪台 worker、项目目录在哪台机器上。老数据为 NULL = 「当初就在唯一那台上」。
   if (!columns.some((column) => column.name === 'worker_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN worker_id TEXT');

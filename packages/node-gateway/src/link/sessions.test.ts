@@ -228,6 +228,51 @@ test('keyed starts fence immediately, serialize, prepare and reject stale prompt
   await sessions.closeAll();
 });
 
+test('keyed ready proof snapshots the exact fresh and reused session, omitting invalid or unavailable data', async (t) => {
+  const log: string[] = [];
+  let starts = 0;
+  const first = fakeSession('s', 'first', log);
+  let ref = 'native-first';
+  let values = [{ id: 'model', label: 'Model', category: 'model' as const, kind: 'select' as const, current: 'one', choices: [] }];
+  first.nativeSessionRef = () => ref;
+  first.options = () => values;
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start(spec) {
+    starts++;
+    if (spec.workspaceRoot === '/one') return { ok: true, value: first };
+    const replacement = fakeSession('s', 'replacement', log);
+    replacement.nativeSessionRef = () => 'native-replacement';
+    replacement.options = () => [{ ...values[0]!, current: 'replacement' }];
+    return { ok: true, value: replacement };
+  } };
+  const { sessions, frames } = setup(runtime);
+  t.after(() => sessions.closeAll());
+  await sessions.run(startCommand('s', '/one', { startAttemptId: 'first' }));
+  ref = 'native-reused';
+  values = [{ ...values[0]!, current: 'two' }];
+  await sessions.run(startCommand('s', '/one', { startAttemptId: 'reused' }));
+  await sessions.run(startCommand('s', '/two', { startAttemptId: 'replacement' }));
+  const reports = frames.filter((f) => f.type === 'session_start_result' && f.state === 'ready');
+  assert.deepEqual(reports.map((f) => [f.startAttemptId, f.agentSessionRef, f.options?.[0]?.current]), [
+    ['first', 'native-first', 'one'], ['reused', 'native-reused', 'two'], ['replacement', 'native-replacement', 'replacement']
+  ]);
+  assert.equal(starts, 2);
+
+  const bad = fakeSession('bad', 'bad', log);
+  bad.nativeSessionRef = () => ' pending ';
+  bad.options = () => [{ id: 'x'.repeat(2049), label: 'x', category: 'custom', kind: 'boolean', current: true, choices: [] }];
+  const invalid = setup({ descriptor: descriptor(), async start() { return { ok: true, value: bad }; } });
+  t.after(() => invalid.sessions.closeAll());
+  await invalid.sessions.run(startCommand('bad', '/tmp', { startAttemptId: 'bad' }));
+  assert.deepEqual(invalid.frames.filter((f) => f.type === 'session_start_result'), [{ type: 'session_start_result', sessionId: 'bad', startAttemptId: 'bad', state: 'ready' }]);
+  bad.nativeSessionRef = () => { throw new Error('secret'); };
+  bad.options = () => { throw new Error('secret'); };
+  await invalid.sessions.run(startCommand('bad', '/tmp', { startAttemptId: 'throws' }));
+  assert.deepEqual(invalid.frames.filter((f) => f.type === 'session_start_result').at(-1), { type: 'session_start_result', sessionId: 'bad', startAttemptId: 'throws', state: 'ready' });
+  assert.equal(JSON.stringify(invalid.frames).includes('secret'), false);
+  await invalid.sessions.run(startCommand('bad', '/tmp'));
+  assert.equal(invalid.frames.filter((f) => f.type === 'session_start_result').length, 2);
+});
+
 test('keyed adapter errors report sanitized uncertainty on origin, not completion or refusal', async (t) => {
   const runtime: AgentRuntime = { descriptor: descriptor(), async start(spec) {
     const session = fakeSession(spec.sessionId, 'test', []);

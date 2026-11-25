@@ -4,10 +4,13 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
 import type { RpcChannel, ServerToWorker } from '@agent-hub/contract';
-import { PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_BRANCH_ATTEMPT, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_OPTION_RECEIPT, createRpcChannel, serverToWorkerSchema, workerToServerSchema, wsImportProjectGitBundle } from '@agent-hub/contract';
-import { CAPABILITY_NAMES, asSessionId, available } from '@agent-hub/domain';
+import { AsyncQueue, PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_BRANCH_ATTEMPT, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_SESSION_START_NATIVE_REF, WORKER_CAPABILITY_OPTION_RECEIPT, createRpcChannel, serverToWorkerSchema, workerToServerSchema, wsImportProjectGitBundle } from '@agent-hub/contract';
+import { CAPABILITY_NAMES, asAgentId, asSessionId, available, capabilityMatrix, type AgentRuntime, type Capability, type CapabilityName, type SessionEvent } from '@agent-hub/domain';
 import { createServerGateway, type GatewayHooks, type GatewayOptions, type WorkerConnectionObservation } from './server-gateway.ts';
+import { connectWorkerLink } from './worker-link.ts';
 import { serveProjectGitBundleImport } from './worker-fs-rpc.ts';
+import { agentToDto, agentFromDto } from '@agent-hub/contract/codec';
+import { agentSchema, workerInfoSchema } from '@agent-hub/contract';
 import type { ProjectGitBundleImportInput, ProjectGitBundleImporter } from './project-git-bundle-import.ts';
 import type { RuntimeJob } from '@agent-hub/domain';
 
@@ -34,6 +37,9 @@ interface HarnessOptions {
   readonly onSessionStartEnded?: GatewayHooks['onSessionStartEnded'];
   readonly onPromptStartRefused?: GatewayHooks['onPromptStartRefused'];
   readonly onStatus?: GatewayHooks['onStatus'];
+  readonly onEvent?: GatewayHooks['onEvent'];
+  readonly onAgentSession?: GatewayHooks['onAgentSession'];
+  readonly onOptions?: GatewayHooks['onOptions'];
   readonly onOptionReceipt?: GatewayHooks['onOptionReceipt'];
   readonly agentConfig?: GatewayHooks['agentConfig'];
   readonly onTerminalData?: GatewayHooks['onTerminalData'];
@@ -63,9 +69,9 @@ async function harness(options: HarnessOptions = {}) {
     onHello: () => {
       helloSeen = true;
     },
-    onEvent: () => {},
-    onAgentSession: () => {},
-    onOptions: () => {},
+    onEvent: options.onEvent ?? (() => {}),
+    onAgentSession: options.onAgentSession ?? (() => {}),
+    onOptions: options.onOptions ?? (() => {}),
     ...(options.onOptionReceipt ? { onOptionReceipt: options.onOptionReceipt } : {}),
     onStatus: options.onStatus ?? (() => {}),
     onWorkerGone: () => {},
@@ -196,6 +202,344 @@ test('session start wire IDs are optional for old peers and bounded for new fram
   }
   assert.equal(workerToServerSchema.safeParse({ type: 'prompt_start_refused', sessionId: 's1', startAttemptId: 'a', deliveryId: 'd' }).success, true);
   assert.equal(workerToServerSchema.safeParse({ type: 'prompt_start_refused', sessionId: 's1', startAttemptId: 'a', deliveryId: '' }).success, false);
+});
+
+test('explicit start attempt is delivered exactly and fenced to its live connection', async () => {
+  let markers = 0;
+  const changes: string[] = [];
+  const ends: Array<() => boolean> = [];
+  const receipts: string[] = [];
+  const h = await harness({ gateway: { echoMs: 0 }, onTerminalData: () => { markers++; }, onOptionReceipt: (_w, _s, id) => receipts.push(id), onSessionStartChanged: (_w, s) => changes.push(s), onSessionStartEnded: (_w, _s, _a, current) => ends.push(current) });
+  const hello = { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_OPTION_RECEIPT] };
+  const first = await h.connect('w1', hello);
+  const other = await h.connect('w2', hello);
+  const old = await h.connect('old', { capabilities: [WORKER_CAPABILITY_SESSION_START_READY] });
+  const sessionId = asSessionId('explicit-start');
+  const start = { kind: 'start_session' as const, sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' as const }, resume: null, options: {}, startAttemptId: 'durable-attempt' };
+  const sync = async (wire: Wire) => { const target = markers + 1; wire.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'test', data: 'aGk=' })); await until(() => markers >= target); };
+  try {
+    assert.equal((await h.gateway.gateway.dispatch(start)).ok, true);
+    await until(() => first.frames.some((f) => f.kind === 'start_session'));
+    const sent = first.frames.find((f) => f.kind === 'start_session');
+    assert.ok(sent?.kind === 'start_session');
+    assert.equal(sent.startAttemptId, start.startAttemptId);
+    assert.equal((await h.gateway.gateway.dispatch(start)).ok, false);
+    assert.equal((await h.gateway.gateway.dispatch({ ...start, workerId: 'w2' })).ok, false);
+    other.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: start.startAttemptId, state: 'ready' }));
+    first.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: 'wrong', state: 'ready' }));
+    await sync(other); await sync(first);
+    assert.deepEqual(changes, []);
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'starting' });
+    first.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: start.startAttemptId, state: 'ready' }));
+    await until(() => changes.length === 1);
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'ready', startAttemptId: start.startAttemptId });
+    assert.equal((await h.gateway.gateway.dispatch({ kind: 'set_option', sessionId, optionId: 'effort', value: 'high', requestId: 'option-1' })).ok, true);
+
+    for (const rejected of [
+      { ...start, startAttemptId: '' }, { ...start, startAttemptId: 'x'.repeat(129) },
+      { ...start, workerId: 'offline', startAttemptId: 'new' },
+      { ...start, workerId: 'old', startAttemptId: 'new' }
+    ]) {
+      const result = await h.gateway.gateway.dispatch(rejected);
+      assert.equal(result.ok, false);
+      assert.match(!result.ok ? result.error.message : '', /not sent/);
+      assert.equal(h.gateway.hostOf(sessionId), 'w1');
+      assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'ready', startAttemptId: start.startAttemptId });
+    }
+    await sync(old);
+    assert.equal(old.frames.some((f) => f.kind === 'start_session'), false);
+    assert.equal(other.frames.some((f) => f.kind === 'start_session'), false);
+    assert.equal(first.frames.filter((f) => f.kind === 'start_session').length, 1);
+    first.ws.send(JSON.stringify({ type: 'option_receipt', sessionId, requestId: 'option-1', optionId: 'effort', outcome: 'unknown' }));
+    await until(() => receipts.length === 1);
+    first.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: start.startAttemptId, state: 'ended' }));
+    await until(() => ends.length === 1);
+    assert.equal((await h.gateway.gateway.dispatch(start)).ok, false);
+    assert.equal(ends[0]!(), true);
+    await sync(first);
+    assert.equal(first.frames.filter((f) => f.kind === 'start_session').length, 1);
+  } finally { await h.stop(first, other, old); }
+});
+
+test('start connection identity rejects a replaced socket and is never sent on the wire', async () => {
+  const h = await harness({ gateway: { echoMs: 0 } });
+  const hello = { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_SESSION_START_NATIVE_REF] };
+  const first = await h.connect('w1', hello);
+  let replacement: Wire | undefined;
+  const sessionId = asSessionId('socket-fenced');
+  const start = { kind: 'start_session' as const, sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' as const }, resume: null, options: {}, startAttemptId: 'socket-attempt' };
+  try {
+    const oldId = h.gateway.gateway.sessionStartConnection!('w1');
+    assert.ok(oldId);
+    assert.equal(h.gateway.gateway.sessionStartConnection!('missing'), null);
+    replacement = await h.connect('w1', hello);
+    const currentId = h.gateway.gateway.sessionStartConnection!('w1');
+    assert.ok(currentId);
+    assert.notEqual(currentId, oldId);
+    h.gateway.adopt('w1', [sessionId]);
+    const rejected = await h.gateway.gateway.dispatch({ ...start, expectedStartConnectionId: oldId });
+    assert.equal(rejected.ok, false);
+    assert.match(!rejected.ok ? rejected.error.message : '', /not sent/);
+    assert.equal(h.gateway.hostOf(sessionId), 'w1');
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'w1'), { state: 'untracked' });
+    assert.equal((await h.gateway.gateway.dispatch({ ...start, expectedStartConnectionId: currentId })).ok, true);
+    await until(() => replacement!.frames.some((f) => f.kind === 'start_session'));
+    const frame = replacement.frames.find((f) => f.kind === 'start_session');
+    assert.ok(frame?.kind === 'start_session');
+    assert.equal(frame.startAttemptId, start.startAttemptId);
+    assert.equal('expectedStartConnectionId' in frame, false);
+    assert.equal(first.frames.some((f) => f.kind === 'start_session'), false);
+    assert.equal(replacement.frames.filter((f) => f.kind === 'start_session').length, 1);
+  } finally { await h.stop(first, ...(replacement ? [replacement] : [])); }
+});
+
+test('start connection identity requires all three capabilities and sessions permission', async () => {
+  const h = await harness({ gateway: { echoMs: 0 }, authenticate: async ({ workerId }) => ({ ok: true, capabilities: workerId === 'denied' ? ['files.read'] : ['sessions'] }) });
+  const hello = { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_SESSION_START_NATIVE_REF] };
+  const denied = await h.connect('denied', hello);
+  const partial = await h.connect('partial', { capabilities: [WORKER_CAPABILITY_SESSION_START_READY] });
+  const capable = await h.connect('capable', hello);
+  try {
+    assert.equal(h.gateway.gateway.sessionStartConnection!('denied'), null);
+    assert.equal(h.gateway.gateway.sessionStartConnection!('partial'), null);
+    const id = h.gateway.gateway.sessionStartConnection!('capable');
+    assert.ok(id);
+    const result = await h.gateway.gateway.dispatch({ kind: 'start_session', sessionId: asSessionId('missing-attempt'), workerId: 'capable', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' }, resume: null, options: {}, expectedStartConnectionId: id });
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error.message : '', /not sent/);
+    assert.equal(capable.frames.some((f) => f.kind === 'start_session'), false);
+  } finally { await h.stop(denied, partial, capable); }
+});
+
+test('native handoff catalog projects only exact agent proof on an eligible live worker connection', async () => {
+  const h = await harness({ gateway: { echoMs: 0 }, authenticate: async ({ workerId }) => ({ ok: true, capabilities: workerId === 'denied' ? ['files.read'] : ['sessions'] }) });
+  const descriptor = { id: asAgentId('native'), label: 'Native', capabilities: capabilityMatrix(Object.fromEntries(CAPABILITY_NAMES.map((name) => [name, available])) as Record<CapabilityName, Capability>), models: ['m'], defaultModel: 'm', options: [], nativeHandoff: true as const };
+  const dto = agentToDto(descriptor);
+  assert.equal(agentFromDto(agentSchema.parse(dto)).nativeHandoff, true);
+  assert.equal(agentFromDto(agentSchema.parse({ ...dto, nativeHandoff: undefined })).nativeHandoff, undefined);
+  assert.equal(agentSchema.safeParse({ ...dto, nativeHandoff: false }).success, false);
+  const agents = [dto, { ...dto, id: 'plain', nativeHandoff: undefined }];
+  const all = [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_SESSION_START_NATIVE_REF];
+  const current = await h.connect('current', { capabilities: all, agents });
+  const old = await h.connect('old', { capabilities: all.slice(0, 2), agents });
+  const noReady = await h.connect('no-ready', { capabilities: all.slice(1), agents });
+  const noDurable = await h.connect('no-durable', { capabilities: [all[0], all[2]], agents });
+  const denied = await h.connect('denied', { capabilities: all, agents });
+  let replacement: Wire | undefined;
+  let restored: Wire | undefined;
+  const status = (workerId: string) => h.gateway.workers().find((worker) => worker.workerId === workerId)!;
+  const proof = (workerId: string, agentId: string) => status(workerId).agentModels?.find((agent) => agent.agentId === agentId)?.nativeHandoff;
+  try {
+    assert.equal(proof('current', 'native'), true);
+    assert.equal(proof('current', 'plain'), undefined);
+    for (const id of ['old', 'no-ready', 'no-durable', 'denied']) assert.equal(proof(id, 'native'), undefined, id);
+    assert.deepEqual(status('current').capabilities, ['sessions']);
+    const parsed = workerInfoSchema.parse({ ...status('current'), versionStatus: 'unknown', actions: { update: false, updateLogs: false, disconnect: false, rotateCredential: false, revokeCredential: false, installRuntime: false, installComponent: false, configureResources: false } });
+    assert.equal(parsed.agentModels?.[0]?.nativeHandoff, true);
+    replacement = await h.connect('current', { capabilities: all.slice(0, 2), agents });
+    assert.equal(proof('current', 'native'), undefined);
+    old.ws.close();
+    await until(() => status('old').state === 'offline');
+    assert.equal(proof('old', 'native'), undefined);
+    restored = await h.connect('current', { capabilities: all, agents });
+    assert.equal(proof('current', 'native'), true);
+    restored.ws.close();
+    await until(() => status('current').state === 'offline');
+    assert.equal(proof('current', 'native'), undefined);
+  } finally { await h.stop(current, old, noReady, noDurable, denied, ...(replacement ? [replacement] : []), ...(restored ? [restored] : [])); }
+});
+
+test('old readiness-capable worker refuses handoff pre-I/O but ordinary managed starts and options remain available', async () => {
+  const receipts: string[] = [];
+  let markers = 0;
+  const h = await harness({ gateway: { echoMs: 0 }, onOptionReceipt: (_w, _s, id) => receipts.push(id), onTerminalData: () => { markers++; } });
+  const hello = { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_OPTION_RECEIPT] };
+  const old = await h.connect('old', hello);
+  const current = await h.connect('current', { capabilities: [...hello.capabilities, WORKER_CAPABILITY_SESSION_START_NATIVE_REF] });
+  const sessionId = asSessionId('mixed-fleet');
+  const command = { kind: 'start_session' as const, sessionId, workerId: 'old', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' as const }, resume: null, options: {} };
+  const sync = async (wire: Wire) => { const target = markers + 1; wire.ws.send(JSON.stringify({ type: 'terminal_data', terminalId: 'sync', data: 'aGk=' })); await until(() => markers >= target); };
+  try {
+    assert.equal(h.gateway.gateway.sessionStartConnection!('old'), null);
+    const wrongConnectionId = h.gateway.gateway.sessionStartConnection!('current');
+    assert.ok(wrongConnectionId);
+    assert.equal((await h.gateway.gateway.dispatch(command)).ok, true);
+    await until(() => old.frames.some((frame) => frame.kind === 'start_session'));
+    const sent = old.frames.find((frame) => frame.kind === 'start_session');
+    assert.ok(sent?.kind === 'start_session' && sent.startAttemptId);
+    old.ws.send(JSON.stringify({ type: 'session_start_result', sessionId, startAttemptId: sent.startAttemptId, state: 'ready' }));
+    await until(() => h.gateway.gateway.sessionStartReadiness!(sessionId, 'old').state === 'ready');
+    const readiness = h.gateway.gateway.sessionStartReadiness!(sessionId, 'old');
+    assert.equal((await h.gateway.gateway.dispatch({ kind: 'set_option', sessionId, optionId: 'model', value: 'high', requestId: 'pending-option' })).ok, true);
+    await until(() => old.frames.some((frame) => frame.kind === 'set_option'));
+    const count = old.frames.length;
+    const rejected = await h.gateway.gateway.dispatch({ ...command, startAttemptId: 'handoff', expectedStartConnectionId: wrongConnectionId });
+    assert.equal(rejected.ok, false);
+    assert.match(!rejected.ok ? rejected.error.message : '', /native ref proof; command not sent/);
+    assert.equal(h.gateway.hostOf(sessionId), 'old');
+    assert.deepEqual(h.gateway.gateway.sessionStartReadiness!(sessionId, 'old'), readiness);
+    await sync(old);
+    assert.equal(old.frames.length, count);
+    assert.equal(current.frames.some((frame) => frame.kind === 'start_session'), false);
+    old.ws.send(JSON.stringify({ type: 'option_receipt', sessionId, requestId: 'pending-option', optionId: 'model', outcome: 'unknown' }));
+    await until(() => receipts.length === 1);
+    assert.deepEqual(receipts, ['pending-option']);
+    // Explicit generation without a handoff socket fence keeps previous behavior.
+    assert.equal((await h.gateway.gateway.dispatch({ ...command, startAttemptId: 'ordinary-explicit' })).ok, true);
+    await until(() => old.frames.filter((frame) => frame.kind === 'start_session').length === 2);
+  } finally { await h.stop(old, current); }
+});
+
+test('keyed ready proof is accepted only for current attempt and socket, and never inferred from unkeyed frames', async () => {
+  const reports: Array<Parameters<NonNullable<GatewayHooks['onSessionStartChanged']>>[2]> = [];
+  const unkeyed: Array<Parameters<GatewayHooks['onOptions']>[3]> = [];
+  let markers = 0;
+  const h = await harness({ gateway: { echoMs: 0 }, onSessionStartChanged: (_w, _s, metadata) => reports.push(metadata), onOptions: (_w, _s, _o, metadata) => unkeyed.push(metadata), onTerminalData: () => { markers++; } });
+  const hello = { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_SESSION_START_NATIVE_REF] };
+  const first = await h.connect('w1', hello);
+  const other = await h.connect('w2', hello);
+  let replacement: Wire | undefined;
+  const sessionId = asSessionId('ready-proof');
+  const start = { kind: 'start_session' as const, sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' as const }, resume: null, options: {}, startAttemptId: 'a' };
+  const option = { id: 'model', label: 'Model', category: 'model', kind: 'select', current: 'one', choices: [] };
+  const send = (wire: Wire, frame: object) => wire.ws.send(JSON.stringify(frame));
+  const sync = async (wire: Wire) => { const target = markers + 1; send(wire, { type: 'terminal_data', terminalId: 'sync', data: 'aGk=' }); await until(() => markers >= target); };
+  try {
+    assert.equal((await h.gateway.gateway.dispatch({ ...start, expectedStartConnectionId: h.gateway.gateway.sessionStartConnection!('w1')! })).ok, true);
+    const proof = { type: 'session_start_result', sessionId, startAttemptId: 'a', state: 'ready', agentSessionRef: 'native-a', options: [option] };
+    send(other, proof);
+    send(first, { ...proof, startAttemptId: 'wrong' });
+    send(first, { ...proof, agentSessionRef: 'pending' });
+    send(first, { type: 'options', sessionId, options: [option] });
+    await sync(other); await sync(first);
+    assert.equal(reports.length, 0);
+    assert.equal(unkeyed[0]?.ready, undefined);
+    send(first, proof);
+    await until(() => reports.length === 1);
+    assert.deepEqual(reports[0]?.ready, { agentSessionRef: 'native-a', options: [option] });
+    assert.equal(reports[0]?.isCurrent(), true);
+    assert.equal((await h.gateway.gateway.dispatch({ ...start, startAttemptId: 'b' })).ok, true);
+    assert.equal(reports[0]?.isCurrent(), false);
+    send(first, proof);
+    await sync(first);
+    assert.equal(reports.length, 1);
+    send(first, { ...proof, startAttemptId: 'b', agentSessionRef: 'native-b' });
+    await until(() => reports.length === 2);
+    assert.equal(reports[1]?.ready?.agentSessionRef, 'native-b');
+    replacement = await h.connect('w1', hello);
+    assert.equal(reports[1]?.isCurrent(), false);
+    assert.equal((await h.gateway.gateway.dispatch({ ...start, startAttemptId: 'c', expectedStartConnectionId: h.gateway.gateway.sessionStartConnection!('w1')! })).ok, true);
+    send(replacement, { ...proof, startAttemptId: 'b' });
+    await sync(replacement);
+    assert.equal(reports.length, 2);
+    send(replacement, { type: 'session_start_result', sessionId, startAttemptId: 'c', state: 'ready' });
+    await until(() => reports.length === 3);
+    assert.deepEqual(reports[2]?.ready, {}, 'legacy worker has unknown proof');
+    send(replacement, { type: 'session_start_result', sessionId, startAttemptId: 'c', state: 'ended', agentSessionRef: 'bad' });
+    await until(() => reports.length === 4);
+    assert.equal(reports[3], undefined);
+    send(replacement, { ...proof, startAttemptId: 'c' });
+    await sync(replacement);
+    assert.equal(reports.length, 4);
+  } finally { await h.stop(first, other, ...(replacement ? [replacement] : [])); }
+});
+
+test('real negotiated worker reports exact runtime proof for fresh, reused and replaced starts', async () => {
+  const reports: Array<Parameters<NonNullable<GatewayHooks['onSessionStartChanged']>>[2]> = [];
+  const h = await harness({ gateway: { echoMs: 0 }, onSessionStartChanged: (_w, _s, metadata) => { if (metadata?.ready) reports.push(metadata); } });
+  const capabilities = Object.fromEntries(CAPABILITY_NAMES.map((name) => [name, available])) as Record<CapabilityName, Capability>;
+  let count = 0;
+  const runtime: AgentRuntime = {
+    descriptor: { id: asAgentId('echo'), label: 'Echo', capabilities: capabilityMatrix(capabilities), models: [], defaultModel: '', options: [] },
+    async start(spec) {
+      const number = ++count;
+      const queue = new AsyncQueue<SessionEvent>();
+      return { ok: true, value: {
+        sessionId: spec.sessionId, nativeSessionRef: () => `native-${number}`,
+        options: () => [{ id: 'model', label: 'Model', category: 'model', kind: 'select', current: `m-${number}`, choices: [] }],
+        async prompt() { return { ok: true, value: undefined }; }, async interrupt() {}, events: () => queue,
+        async adopt() {}, async changeOption() { return { ok: true, value: [] }; }, async dispose() { queue.close(); }
+      } };
+    }
+  };
+  let accepted = false;
+  const link = connectWorkerLink({ url: h.url, token: '', workerId: 'real', label: 'real', reconnect: false, runtimes: [runtime], sessionIdleMs: 0, welcomeFallbackMs: 50, onAccepted: () => { accepted = true; } });
+  const sessionId = asSessionId('real-proof');
+  const command = { kind: 'start_session' as const, sessionId, workerId: 'real', taskId: null, agentId: 'echo', workspaceRoot: '/one', origin: { kind: 'derive' as const }, resume: null, options: {} };
+  try {
+    await until(() => accepted && h.gateway.gateway.sessionStartConnection!('real') !== null);
+    const connectionId = h.gateway.gateway.sessionStartConnection!('real')!;
+    for (const [attempt, root] of [['a', '/one'], ['b', '/one'], ['c', '/two']] as const) {
+      assert.equal((await h.gateway.gateway.dispatch({ ...command, workspaceRoot: root, startAttemptId: attempt, expectedStartConnectionId: connectionId })).ok, true);
+      await until(() => reports.some((report) => report?.attemptId === attempt)).catch(() => { throw new Error(`attempt ${attempt}: ${JSON.stringify(h.gateway.gateway.sessionStartReadiness!(sessionId, 'real'))}; starts=${count}; reports=${reports.length}`); });
+    }
+    assert.deepEqual(reports.map((r) => [r?.attemptId, r?.connectionId, r?.ready?.agentSessionRef, r?.ready?.options?.[0]?.current]), [
+      ['a', connectionId, 'native-1', 'm-1'], ['b', connectionId, 'native-1', 'm-1'], ['c', connectionId, 'native-2', 'm-2']
+    ]);
+    assert.deepEqual(reports.map((r) => r?.isCurrent()), [false, false, true]);
+    assert.equal(count, 2);
+  } finally { await link.close(); await h.stop(); }
+});
+
+test('session callbacks carry current connection and generation metadata with revocable guards', async () => {
+  const observed: Array<{ kind: string; metadata: Parameters<GatewayHooks['onEvent']>[3] }> = [];
+  let markers = 0;
+  const h = await harness({
+    gateway: { echoMs: 0 }, onTerminalData: () => { markers++; },
+    onEvent: (_w, _s, _event, metadata) => observed.push({ kind: 'event', metadata }),
+    onAgentSession: (_w, _s, _ref, metadata) => observed.push({ kind: 'agent', metadata }),
+    onOptions: (_w, _s, _options, metadata) => observed.push({ kind: 'options', metadata }),
+    onStatus: (_w, _s, _status, _reason, metadata) => observed.push({ kind: 'status', metadata }),
+    onSessionStartChanged: (_w, _s, metadata) => observed.push({ kind: 'changed', metadata })
+  });
+  const hello = { capabilities: [WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_SESSION_START_NATIVE_REF] };
+  const first = await h.connect('w1', hello);
+  const other = await h.connect('w2', hello);
+  let replacement: Wire | undefined;
+  const sessionId = asSessionId('provenance');
+  const start = { kind: 'start_session' as const, sessionId, workerId: 'w1', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', origin: { kind: 'derive' as const }, resume: null, options: {}, startAttemptId: 'generation-1' };
+  const send = (w: Wire, frame: object) => w.ws.send(JSON.stringify(frame));
+  const sync = async (w: Wire) => { const target = markers + 1; send(w, { type: 'terminal_data', terminalId: 'test', data: 'aGk=' }); await until(() => markers >= target); };
+  try {
+    const connectionId = h.gateway.gateway.sessionStartConnection!('w1');
+    assert.ok(connectionId);
+    assert.equal((await h.gateway.gateway.dispatch(start)).ok, true);
+    send(first, { type: 'agent_session', sessionId, agentSessionRef: 'ref' });
+    send(first, { type: 'options', sessionId, options: [] });
+    send(first, { type: 'event', sessionId, event: { kind: 'ended', outcome: 'done' } });
+    send(first, { type: 'status', sessionId, status: 'idle' });
+    send(first, { type: 'session_start_result', sessionId, startAttemptId: start.startAttemptId, state: 'ready' });
+    await until(() => observed.length === 5);
+    assert.deepEqual(observed.map((item) => item.kind), ['agent', 'options', 'event', 'status', 'changed']);
+    for (const { metadata } of observed) {
+      assert.equal(metadata?.attemptId, start.startAttemptId);
+      assert.equal(metadata?.connectionId, connectionId);
+      assert.equal(metadata?.isCurrent(), true);
+    }
+    send(other, { type: 'agent_session', sessionId, agentSessionRef: 'other' });
+    await sync(other);
+    assert.equal(observed.at(-1)?.metadata, undefined);
+    const old = observed[0]!.metadata!;
+    assert.equal((await h.gateway.gateway.dispatch({ ...start, startAttemptId: 'generation-2' })).ok, true);
+    assert.equal(old.isCurrent(), false);
+    send(first, { type: 'options', sessionId, options: [] });
+    await until(() => observed.at(-1)?.metadata?.attemptId === 'generation-2');
+    const second = observed.at(-1)!.metadata!;
+    replacement = await h.connect('w1', hello);
+    assert.equal(second.isCurrent(), false);
+    send(replacement, { type: 'options', sessionId, options: [] });
+    await sync(replacement);
+    assert.equal(observed.at(-1)?.metadata, undefined);
+    assert.equal((await h.gateway.gateway.dispatch({ ...start, startAttemptId: 'generation-3' })).ok, true);
+    send(replacement, { type: 'session_start_result', sessionId, startAttemptId: 'generation-3', state: 'ended' });
+    await sync(replacement);
+    assert.equal(observed.at(-1)?.kind, 'changed');
+    assert.equal(observed.at(-1)?.metadata, undefined);
+    send(replacement, { type: 'event', sessionId, event: { kind: 'ended', outcome: 'done' } });
+    await sync(replacement);
+    assert.equal(observed.at(-1)?.kind, 'event');
+    assert.equal(observed.at(-1)?.metadata, undefined);
+  } finally { await h.stop(first, other, ...(replacement ? [replacement] : [])); }
 });
 
 test('keyed prompts are fenced by current start generation and refusals are exactly correlated', async () => {

@@ -1,3 +1,4 @@
+import { MODEL_PINNED } from '@agent-hub/domain';
 import type {
   WorkLogRepository,
   Artifact,
@@ -253,6 +254,7 @@ export function toSession(row: Row): Session {
     taskId: rawTaskId === null || rawTaskId === '' ? null : asTaskId(rawTaskId),
     agentId: asAgentId(str(row, 'agent_id')),
     model: str(row, 'model'),
+    ...(row['model_pinned'] === 1 ? { [MODEL_PINNED]: true } : {}),
     origin:
       originSession === null || originSeq === null
         ? { kind: 'derive' }

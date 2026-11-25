@@ -13,11 +13,16 @@ import {
   createArtifact,
   createProject,
   createTask,
+  changeSessionOption,
   deriveSession,
+  MODEL_PINNED,
+  recordSessionOptions,
+  startCommand,
   type Session,
   type SessionEvent
 } from '@agent-hub/domain';
 import { openSqliteStore, type SqliteStore } from './store.ts';
+import { inMemoryDeps } from '@agent-hub/domain/testing';
 import { asLoginId, asUserId } from '@agent-hub/domain';
 
 /**
@@ -25,6 +30,61 @@ import { asLoginId, asUserId } from '@agent-hub/domain';
  * mappers.ts 是领域形状与行形状之间唯一的翻译点，这里是它的护栏。
  */
 const now = 1_700_000_000_000;
+
+test('exact model pin survives SQLite reopen without appearing in JSON DTO', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'model-pin-'));
+  const path = join(dir, 'store.sqlite');
+  try {
+    let store = openSqliteStore(path);
+    const w = await seeded(store);
+    const option = { id: 'model', label: 'Model', category: 'model' as const, kind: 'select' as const, current: 'b', choices: [] };
+    await store.sessions.save({ ...w.session, model: 'b', options: { model: 'b' }, optionSpec: [option], [MODEL_PINNED]: true }, { modelWrite: true });
+    store.close();
+    store = openSqliteStore(path);
+    const session = await store.sessions.byId(w.session.id);
+    assert.equal(session?.[MODEL_PINNED], true);
+    assert.equal(JSON.stringify(session).includes('modelPinned'), false);
+    assert.ok(session);
+    await recordSessionOptions({ sessions: store.sessions, now: () => now }, { sessionId: session.id, confirmedModel: 'c', options: [{ ...option, current: 'c' }] });
+    await store.sessions.save({ ...session, status: 'done' });
+    store.close();
+    store = openSqliteStore(path);
+    const current = (await store.sessions.byId(session.id))!;
+    assert.equal(current[MODEL_PINNED], true);
+    assert.equal(current.model, 'c');
+    assert.equal(current.options.model, 'c');
+    assert.equal(current.optionSpec[0]?.current, 'c');
+    assert.equal(current.status, 'done');
+    assert.equal(startCommand({ ...current, workerId: 'w' }, '/tmp', null).options.model, 'c');
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('unhosted saved exact model retains historical observation after SQLite reopen', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'model-saved-'));
+  const path = join(dir, 'store.sqlite');
+  try {
+    let store = openSqliteStore(path);
+    const w = await seeded(store);
+    const option = { id: 'model', label: 'Model', category: 'model' as const, kind: 'select' as const, current: 'b', choices: [
+      { kind: 'value' as const, value: { value: 'b', label: 'B' } },
+      { kind: 'value' as const, value: { value: 'c', label: 'C' } }
+    ] };
+    await store.sessions.save({ ...w.session, model: 'b', options: { model: 'b' }, optionSpec: [option] });
+    const { deps } = inMemoryDeps();
+    const result = await changeSessionOption({ ...deps, sessions: store.sessions }, { sessionId: w.session.id, id: 'model', value: 'c', exactModel: true });
+    assert.equal(result.ok, true);
+    store.close();
+    store = openSqliteStore(path);
+    const reloaded = (await store.sessions.byId(w.session.id))!;
+    assert.equal(reloaded.model, 'c');
+    assert.equal(reloaded.options.model, 'c');
+    assert.equal(reloaded[MODEL_PINNED], true);
+    assert.deepEqual(reloaded.optionSpec, [option]);
+    assert.equal(startCommand({ ...reloaded, workerId: 'w' }, '/tmp', null).options.model, 'c');
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 function world() {
   const project = createProject({ name: 'demo', now, id: undefined });

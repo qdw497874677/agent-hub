@@ -11,6 +11,7 @@ import { recordEvent } from './sessions.ts';
 import { withActiveTask } from './task-admission.ts';
 import { readInFlightTurn, readJournalTail, readRecentTurnDeliveries, turnVerdictInTail } from './turn-evidence.ts';
 import { admitBranchSession } from './branch-admission.ts';
+import { handoffFirstEnded, handoffRecord } from './handoff-admission.ts';
 
 /**
  * 送达（ADR 0031 D2）。只有「依赖不在线」（unavailable）才重试：
@@ -19,7 +20,7 @@ import { admitBranchSession } from './branch-admission.ts';
 export type DeliveryDeps = Pick<
   Deps,
   'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaces' | 'workspaceGroups' | 'bots'
-> & Pick<Deps, 'branchAttempts'> & { readonly deliveries: DeliveryQueue; readonly random?: () => number };
+> & Pick<Deps, 'branchAttempts' | 'agentHandoffs'> & { readonly deliveries: DeliveryQueue; readonly random?: () => number };
 
 export interface PromptPayload {
   readonly text: string;
@@ -137,6 +138,28 @@ async function attemptClaimed(deps: DeliveryDeps, delivery: Delivery): Promise<R
   // Do not claim, fail, reschedule, or dispatch while branch evidence is unresolved.
   const admitted = await admitBranchSession(deps, sessionId);
   if (!admitted.ok) return admitted;
+  const handoff = await handoffRecord(deps, sessionId);
+  if (!handoff.ok) return handoff;
+  const pendingHandoff = handoff.value && !(await handoffFirstEnded(deps, handoff.value)) ? handoff.value : null;
+  const matchesStart = (): boolean => {
+    if (!pendingHandoff?.first || pendingHandoff.first.delivery.id !== delivery.id || pendingHandoff.startup.state !== 'ready') return false;
+    const { workerId, attemptId, connectionId } = pendingHandoff.startup;
+    if (!workerId || !attemptId || !connectionId || !deps.hosting.has(sessionId)) return false;
+    const ready = deps.gateway.sessionStartReadiness?.(sessionId, workerId);
+    return ready?.state === 'ready' && ready.startAttemptId === attemptId && deps.gateway.sessionStartConnection?.(workerId) === connectionId;
+  };
+  // A blocked handoff must yield its slot in the bounded global due scan.
+  // Re-read the head under the session queue and use the store's conditional
+  // update: never revive a delivery which moved while the reads were pending.
+  const deferHandoffHead = async (): Promise<Result<void, DomainError>> => {
+    const head = (await deps.deliveries.pendingFor(sessionId))[0];
+    if (head?.id === delivery.id && head.state === 'queued') {
+      const now = deps.now();
+      await deps.deliveries.reschedule(head.id, now, now + TURN_WAIT_MS);
+    }
+    return ok(undefined);
+  };
+  if (pendingHandoff && !matchesStart()) return deferHandoffHead();
   if (delivery.kind === 'prompt' && (await turnInProgress(deps, sessionId))) {
     const now = deps.now();
     await deps.deliveries.reschedule(delivery.id, now, now + TURN_WAIT_MS);
@@ -149,7 +172,13 @@ async function attemptClaimed(deps: DeliveryDeps, delivery: Delivery): Promise<R
     let failure: DomainError | null = null;
     let startAttemptId: string | undefined;
     const readiness = deps.gateway.sessionStartReadiness?.bind(deps.gateway);
-    if (readiness && session) {
+    if (pendingHandoff) {
+      if (!session?.agentSessionRef || session.workerId !== pendingHandoff.startup.workerId || !matchesStart()) return deferHandoffHead();
+      const head = (await deps.deliveries.pendingFor(sessionId))[0];
+      if (!head || head.id !== delivery.id || (head.state !== 'queued' && head.state !== 'undelivered')) return ok(undefined);
+      startAttemptId = pendingHandoff.startup.attemptId!;
+      if (!matchesStart()) return deferHandoffHead();
+    } else if (readiness && session) {
       const head = (await deps.deliveries.pendingFor(sessionId))[0];
       if (!head || head.id !== delivery.id || (head.state !== 'queued' && head.state !== 'undelivered')) return ok(undefined);
       const before = readiness(sessionId, session.workerId);
@@ -179,6 +208,8 @@ async function attemptClaimed(deps: DeliveryDeps, delivery: Delivery): Promise<R
     // 条件认领：定时泵、回合结束放行、立即重试可能同时看见这条，
     // 只有把状态原子翻成 sending 的那一个才派发，避免同一句话投递两次。
     if (!(await deps.deliveries.claimSend(delivery.id, deps.now()))) return ok(undefined);
+    // Once claimed, loss of the exact connection is uncertain; never send or retry on another socket.
+    if (pendingHandoff && !matchesStart()) return ok(undefined);
     if (!session) failure = notFound('会话不存在');
     else if (!failure && !readiness) {
       const hosted = await ensureHosted(deps, session);
@@ -195,7 +226,7 @@ async function attemptClaimed(deps: DeliveryDeps, delivery: Delivery): Promise<R
       // 只有持久化的、带同一个 deliveryId 的 ended 才能通过 finishSending 收掉它。
       return ok(undefined);
     }
-    if (failure.deliveryDeferred) {
+    if (failure.deliveryDeferred && !pendingHandoff) {
       await requeueRefusedPromptClaimed(deps, sessionId, delivery.id);
       return ok(undefined);
     }
@@ -221,6 +252,8 @@ export async function requeueRefusedPrompt(deps: DeliveryDeps, sessionId: Sessio
 }
 
 async function requeueRefusedPromptClaimed(deps: DeliveryDeps, sessionId: SessionId, deliveryId: string): Promise<boolean> {
+  const handoff = await handoffRecord(deps, sessionId);
+  if (!handoff.ok || (handoff.value?.first?.delivery.id === deliveryId && !(await handoffFirstEnded(deps, handoff.value)))) return false;
   const current = await deps.deliveries.inFlight(sessionId);
   if (!current || current.sessionId !== sessionId || current.id !== deliveryId || await findDeliveryEnded(deps, current)) return false;
   const fresh = await deps.deliveries.byId(deliveryId);
@@ -417,6 +450,8 @@ export async function recoverOrphanedTurns(
   const sessions = await deps.sessions.listAll();
   for (const session of sessions) {
     const sessionId = session.id;
+    const handoff = await handoffRecord(deps, sessionId);
+    if (!handoff.ok || (handoff.value && !(await handoffFirstEnded(deps, handoff.value)))) continue;
     const inFlight = await deps.deliveries.inFlight(sessionId);
     // ended 已落盘、只等 hooks 后 release：既不当孤儿打断，也不在这里抢先收尾。
     if (inFlight && (await findDeliveryEnded(deps, inFlight))) continue;
@@ -504,6 +539,9 @@ export async function retryDeliveryNow(deps: DeliveryDeps, id: string): Promise<
     if (!current || (current.state !== 'undelivered' && current.state !== 'queued')) return err(notFound('没有这条待送达的消息'));
     const head = (await deps.deliveries.pendingFor(sessionId))[0];
     if (head?.id !== id) return err({ code: 'conflict', message: '前面还有消息没送达，先处理前面的' });
+    const handoff = await handoffRecord(deps, sessionId);
+    if (!handoff.ok) return handoff;
+    if (handoff.value && !(await handoffFirstEnded(deps, handoff.value))) return err({ code: 'conflict', message: '交接首条消息尚未完成，不能手动重试' });
     // Do not clear/start anything while an older turn is still uncertain.
     if (!(await turnInProgress(deps, sessionId))) {
       const session = await deps.sessions.byId(sessionId);
@@ -526,6 +564,9 @@ export async function cancelDelivery(deps: DeliveryDeps, id: string): Promise<Re
   return deps.queue.run(sessionId, async (): Promise<Result<void, DomainError>> => {
     const d = await deps.deliveries.byId(id);
     if (!d || (d.state !== 'undelivered' && d.state !== 'queued')) return err(notFound('没有这条待送达的消息'));
+    const handoff = await handoffRecord(deps, sessionId);
+    if (!handoff.ok) return handoff;
+    if (handoff.value?.first?.delivery.id === id && !(await handoffFirstEnded(deps, handoff.value))) return err({ code: 'conflict', message: '交接首条消息尚未完成，不能撤回' });
     await deps.deliveries.save({ ...d, state: 'cancelled', nextAt: null, updatedAt: deps.now() });
     await recordEvent(deps, { sessionId, event: { kind: 'diagnostic', level: 'info', text: `已撤回第 ${d.seq} 步那条未送达的消息` } });
     // 提问会把会话置成 running（见 applyEvent）；撤回最后一条待送达的消息后，

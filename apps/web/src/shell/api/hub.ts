@@ -204,6 +204,9 @@ export const api = {
     call<CanvasDto>(`/api/projects/${projectId}/canvas`, signal ? { signal } : undefined),
   /** 单条会话：侧聊这类不进画布的会话要单独取。 */
   session: (id: string) => call<SessionDto>(`/api/sessions/${id}`),
+  agentHandoff: (id: string) => call<{ handoff: null | { sourceSessionId: string; firstAccepted: boolean; firstCompleted?: true; startup: 'pending' | 'claimed' | 'ready' | 'failed' | 'unknown'; historyAvailable: boolean } }>(`/api/sessions/${encodeURIComponent(id)}/agent-handoff`),
+  createAgentHandoff: (id: string, input: { agentId: string; model: string; requestId: string }) => post<{ sessionId: string }>(`/api/sessions/${encodeURIComponent(id)}/agent-handoff`, input),
+  firstAgentHandoff: (id: string, input: { text: string; clientMessageId: string; withHistory: boolean }) => post<PromptAckDto>(`/api/sessions/${encodeURIComponent(id)}/agent-handoff/first`, input),
   createTask: (input: CreateTaskRequest) => post<TaskDto>('/api/tasks', input),
   setTaskStatus: (taskId: string, status: TaskDto['status'], note?: string) =>
     call<TaskDto>(`/api/tasks/${taskId}/status`, { method: 'PATCH', body: JSON.stringify({ status, note }) }),

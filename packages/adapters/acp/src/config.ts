@@ -171,6 +171,7 @@ export function acpDescriptor(
   const descriptor: AgentDescriptor = {
     id: asAgentId(config.id),
     label: config.label,
+    nativeHandoff: true,
     capabilities: capabilityMatrix({
       prompt: available,
       interrupt: available,

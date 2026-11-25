@@ -614,6 +614,7 @@ export const workerInfoSchema = z.object({
         agentId: z.string(),
         models: z.array(z.string()),
         defaultModel: z.string(),
+        nativeHandoff: z.literal(true).optional(),
         readiness: agentReadinessSchema.optional(),
         provision: runtimeProvisionSchema.optional(),
         providers: z.array(z.enum(['openai-chat', 'openai-responses', 'anthropic'])).optional()

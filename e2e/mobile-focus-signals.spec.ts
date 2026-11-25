@@ -63,9 +63,14 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     git('-c', 'user.email=e2e@example.invalid', '-c', 'user.name=e2e', 'commit', '-q', '--allow-empty', '-m', 'init');
 
     const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 手机进度 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
-    // 项目里再登记一个仓库：这样「添加仓库」在窄屏也必须有地方可达（收纳进工作区抽屉）。
+    // 项目里再登记一个仓库：单仓会话不该长出「添加仓库」——入口在、点了有反应才算数。
     const patched = await page.request.patch(`/api/projects/${project.id}`, {
-      data: { repos: [{ name: 'second', url: 'https://example.invalid/acme/second.git', defaultBranch: 'main' }] },
+      data: {
+        repos: [
+          { name: 'second', url: 'https://example.invalid/acme/second.git', defaultBranch: 'main' },
+          { name: 'third', url: 'https://example.invalid/acme/third.git', defaultBranch: 'main' }
+        ]
+      },
       headers
     });
     expect(patched.ok(), await patched.text()).toBe(true);
@@ -77,11 +82,11 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     // 原生模型之间切换不涉及重新托管，不显示跨提供商提醒。
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/#/p/${project.id}/focus/${session.id}`);
-    await page.getByRole('button', { name: /^(模型|Model)：/ }).click();
-    await expect(page.getByTestId('model-scope-note')).toHaveCount(0);
+    await page.getByRole('button', { name: /^Agent 和模型：/ }).click();
+    await expect(page.getByRole('dialog', { name: '选择Agent 和模型' })).not.toContainText('需要重启');
     await page.getByRole('button', { name: '取消' }).click();
 
-    // hub 提供商：清单里 hub 模型与原生模型并存，才该出现「换提供商会重启进程」的提醒。
+    // Hub 模型与本机模型并存时，把不能原地切换的原因留在选择器里。
     const seeded = await page.request.post('/api/providers', {
       data: {
         slug: `e2e-scope-${Date.now().toString(36)}`,
@@ -99,6 +104,12 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     expect(seeded.ok(), await seeded.text()).toBe(true);
 
     await page.setViewportSize({ width: 390, height: 844 });
+    // 单仓会话没有可加的仓库：记一下是否有人偷偷发了请求。
+    let addCalls = 0;
+    await page.route('**/api/workspace-groups/*/members', async (route) => {
+      addCalls += 1;
+      await route.continue();
+    });
     await page.goto(`/#/p/${project.id}/focus/${session.id}`);
     // 同地址的 hash 导航不会刷新之前的模型缓存；重新载入后读取新建提供商。
     await page.reload();
@@ -165,7 +176,10 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     await sheet.getByTestId('workspace-copy-path').click();
     await expect(sheet.getByTestId('workspace-copy-path')).toHaveText('已复制');
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(dir);
-    await expect(sheet.getByTestId('repo-add')).toBeVisible(); // 加仓库仍然可达
+    await expect(sheet.getByTestId('repo-add')).toHaveCount(0); // 单仓会话不再假装能加仓库
+    await expect(sheet.getByTestId('workspace-repo-hint')).toBeVisible();
+    await expect(sheet.getByTestId('workspace-repo-hint')).toContainText('组合工作目录');
+    expect(addCalls, '单仓会话不该发出加仓库请求').toBe(0);
     await expect(sheet.getByTestId('workspace-git')).toBeVisible(); // 分支操作仍然可达
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'mobile-workspace-sheet.png') });
     await page.keyboard.press('Escape');
@@ -173,9 +187,10 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
 
     // —— 换提供商的提醒：进模型选择器，选之前就能看见；输入区下面不再常驻一行
     await expect(page.getByTestId('hub-switch-note')).toBeHidden();
-    await page.getByRole('button', { name: /^(模型|Model)：/ }).click();
+    await page.getByRole('button', { name: /^Agent 和模型：/ }).click();
     await expect(page.getByTestId('model-scope-note')).toBeVisible();
-    await expect(page.getByTestId('model-scope-note')).toContainText('换提供商会重启');
+    await expect(page.getByRole('option', { name: /scope1/ })).toHaveAttribute('aria-disabled', 'true');
+    await expect(page.getByRole('option', { name: /scope1/ })).toContainText('需要重启，暂不支持在此切换');
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'mobile-model-note.png') });
     await page.getByRole('button', { name: '取消' }).click();
     await expect(page.getByTestId('model-scope-note')).toHaveCount(0);
@@ -197,8 +212,8 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     await expect(page.getByTestId('git-branch')).toBeVisible();
     await expect(page.getByTestId('workspace-entry')).toHaveCount(0);
     await expect(page.getByTestId('hub-switch-note')).toHaveCount(0);
-    await page.getByRole('button', { name: /^(模型|Model)：/ }).click();
-    await expect(page.getByTestId('model-scope-note')).toContainText('当前回合未结束时不能切换');
+    await page.getByRole('button', { name: /^Agent 和模型：/ }).click();
+    await expect(page.getByRole('option', { name: /scope1/ })).toHaveAttribute('aria-disabled', 'true');
     await page.getByRole('button', { name: '取消' }).click();
     await page.setViewportSize({ width: 1440, height: 900 });
     await expect(hint).toHaveAttribute('data-stage', 'runtime');
@@ -212,8 +227,8 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     await page.goto(`/#/p/${project.id}/canvas`);
     await expect(page.locator('.react-flow__node-session').first()).toBeVisible();
     await expect(page.getByTestId('hub-switch-note-card')).toHaveCount(0);
-    await page.locator('.react-flow__node-session').first().getByRole('button', { name: /^(模型|Model)：/ }).click();
-    await expect(page.getByTestId('model-scope-note')).toContainText('当前回合未结束时不能切换');
+    await page.locator('.react-flow__node-session').first().getByRole('button', { name: /^Agent 和模型：/ }).click();
+    await expect(page.getByRole('option', { name: /scope1/ })).toHaveAttribute('aria-disabled', 'true');
   } finally {
     worker.kill();
     await page.request.delete(`/api/workers/${encodeURIComponent(workerId)}`, { headers }).catch(() => undefined);

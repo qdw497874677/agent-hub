@@ -7,7 +7,7 @@ import type { RuntimeOption } from '../option.ts';
 import type { SessionId } from '../ids.ts';
 import { asSessionId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
-import { invalid, notFound } from '../errors.ts';
+import { invalid, notFound, unavailable } from '../errors.ts';
 import { promptOpening } from '../messaging.ts';
 import type { AttachmentInput, PromptPart, StoredAttachment } from '../attachment.ts';
 import { attachmentPath, base64Bytes, validateAttachments } from '../attachment.ts';
@@ -22,6 +22,7 @@ import { taskBriefing, type BriefingRepo, type ProjectContext } from '../task-br
 import { groupLayout, groupSessionRoot, isPrimaryMember, memberBriefingPath, type WorkspaceGroup } from '../workspace-group.ts';
 import { withActiveTask } from './task-admission.ts';
 import { admitBranchSession } from './branch-admission.ts';
+import { admitHandoffIngress, handoffFirstEnded, handoffRecord, handoffWorkerEventsAllowed } from './handoff-admission.ts';
 
 /*
  * 「会话在跑」这一侧的用例：用户发话，以及 worker 回报的一切。
@@ -152,7 +153,7 @@ async function peerBriefingFor(
 type PromptSessionDeps = Pick<
   Deps,
   'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaces' | 'workspaceGroups' | 'bots'
-> & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links' | 'peerBriefing' | 'branchAttempts'>>;
+> & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links' | 'peerBriefing' | 'branchAttempts' | 'agentHandoffs'>>;
 
 export async function promptSessionUseCase(
   deps: PromptSessionDeps,
@@ -161,6 +162,13 @@ export async function promptSessionUseCase(
   const sessionId = asSessionId(command.sessionId);
   const session = await deps.sessions.byId(sessionId);
   if (!session) return err(notFound('会话不存在'));
+  const ingress = await admitHandoffIngress(deps, sessionId, command.clientMessageId);
+  if (!ingress.ok) return ingress;
+  if (!deps.deliveries) {
+    const handoff = await handoffRecord(deps, sessionId);
+    if (!handoff.ok) return handoff;
+    if (handoff.value) return err(unavailable('无法确认交接送达状态，暂时不能继续'));
+  }
 
   // 幂等（§5.3）：客户端超时重试用同一个 clientMessageId。已经收过就只回执，
   // 不再写 journal、不再派发；没带 id 的老调用方行为完全不变。
@@ -197,8 +205,10 @@ async function promptSessionAdmitted(
 
   // 反过来的话，agent 起不来时用户那句问话就凭空消失了——
   // 专注对话里会是一条没有提问的回答。
-  const logged = await deps.queue.run(sessionId, () =>
-    recordEvent(deps, { sessionId, event: {
+  const logged = await deps.queue.run(sessionId, async () => {
+    const ingress = await admitHandoffIngress(deps, sessionId, command.clientMessageId);
+    if (!ingress.ok) return ingress;
+    return recordEvent(deps, { sessionId, event: {
         kind: 'prompt',
         text: command.text,
         ...(stored.length > 0 ? { attachments: stored } : {}),
@@ -206,8 +216,8 @@ async function promptSessionAdmitted(
         ...(command.promptActor === 'account' || command.promptActor === 'token' || command.promptActor === 'system' || command.promptActor === 'unknown' ? { promptActor: command.promptActor } : {}),
         ...(command.handoff ? { handoff: command.handoff } : {}),
         ...(command.clientMessageId !== undefined ? { clientMessageId: command.clientMessageId } : {})
-      } })
-  );
+      } });
+  });
   if (!logged.ok) return logged;
 
   if (deps.deliveries) {
@@ -382,13 +392,14 @@ async function withBytes(
  * 直接调用或未启用队列（没有 `deliveries`）仍走原来的无闸门路径。
  */
 export function ingestWorkerEvent(
-  deps: Pick<Deps, 'artifacts' | 'deliveries' | 'fs' | 'gateway' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots'>,
+  deps: Pick<Deps, 'artifacts' | 'deliveries' | 'fs' | 'gateway' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots' | 'agentHandoffs'>,
   sessionId: SessionId,
   event: SessionEvent
 ): Promise<Result<Session, DomainError>> {
   return deps.queue.run(sessionId, async () => {
     const session = await deps.sessions.byId(sessionId);
     if (!session) return err(notFound('会话不存在'));
+    if (!(await handoffWorkerEventsAllowed(deps, sessionId))) return ok(session);
 
     const deliveries = deps.deliveries;
     if (event.kind === 'ended' && deliveries) {
@@ -449,22 +460,29 @@ export function ingestWorkerEvent(
  * 走同一条串行队列，这样「改动请求」和「agent 的回报」不会互相覆盖。
  */
 export function ingestWorkerOptions(
-  deps: Pick<Deps, 'now' | 'queue' | 'sessions'>,
+  deps: Pick<Deps, 'now' | 'queue' | 'sessions' | 'agentHandoffs' | 'deliveries'>,
   sessionId: SessionId,
   options: readonly RuntimeOption[]
 ): Promise<Result<Session, DomainError>> {
-  return deps.queue.run(sessionId, () => recordSessionOptions(deps, { sessionId, options }));
+  return deps.queue.run(sessionId, async () => {
+    if (!(await handoffWorkerEventsAllowed(deps, sessionId))) {
+      const session = await deps.sessions.byId(sessionId);
+      return session ? ok(session) : err(notFound('会话不存在'));
+    }
+    return recordSessionOptions(deps, { sessionId, options });
+  });
 }
 
 /** agent 自己的会话号：resume 时要原样还给它。 */
 export function ingestAgentSessionRef(
-  deps: Pick<Deps, 'sessions' | 'queue' | 'now' | 'branchAttempts'>,
+  deps: Pick<Deps, 'sessions' | 'queue' | 'now' | 'branchAttempts' | 'agentHandoffs' | 'deliveries'>,
   sessionId: SessionId,
   agentSessionRef: string
 ): Promise<Result<Session, DomainError>> {
   return deps.queue.run(sessionId, async () => {
     const session = await deps.sessions.byId(sessionId);
     if (!session) return err(notFound('会话不存在'));
+    if (!(await handoffWorkerEventsAllowed(deps, sessionId))) return ok(session);
     // 新分叉的原生引用只由带凭据的结果确定；普通帧不能取代它或替未决分叉确认。
     if (await deps.branchAttempts?.bySession(sessionId)) return ok(session);
     const next = { ...session, agentSessionRef, updatedAt: deps.now() };
@@ -481,10 +499,11 @@ export type RuntimeStatus = 'running' | 'idle' | 'ended' | 'gone';
  * 从「发出提问」到「agent 说出第一个字」之间可能十几秒，界面不能还挂着上一次的「完成」。
  */
 export async function ingestRuntimeStatus(
-  deps: Pick<Deps, 'sessions' | 'hosting' | 'stream' | 'now'>,
+  deps: Pick<Deps, 'sessions' | 'hosting' | 'stream' | 'now' | 'agentHandoffs' | 'deliveries'>,
   sessionId: SessionId,
   status: RuntimeStatus
 ): Promise<void> {
+  if (!(await handoffWorkerEventsAllowed(deps, sessionId))) return;
   if (status === 'ended' || status === 'gone') deps.hosting.drop(sessionId);
   const session = await deps.sessions.byId(sessionId);
   if (!session) return;
@@ -529,7 +548,7 @@ export async function frameAccepted(
  * 落点为 null 的老会话不知道归哪台，跳过——只由 `hosting.dropWorker` 清托管。
  */
 export async function workerGone(
-  deps: Pick<Deps, 'hosting' | 'sessions' | 'stream' | 'now'>,
+  deps: Pick<Deps, 'hosting' | 'sessions' | 'stream' | 'now' | 'agentHandoffs' | 'deliveries'>,
   workerId: string
 ): Promise<number> {
   const dropped = deps.hosting.dropWorker(workerId);
@@ -539,6 +558,7 @@ export async function workerGone(
   for (const session of await deps.sessions.listAll()) {
     if (session.status !== 'running') continue;
     if (session.workerId === null || session.workerId !== workerId) continue;
+    if (!(await handoffWorkerEventsAllowed(deps, session.id))) continue;
     if (!(await deps.sessions.markInterrupted(session.id, deps.now()))) continue;
     deps.stream.publish({ sessionId: session.id, seq: session.lastSeq, event: null, status: 'interrupted' });
   }
@@ -552,7 +572,7 @@ export async function workerGone(
  * 返回核对过的那些，组合根据此让网关恢复路由（网关自己不信 hello 里报的清单）。
  */
 export async function workerAttached(
-  deps: Pick<Deps, 'hosting' | 'sessions' | 'stream' | 'now' | 'branchAttempts'>,
+  deps: Pick<Deps, 'hosting' | 'sessions' | 'stream' | 'now' | 'branchAttempts' | 'agentHandoffs' | 'deliveries'>,
   workerId: string,
   sessionIds: readonly string[]
 ): Promise<string[]> {
@@ -561,6 +581,8 @@ export async function workerAttached(
     const session = await deps.sessions.byId(id as SessionId);
     if (!session || (session.workerId !== null && session.workerId !== workerId)) continue;
     if (!(await admitBranchSession(deps, session.id)).ok) continue;
+    const handoff = await handoffRecord(deps, session.id);
+    if (!handoff.ok || (handoff.value && !(await handoffFirstEnded(deps, handoff.value)))) continue;
     deps.hosting.add(session.id, workerId);
     // 刚才掉线时被降级成 interrupted 的，进程其实还活着：接回来，界面继续显示「正在回复」。
     if (session.status === 'interrupted') {

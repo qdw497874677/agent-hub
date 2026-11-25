@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ServerToWorker, SessionEventDto } from '@agent-hub/contract';
-import { RpcFailure, assetsFetch, assetsSync, branchAgentSessionRefSchema, providerTest } from '@agent-hub/contract';
+import { RpcFailure, assetsFetch, assetsSync, branchAgentSessionRefSchema, providerTest, sessionStartReadyOptionsSchema } from '@agent-hub/contract';
 import { allowsFor, asSessionId, asTaskId, withExecutableArg } from '@agent-hub/domain';
 import type { RuntimeSession, SessionEvent, StartSpec } from '@agent-hub/domain';
 import { authHeaders } from '../provider-proxy.ts';
@@ -107,6 +107,24 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
   function result(generation: Generation, state: 'ready' | 'failed' | 'ended', reason?: 'runtime' | 'configuration'): void {
     const { sessionId, startAttemptId, origin } = generation;
     if (startAttemptId === undefined || !origin) return;
+    if (state === 'ready') {
+      const session = generation.session;
+      if (!session || !generation.ready || generations.get(sessionId) !== generation || sessions.get(sessionId) !== session) return;
+      let agentSessionRef: string | undefined;
+      let readyOptions: ReturnType<typeof sessionStartReadyOptionsSchema.parse> | undefined;
+      try {
+        const ref = branchAgentSessionRefSchema.safeParse(session.nativeSessionRef?.());
+        if (ref.success) agentSessionRef = ref.data;
+      } catch { /* Missing or broken accessor is unknown, not proof. */ }
+      try {
+        const parsed = sessionStartReadyOptionsSchema.safeParse(session.options());
+        if (parsed.success) readyOptions = parsed.data;
+      } catch { /* Omit invalid or unavailable snapshots. */ }
+      // Accessors can invoke arbitrary runtime code; recheck ownership before reporting.
+      if (!generation.ready || generations.get(sessionId) !== generation || sessions.get(sessionId) !== session) return;
+      transport.sendOnOrigin(origin, { type: 'session_start_result', sessionId, startAttemptId, state, ...(agentSessionRef === undefined ? {} : { agentSessionRef }), ...(readyOptions === undefined ? {} : { options: readyOptions }), ...(reason ? { reason } : {}) });
+      return;
+    }
     transport.sendOnOrigin(origin, { type: 'session_start_result', sessionId, startAttemptId, state, ...(reason ? { reason } : {}) });
   }
   function ended(sessionId: string, session: RuntimeSession, reason?: string): void {

@@ -2,8 +2,11 @@ import { useState } from 'react';
 import type { RuntimeOptionDto } from '../shell/api.ts';
 import { ModelPicker } from './model-picker.tsx';
 import type { ModelItem } from './model-list.ts';
-import { filterModelsByScope, hasSelectableCrossScope, scopeNote } from './model-scope.ts';
+import { modelScope, sameModelScope } from './model-scope.ts';
+import { providerOf } from './model-list.ts';
 import { useOptionFeedback } from './option-feedback.tsx';
+import { useHandoffCandidates } from './agent-handoff.tsx';
+import type { SessionDto } from '../shell/api.ts';
 
 interface Props {
   readonly options: readonly RuntimeOptionDto[];
@@ -13,6 +16,9 @@ interface Props {
   readonly compact?: boolean;
   readonly disabled?: boolean;
   readonly sessionId: string;
+  readonly agentLabel: string;
+  readonly session: SessionDto;
+  readonly projectId: string;
 }
 
 const COMPACT_CATEGORIES: readonly string[] = ['model', 'agent', 'mode', 'thought_level'];
@@ -37,8 +43,9 @@ export function currentOf(
 /** 输入框底栏里的可调项画成小胶囊：透明底、细边、悬停才加深（参照 t3code 的 composer chips）。 */
 const CHIP = 'rounded-full border border-hair bg-transparent px-2.5 hover:bg-hover';
 
-export function OptionControls({ options, values, onChange, sessionId, compact = false, disabled = false }: Props) {
+export function OptionControls({ options, values, onChange, sessionId, agentLabel, session, projectId, compact = false, disabled = false }: Props) {
   const feedback = useOptionFeedback(sessionId);
+  const handoff = useHandoffCandidates(session, projectId);
   // 一次请求没回来之前，这个可调项显示“切换中…”，但绝不显示还没被确认的目标值。
   const [pending, setPending] = useState<Readonly<Record<string, true>>>({});
   const runChange = (optionId: string, value: string | boolean) => {
@@ -55,23 +62,31 @@ export function OptionControls({ options, values, onChange, sessionId, compact =
     // 失败由调用方呈现；这里只负责把“切换中”收掉，别留下未处理的 rejection。
     void result.then(clear, clear);
   };
+  const hasModel = options.some((option) => option.category === 'model');
+  const availableOptions: readonly RuntimeOptionDto[] = hasModel ? options : [
+    { id: 'model', label: '模型', category: 'model', kind: 'select', current: '', choices: [] },
+    ...options
+  ];
   const visible = compact
-    ? options
+    ? availableOptions
         .filter((option) => COMPACT_CATEGORIES.includes(option.category))
         .slice()
         .sort((left, right) => COMPACT_ORDER.indexOf(left.category) - COMPACT_ORDER.indexOf(right.category))
-    : options;
+    : availableOptions;
   if (visible.length === 0) return null;
 
-  return (
-    // 窄屏放不下三项时换行，别把模型选择器挤成一条竖线；sm 以上保持一行。
+  return <>
+    {/* 输入栏的选项保持同一行，优先压缩文字而不是换行。 */}
     <div
       data-testid={compact ? 'option-controls-compact' : 'option-controls'}
-      className={`flex min-w-0 items-center gap-0.5 ${compact ? 'flex-wrap sm:flex-nowrap' : 'flex-wrap'}`}
+      className={`flex min-w-0 items-center gap-0.5 ${compact ? 'flex-1 flex-nowrap' : 'flex-wrap'}`}
     >
       {visible.map((option) => {
         const status = feedback[option.id];
-        const current = status?.state === 'pending' ? status.original : currentOf(options, values, option);
+        // 模型的 options 是保存的启动设置，只有 optionSpec.current 是运行时报告的值。
+        const current = !hasModel && option.category === 'model' ? ''
+          : status?.state === 'pending' ? status.original
+          : option.category === 'model' ? option.current : currentOf(options, values, option);
         const waiting = pending[option.id] === true || status?.state === 'pending';
         if (option.kind === 'boolean') {
           return (
@@ -93,38 +108,43 @@ export function OptionControls({ options, values, onChange, sessionId, compact =
           );
         }
         const items = flatChoices(option);
-        // 模型清单里 hub 提供商模型和原生模型混着来。现在换提供商会重启这条会话的进程
-        // 并接回历史（`switchSessionModel`），所以两类都放出来，只在要跨类时提醒一句。
-        const scoped = option.category === 'model' ? filterModelsByScope(items, String(current)) : null;
-        const crossesScope = scoped !== null && hasSelectableCrossScope(items, String(current));
-        const note = crossesScope ? scopeNote(String(current)) : undefined;
+        // 本轮只支持原地切换；来源不同时不能走旧的隐式重启路径。
+        const scoped = option.category === 'model' ? items.map((item) => {
+          const restart = String(current) !== '' && !sameModelScope(item.value, String(current));
+          const unknown = String(current) === '' && item.value !== '';
+          const uncertain = status?.state === 'unconfirmed' && status.observed === undefined;
+          const source = modelScope(item.value).kind === 'hub' ? 'Hub' : '本机';
+          return { ...item, group: `${source} · ${providerOf(item)}`, keywords: [...(item.keywords ?? []), agentLabel],
+            ...(restart || unknown || uncertain ? { disabled: true, description: uncertain ? '当前切换结果未确认，暂不能切换' : restart ? '需要重启，暂不支持在此切换' : '当前模型未确认，暂不能切换' } : {}) };
+        }) : null;
         // 模型一律走同一个选择器（按提供方分组、可搜索），和派生对话框、Bot 设置一致
         if (scoped !== null) {
           return (
             <ModelPicker
               key={option.id}
-              label={option.label}
+              label="Agent 和模型"
+              agentLabel={agentLabel}
+              note={handoff.note}
               scope={option.id}
-              items={scoped.items}
+              items={[...scoped, ...handoff.items]}
               value={String(current)}
-              disabled={disabled || waiting}
+              disabled={disabled || waiting || (!hasModel && handoff.items.length === 0)}
               pending={waiting}
-              note={note}
-              onChange={(value) => runChange(option.id, value)}
+              onChange={(value) => value.startsWith('handoff:') ? handoff.choose(value) : runChange(option.id, value)}
               short={compact}
-              className={`${compact ? `min-w-[80px] flex-1 option-control ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} max-w-[160px] text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
+              className={`${compact ? `min-w-[44px] flex-1 basis-0 option-control ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} max-w-[220px] text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
             />
           );
         }
         // 短清单走原生 <select>，塞不进额外一行说明，就把说明放进控件的 title。
-        const title = note === undefined ? (option.description ?? option.label) : `${option.description ?? option.label}（${note}）`;
+        const title = option.description ?? option.label;
         return (
           <select
             key={option.id}
             aria-label={option.label}
             title={title}
             data-category={option.category}
-            className={`${compact ? 'shrink-0' : ''} ${option.category === 'agent' ? 'max-w-[112px]' : 'max-w-[72px] sm:max-w-[132px]'} ${compact ? `option-control appearance-none ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} min-h-[44px] min-w-[44px] md:min-h-0 truncate text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
+            className={`${option.category === 'agent' ? 'max-w-[112px]' : 'max-w-[72px] sm:max-w-[132px]'} ${compact ? `option-control appearance-none ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} min-h-[44px] min-w-[44px] md:min-h-0 truncate text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
             value={String(current)}
             disabled={disabled || waiting}
             aria-busy={waiting || undefined}
@@ -154,23 +174,25 @@ export function OptionControls({ options, values, onChange, sessionId, compact =
           </select>
         );
       })}
-    </div>
-  );
+    </div>{handoff.dialog}</>;
 }
 
 /** 与输入区相邻：不阻止发送，但不把未确认的设置说成已生效。 */
-export function OptionFeedbackNotice({ sessionId, options }: { sessionId: string; options: readonly RuntimeOptionDto[] }) {
+export function OptionFeedbackNotice({ sessionId, options, savedModel }: { sessionId: string; options: readonly RuntimeOptionDto[]; savedModel: string }) {
   const feedback = useOptionFeedback(sessionId);
   const label = (option: RuntimeOptionDto, value: string | boolean) =>
     typeof value === 'boolean' ? (value ? '开启' : '关闭') : (flatChoices(option).find((item) => item.value === value)?.label ?? value);
-  return <div className="space-y-1">{options.map((option) => {
+  const model = options.find((option) => option.category === 'model');
+  return <div className="space-y-1">{savedModel && (!model || model.current !== savedModel) ? <div role="status" data-testid="model-observation" className="text-meta text-secondary">
+    当前运行时报告：{model && model.current !== '' ? label(model, model.current) : '未确认'}；保存的启动模型：{model ? label(model, savedModel) : savedModel}。
+  </div> : null}{options.map((option) => {
     const item = feedback[option.id];
     if (!item) return null;
     const target = label(option, item.target);
     const text = item.state === 'pending' ? `${option.label}：正在切换到 ${target}，当前仍显示 ${label(option, item.original)}。发送时设置可能尚未生效。`
-      : item.state === 'confirmed' ? `${option.label}：已确认切换到 ${target}。`
-      : item.state === 'saved' ? `${option.label}：已保存 ${target}，下次启动时生效。`
-      : item.state === 'rejected' ? `${option.label}：切换未被接受，原设置保留。`
+      : item.state === 'confirmed' ? `${option.label}：之前已确认切换到 ${target}，当前值以选择器为准。`
+      : item.state === 'saved' ? `${option.label}：已保存 ${target}，供下次启动使用；当前值以选择器为准。`
+      : item.state === 'rejected' ? `${option.label}：上次切换未被接受，当前值以选择器为准。`
       : `${option.label}：未能确认是否切换到 ${target}，发送时使用的设置可能不同。`;
     return <div key={option.id} role="status" data-testid="option-feedback" data-state={item.state} className="flex flex-wrap items-center gap-x-2 text-meta text-secondary">
       <span>{text}{item.observed !== undefined ? ` 最近读取到：${label(option, item.observed)}。这不能确认之前发送的消息使用了什么设置。` : ''}</span>

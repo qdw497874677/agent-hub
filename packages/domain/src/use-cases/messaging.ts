@@ -49,6 +49,7 @@ import { otherEnd } from '../session-link.ts';
 import { projectAsResource, projectOfSessionOrigin, authorizeSession, type AccessPolicy } from './authorization.ts';
 import type { Subject } from '../access.ts';
 import type { Deps } from './deps.ts';
+import { admitHandoffIngress, handoffFirstEnded, handoffRecord } from './handoff-admission.ts';
 import { loadBotConfig } from './bots.ts';
 import {
   inSameTaskTree,
@@ -64,7 +65,7 @@ import {
  * 接收（权限 ∩、限额、幂等、审计）→ 解析地址 → 对方空闲就投、忙就排队 → 回合结束时收回复（agent_reply 优先，最后一轮文字兜底）并投下一条。
  * 派生新会话要 agent.spawn，且要人批。
  */
-export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'projects' | 'tasks' | 'bots' | 'workspaces' | 'workspaceGroups'> {
+export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'projects' | 'tasks' | 'bots' | 'workspaces' | 'workspaceGroups' | 'agentHandoffs' | 'deliveries'> {
   readonly messages: MessageStore;
   readonly policy?: AccessPolicy;
   /** userId → 带上自定义角色和显式授权的 Principal；停用 / 不存在是 null。 */
@@ -577,6 +578,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     serial(targetId, () => lane.run(targetId, async () => {
       const target = await deps.sessions.byId(targetId);
       if (!target) return;
+      const handoff = await handoffRecord(deps, targetId);
+      if (!handoff.ok || (handoff.value && !(await handoffFirstEnded(deps, handoff.value)))) return;
       if (target.settledAt) {
         await drainArchived(target);
         return;
@@ -856,6 +859,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
 
     const target = await deps.sessions.byId(input.targetSessionId);
     if (!target) return err(notFound('目标会话不存在'));
+    const ingress = await admitHandoffIngress(deps, target.id);
+    if (!ingress.ok) return ingress;
     const targetProject = await canonicalProjectOf(target);
     if (!targetProject.ok) return targetProject;
 
@@ -927,6 +932,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     const { config, trace } = gate;
 
     const commit = async (): Promise<Result<AgentMessage, DomainError>> => {
+      const ingress = await admitHandoffIngress(deps, target.id);
+      if (!ingress.ok) return ingress;
       // 并发同键在锁内再查一次：同参回收先到的结果，异参拒绝，绝不覆盖。
       const raced = await deps.messages.byIdempotencyKey(from.id, key);
       if (raced) {
@@ -1103,6 +1110,10 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       // 并发 accept 同一对时会同时读到同一份计数，全都过线。投递（pump）在锁释放后排同一条串行队，
       // 不能在锁内调 pump——它会再入 serial(target.id)，排在还没结东的当前链后面，直接死锁。
       const commit = async (): Promise<Result<AgentMessage, DomainError>> => {
+        if (target) {
+          const ingress = await admitHandoffIngress(deps, target.id);
+          if (!ingress.ok) return ingress;
+        }
         const hold = await holdGate(from, target, body, parts, trace, config);
         if ('code' in hold) return deny(hold.code, hold.message);
         const { holdReason, tiers } = hold;
@@ -1391,6 +1402,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       const there = await sessionAndProject(command.targetSessionId);
       if (!there) return err(notFound('会话不存在'));
       const { session: target, project } = there;
+      const ingress = await admitHandoffIngress(deps, target.id);
+      if (!ingress.ok) return ingress;
       const checkedParts = validateParts(command.parts, project.repos.map((r) => r.name));
       if (!checkedParts.ok) return err(invalid(checkedParts.problem));
       const parts = checkedParts.parts;
@@ -1409,6 +1422,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       // 防风暴计数和落库同一把串行锁（LOW4）：外部发送也是先数后写，锁外并发会一起过线。
       // 投递（pump）在锁释放后再排，不能在锁内调——pump 会再入同一条串行队，死锁。
       const commit = async (): Promise<Result<AgentMessage, DomainError>> => {
+        const ingress = await admitHandoffIngress(deps, target.id);
+        if (!ingress.ok) return ingress;
         // 防风暴（外部这一侧）：同一对每分钟 6 条、10 分钟重复、对方收件队列 20
         const now = deps.now();
         const inbound = await deps.messages.forSession(target.id, 200);

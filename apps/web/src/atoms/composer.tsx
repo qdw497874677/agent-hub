@@ -350,7 +350,7 @@ export function Composer({
     <div className="relative">
       {error ? <p className="mb-1 text-meta text-rust">{error}</p> : null}
       <OfflineNotice text={allowOfflineSend ? null : offline} />
-      <OptionFeedbackNotice sessionId={session.id} options={session.optionSpec} />
+      <OptionFeedbackNotice sessionId={session.id} options={session.optionSpec} savedModel={session.model} />
       {options.length > 0 ? (
         <ul
           role="listbox"
@@ -520,9 +520,11 @@ export function Composer({
                 event.target.value = '';
               }}
             />
-            <span className="hidden shrink-0 text-meta text-tertiary sm:inline">{agentLabel}</span>
             <OptionControls
+              session={session}
+              projectId={projectId}
               sessionId={session.id}
+              agentLabel={agentLabel}
               options={sessionOptions.options}
               values={session.options}
               onChange={onChangeOption}

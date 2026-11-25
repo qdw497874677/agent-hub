@@ -40,6 +40,7 @@ import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import type { SessionServiceRepository } from '../ports/session-service-repository.ts';
 import type { AgentDefaultsStore } from '../ports/agent-defaults.ts';
 import type { BranchAttemptStore } from '../ports/branch-attempt.ts';
+import type { AgentHandoffStore } from '../ports/agent-handoff-store.ts';
 
 /**
  * 已装配的 agent。UI 只从这里拿能力矩阵，不认 agent 名字。
@@ -73,6 +74,7 @@ export interface Deps {
   readonly sessions: SessionRepository;
   /** Durable native-branch admission evidence, when native branching is enabled. */
   readonly branchAttempts?: Pick<BranchAttemptStore, 'bySession'>;
+  readonly agentHandoffs?: Pick<AgentHandoffStore, 'byTarget'> & Partial<Pick<AgentHandoffStore, 'firstEnded'>>;
   /** 工作空间登记（workspaces.md）。 */
   readonly workspaces: WorkspaceRepository;
   /** 组合工作空间（docs/design/multi-repo.md）。T4 已接线，必填。 */

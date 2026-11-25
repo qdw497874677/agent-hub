@@ -54,8 +54,20 @@ import { authenticateWorker, withToolAccess,
   terminalTarget,
   asServiceId,
   asProjectId,
+  asAgentId,
+  asSessionId,
+  asTaskId,
+  asWorkspaceId,
   authorizeProject,
   authorizeSession,
+  authorizeWorker,
+  handoffRecord,
+  handoffFirstEnded,
+  optionValues,
+  parseHubModel,
+  projectOfSessionOrigin,
+  placeSession,
+  setupNotReady,
   forbidden,
   projectToolScope,
   resolveSessionAssets,
@@ -113,6 +125,8 @@ import { createProjectAssetToolProvider } from './project-session-asset-tools.ts
 import { createProjectSessionAssetActions } from './project-session-assets.ts';
 import { importProjectCandidate } from './project-session-candidate.ts';
 import { createProjectSessionHandoffActions } from './project-session-handoff.ts';
+import { createAgentHandoffService } from './agent-handoff.ts';
+import { createAgentHandoffStartup } from './agent-handoff-startup.ts';
 import { gitForWorker } from './workspace-delegation.ts';
 import { createModelDistiller } from './model-distiller.ts';
 import { createApp } from './http.ts';
@@ -249,6 +263,7 @@ const deps: Deps = {
     status: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),
     probe: async (workerId) => serverGateway?.gateway.probe?.(workerId) ?? false,
     sessionStartReadiness: startReadiness,
+    sessionStartConnection: (workerId) => serverGateway?.gateway.sessionStartConnection?.(workerId) ?? null,
     retrySessionStart: (sessionId, workerId) => {
       failedStartPreparations.delete(sessionId);
       serverGateway?.gateway.retrySessionStart?.(sessionId, workerId);
@@ -381,6 +396,7 @@ const deps: Deps = {
   now: () => Date.now(),
   deliveries: store.deliveries,
   branchAttempts: store.branchAttempts,
+  agentHandoffs: store.agentHandoffs,
   // 授权（ADR 0011）：can() 要的团队 / 本机授权从这里拿；机器状态延迟到调用时再读 deps.gateway。
   access: createAccessPolicy({
     users: store.users,
@@ -894,6 +910,74 @@ const syncAssets = (workerId: string) =>
     })
     .catch((failure: unknown) => log(`资产同步失败（${workerId}）：${(failure as Error).message}`));
 
+const handoffStartup = createAgentHandoffStartup({
+  store: store.agentHandoffs,
+  gateway: {
+    dispatch: (command) => deps.gateway.dispatch(command),
+    sessionStartConnection: (workerId) => deps.gateway.sessionStartConnection?.(workerId) ?? null,
+    sessionStartReadiness: (sessionId, workerId) => serverGateway?.gateway.sessionStartReadiness?.(sessionId, workerId) ?? { state: 'untracked' }
+  },
+  now: deps.now,
+  newAttemptId: () => globalThis.crypto.randomUUID(),
+  onReady(workerId, sessionId, isCurrent) {
+    if (!isCurrent()) return;
+    const id = asSessionId(sessionId);
+    deps.hosting.add(id, workerId);
+    void releaseAfterTurn({ ...deps, deliveries: store.deliveries }, id).catch(() => log('交接启动后检查送达队列失败'));
+  }
+});
+const agentHandoff = createAgentHandoffService({
+  store: store.agentHandoffs,
+  session: (id) => store.sessions.byId(asSessionId(id)),
+  task: (id) => store.tasks.byId(asTaskId(id)),
+  workspace: (id) => store.workspaces.byId(asWorkspaceId(id)),
+  sessionAllowed: async (actor, session, permission) =>
+    (await authorizeSession(deps.access, actor, await projectOfSessionOrigin(deps, session), session, permission)).ok,
+  taskCreateAllowed: async (actor, task) =>
+    (await authorizeProject(deps.access, actor, await store.projects.byId(task.projectId), 'session.create')).ok,
+  taskActive: async (task) => {
+    const [live, project] = await Promise.all([store.tasks.byId(task.id), store.projects.byId(task.projectId)]);
+    return !!live && live.projectId === task.projectId && live.archivedAt == null && live.status !== 'abandoned' && !!project && project.deletedAt == null;
+  },
+  workspaceReady: async (task, workspace) => {
+    const project = await store.projects.byId(task.projectId);
+    return !!project && project.deletedAt == null && setupNotReady(workspace, project.worktree?.setup?.waitForSetup ?? true) === null;
+  },
+  workerUseAllowed: async (actor, workerId) => (await authorizeWorker(deps.access, actor, workerId)).ok,
+  readyDescriptors: async (workerId) => {
+    if (!deps.gateway.sessionStartConnection?.(workerId)) return null;
+    return catalog.list().flatMap(({ id }) => {
+      const descriptor = catalog.descriptorOn?.(workerId, id);
+      return descriptor ? [descriptor] : [];
+    });
+  },
+  providerAllowed: async (_actor, workerId, descriptor, model) => {
+    // First release supports native, advertised models only. A Hub provider changes startup wiring.
+    if (parseHubModel(model)) return false;
+    const placement = placeSession(await deps.gateway.status(), { agentId: descriptor.id, requested: workerId, projectWorker: workerId, model });
+    if (!placement.ok || placement.value !== workerId) return false;
+    const option = descriptor.options.find(({ category }) => category === 'model');
+    const choice = option && optionValues(option).find(({ value }) => value === model);
+    return !choice || choice.metadata?.selectable !== false;
+  },
+  history: (id, cursor) => store.agentHandoffs.historyFor(id, cursor),
+  targetWindow: async (workerId, agentId, model) => {
+    const option = catalog.descriptorOn?.(workerId, asAgentId(agentId))?.options.find(({ category }) => category === 'model');
+    const size = option && optionValues(option).find(({ value }) => value === model)?.metadata?.contextWindow;
+    return typeof size === 'number' && Number.isSafeInteger(size) && size > 0 ? size : null;
+  },
+  startupState: handoffStartup.metadataState,
+  firstCompleted: (record) => handoffFirstEnded(deps, record),
+  now: deps.now,
+  async onAdmitted(record) {
+    const first = record.first;
+    if (!first) return;
+    const sessionId = record.reservation.target.id;
+    deps.stream.publish({ sessionId, seq: first.delivery.seq, event: first.event, status: 'running' });
+    void handoffStartup.start(record).catch(() => log('交接会话启动失败，未自动重试'));
+  }
+});
+
 serverGateway = createServerGateway({
   token,
   authenticate: (hello) => authenticateWorker(enrollmentDeps, hello),
@@ -963,11 +1047,17 @@ serverGateway = createServerGateway({
     const receipt = outcome === 'both_failed' ? { outcome } as const : agentSessionRef === undefined ? null : { outcome, agentSessionRef };
     if (receipt) void rewindService.branchResult(sessionId, attemptId, workerId, receipt).catch((e) => log(`处理分叉结果失败：${String(e)}`));
   },
-  onSessionStartChanged(workerId, sessionId) {
+  onSessionStartChanged(workerId, sessionId, sessionStart) {
     // This hook is emitted only after gateway acceptance on the exact socket/start.
     // Startup is not a completed turn: wake a queued head without releasing in-flight work.
-    if (serverGateway?.gateway.sessionStartReadiness?.(sessionId, workerId).state !== 'ready') return;
-    fromWorker(workerId, sessionId, () => {
+    fromWorker(workerId, sessionId, async () => {
+      const handoff = await handoffRecord(deps, sessionId);
+      if (!handoff.ok) return;
+      if (handoff.value && !(await handoffFirstEnded(deps, handoff.value))) {
+        await handoffStartup.changed(workerId, sessionId, sessionStart);
+        return;
+      }
+      if (serverGateway?.gateway.sessionStartReadiness?.(sessionId, workerId).state !== 'ready') return;
       void releaseAfterTurn({ ...deps, deliveries: store.deliveries }, sessionId).catch(() => log('运行时就绪后检查送达队列失败'));
     });
   },
@@ -1123,7 +1213,21 @@ const previews = wirePreviews({
 const { ports: previewPorts, reconcile: reconcilePreviews, channel: previewChannel } = previews;
 void loadResourcePolicy({ metrics: workerMetrics, settings: store.settings }).catch((failure: unknown) => log(`同步资源策略失败：${(failure as Error).message}`));
 
-const recovered = await reconcileInterrupted(deps);
+const recovered = await reconcileInterrupted({
+  now: deps.now,
+  sessions: {
+    ...store.sessions,
+    listAll: async () => {
+      const recoverable = [];
+      for (const session of await store.sessions.listAll()) {
+        if (session.status !== 'running') continue;
+        const handoff = await handoffRecord(deps, session.id);
+        if (handoff.ok && (!handoff.value || await handoffFirstEnded(deps, handoff.value))) recoverable.push(session);
+      }
+      return recoverable;
+    }
+  }
+});
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
 
 // 卡顿巡检：一轮跑着却长时间没新事件，只记一条 warn 诊断（卡片上显示提醒）。
@@ -1205,6 +1309,7 @@ const projectGitProbe = await setupProjectGitProbe({
   secretKey
 });
 const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, optionConfirmations: optionWaiters, guard,
+  agentHandoff,
   ...(projectGitProbe ? { projectGitProbe: {
     projects: deps.projects, secrets: projectGitProbe.vault, access: deps.access, probe: projectGitProbe.probe, now: deps.now,
     allows: projectGitProbe.allows

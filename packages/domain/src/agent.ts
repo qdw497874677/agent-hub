@@ -20,6 +20,8 @@ export interface AgentDescriptor {
   readonly models: readonly string[];
   readonly defaultModel: string;
   readonly options: readonly RuntimeOption[];
+  /** Runtime can expose its own native session reference; individual sessions may still lack one. */
+  readonly nativeHandoff?: true;
   /** 认得 hub 下发的模型提供商（ADR 0013）时报它支持的协议；不报 = 不支持。 */
   readonly providers?: readonly ProviderProtocol[];
 }

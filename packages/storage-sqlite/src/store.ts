@@ -13,7 +13,7 @@ import type {
   Task,
   WorkspaceClaim
 } from '@agent-hub/domain';
-import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
+import { asProjectId, asSessionId, asTaskId, MODEL_PINNED } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createMetadataSearch } from './metadata-search.ts';
 import { createAccountRepositories } from './accounts.ts';
@@ -38,6 +38,7 @@ import { createSqliteSessionBases } from './session-bases.ts';
 import { createSqliteCheckpoints, createSqliteTurnRefs } from './turn-checkpoints.ts';
 import { createSqliteDeliveries } from './deliveries.ts';
 import { createSqliteBranchAttempts, ensureBranchAttemptTable } from './branch-attempts.ts';
+import { createSqliteAgentHandoffs, ensureAgentHandoffTable } from './agent-handoffs.ts';
 import { createSqliteProvenance } from './provenance.ts';
 import { createSqliteConnectors } from './connectors.ts';
 import { createSqliteTaskDispatch } from './task-dispatch.ts';
@@ -91,6 +92,7 @@ export interface SqliteStore extends RepositorySet {
   /** 送达队列（ADR 0031）。 */
   readonly deliveries: DeliveryQueue;
   readonly branchAttempts: import('@agent-hub/domain').BranchAttemptStore;
+  readonly agentHandoffs: import('@agent-hub/domain').AgentHandoffStore;
   readonly provenance: ProvenanceStore;
   readonly connectors: import('@agent-hub/domain').ConnectorStore;
   readonly agentTasks: import('@agent-hub/domain').AgentTaskStore;
@@ -196,9 +198,9 @@ export function openSqliteStore(file: string): SqliteStore {
   const updateTaskArchived = db.prepare('UPDATE tasks SET archived_at = ? WHERE id = ? AND archived_at IS ?');
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, origin_project_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, asset_ids, asset_set_ids, mcp_disabled, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
-      'ON CONFLICT(id) DO UPDATE SET model = excluded.model, ' +
+      'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, origin_project_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, asset_ids, asset_set_ids, mcp_disabled, created_at, updated_at, model_pinned) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'ON CONFLICT(id) DO UPDATE SET model = CASE WHEN sessions.model_pinned = 1 AND ? = 0 THEN sessions.model ELSE excluded.model END, model_pinned = CASE WHEN ? THEN excluded.model_pinned ELSE sessions.model_pinned END, ' +
       // 状态跟着 last_seq 单调走：并发写回一个更旧的会话对象（比如上一轮读到的 running）
       // 不能把已经 done 的状态又翻回去，也不能把游标倒退。
       'status = CASE WHEN excluded.last_seq >= sessions.last_seq THEN excluded.status ELSE sessions.status END, ' +
@@ -206,7 +208,7 @@ export function openSqliteStore(file: string): SqliteStore {
       // 分叉子会话的落点和原生 ref 属于分叉回执，普通快照不能改写。
       'agent_session = CASE WHEN EXISTS (SELECT 1 FROM branch_attempt WHERE session_id = sessions.id) THEN sessions.agent_session ELSE excluded.agent_session END, ' +
       'worker_id = CASE WHEN EXISTS (SELECT 1 FROM branch_attempt WHERE session_id = sessions.id) THEN sessions.worker_id ELSE excluded.worker_id END, ' +
-      'options = excluded.options, option_spec = excluded.option_spec, workspace_id = excluded.workspace_id, ' +
+      "options = CASE WHEN sessions.model_pinned = 1 AND ? = 0 THEN CASE WHEN json_type(sessions.options, '$.model') IS NULL THEN json_remove(excluded.options, '$.model') ELSE json_set(excluded.options, '$.model', json_extract(sessions.options, '$.model')) END ELSE excluded.options END, option_spec = CASE WHEN sessions.model_pinned = 1 AND ? = 0 THEN sessions.option_spec ELSE excluded.option_spec END, workspace_id = excluded.workspace_id, " +
       'environment_revision = excluded.environment_revision, settled_at = excluded.settled_at, group_id = excluded.group_id, ' +
       'kind = excluded.kind, parent_session_id = excluded.parent_session_id, ' +
       // 资产清单只在显式给的时候写：旧快照回写不能把用户的选择冲掉。
@@ -444,7 +446,7 @@ export function openSqliteStore(file: string): SqliteStore {
     }
   };
 
-  const saveSession = (session: Session): void => {
+  const saveSession = (session: Session, intent?: { readonly modelWrite?: boolean; readonly optionSpecWrite?: boolean }): void => {
       const [kind, from, seq] = originColumns(session);
       upsertSession.run(
         session.id,
@@ -475,11 +477,16 @@ export function openSqliteStore(file: string): SqliteStore {
         session.assetSetIds == null ? null : JSON.stringify(session.assetSetIds),
         JSON.stringify(session.mcpDisabled ?? []),
         session.createdAt,
-        session.updatedAt
+        session.updatedAt,
+        session[MODEL_PINNED] === true ? 1 : 0,
+        intent?.modelWrite ? 1 : 0,
+        intent?.modelWrite ? 1 : 0,
+        intent?.modelWrite ? 1 : 0,
+        intent?.modelWrite || intent?.optionSpecWrite ? 1 : 0
       );
   };
   const sessions = {
-    async save(session: Session): Promise<void> { saveSession(session); },
+    async save(session: Session, intent?: { readonly modelWrite?: boolean; readonly optionSpecWrite?: boolean }): Promise<void> { saveSession(session, intent); },
     async byId(id: Parameters<typeof asSessionId>[0]): Promise<Session | null> {
       const row = selectSession.get(id);
       return row ? toSession(row) : null;
@@ -610,19 +617,23 @@ export function openSqliteStore(file: string): SqliteStore {
   }
   // 独占归属：合并迁移可能给同一个工作空间留下多条关联，先兜底去重再建唯一索引。
   ensureSingleWorkspaceOwner(db);
+  const deliveries = createSqliteDeliveries(db);
+  const messages = createSqliteMessageStore(db);
+  ensureAgentHandoffTable(db);
   return {
     projects,
     tasks,
     workLog: createWorkLogRepository(db),
     toolGrants: createToolGrantRepository(db),
-    messages: createSqliteMessageStore(db),
+    messages,
     groups: createSqliteGroupStore(db),
     contextSettings: createSqliteContextSettings(db),
     sessionBases: createSqliteSessionBases(db),
     checkpoints: createSqliteCheckpoints(db),
     turnRefs: createSqliteTurnRefs(db),
-    deliveries: createSqliteDeliveries(db),
+    deliveries,
     branchAttempts: createSqliteBranchAttempts(db, saveSession),
+    agentHandoffs: createSqliteAgentHandoffs(db, saveSession),
     provenance: createSqliteProvenance(db),
     ...createSqliteConnectors(db),
     dispatches: createSqliteTaskDispatch(db),

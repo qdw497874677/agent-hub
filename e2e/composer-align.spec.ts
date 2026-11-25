@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, stopFakeWorker, FAKE_AGENT_ID } from './fake-worker.ts';
 
 /**
  * 输入框底栏：「+ / 拍照 / 模型 / Agent / 思考强度 / 发送」一样高、垂直居中对齐——
@@ -15,18 +15,13 @@ async function setup(page: Page, baseURL: string) {
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((c) => c.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((w) => w.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const workerId = await ensureFakeWorker(page, baseURL);
   const dir = mkdtempSync(join(tmpdir(), 'e2e-align-'));
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 对齐 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 对齐 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '对齐' }, headers })).json()) as { id: string };
-  rmSync(dir, { recursive: true, force: true });
-  const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: 'fake/m1' }, headers });
+  expect(derived.ok(), await derived.text()).toBe(true);
+  const { id } = (await derived.json()) as { id: string };
   // e2e 的 agent 不报可调项：在画布投影里给这条会话补上和真实 OpenCode 一样的三项——
   // 候选很多的模型（走可搜索的按钮选择器）+ Agent + 思考强度
   const models = Array.from({ length: 12 }, (_, i) => ({ kind: 'value', value: { value: `zai/glm-5.${i}-flash`, label: `zai-coding-cn/glm-5.${i}-flash` } }));
@@ -41,7 +36,7 @@ async function setup(page: Page, baseURL: string) {
     for (const s of body.sessions) if (s.id === id) { s.optionSpec = optionSpec; s.options = { model: 'zai/glm-5.3-flash', effort: 'high' }; }
     await route.fulfill({ response, json: body });
   });
-  return { projectId: project.id, id };
+  return { projectId: project.id, id, dir };
 }
 
 /** 底栏里每个控件的盒子：高度相同、垂直中线相同（容差 1px）。 */
@@ -62,9 +57,11 @@ async function expectAligned(row: Locator, label: string, touch: boolean) {
     expect(b.left + b.width, `${label}：${b.name} 没超出底栏右边`).toBeLessThanOrEqual(rowBox.right + 1);
   }
   if (touch) for (const b of options) expect(Math.abs(b.height - 44), `${label}：${b.name} 是 44px 触屏目标`).toBeLessThanOrEqual(0.5);
-  const model = boxes.find((b) => b.name.startsWith('模型：'));
+  const model = boxes.find((b) => b.name.startsWith('Agent 和模型：'));
   const effort = boxes.find((b) => b.name === '思考强度');
   const agent = boxes.find((b) => b.name === 'Agent');
+  expect(model, `${label}：Agent 和模型选择器存在`).toBeDefined();
+  expect(effort, `${label}：思考强度选择器存在`).toBeDefined();
   if (model && effort) {
     expect(model.left, `${label}：模型在思考强度左边`).toBeLessThan(effort.left);
     if (agent) expect(agent.left, `${label}：Agent 在思考强度右边`).toBeGreaterThan(effort.left);
@@ -80,7 +77,7 @@ async function exercise(page: Page, scope: Locator, label: string, touch: boolea
   const boxes = await expectAligned(row, label, touch);
   void boxes;
   await expect(row.getByRole('combobox', { name: '思考强度' })).toHaveValue('high');
-  await expect(row.getByRole('button', { name: /^模型：/ })).toBeVisible();
+  await expect(row.getByRole('button', { name: /^Agent 和模型：.+ · .+$/ })).toBeVisible();
   const send = scope.getByRole('button', { name: '发送' });
   await expect(send).toBeDisabled();
   await scope.getByRole('textbox', { name: '发送消息' }).fill('你好');
@@ -98,15 +95,20 @@ for (const mode of [{ name: '390px 触屏', w: 390, h: 844, touch: true }, { nam
     test.use({ hasTouch: mode.touch, viewport: { width: mode.w, height: mode.h } });
     test(`${mode.name}：输入框底栏对齐，会话页和画布窗口一致`, async ({ page, baseURL }) => {
       if (SHOTS) mkdirSync(SHOTS, { recursive: true });
-      const { projectId, id } = await setup(page, baseURL!);
-      await page.goto(`/#/p/${projectId}/focus/${id}`);
-      await exercise(page, page.locator('body'), `${mode.name} 会话页`, mode.touch);
-      await page.goto(`/#/p/${projectId}/canvas`);
-      const card = page.locator(`.react-flow__node-session[data-id="${id}"]`);
-      await card.locator('header').dblclick({ position: { x: 60, y: 8 } });
-      const win = page.locator(`[data-testid="canvas-window"][data-session-id="${id}"]`);
-      await expect(win).toBeVisible();
-      await exercise(page, win, `${mode.name} 画布窗口`, mode.touch);
+      const { projectId, id, dir } = await setup(page, baseURL!);
+      try {
+        await page.goto(`/#/p/${projectId}/focus/${id}`);
+        await exercise(page, page.locator('body'), `${mode.name} 会话页`, mode.touch);
+        await page.goto(`/#/p/${projectId}/canvas`);
+        const card = page.locator(`.react-flow__node-session[data-id="${id}"]`);
+        await card.locator('header').dblclick({ position: { x: 60, y: 8 } });
+        const win = page.locator(`[data-testid="canvas-window"][data-session-id="${id}"]`);
+        await expect(win).toBeVisible();
+        await exercise(page, win, `${mode.name} 画布窗口`, mode.touch);
+      } finally {
+        stopFakeWorker();
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 }

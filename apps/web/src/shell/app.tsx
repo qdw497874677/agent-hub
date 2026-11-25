@@ -30,7 +30,7 @@ import { Sheet } from './dialog-shell.tsx';
 import { TaskDetail } from '../surfaces/workbench/task-detail.tsx';
 import { UndoToast } from '../atoms/undo-toast.tsx';
 import { splitArchivedTasks } from '../atoms/task-display.ts';
-import { patchCanvasSessionConfig, patchSessionConfig, patchCanvasTask } from './confirmed-patch.ts';
+import { patchCanvasTask } from './confirmed-patch.ts';
 import { clearOptionFeedback, optionFeedbackIsCurrent, setOptionFeedback } from '../atoms/option-feedback.tsx';
 import type { View } from './route.ts';
 
@@ -205,14 +205,12 @@ function Workspace() {
   );
 
   // 同一会话连点两下：只认最后一次请求的回执，别让先到的旧配置盖住后选的。
-  const optionRequests = useRef(new Map<string, symbol>());
   const optionLifetime = useRef({ active: true });
   useEffect(() => {
     const lifetime = { active: true };
     optionLifetime.current = lifetime;
     return () => {
       lifetime.active = false;
-      optionRequests.current.clear();
       clearOptionFeedback();
     };
   }, []);
@@ -227,18 +225,43 @@ function Workspace() {
       const snapshot = queryClient.getQueryData<SessionDto>(['session', sessionId]) ??
         (projectId ? queryClient.getQueryData<CanvasDto>(projectKeys.canvas(projectId))?.sessions.find((item) => item.id === sessionId) : undefined);
       const option = snapshot?.optionSpec.find((item) => item.id === optionId);
-      if (option && option.category !== 'model') {
+      if (option) {
         const request = Symbol();
         const lifetime = optionLifetime.current;
-        const original = snapshot?.options[optionId] ?? option.current ?? '';
+        const original = option.category === 'model' ? option.current : snapshot?.options[optionId] ?? option.current;
         const latest = () => lifetime.active && optionFeedbackIsCurrent(sessionId, optionId, request);
         let readSequence = 0;
+        // 只合并运行时选项，不覆盖草稿或其他会话字段；读期间独立改变的设置保留本地新值。
+        const readOptions = async (isCurrent: () => boolean = () => true) => {
+          const key = projectId ? projectKeys.canvas(projectId) : undefined;
+          const canvasBefore = key ? queryClient.getQueryData<CanvasDto>(key)?.sessions.find((item) => item.id === sessionId) : undefined;
+          const sessionBefore = queryClient.getQueryData<SessionDto>(['session', sessionId]);
+          const observed = await api.session(sessionId);
+          if (!latest() || !isCurrent()) return undefined;
+          const merge = (current: SessionDto, before: SessionDto | undefined): SessionDto => {
+            if (!before || current.updatedAt > observed.updatedAt) return current;
+            const changed = (id: string) => current.options[id] !== before.options[id] ||
+              current.optionSpec.find((item) => item.id === id)?.current !== before.optionSpec.find((item) => item.id === id)?.current;
+            const options = { ...current.options };
+            for (const [id, next] of Object.entries(observed.options)) if (!changed(id)) options[id] = next;
+            const optionSpec = observed.optionSpec.map((item) => {
+              const existing = current.optionSpec.find((candidate) => candidate.id === item.id);
+              return existing && changed(item.id) ? { ...item, current: existing.current } : item;
+            });
+            for (const item of current.optionSpec) if (changed(item.id) && !optionSpec.some((candidate) => candidate.id === item.id)) optionSpec.push(item);
+            return { ...current, updatedAt: observed.updatedAt, model: current.model === before.model ? observed.model : current.model, options, optionSpec };
+          };
+          if (key) queryClient.setQueryData<CanvasDto>(key, (current) => current ? { ...current, sessions: current.sessions.map((item) => item.id === sessionId ? merge(item, canvasBefore) : item) } : current);
+          queryClient.setQueryData<SessionDto>(['session', sessionId], (current) => current ? merge(current, sessionBefore) : current);
+          return observed;
+        };
         const recheck = () => {
           if (!latest()) return;
           const read = ++readSequence;
-          void api.session(sessionId).then((observed) => {
+          void readOptions(() => read === readSequence).then((observed) => {
             if (!latest() || read !== readSequence) return;
-            setOptionFeedback(sessionId, optionId, { state: 'unconfirmed', target: value, original, observed: observed.options[optionId] ?? observed.optionSpec.find((item) => item.id === optionId)?.current, recheck, requestToken: request });
+            const current = observed?.optionSpec.find((item) => item.id === optionId)?.current;
+            setOptionFeedback(sessionId, optionId, { state: 'unconfirmed', target: value, original, ...(current !== undefined && current !== '' ? { observed: current } : {}), recheck, requestToken: request });
           }).catch(() => {
             if (latest() && read === readSequence) setOptionFeedback(sessionId, optionId, { state: 'unconfirmed', target: value, original, recheck, requestToken: request });
           });
@@ -251,7 +274,10 @@ function Workspace() {
             new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 12000); })
           ]);
           if (!latest()) return;
-          if (receipt.state === 'confirmed' || receipt.state === 'saved') {
+          // A confirmed receipt must actually identify the requested setting.
+          const observed = option.category === 'model' ? receipt.session.optionSpec.find((item) => item.id === optionId)?.current : receipt.session.options[optionId] ?? receipt.session.optionSpec.find((item) => item.id === optionId)?.current;
+          const state = receipt.state === 'confirmed' && option.category === 'model' && observed !== value ? 'unconfirmed' : receipt.state;
+          if (state === 'confirmed' || state === 'saved') {
             await Promise.all([
               projectId ? queryClient.cancelQueries({ queryKey: projectKeys.canvas(projectId) }) : undefined,
               queryClient.cancelQueries({ queryKey: ['session', sessionId] })
@@ -260,45 +286,27 @@ function Workspace() {
             // Only merge this option, and never replace a newer session projection.
             const patch = (current: SessionDto) => current.updatedAt > receipt.session.updatedAt ? current : {
               ...current,
-              options: { ...current.options, [optionId]: receipt.session.options[optionId] ?? value },
-              optionSpec: current.optionSpec.map((item) => item.id === optionId ? (receipt.session.optionSpec.find((candidate) => candidate.id === optionId) ?? item) : item)
+              updatedAt: receipt.session.updatedAt,
+              ...(option.category === 'model' ? { model: receipt.session.model } : {}),
+              options: receipt.session.options[optionId] !== undefined
+                ? { ...current.options, [optionId]: receipt.session.options[optionId] }
+                : current.options,
+              optionSpec: state === 'confirmed' ? current.optionSpec.map((item) => item.id === optionId ? (receipt.session.optionSpec.find((candidate) => candidate.id === optionId) ?? item) : item) : current.optionSpec
             };
             if (projectId) queryClient.setQueryData<CanvasDto>(projectKeys.canvas(projectId), (current) => current ? { ...current, sessions: current.sessions.map((item) => item.id === sessionId ? patch(item) : item) } : current);
             queryClient.setQueryData<SessionDto>(['session', sessionId], (current) => current ? patch(current) : current);
           }
-          setOptionFeedback(sessionId, optionId, { state: receipt.state, target: value, original, requestToken: request, ...(receipt.state === 'unconfirmed' ? { recheck } : {}) });
+          setOptionFeedback(sessionId, optionId, { state, target: value, original, requestToken: request, ...(state === 'unconfirmed' ? { recheck } : {}) });
+          if (state === 'confirmed' && option.category === 'model') {
+            const read = ++readSequence;
+            void readOptions(() => read === readSequence).catch(() => {});
+          }
         } catch {
           if (latest()) setOptionFeedback(sessionId, optionId, { state: 'unconfirmed', target: value, original, recheck, requestToken: request });
         } finally {
           if (timer !== undefined) clearTimeout(timer);
         }
         return;
-      }
-      const request = Symbol();
-      const lifetime = optionLifetime.current;
-      optionRequests.current.set(sessionId, request);
-      try {
-        const confirmed = await api.changeOption(sessionId, optionId, value);
-
-        // 两个取消都要等完：等的过程中可能又发起了下一次修改，落地前再认一次「我是不是最新的」。
-        await Promise.all([
-          projectId ? queryClient.cancelQueries({ queryKey: projectKeys.canvas(projectId) }) : undefined,
-          queryClient.cancelQueries({ queryKey: ['session', sessionId] })
-        ]);
-        if (!lifetime.active || optionRequests.current.get(sessionId) !== request) return;
-
-        // 中间没有 await：旧回执不会在这里插进来。
-        if (projectId) {
-          queryClient.setQueryData<CanvasDto>(projectKeys.canvas(projectId), (current) =>
-            current ? patchCanvasSessionConfig(current, confirmed) : current
-          );
-        }
-        // 侧聊不进画布，单条会话缓存也要跟回执对齐。
-        queryClient.setQueryData<SessionDto>(['session', sessionId], (current) =>
-          current ? patchSessionConfig(current, confirmed) : current
-        );
-      } finally {
-        if (optionRequests.current.get(sessionId) === request) optionRequests.current.delete(sessionId);
       }
     },
     [project, queryClient]

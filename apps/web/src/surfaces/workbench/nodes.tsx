@@ -13,6 +13,7 @@ import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
 import { PinnedMark } from '../../atoms/pinned-mark.tsx';
 import { CardComposer } from './card-composer.tsx';
 import { OptionControls, OptionFeedbackNotice } from '../../atoms/options.tsx';
+import { HandoffGate } from '../../atoms/agent-handoff.tsx';
 import { useSessionOptions } from '../../atoms/session-options.tsx';
 import { PHASE_DOT, phaseLabel, phaseTone, sessionPhase, type SessionPhase } from './session-status.ts';
 import {
@@ -532,10 +533,12 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
       ) : null}
 
       {/* 可调项自己占一行：卡片只有 320px，和 agent 名、状态位挤在一行会把模型名截成三个字 */}
-      {session.optionSpec.length === 0 ? null : (
         <div className="nodrag mb-2">
           <OptionControls
+            session={session}
+            projectId={projectId}
             sessionId={session.id}
+            agentLabel={agentLabel}
             options={sessionOptions.options}
             values={session.options}
             onChange={(optionId, value) => session.optionSpec.find((option) => option.id === optionId)?.category === 'model'
@@ -544,7 +547,6 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             compact
           />
         </div>
-      )}
 
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div
@@ -592,8 +594,8 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         <ScrollToEnd visible={!nearEnd} onClick={() => scrollToEnd()} />
       </div>
 
-      <OptionFeedbackNotice sessionId={session.id} options={session.optionSpec} />
-      <CardComposer
+      <OptionFeedbackNotice sessionId={session.id} options={session.optionSpec} savedModel={session.model} />
+      <HandoffGate key={session.id} session={session} projectId={projectId} draft={draft} onDraftChange={onDraftChange}><CardComposer
         session={{ ...session, status }}
         awaiting={waitingForReply(live, status)}
         draft={draft}
@@ -603,7 +605,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         onInterrupt={() => void run(onInterrupt)}
         busy={busy}
         error={error}
-      />
+      /></HandoffGate>
 
       <footer className="mt-2 flex min-w-0 items-center justify-between gap-2 border-t border-hair pt-1.5 text-meta text-tertiary">
         <span className="font-mono">#{live?.lastSeq ?? session.lastSeq}</span>

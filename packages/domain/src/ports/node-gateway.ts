@@ -39,6 +39,8 @@ export type WorkerCommand =
       /** 与持久分叉尝试绑定，只在协商支持时随原生启动发送。 */
       readonly branchAttemptId?: string;
       readonly startAttemptId?: string;
+      /** Hub-only live connection fence; never sent to the Worker. Requires startAttemptId. */
+      readonly expectedStartConnectionId?: string;
       /** 能力层：agent 用它连 hub 的工具（MCP）。没有 = 这次不给工具，行为同旧版。令牌不进日志。 */
       readonly tools?: ToolAccess;
       /** MCP 资产（hub 在发出前才填，见 sessionMcpLaunch）。stdio 的 env 含密钥明文：不落库、不进日志。 */
@@ -139,6 +141,8 @@ export interface ProcessInfo {
 }
 
 export interface NodeGateway {
+  /** Opaque identity of the current eligible connection, or null if unavailable. */
+  sessionStartConnection?(workerId: string): string | null;
   sessionStartReadiness?(sessionId: SessionId, workerId?: string | null): SessionStartReadiness;
   retrySessionStart?(sessionId: SessionId, workerId?: string | null): void;
   status(): Promise<WorkerStatus[]>;

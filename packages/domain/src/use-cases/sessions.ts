@@ -1,5 +1,5 @@
 import { principalOfSubject, type Subject } from '../access.ts';
-import { applyEvent, deriveSession, forkSession, isContainerSession, isNeverPrompted, markInterrupted, normalizeMcpDisabled, withOptions } from '../session.ts';
+import { applyEvent, deriveSession, forkSession, isContainerSession, isNeverPrompted, markInterrupted, normalizeMcpDisabled, withOptions, MODEL_PINNED } from '../session.ts';
 import type { Session } from '../session.ts';
 import { findOption, optionValues, type RuntimeOption } from '../option.ts';
 import type { Seq, SessionId, TaskId, WorkspaceGroupId } from '../ids.ts';
@@ -397,6 +397,8 @@ export interface SessionOptionsCommand {
   readonly sessionId: string;
   /** agent 报上来的全量清单（含候选值）。 */
   readonly options: readonly RuntimeOption[];
+  /** Only an exact, current receipt may establish a pinned model selection. */
+  readonly confirmedModel?: string;
 }
 
 /** agent 报上来的可调项当前值落库。它不是事件，所以不进 journal——不进就不占 seq。 */
@@ -418,6 +420,13 @@ export async function recordSessionOptions(
     // （changeSessionOption → set_option）走的正是这条回报：hub 不写乐观值，等 agent
     // 回报新值才落库；一刀切跳过会把合法的 A→B 改动静默丢掉。
     if (option.id === 'model') {
+      if (command.confirmedModel !== undefined) {
+        if (option.current !== command.confirmedModel) continue;
+        reportedModel = command.confirmedModel;
+        values[option.id] = command.confirmedModel;
+        continue;
+      }
+      if (session[MODEL_PINNED]) continue;
       if (session.model === '') continue;
       if (typeof option.current === 'string') {
         // 跨提供商切换会重启进程。模型和选项来自同一快照，不能部分接受旧进程的回报。
@@ -433,9 +442,10 @@ export async function recordSessionOptions(
     // options.model / optionSpec：界面和下一次 start_session 都读 model 字段，漏了它就会
     // 停在旧模型。只有用户显式选过（非空）才同步，留空的会话仍由运行时每次决定。
     ...(reportedModel !== null && reportedModel !== session.model ? { model: reportedModel } : {}),
+    ...(command.confirmedModel !== undefined && reportedModel !== null ? { [MODEL_PINNED]: true } : {}),
     optionSpec: command.options
   };
-  await deps.sessions.save(next);
+  await deps.sessions.save(next, { modelWrite: command.confirmedModel !== undefined && reportedModel !== null, optionSpecWrite: true });
   return ok(next);
 }
 
@@ -445,6 +455,8 @@ export interface ChangeOptionCommand {
   readonly value: string | boolean;
   readonly requestId?: string;
   readonly onSaved?: () => void;
+  /** Exact opt-in: only save if actually unhosted; an idle hosted runtime is still live. */
+  readonly exactModel?: boolean;
 }
 
 /**
@@ -464,15 +476,21 @@ export async function changeSessionOption(
   // 会话没在跑（这一轮已经结束）时，改选项是给「下一轮」预备的：
   // 不为了写一个值把 agent 进程拉起来（拉起也会被下一轮启动冲掉），直接落库并改本地的
   // optionSpec.current，界面立刻能看到新值，下次启动按 session.options 应用。
-  if (session.status !== 'running') {
+  if (command.exactModel ? !deps.hosting.has(session.id) : session.status !== 'running') {
     const saved = await changeSavedOption(deps, session, command);
     if (saved.ok) command.onSaved?.();
     return saved;
   }
 
   // 改模型也是在改一条会话的运行状态；它没在跑就先拉起来，否则指令会打空。
-  const hosted = await ensureHosted(deps, session);
-  if (!hosted.ok) return hosted;
+  if (!command.exactModel) {
+    const hosted = await ensureHosted(deps, session);
+    if (!hosted.ok) return hosted;
+  }
+
+  if (command.exactModel && !session[MODEL_PINNED]) {
+    await deps.sessions.save({ ...session, [MODEL_PINNED]: true }, { modelWrite: true });
+  }
 
   const changed = await deps.gateway.dispatch({
     kind: 'set_option',
@@ -482,6 +500,13 @@ export async function changeSessionOption(
     ...(command.requestId ? { requestId: command.requestId } : {})
   });
   if (!changed.ok) return err(changed.error);
+
+  // Legacy APIs have no exact receipt; an explicitly dispatched selection opts
+  // back into their existing snapshot semantics, without doing so on failure.
+  if (!command.exactModel && command.id === 'model' && session[MODEL_PINNED]) {
+    const latest = await deps.sessions.byId(session.id);
+    if (latest) await deps.sessions.save({ ...latest, [MODEL_PINNED]: false }, { modelWrite: true });
+  }
 
   // 这里**不**自己往库里写一个乐观值：换模型会连带改变思考档位的可选值，
   // 只有 agent 知道换完之后整体长什么样。落库交给它的回报（recordSessionOptions），
@@ -593,10 +618,11 @@ export async function switchSessionModel(
     const next: Session = {
       ...session,
       model: command.model,
+      [MODEL_PINNED]: false,
       options: { ...session.options, model: command.model },
       optionSpec
     };
-    await deps.sessions.save(next);
+    await deps.sessions.save(next, { modelWrite: true });
 
     // 丢掉托管记录，下面的 ensureHosted 会按 session.model 重新算提供商配置并带 resume 启动。
     deps.hosting.drop(session.id);
@@ -661,16 +687,19 @@ async function changeSavedOption(
     return err(invalid(`${option.label} 只能是 ${choices || '它上报的候选'} 之一`));
   }
 
-  const optionSpec = session.optionSpec.map((entry) =>
+  // A saved exact model is only a desired value; the last runtime observation
+  // remains historical until a later runtime actually reports the change.
+  const optionSpec = command.exactModel && option.id === 'model' ? session.optionSpec : session.optionSpec.map((entry) =>
     entry.id === option.id ? { ...entry, current: command.value } : entry
   );
   const next: Session = {
     ...session,
     model: option.id === 'model' && typeof command.value === 'string' ? command.value : session.model,
+    ...(option.id === 'model' ? { [MODEL_PINNED]: command.exactModel === true } : {}),
     options: { ...session.options, [option.id]: command.value },
     optionSpec
   };
-  await deps.sessions.save(next);
+  await deps.sessions.save(next, { modelWrite: option.id === 'model', optionSpecWrite: true });
   return ok(next);
 }
 

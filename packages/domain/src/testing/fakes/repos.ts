@@ -5,7 +5,7 @@ import type { WorkLogRepository } from '../../ports/work-log-repository.ts';
 import type { SecretVault } from '../../ports/secret-vault.ts';
 import { canonicalLink, type SessionLink } from '../../session-link.ts';
 import type { SessionLinkRepository } from '../../ports/session-link-repository.ts';
-import { isContainerSession } from '../../session.ts';
+import { isContainerSession, MODEL_PINNED } from '../../session.ts';
 import type {
   AgentProfile,
   AgentProfileRepository,
@@ -329,7 +329,7 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
   const journal = new Map<string, JournalEntry[]>();
   return {
     journal,
-    async save(session) {
+    async save(session, intent) {
       const existing = rows.get(session.id);
       // 常驻只经 setPinned 改：整行 save 不能把它冲掉（SQL 那边同样不写这一列）。
       const pinned = session.pinned ?? existing?.pinned;
@@ -343,6 +343,19 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
         title: existing.title ?? null,
         ...(pinned === undefined ? {} : { pinned })
       };
+      if (existing[MODEL_PINNED] && !intent?.modelWrite) {
+        merged.model = existing.model;
+        merged[MODEL_PINNED] = true;
+        const options = { ...session.options };
+        if (existing.options.model === undefined) delete options.model;
+        else options.model = existing.options.model;
+        merged.options = options;
+        if (!intent?.optionSpecWrite) merged.optionSpec = existing.optionSpec;
+      }
+      if (!intent?.modelWrite) {
+        if (existing[MODEL_PINNED] === undefined) delete merged[MODEL_PINNED];
+        else merged[MODEL_PINNED] = existing[MODEL_PINNED];
+      }
       if (existing.originProjectId === undefined) delete merged.originProjectId;
       else merged.originProjectId = existing.originProjectId;
       rows.set(session.id, merged);

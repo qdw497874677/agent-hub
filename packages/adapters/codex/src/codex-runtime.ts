@@ -178,6 +178,11 @@ class CodexSession implements RuntimeSession {
   private ended = false;
   private lastStderr = '';
 
+  nativeSessionRef(): string | null {
+    const ref = this.threadId.trim();
+    return ref && ref.toLowerCase() !== 'pending' ? this.threadId : null;
+  }
+
   constructor(options: CodexSessionOptions) {
     this.sessionId = options.spec.sessionId;
     this.spec = options.spec;

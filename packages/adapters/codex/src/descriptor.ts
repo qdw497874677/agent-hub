@@ -119,6 +119,7 @@ export function codexDescriptorFor(
   return {
     id: asAgentId('codex'),
     label: 'Codex',
+    nativeHandoff: true,
     capabilities: capabilityMatrix({
       prompt: available,
       interrupt: available,

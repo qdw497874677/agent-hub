@@ -55,6 +55,8 @@ export interface AgentModels {
   readonly agentId: string;
   readonly models: readonly string[];
   readonly defaultModel: string;
+  /** Positive only while this exact online Worker connection and agent support native handoff proof. */
+  readonly nativeHandoff?: true;
   /** 这台机器上它此刻能不能用（Worker 探测的）；老 Worker 不报，按能用处理。 */
   readonly readiness?: AgentReadiness;
   /** 它从哪来、能不能由 hub 安装；老 Worker 不报（= 不支持在线安装）。 */

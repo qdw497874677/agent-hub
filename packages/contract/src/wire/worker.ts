@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { rpcFrameSchema } from '../rpc/frames.ts';
 import { id } from './common.ts';
 import { workerMetricsSchema } from './resources.ts';
-import { agentSchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema, sessionEventSchema, sessionOriginSchema } from './entities.ts';
+import { agentSchema, optionCategorySchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema, sessionEventSchema, sessionOriginSchema } from './entities.ts';
 
 /** hub ↔ worker 长连接协议：握手、上下行帧、更新。 */
 
@@ -25,6 +25,8 @@ import { agentSchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema,
 export const PROTOCOL_VERSION = 7;
 export const PROTOCOL_MISMATCH_CLOSE = 4426;
 export const WORKER_CAPABILITY_SESSION_START_READY = 'session_start_ready';
+/** Ready reports can carry a native ref from the exact runtime object (not every runtime supplies one). */
+export const WORKER_CAPABILITY_SESSION_START_NATIVE_REF = 'session_start_native_ref';
 export const WORKER_CAPABILITY_OPTION_RECEIPT = 'option_receipt';
 
 /** 一份代码的身份：package 版本 + git 提交（不在 git 仓库里就是 null）+ 协议版本。 */
@@ -115,23 +117,42 @@ export const workerBranchResultSchema = z.object({
 
 export const branchAttemptIdSchema = z.string().min(1).max(128);
 export const startAttemptIdSchema = z.string().min(1).max(128);
-export const workerSessionStartResultSchema = z.object({
-  type: z.literal('session_start_result'),
-  sessionId: id,
-  startAttemptId: startAttemptIdSchema,
-  state: z.enum(['ready', 'failed', 'ended']),
-  reason: z.enum(['runtime', 'configuration']).optional()
+export const branchAgentSessionRefSchema = z.string().refine(
+  (ref) => ref.trim().length > 0 && ref.trim().toLowerCase() !== 'pending' && new TextEncoder().encode(ref).length <= 512,
+  'invalid attested agent session ref'
+);
+
+// Ready reports are optional proof, not a second unbounded options channel.
+const readyText = z.string().max(2048);
+const readyValue = z.object({
+  value: readyText, label: readyText, description: readyText.optional(),
+  metadata: z.object({
+    contextWindow: z.number().int().positive().optional(), maxTokens: z.number().int().positive().optional(),
+    defaultThinking: readyText.optional(), aliases: z.array(readyText).max(64).readonly().optional(),
+    selectable: z.boolean().optional(), tags: z.array(readyText).max(64).readonly().optional()
+  }).optional()
 });
+export const sessionStartReadyOptionsSchema = z.array(z.object({
+  id: readyText, label: readyText, description: readyText.optional(), category: optionCategorySchema,
+  kind: z.enum(['select', 'boolean']), current: z.union([readyText, z.boolean()]),
+  choices: z.array(z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('value'), value: readyValue }),
+    z.object({ kind: z.literal('group'), label: readyText, values: z.array(readyValue).max(64).readonly() })
+  ])).max(64).readonly()
+})).max(64).refine((value) => new TextEncoder().encode(JSON.stringify(value)).length <= 65_536, 'ready options exceed byte budget');
+
+const startResultBase = { type: z.literal('session_start_result'), sessionId: id, startAttemptId: startAttemptIdSchema, reason: z.enum(['runtime', 'configuration']).optional() };
+export const workerSessionStartResultSchema = z.discriminatedUnion('state', [
+  z.object({ ...startResultBase, state: z.literal('ready'), agentSessionRef: branchAgentSessionRefSchema.optional(), options: sessionStartReadyOptionsSchema.optional() }),
+  z.object({ ...startResultBase, state: z.literal('failed') }),
+  z.object({ ...startResultBase, state: z.literal('ended') })
+]);
 export const workerPromptStartRefusedSchema = z.object({
   type: z.literal('prompt_start_refused'),
   sessionId: id,
   startAttemptId: startAttemptIdSchema,
   deliveryId: z.string().min(1).max(128)
 });
-export const branchAgentSessionRefSchema = z.string().refine(
-  (ref) => ref.trim().length > 0 && ref.trim().toLowerCase() !== 'pending' && new TextEncoder().encode(ref).length <= 512,
-  'invalid attested agent session ref'
-);
 const attemptResultBase = { type: z.literal('branch_attempt_result'), sessionId: id, attemptId: branchAttemptIdSchema };
 export const workerBranchAttemptResultSchema = z.discriminatedUnion('outcome', [
   z.object({ ...attemptResultBase, outcome: z.literal('native'), agentSessionRef: branchAgentSessionRefSchema }).strict(),

@@ -179,8 +179,8 @@ test('配置、归档和停止都在回执后立刻反馈，不被旧画布或�
     await page.getByTestId('list-session-row').filter({ hasText: stopTitle }).click();
     await expect(page.getByLabel('发送消息')).toBeVisible();
 
-    const modelButton = page.getByRole('button', { name: /^Model：/ });
-    await expect(modelButton).toHaveAttribute('aria-label', /^Model：A/);
+    const modelButton = page.getByRole('button', { name: /^Agent 和模型：/ });
+    await expect(modelButton).toHaveAttribute('aria-label', /^Agent 和模型：.+ · A$/);
     const sheet = page.getByRole('dialog');
 
     let optionGate: Deferred | null = null;
@@ -199,18 +199,18 @@ test('配置、归档和停止都在回执后立刻反馈，不被旧画布或�
 
     expect(optionGate).not.toBeNull();
     optionGate!.fire();
-    await expect(modelButton).toHaveAttribute('aria-label', /Model：B/);
+    await expect(modelButton).toHaveAttribute('aria-label', / · B$/);
     await expect(modelButton).not.toHaveAttribute('aria-busy', 'true');
 
     // 旧画布这才会放行：它带的是改之前的数据，不能把刚确认的 B 盖回 A。
     await releaseCanvas();
-    await expect(modelButton).toHaveAttribute('aria-label', /Model：B/);
+    await expect(modelButton).toHaveAttribute('aria-label', / · B$/);
     await page.unroute('**/api/sessions/*/options');
 
     // 回执可能仍是旧值（agent 超时没确认）：界面只认回执，不显示刚点过的目标 A。
     const confirmed = (await (await page.request.get(`/api/sessions/${stopSession}`, { headers })).json()) as Record<string, unknown>;
     await page.route('**/api/sessions/*/options', (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(confirmed) })
+      route.fulfill({ status: 200, json: { state: 'unconfirmed', session: confirmed } })
     );
     const staleAck = page.waitForResponse(
       (response) => response.request().method() === 'POST' && response.url().includes('/options')
@@ -219,7 +219,7 @@ test('配置、归档和停止都在回执后立刻反馈，不被旧画布或�
     await expect(sheet).toBeVisible();
     await sheet.getByRole('option').filter({ hasText: 'A' }).first().click();
     await staleAck;
-    await expect(modelButton).toHaveAttribute('aria-label', /Model：B/);
+    await expect(modelButton).toHaveAttribute('aria-label', / · B$/);
     await expect(modelButton).not.toContainText('切换中…');
     await page.unroute('**/api/sessions/*/options');
 

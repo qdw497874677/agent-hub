@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   agent_session    TEXT,
   options          TEXT NOT NULL DEFAULT '{}',
   option_spec      TEXT NOT NULL DEFAULT '[]',
+  model_pinned     INTEGER NOT NULL DEFAULT 0,
   worker_id        TEXT,
   -- #243：容器会话创建时落定的来源项目；只用于授权。老库为 NULL，由 store.ts 补列。
   origin_project_id TEXT,

@@ -1,11 +1,73 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createOptionWaiters, ingestOptionReceipt } from './option-waiters.ts';
-import { asSessionId } from '@agent-hub/domain';
+import { asSessionId, MODEL_PINNED, recordSessionOptions, startCommand } from '@agent-hub/domain';
 import type { RuntimeOption, Session } from '@agent-hub/domain';
 import { inMemoryDeps } from '@agent-hub/domain/testing';
 
 const snapshot = (current: string): RuntimeOption[] => [{ id: 'effort', label: 'Effort', category: 'thought_level', kind: 'select', current, choices: [] }];
+const modelSnapshot = (current: string): RuntimeOption[] => [{ id: 'model', label: 'Model', category: 'model', kind: 'select', current, choices: [] }];
+
+test('only an exact live model receipt pins the first explicit model and protects fresh start', async () => {
+  const { deps } = inMemoryDeps();
+  const id = asSessionId('model-exact');
+  await deps.sessions.save({ id, model: '', agentId: 'fake', workerId: 'w', options: {}, optionSpec: [], lastSeq: 0 } as unknown as Session);
+  const waiters = createOptionWaiters(1000);
+  const pending = waiters.register(id, 'model', 'm2');
+  await ingestOptionReceipt(deps, waiters, id, pending.requestId, 'model', 'applied', modelSnapshot('m2'), () => true);
+  assert.equal(await pending.result, 'confirmed');
+  await recordSessionOptions(deps, { sessionId: id, options: modelSnapshot('m1') });
+  const session = (await deps.sessions.byId(id))!;
+  assert.equal(session.model, 'm2');
+  assert.equal(session.options.model, 'm2');
+  assert.equal(session.optionSpec[0]?.current, 'm1');
+  assert.equal(session[MODEL_PINNED], true);
+  assert.equal(startCommand({ ...session, workerId: 'w' }, '/tmp', null).options.model, 'm2');
+});
+
+test('mismatched, ambiguous and late model receipts never pin or overwrite', async () => {
+  const { deps } = inMemoryDeps();
+  const id = asSessionId('model-races');
+  await deps.sessions.save({ id, model: '', options: {}, optionSpec: [] } as unknown as Session);
+  const waiters = createOptionWaiters(5);
+  const mismatch = waiters.register(id, 'model', 'm2');
+  await ingestOptionReceipt(deps, waiters, id, mismatch.requestId, 'model', 'applied', modelSnapshot('m1'), () => true);
+  assert.equal(await mismatch.result, 'unconfirmed');
+  const ambiguous = waiters.register(id, 'model', 'm2');
+  await ingestOptionReceipt(deps, waiters, id, ambiguous.requestId, 'model', 'applied', [...modelSnapshot('m2'), ...modelSnapshot('m1')], () => true);
+  assert.equal(await ambiguous.result, 'unconfirmed');
+  const late = waiters.register(id, 'model', 'm2');
+  assert.equal(await late.result, 'unconfirmed');
+  await ingestOptionReceipt(deps, waiters, id, late.requestId, 'model', 'applied', modelSnapshot('m2'), () => true);
+  assert.equal((await deps.sessions.byId(id))?.model, '');
+});
+
+test('old receipt after timeout and newer selection cannot overwrite the newer desired model', async () => {
+  const { deps } = inMemoryDeps();
+  const id = asSessionId('model-newer');
+  await deps.sessions.save({ id, model: '', options: {}, optionSpec: [] } as unknown as Session);
+  const waiters = createOptionWaiters(10);
+  const old = waiters.register(id, 'model', 'm1');
+  assert.equal(await old.result, 'unconfirmed');
+  const next = waiters.register(id, 'model', 'm2');
+  await ingestOptionReceipt(deps, waiters, id, next.requestId, 'model', 'applied', modelSnapshot('m2'), () => true);
+  assert.equal(await next.result, 'confirmed');
+  await ingestOptionReceipt(deps, waiters, id, old.requestId, 'model', 'applied', modelSnapshot('m1'), () => true);
+  assert.equal((await deps.sessions.byId(id))?.model, 'm2');
+});
+
+test('receipt cannot replace a desired model changed by a different command', async () => {
+  const { deps } = inMemoryDeps();
+  const id = asSessionId('model-concurrent');
+  await deps.sessions.save({ id, model: 'm0', options: {}, optionSpec: [] } as unknown as Session);
+  const waiters = createOptionWaiters(5);
+  const pending = waiters.register(id, 'model', 'm1', 'm0');
+  const current = (await deps.sessions.byId(id))!;
+  await deps.sessions.save({ ...current, model: 'm2', [MODEL_PINNED]: true });
+  await ingestOptionReceipt(deps, waiters, id, pending.requestId, 'model', 'applied', modelSnapshot('m1'), () => true);
+  assert.equal(await pending.result, 'unconfirmed');
+  assert.equal((await deps.sessions.byId(id))?.model, 'm2');
+});
 
 test('late exact applied snapshot persists as observation, not retroactive confirmation', async () => {
   const { deps } = inMemoryDeps();

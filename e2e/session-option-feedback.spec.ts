@@ -72,7 +72,7 @@ for (const width of [1280, 390]) {
       mode = 'saved';
       await select.selectOption('low');
       await expect(notice).toHaveAttribute('data-state', 'saved');
-      await expect(notice).toContainText('下次启动时生效');
+      await expect(notice).toContainText('供下次启动使用');
       mode = 'immediate';
       await select.selectOption('high');
       await expect(notice).toHaveAttribute('data-state', 'confirmed');

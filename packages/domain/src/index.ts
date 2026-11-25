@@ -42,6 +42,8 @@ export type { TaskRepository } from './ports/task-repository.ts';
 export type { TaskGate } from './ports/task-gate.ts';
 export type { TaskCreationStore, TaskCreationOutcome } from './ports/task-creation-store.ts';
 export type * from './ports/operation-receipt-store.ts';
+export type * from './ports/agent-handoff-store.ts';
+export { buildAgentHandoffHistory, type AgentHandoffHistoryInput } from './use-cases/agent-handoff-history.ts';
 export type { WorkLogRepository, WorkLogQuery } from './ports/work-log-repository.ts';
 export type {
   WorkspaceClaim,
@@ -246,6 +248,7 @@ export * from './use-cases/git-workflow.ts';
 export * from './delivery.ts';
 export type { DeliveryQueue } from './ports/delivery-queue.ts';
 export { attemptDelivery, pumpDeliveries, releaseAfterTurn, recoverOrphanedTurns, resolveOrphanTurnMs, findDeliveryEnded, reconcileInFlightDelivery, reconcileSendingDeliveries, requeueRefusedPrompt, TURN_WAIT_MS, ORPHAN_TURN_MS, ORPHAN_TURN_MARKER, retryDeliveryNow, cancelDelivery, type DeliveryDeps, type PromptPayload } from './use-cases/delivery.ts';
+export { handoffRecord, handoffFirstEnded } from './use-cases/handoff-admission.ts';
 export { validateProvenance, legacyProvenance, viaLabel, PARENT_REQUIRED, type SessionProvenance, type ProvenanceVia, type ProvenanceActorKind } from './provenance.ts';
 export type { ProvenanceStore } from './ports/provenance-store.ts';
 export { recordProvenance, type ProvenanceDeps, type RecordProvenanceInput } from './use-cases/provenance.ts';

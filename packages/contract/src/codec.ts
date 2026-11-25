@@ -23,6 +23,7 @@ export function agentToDto(descriptor: AgentDescriptor): AgentDto {
     models: [...descriptor.models],
     defaultModel: descriptor.defaultModel,
     options: descriptor.options.map(optionToDto),
+    ...(descriptor.nativeHandoff === true ? { nativeHandoff: true as const } : {}),
     ...(descriptor.providers?.length ? { providers: [...descriptor.providers] } : {})
   };
 }
@@ -36,6 +37,7 @@ export function agentFromDto(dto: AgentDto): AgentDescriptor {
     models: dto.models,
     defaultModel: dto.defaultModel,
     options: dto.options,
+    ...(dto.nativeHandoff === true ? { nativeHandoff: true as const } : {}),
     ...(dto.providers?.length ? { providers: dto.providers } : {})
   };
 }

@@ -13,6 +13,9 @@ const entries = new Map<string, Readonly<Record<string, OptionFeedback>>>();
 const listeners = new Set<() => void>();
 const empty: Readonly<Record<string, OptionFeedback>> = {};
 const MAX_SESSIONS = 192;
+export function getOptionFeedback(sessionId: string, optionId: string): OptionFeedback | undefined {
+  return entries.get(sessionId)?.[optionId];
+}
 export function setOptionFeedback(sessionId: string, optionId: string, feedback: OptionFeedback): void {
   const next = { ...entries.get(sessionId), [optionId]: feedback };
   entries.delete(sessionId);

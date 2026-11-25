@@ -1,4 +1,7 @@
 import { installConnectorRoutes, type ConnectorRouteDeps } from './connector-routes.ts';
+import { installAgentHandoffRoutes } from './agent-handoff-routes.ts';
+import type { AgentHandoffService } from './agent-handoff.ts';
+import { installHandoffMutationGate } from './handoff-mutation-gate.ts';
 import { installObserveRoutes, type ObserveRouteOptions } from './observe-routes.ts';
 import { installGroupRoutes, type GroupRouteDeps } from './group-routes.ts';
 import { installWorkspaceGroupRoutes } from './workspace-group-routes.ts';
@@ -79,6 +82,11 @@ import type { AttentionStore, PullRequestRepository } from '@agent-hub/domain';
 const NO_AUTH_SUBJECT = systemSubject('no-auth');
 import {
   authorizeProject,
+  authorizeSession,
+  authorizeWorker,
+  projectOfSessionOrigin,
+  parseHubModel,
+  optionValues,
   can,
   forbidden,
   projectOfRef,
@@ -201,6 +209,7 @@ import type { OpenApiOptions } from './openapi/app.ts';
 import type { ApiTokenDeps } from '@agent-hub/domain';
 
 export interface AppOptions {
+  readonly agentHandoff?: AgentHandoffService;
   readonly taskArchiveBlockers?: TaskArchiveBlockers;
   readonly projectGitProbe?: ProjectGitProbeRouteOptions;
   readonly deps: Deps;
@@ -370,6 +379,8 @@ export function createApp(options: AppOptions): Hono {
     ({ principalOf, subjectOf } = installAuth(app, options.auth));
     // 授权中间件要先于下面所有路由注册（Hono 按注册顺序走）。
     installAccess(app, deps, subjectOf);
+    installHandoffMutationGate(app, deps, '/api', subjectOf);
+    if (options.agentHandoff) installAgentHandoffRoutes(app, options.agentHandoff, principalOf);
     if (options.projectGitProbe) installProjectGitProbeRoutes(app, options.projectGitProbe, subjectOf);
     if (options.admin) installAdmin(app, options.admin, principalOf);
     if (options.auth.team) installTeam(app, options.auth.team, principalOf);
@@ -440,6 +451,7 @@ export function createApp(options: AppOptions): Hono {
     }
     return next();
   });
+  if (!options.auth) installHandoffMutationGate(app, deps, '/api', subjectOf);
 
   if (options.services) {
     installServiceRoutes(
@@ -1132,6 +1144,59 @@ export function createApp(options: AppOptions): Hono {
     if (!input.ok) return input.response;
     const sessionId = c.req.param('sessionId');
     const current = await deps.sessions.byId(asSessionId(sessionId));
+    if (input.value.confirm === true && input.value.optionId === 'model') {
+      c.header('Cache-Control', 'no-store');
+      if (typeof input.value.value !== 'string') return fail(c, invalid('模型必须是字符串'));
+      const model = input.value.value;
+      const run = async () => {
+        const changed = await deps.queue.run(sessionId, async () => {
+          const session = await deps.sessions.byId(asSessionId(sessionId));
+          if (!session) return { kind: 'error' as const, error: notFound('会话不存在') };
+          const project = await projectOfSessionOrigin(deps, session);
+          const authorized = await authorizeSession(deps.access, subjectOf(c), project, session, 'session.prompt');
+          if (!authorized.ok) return { kind: 'error' as const, error: authorized.error };
+          const worker = await authorizeWorker(deps.access, subjectOf(c), session.workerId);
+          if (!worker.ok) return { kind: 'error' as const, error: worker.error };
+          if ((parseHubModel(session.model)?.slug ?? null) !== (parseHubModel(model)?.slug ?? null)) {
+            return { kind: 'error' as const, error: invalid('切换模型提供商需要重启；此操作暂不可用') };
+          }
+          const observed = session.optionSpec.find((option) => option.id === 'model')?.current;
+          if (deps.hosting.has(session.id) && session.model === '' && typeof observed !== 'string') {
+            return { kind: 'error' as const, error: invalid('当前运行时模型来源未知，无法安全热切换') };
+          }
+          if (deps.hosting.has(session.id) && typeof observed === 'string' && (parseHubModel(observed)?.slug ?? null) !== (parseHubModel(model)?.slug ?? null)) {
+            return { kind: 'error' as const, error: invalid('运行时模型提供商不匹配，无法热切换') };
+          }
+          if (parseHubModel(model)) {
+            if (!options.providers) return { kind: 'error' as const, error: invalid('Hub 模型提供商不可用') };
+            const allowed = await options.providers.modelSwitchable(subjectOf(c), model, project?.teamId ?? null);
+            if (!allowed.ok) return { kind: 'error' as const, error: allowed.error };
+          }
+          // A current runtime candidate list constrains native models. Hub models
+          // are checked against their registered provider above: some adapters do
+          // not advertise those until after the provider-backed selection.
+          const runtimeModel = session.optionSpec.find((option) => option.id === 'model');
+          if (deps.hosting.has(session.id) && runtimeModel && !parseHubModel(model) &&
+              (runtimeModel.kind !== 'select' || !optionValues(runtimeModel).some((choice) => choice.value === model && choice.metadata?.selectable !== false))) {
+            return { kind: 'error' as const, error: invalid('运行时没有上报这个模型候选') };
+          }
+          const pending = options.optionConfirmations?.register(sessionId, 'model', model, session.model);
+          let saved = false;
+          const result = await changeSessionOption(deps, {
+            sessionId, id: 'model', value: model, exactModel: true,
+            ...(pending ? { requestId: pending.requestId } : {}),
+            onSaved: () => { saved = true; }
+          });
+          if (!result.ok) { pending?.cancel(); return { kind: 'error' as const, error: result.error }; }
+          if (saved) pending?.cancel();
+          return { kind: 'changed' as const, result: result.value, saved, pending };
+        });
+        if (changed.kind === 'error') return fail(c, changed.error);
+        const state = changed.saved ? 'saved' as const : changed.pending ? await changed.pending.result : 'unconfirmed' as const;
+        return c.json({ state, session: (await deps.sessions.byId(asSessionId(sessionId))) ?? changed.result });
+      };
+      return options.optionConfirmations ? options.optionConfirmations.serialize(sessionId, run) : run();
+    }
     // 换提供商不是「选项值」：Base URL/密钥是启动时写进 agent 配置的，得重启进程再接回来。
     if (
       current !== null &&

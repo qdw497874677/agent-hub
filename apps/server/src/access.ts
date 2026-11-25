@@ -75,6 +75,10 @@ export function installAccess(app: Hono<any>, deps: AccessDeps, subjectOf: Subje
     const method = c.req.method;
     const read = method === 'GET' || method === 'HEAD';
 
+    // Handoff service checks its own source/target ACLs, including continue and
+    // read for reserve; treating reserve as prompt incorrectly rejects callers.
+    if (prefix === '/api' && /^\/api\/sessions\/[^/]+\/agent-handoff(?:\/first)?$/.test(path)) return next();
+
     // 授权撤销只需仍是会话归属人；不能因项目权限变更而留下无法撤销的旧授权。
     if (prefix === '/api' && method === 'DELETE' && /^\/api\/sessions\/[^/]+\/project-tool-grant$/.test(path)) return next();
 

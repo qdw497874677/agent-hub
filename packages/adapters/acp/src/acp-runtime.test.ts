@@ -50,6 +50,26 @@ function keyed(text: string, deliveryId: string): PromptInput & { readonly deliv
   return { text, parts: [], deliveryId };
 }
 
+function nativeRef(session: RuntimeSession): string | null {
+  return (session as RuntimeSession & { nativeSessionRef(): string | null }).nativeSessionRef();
+}
+
+test('acp runtime: native ref excludes missing and pending session ids', async (t) => {
+  for (const ref of [undefined, '', 'pending', ' PENDING ', '   ']) await t.test(String(ref), async (t) => {
+    const script = `
+      const send = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value}) + '\\n');
+      require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') return send({id:msg.id,result:{protocolVersion:1}});
+        if (msg.method === 'session/new') return send({id:msg.id,result:${JSON.stringify(ref === undefined ? {} : { sessionId: ref })}});
+      });`;
+    const started = await createAcpRuntime({ id: 'fake', label: 'Fake', command: process.execPath, args: ['-e', script] }).start(await spec(t));
+    assert.ok(started.ok);
+    t.after(() => started.value.dispose());
+    assert.equal(nativeRef(started.value), null);
+  });
+});
+
 test('OpenCode prompt failure requires the first exact wire response and preserves the process', async (t) => {
   const scenarios = [
     { name: 'proof with prior output', mode: 'proof', codec: true, keyed: true, handled: true },
@@ -209,6 +229,7 @@ test('acp branch attempt: only proven fork or method-not-found can start a sessi
       t.after(() => result.session.dispose());
       assert.equal(result.outcome, scenario.expected);
       assert.equal(result.agentSessionRef, scenario.expected === 'native' ? 'forked' : 'fresh');
+      assert.equal(nativeRef(result.session), result.agentSessionRef);
     } else assert.deepEqual(result, { state: scenario.expected });
     assert.deepEqual(refs, []);
     const requests = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
@@ -538,6 +559,7 @@ test('acp runtime: 认证钩子、_meta、开跑前选项都按顺序落到 agen
   assert.ok(started.ok);
   const session = started.value;
   assert.deepEqual(refs, ['s1'], '新会话立刻报出 agent 的真实 ref');
+  assert.equal(nativeRef(session), 's1');
   assert.equal(session.options()[0]?.current, 'b');
   assert.ok(reported.includes('b'));
 
@@ -556,6 +578,7 @@ test('acp runtime: 恢复时丢掉回放、权限请求自动选 allow、dispose
   const started = await runtime.start(await spec(t, { resume: { agentSessionRef: 's-old', cursor: 0 } }));
   assert.ok(started.ok);
   const session = started.value;
+  assert.equal(nativeRef(session), 's-old');
 
   const turn = collectUntilEnded(session);
   assert.ok((await session.prompt({ text: 'ask', parts: [] })).ok);

@@ -6,6 +6,7 @@ import { ATTACHMENT_LIMITS, authenticateApiToken, invalid, newId } from '@agent-
 import type { Principal } from '@agent-hub/domain';
 import { createIdempotency } from './idempotency.ts';
 import { installAccess } from '../access.ts';
+import { installHandoffMutationGate } from '../handoff-mutation-gate.ts';
 import { fail } from '../http-error.ts';
 import { createRateLimiter } from '../rate-limit.ts';
 import { V1, routes } from './routes.ts';
@@ -140,6 +141,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     return next();
   });
   installAccess(v1 as unknown as Hono, deps, (c) => (c.get('principal') as Principal | undefined) ?? null, V1);
+  installHandoffMutationGate(v1 as unknown as Hono, deps, V1, (c) => (c.get('principal') as Principal | undefined) ?? null);
   // 写请求的幂等重试：MCP 的 clientRequestId 与 REST 的 Idempotency-Key 走同一张表（24h）。
   v1.use(`${V1}/*`, createIdempotency({ store: options.replays }).handle);
   v1.use(

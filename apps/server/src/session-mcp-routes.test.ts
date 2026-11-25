@@ -55,16 +55,30 @@ async function setup() {
   await accounts.users.save({ ...eveUser!, role: 'viewer' });
   const eve = browser();
   assert.equal((await eve('/api/auth/login', post({ email: 'eve@b.co', password: PASSWORD }))).status, 200);
+  await addTeamMember(accounts, 'member@b.co', PASSWORD);
+  const member = browser();
+  assert.equal((await member('/api/auth/login', post({ email: 'member@b.co', password: PASSWORD }))).status, 200);
 
   const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const storedProject = await world.deps.projects.byId(project.id);
+  const memberUser = await accounts.users.byEmail('member@b.co');
+  await world.deps.projects.save({ ...storedProject!, members: [memberUser!.id] });
   const task = (await david('/api/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body;
   const workspace = newWorkspace({ projectId: project.id, workerId: null, path: '/tmp/x', kind: 'long_lived', source: 'linked', now: 1 });
   assert.ok(workspace.ok);
   await world.deps.workspaces.save(workspace.value);
   const session = await david('/api/sessions/derive', post({ taskId: task.id, agentId: 'fake', model: 'm1', workspaceId: workspace.value.id }));
   assert.equal(session.status, 201, JSON.stringify(session.body));
-  return { accounts, david, eve, session: session.body };
+  return { accounts, david, eve, member, session: session.body };
 }
+
+test('exact model opt-in requires this session permission even for a team member', async () => {
+  const { david, member, session } = await setup();
+  assert.equal((await member(`/api/sessions/${session.id}`)).status, 200);
+  const response = await member(`/api/sessions/${session.id}/options`, post({ optionId: 'model', value: 'm1', confirm: true }));
+  assert.equal(response.status, 403);
+  assert.equal((await david(`/api/sessions/${session.id}`)).body.model, session.model);
+});
 
 test('PATCH /api/sessions/:id/mcp：按会话关 MCP，返回 DTO 并写审计；空数组 = 全部开启', async () => {
   const { accounts, david, session } = await setup();
