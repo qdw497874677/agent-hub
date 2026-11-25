@@ -138,6 +138,9 @@ type EndedEvent = Extract<SessionEvent, { kind: 'ended' }>;
 interface InFlightPrompt {
   readonly deliveryId?: string;
   turnId: string | null;
+  /** Suppress attribution after ambiguous or already-delivered first output. */
+  firstOutputDisabled: boolean;
+  firstOutputSent: boolean;
 }
 
 /** 响应还没回来就先到的结束通知：按原生 turn id 暂存，等响应确认归属。 */
@@ -259,7 +262,12 @@ class CodexSession implements RuntimeSession {
     // 只有网关明确带来的送达 id 才在 ended 上回传；老协议不带，行为保持原样。
     const deliveryId = textOf(input.deliveryId);
     this.turnEnded = false;
-    this.inFlight = deliveryId === '' ? { turnId: null } : { deliveryId, turnId: null };
+    this.inFlight = {
+      ...(deliveryId === '' ? {} : { deliveryId }),
+      turnId: null,
+      firstOutputDisabled: false,
+      firstOutputSent: false
+    };
     try {
       const response = await this.peer.request('turn/start', this.turnParams(input.text), TURN_START_TIMEOUT_MS);
       const turnId = textOf(asRecord(asRecord(response)['turn'])['id']);
@@ -385,15 +393,47 @@ class CodexSession implements RuntimeSession {
   }
 
   private handleNotification(method: string, params: Record<string, unknown>): void {
+    if (method === 'turn/started' || method === 'turn/completed' || method === 'error') {
+      const threadId = textOf(params['threadId']);
+      // Filter keyed lifecycle before the stateful mapper. Native v2 requires
+      // threadId; legacy unkeyed notifications retain their prior handling.
+      if (this.inFlight?.deliveryId !== undefined && (threadId === '' || threadId !== this.threadId)) return;
+    }
     const turnId = notificationTurnId(method, params);
     if (method === 'turn/started') this.noteTurnStarted(turnId);
+    const firstOutputDeliveryId = method === 'item/agentMessage/delta' ? this.firstOutputMarker(params) : undefined;
     for (const event of this.mapper.map({ method, params })) {
       if (event.kind === 'ended') {
         this.handleEnded(event, turnId);
         continue;
       }
-      this.push(event);
+      this.push(event.kind === 'text' && firstOutputDeliveryId !== undefined ? { ...event, firstOutputDeliveryId } : event);
     }
+  }
+
+  private firstOutputMarker(params: Record<string, unknown>): string | undefined {
+    const pending = this.inFlight;
+    if (pending === null || pending.deliveryId === undefined || pending.deliveryId.length > 128 ||
+        pending.firstOutputDisabled || pending.firstOutputSent || this.turnEnded) return undefined;
+    // The mapper emits no event for empty or non-string deltas.
+    if (textOf(params['delta']) === '') return undefined;
+    const threadId = textOf(params['threadId']);
+    const turnId = textOf(params['turnId']);
+    // A known other thread cannot be this session's output.
+    if (threadId !== '' && threadId !== this.threadId) return undefined;
+    // A known other turn after binding cannot be this prompt's output.
+    if (pending.turnId !== null && turnId !== '' && turnId !== pending.turnId) return undefined;
+    if (threadId === '' || turnId === '' || textOf(params['itemId']) === '') {
+      pending.firstOutputDisabled = true;
+      return undefined;
+    }
+    if (pending.turnId === null) {
+      // The text is delivered immediately, before it can be attributed.
+      pending.firstOutputDisabled = true;
+      return undefined;
+    }
+    pending.firstOutputSent = true;
+    return pending.deliveryId;
   }
 
   /**

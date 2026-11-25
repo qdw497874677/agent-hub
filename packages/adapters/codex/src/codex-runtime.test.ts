@@ -373,6 +373,99 @@ test('送达确认：turn/completed 早于 turn/start 响应到达也能归属�
   }
 });
 
+test('first output marker 只标记已绑定的精确首个文本，早到文本不延迟也不重复', async () => {
+  const cases: { mode: string; prefix: string[]; marked: boolean; early?: boolean }[] = [
+    { mode: 'normal', prefix: [], marked: true },
+    { mode: 'wrong-thread', prefix: ['wrong-thread'], marked: true },
+    { mode: 'stale', prefix: ['stale'], marked: true },
+    { mode: 'malformed-item', prefix: ['malformed'], marked: false },
+    { mode: 'malformed-thread', prefix: ['malformed'], marked: false },
+    { mode: 'malformed-turn', prefix: ['malformed'], marked: false },
+    { mode: 'empty-delta', prefix: [], marked: true },
+    { mode: 'nontext-delta', prefix: [], marked: true },
+    { mode: 'early-match', prefix: ['early'], marked: false, early: true },
+    { mode: 'early-stale', prefix: ['stale'], marked: false, early: true },
+    { mode: 'early-unknown', prefix: ['unknown'], marked: false, early: true },
+    { mode: 'early-empty', prefix: [], marked: true },
+    { mode: 'early-nontext', prefix: [], marked: true },
+    { mode: 'early-conflict', prefix: ['stale', 'early'], marked: false, early: true },
+    { mode: 'early-overflow', prefix: Array.from({ length: 9 }, (_, i) => String(i)), marked: false, early: true }
+  ];
+  for (const { mode, prefix, marked, early } of cases) {
+    const root = workdir();
+    try {
+      await withSession(makeRuntime(), spec(root), async (session, _pid, events) => {
+        let resolved = false;
+        const prompting = session.prompt(keyedPrompt(`marker:${mode}`, `delivery-${mode}`)).then((result) => {
+          resolved = true;
+          return result;
+        });
+        if (early) {
+          await waitFor(events, `${mode} early text`, (event) => event.kind === 'text');
+          assert.equal(resolved, false, `${mode}: early text must arrive before the start response`);
+        }
+        assert.ok((await prompting).ok, mode);
+        await waitFor(events, `${mode} after end`, (event) => event.kind === 'text' && event.delta === 'after-end');
+        const texts = events.filter((event): event is Extract<SessionEvent, { kind: 'text' }> => event.kind === 'text');
+        assert.deepEqual(texts.map((event) => event.delta), [...prefix, 'normal', 'second', 'after-end'], mode);
+        assert.deepEqual(texts.filter((event) => event.firstOutputDeliveryId !== undefined).map((event) => [event.delta, event.firstOutputDeliveryId]),
+          marked ? [['normal', `delivery-${mode}`]] : [], mode);
+        assert.deepEqual(endedEvents(events).map((event) => event.deliveryId), [`delivery-${mode}`], mode);
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('native lifecycle 仅接收当前 thread，缺失 thread 的旧无键结束仍兼容', async () => {
+  for (const mode of ['native', 'missing-keyed', 'foreign-keyed', 'legacy', 'legacy-foreign']) {
+    const root = workdir();
+    try {
+      await withSession(makeRuntime(), spec(root), async (session, _pid, events) => {
+        const legacy = mode.startsWith('legacy');
+        const input = legacy
+          ? { text: `lifecycle:${mode}`, parts: [] }
+          : keyedPrompt(`lifecycle:${mode}`, `delivery-${mode}`);
+        assert.ok((await session.prompt(input)).ok);
+        await waitFor(events, `${mode} ended`, (event) => event.kind === 'ended');
+        assert.deepEqual(endedEvents(events).map((event) => [event.outcome, event.deliveryId]), [
+          ['done', legacy ? undefined : `delivery-${mode}`]
+        ]);
+        const texts = events.filter((event): event is Extract<SessionEvent, { kind: 'text' }> => event.kind === 'text');
+        assert.deepEqual(texts, [{ kind: 'text', delta: 'lifecycle text', ...(legacy ? {} : { firstOutputDeliveryId: `delivery-${mode}` }) }]);
+        assert.deepEqual(events.filter((event) => event.kind === 'diagnostic'), legacy
+          ? [{ kind: 'diagnostic', level: 'error', text: 'other thread' }]
+          : []);
+        if (mode === 'legacy-foreign') {
+          assert.ok((await session.prompt({ text: 'marker:normal', parts: [] })).ok, 'legacy completion must release the prompt');
+          await waitFor(events, 'second legacy end', () => endedEvents(events).length === 2);
+          assert.deepEqual(endedEvents(events).map((event) => event.deliveryId), [undefined, undefined]);
+        }
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('first output marker 不用于没有 deliveryId 或空 deliveryId 的 prompt', async () => {
+  const root = workdir();
+  try {
+    await withSession(makeRuntime(), spec(root), async (session, _pid, events) => {
+      for (const input of [{ text: 'marker:normal', parts: [] }, keyedPrompt('marker:normal', '')]) {
+        const endCount = endedEvents(events).length;
+        assert.ok((await session.prompt(input)).ok);
+        await waitFor(events, 'after end', () => endedEvents(events).length > endCount);
+      }
+      assert.equal(events.some((event) => event.kind === 'text' && event.firstOutputDeliveryId !== undefined), false);
+      assert.deepEqual(endedEvents(events).map((event) => event.deliveryId), [undefined, undefined]);
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('送达确认：turn id 已确认后进程退出 → failed ended 仍带 deliveryId', async () => {
   const root = workdir();
   try {

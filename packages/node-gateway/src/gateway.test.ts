@@ -199,7 +199,7 @@ test('token 不对的 worker 被拒、不重连，也不会出现在列表里', 
   await stop(link);
 });
 
-test('管理员断开：worker 收到 4403 后不再重连，列表里标离线并写明原因；不在线的断不了', async () => {
+test('管理员断开：worker 收到 4403 后不再重连，列表里标离线并写明原因；不在线的断不了', async (t) => {
   const { rec, gateway, url, stop } = await harness('t0k');
   let closed = false;
   const link = connectWorkerLink({
@@ -211,16 +211,17 @@ test('管理员断开：worker 收到 4403 后不再重连，列表里标离线�
     initialBackoffMs: 10,
     onClose: () => (closed = true)
   });
+  t.after(() => stop(link));
   await rec.until(() => rec.hellos.length === 1);
   assert.equal(gateway.disconnect('w1'), true);
-  await rec.until(() => closed);
+  // 客户端与服务端在各自的 socket 上收到关闭通知，不保证哪一侧先到。
+  await rec.until(() => closed && rec.goneReasons.length > 0);
   assert.deepEqual(rec.goneReasons, ['管理员断开']);
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(rec.hellos.length, 1, '不该重连');
   assert.deepEqual(brief(gateway.workers()), ['w1:offline']);
   assert.equal(gateway.disconnect('w1'), false);
   assert.equal(gateway.disconnect('nope'), false);
-  await stop(link);
 });
 
 test('start + prompt 连发：worker 串行执行，事件与状态回到 server，模型只走 options', async () => {

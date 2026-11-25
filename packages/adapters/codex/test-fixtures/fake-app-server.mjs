@@ -286,6 +286,72 @@ function handleRequest(message) {
       const text = String(params.input?.[0]?.text ?? '');
       const turnId = `turn_${++state.turnSeq}`;
       state.activeTurn = turnId;
+      if (text.startsWith('marker:')) {
+        const mode = text.slice('marker:'.length);
+        const delta = (overrides = {}) => notify('item/agentMessage/delta', {
+          threadId: state.threadId, turnId, itemId: 'item_msg', delta: 'normal', ...overrides
+        });
+        if (mode === 'early-match') delta({ delta: 'early' });
+        if (mode === 'early-stale') delta({ turnId: 'old_turn', delta: 'stale' });
+        if (mode === 'early-unknown') delta({ turnId: '', delta: 'unknown' });
+        if (mode === 'early-empty') delta({ delta: '' });
+        if (mode === 'early-nontext') delta({ delta: 42 });
+        if (mode === 'early-conflict') {
+          delta({ turnId: 'old_turn', delta: 'stale' });
+          delta({ delta: 'early' });
+        }
+        if (mode === 'early-overflow') {
+          for (let i = 0; i < 9; i++) delta({ turnId: `old_${i}`, delta: `${i}` });
+        }
+        const start = () => {
+          reply(id, { turn: { id: turnId, items: [], status: 'inProgress' } });
+          setTimeout(() => {
+            if (mode === 'wrong-thread') delta({ threadId: 'other_thread', delta: 'wrong-thread' });
+            if (mode === 'stale') delta({ turnId: 'old_turn', delta: 'stale' });
+            if (mode === 'malformed-item') delta({ itemId: '', delta: 'malformed' });
+            if (mode === 'malformed-thread') delta({ threadId: '', delta: 'malformed' });
+            if (mode === 'malformed-turn') delta({ turnId: '', delta: 'malformed' });
+            if (mode === 'empty-delta') delta({ delta: '' });
+            if (mode === 'nontext-delta') delta({ delta: null });
+            delta();
+            delta({ delta: 'second' });
+            finishTurn(turnId, 'completed');
+            delta({ delta: 'after-end' });
+          }, 20);
+        };
+        if (mode.startsWith('early-')) setTimeout(start, 100);
+        else start();
+        return;
+      }
+      if (text.startsWith('lifecycle:')) {
+        const mode = text.slice('lifecycle:'.length);
+        const turn = { id: turnId, items: [], status: 'inProgress' };
+        const complete = { ...turn, status: 'completed' };
+        reply(id, { turn });
+        setTimeout(() => {
+          notify('turn/started', { threadId: 'other_thread', turn: { ...turn, id: 'other_turn' } });
+          notify('turn/completed', { threadId: 'other_thread', turn: { ...complete, id: 'other_turn' } });
+          notify('error', { threadId: 'other_thread', turnId: 'other_turn', willRetry: false, error: { message: 'other thread' } });
+          notify('turn/started', { threadId: state.threadId, turn });
+          if (mode === 'missing-keyed') {
+            notify('turn/completed', { turn });
+            notify('error', { turnId, willRetry: false, error: { message: 'missing thread' } });
+          }
+          if (mode === 'foreign-keyed') {
+            notify('turn/completed', { threadId: 'other_thread', turn: complete });
+            notify('error', { threadId: 'other_thread', turnId, willRetry: false, error: { message: 'foreign thread' } });
+          }
+          notify('item/agentMessage/delta', { threadId: state.threadId, turnId, itemId: 'item_msg', delta: 'lifecycle text' });
+          if (mode === 'legacy' || mode === 'legacy-foreign') {
+            state.activeTurn = null;
+            state.lastTurnId = turnId;
+            notify('turn/completed', { ...(mode === 'legacy-foreign' ? { threadId: 'other_thread' } : {}), turn: complete });
+          } else {
+            finishTurn(turnId, 'completed');
+          }
+        }, 20);
+        return;
+      }
       if (text.includes('early')) {
         // 收尾通知先于 turn/start 响应到达：客户端必须按原生 turn id 归属，不能等响应。
         notify('turn/started', {
