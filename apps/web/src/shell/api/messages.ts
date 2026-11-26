@@ -13,6 +13,8 @@ import type {
   MessagingRoleDto
 } from '@agent-hub/contract';
 import { RequestFailed, call, post } from './http.ts';
+import type { AgentMessagePartDto } from './message-types.ts';
+export type { AgentMessagePartDto } from './message-types.ts';
 
 export type {
   BotColorDto,
@@ -32,13 +34,6 @@ export type {
   GroupViewDto,
   MessagingRoleDto
 } from '@agent-hub/contract';
-
-/** agent 间通信（ADR 0018）里的一条消息。 */
-export type AgentMessagePartDto =
-  | { readonly type: 'data'; readonly schema?: string; readonly data: unknown }
-  | { readonly type: 'ref'; readonly repo: string; readonly branch?: string; readonly sha?: string }
-  | { readonly type: 'file'; readonly session: string; readonly member?: string; readonly path: string }
-  | { readonly type: 'link'; readonly url: string; readonly label?: string };
 
 /** 会话通信 P1a：同伴（连了线、派生关系，或同一棵任务树里的会话）。 */
 export interface SessionPeerDto {
@@ -71,6 +66,10 @@ export interface AgentMessageDto {
   readonly depth: number;
   /** 会话通信 P1a/P1d：外部发送者的署名、结构化附件、是否唤醒、回复状态、已读、被拦下的原因。 */
   readonly fromLabel?: string | null;
+  readonly senderKind?: 'session' | 'external' | 'system';
+  readonly initiatorKind?: 'account' | 'session_tool' | 'automatic_reply' | 'external_token' | 'system' | 'unknown';
+  readonly sourceSession?: { readonly id: string; readonly label: string };
+  readonly initiatorName?: string;
   readonly parts?: readonly AgentMessagePartDto[];
   readonly wake?: boolean;
   readonly replyStatus?: 'ok' | 'failed' | 'refused' | null;

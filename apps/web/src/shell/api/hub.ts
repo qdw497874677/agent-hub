@@ -52,6 +52,8 @@ import type {
 import type { CleanupPolicyDto, CleanupRecordsDto } from './workspaces.ts';
 
 export const api = {
+  messageSource: (sessionId: string, messageId: string) =>
+    call<import('../../atoms/message-provenance.ts').SourceDetails>(`/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/source`, { cache: 'no-store' }),
   sessionMessages: (sessionId: string) =>
     call<{ messages: AgentMessageDto[]; awaitingApproval: AgentMessageDto[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`),
   sendAgentMessage: (sessionId: string, body: { kind: 'send' | 'ask'; to: string; body: string; wake?: boolean }) =>

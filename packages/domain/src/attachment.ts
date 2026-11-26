@@ -1,6 +1,7 @@
 import type { DomainError } from './errors.ts';
 import { invalid } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
+import type { PromptMessageOrigin } from './message-provenance.ts';
 
 /**
  * 对话附件。三种来源，过 ACP 时各自对应一种 content block：
@@ -38,6 +39,7 @@ export interface PromptInput {
   readonly parts: readonly PromptPart[];
   /** Hub 投递标识；运行时只在确认这条投递结束时回传。 */
   readonly deliveryId?: string;
+  readonly messageOrigin?: PromptMessageOrigin;
 }
 
 export const ATTACHMENT_LIMITS = {

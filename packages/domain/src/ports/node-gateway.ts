@@ -6,6 +6,7 @@ import type { DomainError } from '../errors.ts';
 import type { Result } from '../result.ts';
 import type { WorkerStatus } from '../worker.ts';
 import type { PromptPart } from '../attachment.ts';
+import type { PromptMessageOrigin } from '../message-provenance.ts';
 import type { DirectoryEntry } from './workspace-fs.ts';
 import type { ToolAccess } from '../tool.ts';
 import type { McpLaunch } from '../mcp.ts';
@@ -73,6 +74,7 @@ export type WorkerCommand =
       readonly sessionId: SessionId;
       readonly text: string;
       readonly parts: readonly PromptPart[];
+      readonly messageOrigin?: PromptMessageOrigin;
       /** 送达队列里的 id（ADR 0031）：Worker 按它去重，重试不会让 agent 收到两遍。 */
       readonly deliveryId?: string;
       readonly startAttemptId?: string;

@@ -7,18 +7,28 @@ import {
   AGENT_REF_OPTION_VALUE_MAX,
   asProjectId,
   asSessionId,
+  asUserId,
   authorizeProject,
+  authorizeSession,
+  isExternalSender,
+  messageSenderKind,
   messageView,
   principalOfSubject,
-  projectOfSession,
+  projectOfSessionOrigin,
+  type AgentMessage,
   type Deps,
   type MessageBus,
+  type MessagePart,
   type MessageStore,
-  type BotDefinition
+  type BotDefinition,
+  type SessionId,
+  type Subject,
+  type UserRepository
 } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { messagingConfigDto } from './agent-ref-dto.ts';
 import { fail } from './http-error.ts';
+import { NO_STORE } from './http-helpers.ts';
 
 /**
  * agent 间通信的 HTTP 外壳（ADR 0018 · P2P）：
@@ -76,31 +86,101 @@ const decisionBody = z.object({ approve: z.boolean() });
 export interface MessagingRouteDeps {
   readonly bus: MessageBus;
   readonly messages: MessageStore;
+  readonly users?: Pick<UserRepository, 'byId'>;
   readonly deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access' | 'bots' | 'workspaces' | 'workspaceGroups'>;
 }
 
 export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDeps, subjectOf: SubjectOf): void {
-  const { bus, messages, deps } = options;
+  const { bus, messages, deps, users } = options;
+  const noMessage = { code: 'not_found', message: '没有这条消息' } as const;
+  const sessionAndProject = async (id: SessionId, actor: Subject | null) => {
+    const session = await deps.sessions.byId(id);
+    if (!session) return null;
+    const project = await projectOfSessionOrigin(deps, session);
+    if (!project || !(await authorizeSession(deps.access, actor, project, session, 'session.read')).ok) return null;
+    return { session, project };
+  };
+  const projections = (actor: Subject | null, projectId: string) => {
+    const cache = new Map<SessionId, ReturnType<typeof sessionAndProject>>();
+    const read = async (id: SessionId) => {
+      let resolve = cache.get(id);
+      if (!resolve) { resolve = sessionAndProject(id, actor); cache.set(id, resolve); }
+      const visible = await resolve;
+      return visible?.project.id === projectId ? visible.session : null;
+    };
+    const visibleParts = async (parts: readonly MessagePart[] = []) => (await Promise.all(parts.map(async (part) =>
+      part.type === 'file' && part.session.startsWith('session:') && !(await read(asSessionId(part.session.slice('session:'.length)))) ? null : part
+    ))).filter((part) => part !== null);
+    const details = async (message: AgentMessage) => {
+      const sender = messageSenderKind(message);
+      const source = sender === 'session' ? await read(message.fromSessionId) : null;
+      const initiator = message.initiator;
+      const user = source && users && initiator?.kind === 'account' ? await users.byId(asUserId(initiator.accountId)) : null;
+      return {
+        ...(source ? { sourceSession: { id: source.id, label: source.title?.trim() || source.agentId } } : {}),
+        ...(user?.displayName ? { initiatorName: user.displayName } : {}),
+        parts: await visibleParts(message.parts), replyStatus: message.replyStatus ?? null, failure: message.failure
+      };
+    };
+    return {
+      details,
+      inbox: async (message: AgentMessage, ownSession: SessionId) => {
+        const { sourceSession, initiatorName, parts } = await details(message);
+        const recipient = message.targetSessionId === ownSession ? ownSession :
+          message.targetSessionId && (await read(message.targetSessionId)) ? message.targetSessionId : null;
+        const view = messageView(message);
+        return {
+          ...view,
+          from: message.fromSessionId === ownSession ? `session:${ownSession}` : sourceSession ? `session:${sourceSession.id}` : isExternalSender(message.fromSessionId) ? 'external:' : 'session:',
+          fromLabel: null,
+          to: message.targetSessionId === null && (message.to.startsWith('role:') || message.to.startsWith('bot:')) ? message.to : recipient ? `session:${recipient}` : '',
+          targetSessionId: recipient,
+          failureDetail: null,
+          parts,
+          replyParts: await visibleParts(message.replyParts),
+          senderKind: messageSenderKind(message),
+          initiatorKind: message.initiator?.kind ?? 'unknown',
+          ...(sourceSession ? { sourceSession } : {}),
+          ...(initiatorName ? { initiatorName } : {})
+        };
+      }
+    };
+  };
 
   app.get('/api/sessions/:id/messages', async (c) => {
+    c.header('Cache-Control', NO_STORE['cache-control']);
     const sessionId = asSessionId(c.req.param('id'));
-    const session = await deps.sessions.byId(sessionId);
-    if (!session) return fail(c, { code: 'not_found', message: '会话不存在' });
-    // 容器会话没有任务：项目按归属反推（#221 步骤 7）。
-    const project = await projectOfSession(deps, session);
-    if (!project) return fail(c, { code: 'not_found', message: '会话不存在' });
-    const visible = await authorizeProject(deps.access, subjectOf(c), project, 'project.read');
-    if (!visible.ok) return fail(c, visible.error);
+    const actor = subjectOf(c);
+    const visible = await sessionAndProject(sessionId, actor);
+    if (!visible) return fail(c, { code: 'not_found', message: '会话不存在' });
+    const { project } = visible;
     const list = await bus.inbox(sessionId, 50, { unreadOnly: c.req.query('unread') === '1' });
-    const pending = (await messages.awaitingApproval(asProjectId(project.id as string))).filter((m) => m.fromSessionId === sessionId);
-    return c.json({ messages: list.map(messageView), awaitingApproval: pending.map(messageView) });
+    const pending = (await messages.awaitingApproval(project.id)).filter((m) => m.projectId === project.id && m.fromSessionId === sessionId);
+    const { inbox } = projections(actor, project.id);
+    return c.json({
+      messages: await Promise.all(list.filter((m) => m.projectId === project.id && (m.targetSessionId === sessionId || m.fromSessionId === sessionId)).map((message) => inbox(message, sessionId))),
+      awaitingApproval: await Promise.all(pending.map((message) => inbox(message, sessionId)))
+    });
+  });
+
+  app.get('/api/sessions/:id/messages/:messageId/source', async (c) => {
+    c.header('Cache-Control', NO_STORE['cache-control']);
+    const actor = subjectOf(c);
+    const target = await sessionAndProject(asSessionId(c.req.param('id')), actor);
+    if (!target) return fail(c, noMessage);
+    const message = await messages.byId(c.req.param('messageId'));
+    if (!message || message.targetSessionId !== target.session.id || message.projectId !== target.project.id) return fail(c, noMessage);
+    return c.json(await projections(actor, target.project.id).details(message));
   });
 
   app.post('/api/sessions/:id/messages', async (c) => {
     const parsed = sendBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return fail(c, { code: 'invalid', message: '要给 kind（send / ask）、to 和 body' });
     const actor = principalOfSubject(subjectOf(c));
-    const accepted = await bus.accept({ fromSessionId: asSessionId(c.req.param('id')), ...parsed.data, ...(actor ? { onBehalfOf: actor.user.id } : {}) });
+    const accepted = await bus.accept(
+      { fromSessionId: asSessionId(c.req.param('id')), ...parsed.data, ...(actor ? { onBehalfOf: actor.user.id } : {}) },
+      actor ? { initiator: actor.via ? { kind: 'external_token' } : { kind: 'account', accountId: actor.user.id } } : undefined
+    );
     return accepted.ok ? c.json(accepted.value, 201) : fail(c, accepted.error);
   });
 

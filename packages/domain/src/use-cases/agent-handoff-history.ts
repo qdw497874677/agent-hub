@@ -113,7 +113,7 @@ export function buildAgentHandoffHistory(input: AgentHandoffHistoryInput): Agent
   for (const d of input.deliveries) {
     const prompt = entries.get(d.promptSeq)?.event;
     const end = entries.get(d.ended.seq)?.event;
-    if (prompt?.kind !== 'prompt' || prompt.promptActor !== 'account' || prompt.handoff !== undefined || !prompt.text.trim()) continue;
+    if (prompt?.kind !== 'prompt' || prompt.promptActor !== 'account' || prompt.messageSource !== undefined || prompt.handoff !== undefined || !prompt.text.trim()) continue;
     if (d.ended.outcome === 'unknown' || end?.kind !== 'ended' || isUnknownOutcomeEnded(end) || end.deliveryId !== d.deliveryId || end.outcome !== d.ended.outcome) continue;
     eligible.set(d.deliveryId, d);
     humanSeqs.add(d.promptSeq);

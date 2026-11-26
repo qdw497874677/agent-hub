@@ -1,6 +1,7 @@
 import type { HandoffStats } from './handoff.ts';
 import type { Seq } from './ids.ts';
 import type { StoredAttachment } from './attachment.ts';
+import type { PromptMessageSource } from './message-provenance.ts';
 
 /**
  * 归一化事件。加变体要改这份文件并过 ADR：
@@ -47,6 +48,7 @@ export type SessionEvent =
       readonly author?: { readonly id: string; readonly name: string; /** 经开放 API 令牌发的：令牌名（ADR 0015）。 */ readonly via?: string };
       /** 仅由可信 Hub 调用方填写；老事件缺省为未记录。 */
       readonly promptActor?: PromptActor;
+      readonly messageSource?: PromptMessageSource;
       /** 这句是平台写的交接简报时：带了多少、省略多少（ADR 0029）。 */
       readonly handoff?: HandoffStats;
       /**

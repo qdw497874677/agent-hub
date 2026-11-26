@@ -387,7 +387,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.admin) installAdmin(app, options.admin, principalOf);
     if (options.auth.team) installTeam(app, options.auth.team, principalOf);
     if (options.auth.accessAdmin) installAccessRoutes(app, options.auth.accessAdmin, subjectOf);
-    if (options.messaging) installMessagingRoutes(app, { ...options.messaging, deps }, subjectOf);
+    if (options.messaging) installMessagingRoutes(app, { ...options.messaging, deps, users: options.auth.accounts.users }, subjectOf);
     if (options.connectors) installConnectorRoutes(app, { ...options.connectors, deps }, subjectOf);
     if (options.observe) installObserveRoutes(app, options.observe, subjectOf);
     if (options.memory) installMemoryRoutes(app, { ...options.memory, deps }, subjectOf);

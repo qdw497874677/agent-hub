@@ -1850,7 +1850,12 @@ function toWire(command: WorkerCommand): ServerToWorker {
         ...(command.provider ? { provider: { ...command.provider, models: command.provider.models.map((model) => ({ ...model })) } } : {})
       };
     case 'prompt':
-      return { kind: 'prompt', sessionId: command.sessionId, text: command.text, parts: [...command.parts], ...(command.deliveryId ? { deliveryId: command.deliveryId } : {}), ...(command.startAttemptId === undefined ? {} : { startAttemptId: command.startAttemptId }) };
+      return {
+        kind: 'prompt', sessionId: command.sessionId, text: command.text, parts: [...command.parts],
+        ...(command.deliveryId ? { deliveryId: command.deliveryId } : {}),
+        ...(command.startAttemptId === undefined ? {} : { startAttemptId: command.startAttemptId }),
+        ...(command.messageOrigin === undefined ? {} : { messageOrigin: command.messageOrigin })
+      };
     case 'interrupt':
       return { kind: 'interrupt', sessionId: command.sessionId };
     case 'dispose':

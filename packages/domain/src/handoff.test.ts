@@ -7,6 +7,14 @@ import { estimateTokens } from './memory.ts';
 const journal = (events: SessionEvent[]): JournalEntry[] => events.map((event, i) => ({ seq: (i + 1) as never, event, at: 0 }));
 const where = { from: 'A', to: 'B', root: '/r' };
 
+test('portable handoff excludes bus prompts even when account-tagged; legacy behavior stays unchanged', () => {
+  const entries = journal([{ kind: 'prompt', text: 'bus secret', promptActor: 'account', messageSource: { kind: 'agent_message', messageId: 'm', messageKind: 'ask', initiator: 'account', sender: 'session' } }, { kind: 'prompt', text: 'legacy human' }]);
+  const portable = renderHandoffDocument(buildHandoffDocument(entries, { sourceSessionId: 's', cursor: 2, windowTokens: 100_000 }));
+  assert.doesNotMatch(portable, /bus secret/);
+  assert.match(portable, /legacy human/);
+  assert.match(buildHandoff(entries, where, { sourceSessionId: 's' }).text, /bus secret/);
+});
+
 test('交接条目：工具调用和结果配成一条，带 ✓/✗、耗时、截短的输出', () => {
   const items = handoffItems(journal([
     { kind: 'prompt', text: '跑测试' },

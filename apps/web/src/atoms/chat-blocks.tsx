@@ -1,6 +1,7 @@
 import { DeliveryNote } from './delivery-note.tsx';
 import { AuthorTag } from './author.tsx';
-import { AGENT_MESSAGE_KIND, REPLY_STATUS_TEXT, parseAgentMessage, type ParsedAgentMessage } from './agent-message-card.ts';
+import { ProvenanceView } from './message-provenance-view.tsx';
+import { projectMessage } from './message-provenance.ts';
 
 /** 会话通信 P1e：agent 间消息在时间线里画成卡片（谁发的、类型、回复状态、正文），正文仍是不可信数据。 */
 /**
@@ -59,24 +60,6 @@ function AgentQuestion({ block }: { block: Extract<Block, { kind: 'tool' }> }) {
   );
 }
 
-function AgentMessageCard({ message }: { message: ParsedAgentMessage }) {
-  const tone = message.failure || message.status === 'failed' || message.status === 'refused' ? 'border-rust/50' : 'border-hair';
-  return (
-    <div data-testid="agent-message-card" data-kind={message.kind} className={`w-full max-w-[85%] min-w-0 rounded-[var(--radius-overlay)] rounded-br-sm border ${tone} bg-card-raised px-3 py-2`}>
-      <p className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-meta">
-        <span className="shrink-0 rounded bg-card px-1 text-[10px] text-secondary">{AGENT_MESSAGE_KIND[message.kind]}</span>
-        <span className="min-w-0 truncate text-primary" title={message.fromSession}>{message.from}</span>
-        {message.onBehalfOf ? <span className="shrink-0 text-tertiary">代 {message.onBehalfOf}</span> : null}
-        {message.kind === 'reply' ? (
-          <span data-testid="agent-message-card-status" className={`ml-auto shrink-0 ${message.failure || message.status !== 'ok' ? 'text-rust' : 'text-sage'}`}>
-            {message.failure ? `失败（${message.failure}）` : (REPLY_STATUS_TEXT[message.status ?? 'ok'] ?? message.status)}
-          </span>
-        ) : null}
-      </p>
-      <p className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words text-chat text-primary">{message.body}</p>
-    </div>
-  );
-}
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { api, attachmentUrl } from '../shell/api.ts';
 import { useAccount } from '../shell/auth.tsx';
@@ -1072,10 +1055,11 @@ export function ChatBlock({
   if (block.kind === 'prompt') {
     const images = block.attachments.filter((item) => item.kind === 'image');
     const others = block.attachments.filter((item) => item.kind !== 'image');
+    const provenance = projectMessage(block);
     return (
       <div className="flex flex-col items-end gap-1.5" data-testid="msg-user">
         {block.handoff ? <HandoffBar handoff={block.handoff} /> : null}
-        {showAuthor ? <AuthorTag author={block.author} /> : null}
+        {showAuthor && provenance.kind === 'ordinary' ? <AuthorTag author={block.author} /> : null}
         {images.length > 0 ? (
           <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
             {images.map((item) => (
@@ -1095,8 +1079,8 @@ export function ChatBlock({
             ))}
           </ul>
         ) : null}
-        {block.text !== '' && block.author?.via === 'agent' && parseAgentMessage(block.text) ? (
-          <AgentMessageCard message={parseAgentMessage(block.text)!} />
+        {provenance.kind !== 'ordinary' ? (
+          <ProvenanceView text={block.text} author={block.author} messageSource={block.messageSource} sessionId={sessionId} />
         ) : block.text !== '' ? (
           <p
             className={`max-w-[85%] whitespace-pre-wrap rounded-[var(--radius-overlay)] rounded-br-sm bg-card-raised px-3 py-2 text-chat text-primary transition-opacity duration-150 ${

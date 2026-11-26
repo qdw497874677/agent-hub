@@ -52,13 +52,14 @@ test('会话通信 P1a：parts / wake / reply status / 已读 / 拦下原因往�
     await store.messages.save(base({ id: 'old', idempotencyKey: null }));
     // 模拟升级前的老库：把新列删掉，重开时要自动补回
     const raw = new DatabaseSync(path);
-    for (const column of ['parts', 'wake', 'reply_status', 'reply_parts', 'read_at', 'hold_reason', 'handoff_origin']) raw.exec(`ALTER TABLE agent_messages DROP COLUMN ${column}`);
+    for (const column of ['parts', 'wake', 'reply_status', 'reply_parts', 'read_at', 'hold_reason', 'handoff_origin', 'initiator']) raw.exec(`ALTER TABLE agent_messages DROP COLUMN ${column}`);
     raw.close();
     const reopened = openSqliteStore(path);
     const old = await reopened.messages.byId('old');
     assert.equal(old?.wake, true);
     assert.deepEqual(old?.parts, []);
     assert.equal(old?.handoffOrigin, undefined, '老库补列后仍是来源未知');
+    assert.equal(old?.initiator, undefined);
     await reopened.messages.save(base({
       id: 'n1', idempotencyKey: null, kind: 'send', status: 'held', holdReason: 'pingpong', wake: false,
       parts: [{ type: 'ref', repo: 'web', branch: 'feat/x' }]
@@ -108,6 +109,34 @@ test('会话通信 P1a：parts / wake / reply status / 已读 / 拦下原因往�
     assert.equal((await reopened.messages.config(asProjectId('p')))?.trustPeers, false);
     await reopened.messages.saveConfig({ projectId: asProjectId('p'), roles: [], limits: {}, trustPeers: true, updatedAt: 2 });
     assert.equal((await openSqliteStore(path).messages.config(asProjectId('p')))?.trustPeers, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('initiator is insert-only, persists across reopen and malformed historical values are unknown', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-msg-'));
+  try {
+    const path = join(dir, 'hub.db');
+    const store = openSqliteStore(path);
+    await store.messages.save(base({ id: 'person', initiator: { kind: 'account', accountId: 'bob' } }));
+    await store.messages.save(base({ id: 'person', initiator: { kind: 'session_tool' }, status: 'done' }));
+    await store.messages.save(base({ id: 'legacy', idempotencyKey: null }));
+    await store.messages.save(base({ id: 'legacy', idempotencyKey: null, initiator: { kind: 'system' }, status: 'done' }));
+    assert.equal((await store.messages.byId('legacy'))?.initiator, undefined);
+    for (const kind of ['session_tool', 'automatic_reply', 'external_token', 'system'] as const) {
+      await store.messages.save(base({ id: kind, idempotencyKey: null, initiator: { kind } }));
+    }
+    const raw = new DatabaseSync(path);
+    raw.prepare('UPDATE agent_messages SET initiator = ? WHERE id = ?').run('{"kind":"account"}', 'legacy');
+    raw.close();
+    const reopened = openSqliteStore(path);
+    assert.deepEqual((await reopened.messages.byIdempotencyKey(asSessionId('a'), 'k'))?.initiator, { kind: 'account', accountId: 'bob' });
+    assert.equal((await reopened.messages.byId('person'))?.status, 'done');
+    assert.equal((await reopened.messages.byId('legacy'))?.initiator, undefined);
+    for (const kind of ['session_tool', 'automatic_reply', 'external_token', 'system'] as const) {
+      assert.deepEqual((await reopened.messages.byId(kind))?.initiator, { kind });
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

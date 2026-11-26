@@ -101,6 +101,19 @@ function setup(runtime: AgentRuntime, extra: Partial<WorkerLinkOptions> = {}): {
   return { ctx, sessions: installSessions(ctx, transport), frames };
 }
 
+test('prompt origin reaches runtime unchanged alongside delivery identity and text', async () => {
+  const session = fakeSession('s', 'one', []);
+  const received: Parameters<RuntimeSession['prompt']>[0][] = [];
+  session.prompt = async (input) => { received.push(input); return { ok: true, value: undefined }; };
+  const runtime: AgentRuntime = { descriptor: descriptor(), async start() { return { ok: true, value: session }; } };
+  const { sessions } = setup(runtime);
+  await sessions.run(startCommand('s', '/tmp'));
+  const messageOrigin = { kind: 'agent_message', messageId: 'm', messageKind: 'reply', initiator: 'automatic_reply', sender: 'session', sourceSessionId: 'source' } as const;
+  await sessions.run({ kind: 'prompt', sessionId: 's', text: 'wrapped', parts: [], deliveryId: 'd', messageOrigin });
+  assert.deepEqual(received, [{ text: 'wrapped', parts: [], deliveryId: 'd', messageOrigin }]);
+  await sessions.closeAll();
+});
+
 test('keyed option receipts serialize mutations, classify uncertain errors and fence replacement', async () => {
   const log: string[] = [];
   const session = fakeSession('s', 'first', log);

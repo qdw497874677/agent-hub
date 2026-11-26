@@ -83,7 +83,7 @@ function projectHandoffItems(entries: readonly JournalEntry[], policy: 'portable
         pendingTool = null;
         turn += 1;
         // 旧交接简报也写作 prompt，但正文可能已经内嵌工具输出和附件路径，不能再当成用户原话转交。
-        if (policy === 'portable' && (event.handoff !== undefined || event.text.trim() === '')) break;
+        if (policy === 'portable' && (event.messageSource !== undefined || event.handoff !== undefined || event.text.trim() === '')) break;
         const files = policy === 'legacy' ? (event.attachments ?? []).map((a) => a.path).join('、') : '';
         items.push({ seq, lastSeq: seq, turn, role: 'user', kind: 'user', text: `用户：${event.text.trim()}${files ? `（附带：${files}）` : ''}` });
         break;

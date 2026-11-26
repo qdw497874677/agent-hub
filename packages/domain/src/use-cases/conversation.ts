@@ -1,4 +1,5 @@
 import type { HandoffStats } from '../handoff.ts';
+import { promptMessageSource, type PromptMessageOrigin } from '../message-provenance.ts';
 import { isUnknownOutcomeEnded } from '../attention.ts';
 import { locationOf } from './workspaces.ts';
 import { routeOf } from './machine-dirs.ts';
@@ -41,6 +42,9 @@ export interface PromptCommand {
   readonly author?: { readonly id: string; readonly name: string; readonly via?: string };
   /** 可信 Hub 入口认证所得类别，不得从请求正文或 author 推导。 */
   readonly promptActor?: PromptActor;
+  /** Set together only by the trusted message bus. */
+  readonly messageOrigin?: PromptMessageOrigin;
+  readonly messageBody?: string;
   /** 交接简报的统计（ADR 0029），存在 prompt 事件上给界面画提示条。 */
   readonly handoff?: HandoffStats;
   /** 客户端生成的幂等键：同一 (sessionId, clientMessageId) 重试只会落一条 prompt。 */
@@ -162,6 +166,7 @@ export async function promptSessionUseCase(
   command: PromptCommand,
   admission?: (input: { event: Extract<SessionEvent, { kind: 'prompt' }>; payload: Delivery['payload']; now: number }) => Promise<Result<{ ack: PromptAck; publishedSession: Session | null }, DomainError>>
 ): Promise<Result<PromptAck, DomainError>> {
+  if (command.messageOrigin !== undefined && typeof command.messageBody !== 'string') return err(invalid('消息正文缺失'));
   // Reserved for internally admitted reviews; public prompt IDs cannot impersonate them.
   if (!admission && command.clientMessageId?.startsWith('diff-review:')) return err(invalid('clientMessageId 使用了保留前缀'));
   const sessionId = asSessionId(command.sessionId);
@@ -215,14 +220,15 @@ async function promptSessionAdmitted(
       const guidance = current.lastSeq === 0 && deps.memoryGuidance ? deps.memoryGuidance : null;
       const text = [instructions, guidance?.text, briefing, peers, membersNote, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
       const event: Extract<SessionEvent, { kind: 'prompt' }> = {
-        kind: 'prompt', text: command.text,
+        kind: 'prompt', text: command.messageOrigin ? command.messageBody! : command.text,
         ...(stored.length > 0 ? { attachments: stored } : {}),
-        ...(command.author ? { author: { id: command.author.id, name: command.author.name, ...(command.author.via ? { via: command.author.via } : {}) } } : {}),
+        ...(!command.messageOrigin && command.author ? { author: { id: command.author.id, name: command.author.name, ...(command.author.via ? { via: command.author.via } : {}) } } : {}),
+        ...(command.messageOrigin ? { messageSource: promptMessageSource(command.messageOrigin) } : {}),
         ...(command.promptActor === 'account' || command.promptActor === 'token' || command.promptActor === 'system' || command.promptActor === 'unknown' ? { promptActor: command.promptActor } : {}),
         ...(command.handoff ? { handoff: command.handoff } : {}),
         ...(command.clientMessageId !== undefined ? { clientMessageId: command.clientMessageId } : {})
       };
-      const result = await admission({ event, payload: { text, parts }, now: deps.now() });
+      const result = await admission({ event, payload: { text, parts, ...(command.messageOrigin ? { messageOrigin: command.messageOrigin } : {}) }, now: deps.now() });
       if (!result.ok) return result;
       const published = result.value.publishedSession;
       if (published) {
@@ -252,9 +258,10 @@ async function promptSessionAdmitted(
     if (!ingress.ok) return ingress;
     return recordEvent(deps, { sessionId, event: {
         kind: 'prompt',
-        text: command.text,
+        text: command.messageOrigin ? command.messageBody! : command.text,
         ...(stored.length > 0 ? { attachments: stored } : {}),
-        ...(command.author ? { author: { id: command.author.id, name: command.author.name, ...(command.author.via ? { via: command.author.via } : {}) } } : {}),
+        ...(!command.messageOrigin && command.author ? { author: { id: command.author.id, name: command.author.name, ...(command.author.via ? { via: command.author.via } : {}) } } : {}),
+        ...(command.messageOrigin ? { messageSource: promptMessageSource(command.messageOrigin) } : {}),
         ...(command.promptActor === 'account' || command.promptActor === 'token' || command.promptActor === 'system' || command.promptActor === 'unknown' ? { promptActor: command.promptActor } : {}),
         ...(command.handoff ? { handoff: command.handoff } : {}),
         ...(command.clientMessageId !== undefined ? { clientMessageId: command.clientMessageId } : {})
@@ -273,7 +280,7 @@ async function promptSessionAdmitted(
     // 先 pendingFor 再 save 时，两条并发都会看见空队列，各派一次给 worker。
     // 不在写 journal 之前认领：排队的那句也得留在会话里，不能因为抢不到队首就丢掉。
     const claimed = await deliveries.claimPrompt({
-      id: randomDeliveryId(), sessionId, seq: logged.value.lastSeq, kind: 'prompt', payload: { text, parts },
+      id: randomDeliveryId(), sessionId, seq: logged.value.lastSeq, kind: 'prompt', payload: { text, parts, ...(command.messageOrigin ? { messageOrigin: command.messageOrigin } : {}) },
       state: 'queued', attempt: 0, nextAt: now, lastError: null, createdAt: now, updatedAt: now
     });
     const ack: PromptAck = {
@@ -296,7 +303,7 @@ async function promptSessionAdmitted(
   const guidance = session.lastSeq === 0 && deps.memoryGuidance ? deps.memoryGuidance : null;
   const text = [instructions, guidance?.text, briefing, peers, membersNote, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
   if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
-  const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
+  const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts, ...(command.messageOrigin ? { messageOrigin: command.messageOrigin } : {}) });
   return sent.ok ? ok({ seq: logged.value.lastSeq, deliveryId: null, state: 'sending', turn: logged.value.turn }) : failTurn(deps, sessionId, sent.error);
 }
 
@@ -469,7 +476,7 @@ export function ingestWorkerEvent(
     // 注意：这里不调用 finishSending。ended 落盘后先让 hooks 跑，显式 releaseAfterTurn
     // 才精确收掉 sending 并放行下一句；否则 1s 泵可能在钩子完成前就送出 B。
     // Worker 事件不可信：不能让它写入 Hub 的发起类别。
-    let safeEvent = event.kind === 'prompt' ? (({ promptActor: _ignored, ...rest }) => rest)(event) : event;
+    let safeEvent = event.kind === 'prompt' ? (({ promptActor: _ignored, messageSource: _ignoredSource, ...rest }) => rest)(event) : event;
     if (safeEvent.kind === 'ended' && isUnknownOutcomeEnded(safeEvent) && safeEvent.outcomeUnknown === undefined) {
       safeEvent = { ...safeEvent, outcomeUnknown: true };
     }

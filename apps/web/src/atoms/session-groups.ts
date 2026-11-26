@@ -1,6 +1,7 @@
 // 只读类型：atom 的测试跑在根 tsconfig（没有 DOM），不能顺着 shell/api 拉进浏览器那一层。
 import type { CanvasDto, SessionDto } from '@agent-hub/contract';
 import { sessionListLabel } from './session-label.ts';
+import { projectMessage } from './message-provenance.ts';
 
 /**
  * 画布会话按「归属任务」分组：列表视图和别处都读这一份，免得两处对「无任务」各说各话。
@@ -58,7 +59,7 @@ export function groupSessions(
         title: task?.title ?? (kind === 'coordinator' ? COORDINATOR_TITLE : UNASSIGNED_TITLE),
         sessions: sessions.map((session, index) => {
           const prompt = (canvas.previews[session.id] ?? []).find((entry) => entry.event.kind === 'prompt');
-          const previewText = prompt && prompt.event.kind === 'prompt' ? prompt.event.text : '';
+          const previewText = prompt && prompt.event.kind === 'prompt' ? projectMessage(prompt.event).body : '';
           return {
             session,
             label: sessionListLabel({ title: session.title, previewText, opening: canvas.openings[session.id], index })

@@ -866,7 +866,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
         });
       };
       try {
-        const result = await session!.prompt({ text: command.text, parts: command.parts, ...(command.deliveryId ? { deliveryId: command.deliveryId } : {}) });
+        const result = await session!.prompt({ text: command.text, parts: command.parts, ...(command.deliveryId ? { deliveryId: command.deliveryId } : {}), ...(command.messageOrigin ? { messageOrigin: command.messageOrigin } : {}) });
         if (!result.ok && sessions.get(sessionId) === session && generations.get(sessionId) === generation) {
           if (command.deliveryId) uncertain();
           else {

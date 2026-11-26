@@ -11,6 +11,13 @@ const end = (seq: number, id: string): JournalEntry => entry(seq, { kind: 'ended
 const proof = (promptSeq: number, deliveryId: string, seq: number): AgentHandoffDeliveryEvidence => ({ sessionId: 'source', promptSeq, deliveryId, ended: { seq, outcome: 'done' } });
 const input = (entries: JournalEntry[], deliveries: AgentHandoffDeliveryEvidence[], overrides: Partial<AgentHandoffHistoryInput> = {}): AgentHandoffHistoryInput => ({ sourceSessionId: 'source', cursor: 100, windowTokens: 100_000, currentText: 'new request', entries, deliveries, ...overrides });
 
+test('account actor on bus prompt is not direct-human provenance', () => {
+  const entries = [entry(1, { kind: 'prompt', text: 'bus body', promptActor: 'account', messageSource: { kind: 'agent_message', messageId: 'm', messageKind: 'ask', initiator: 'account', sender: 'session' } }), output(2, 'a', 'bus response'), end(3, 'a'), prompt(4, 'direct human'), end(5, 'b')];
+  const result = buildAgentHandoffHistory(input(entries, [proof(1, 'a', 3), proof(4, 'b', 5)]));
+  assert.doesNotMatch(result.text, /bus body|bus response/);
+  assert.match(result.text, /direct human/);
+});
+
 test('queued prompts match only exact tagged output, with faithful text and explicit excerpt labels', () => {
   const entries = [prompt(1, '  A\n'), prompt(2, 'B'), output(3, 'A', ' answer A '), output(4, 'B', 'answer B'), entry(5, { kind: 'text', delta: 'untagged follow-on', textOrigin: 'main_assistant' }), output(6, 'A', 'second chunk'), end(7, 'A'), end(8, 'B')];
   const result = buildAgentHandoffHistory(input(entries, [proof(1, 'A', 7), proof(2, 'B', 8)]));

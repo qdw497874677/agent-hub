@@ -1,5 +1,7 @@
 import { modelLabel } from '../../atoms/model-label.ts';
 import { AuthorTag } from '../../atoms/author.tsx';
+import { projectMessage } from '../../atoms/message-provenance.ts';
+import { ProvenanceView } from '../../atoms/message-provenance-view.tsx';
 import { Handle, NodeResizeControl, Position, type NodeProps, type Node } from '@xyflow/react';
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -121,11 +123,13 @@ function CardResizer({ kind, selected, onResized }: { kind: CardKind; selected: 
 
 function BlockView({
   block,
+  sessionId,
   showAuthor,
   queued = false,
   uncertain = false
 }: {
   block: LiveSession['blocks'][number];
+  sessionId: string;
   showAuthor: boolean;
   /** 这条用户消息还在等（排队 / 发送中 / 未送达）：淡一点，并在右下角点一个小圆点。 */
   queued?: boolean;
@@ -135,10 +139,11 @@ function BlockView({
   if (block.kind === 'prompt') {
     // 和对话页一样：用户的话靠右的气泡，卡片上收紧一点。附件只列名字。
     const names = block.attachments.map((item) => (item.kind === 'mention' ? `@${item.path}` : item.name));
+    const provenance = projectMessage(block);
     return (
       <div className="flex flex-col items-end gap-0.5" data-testid="card-msg-user">
-        {showAuthor ? <AuthorTag author={block.author} size="sm" /> : null}
-        {block.text !== '' ? (
+        {showAuthor && provenance.kind === 'ordinary' ? <AuthorTag author={block.author} size="sm" /> : null}
+        {provenance.kind !== 'ordinary' ? <ProvenanceView text={block.text} author={block.author} messageSource={block.messageSource} sessionId={sessionId} compact /> : block.text !== '' ? (
           <p
             className={`max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-2 py-1 text-meta text-primary transition-opacity duration-150 ${
               queued ? 'opacity-70' : ''
@@ -576,7 +581,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             </p>
           ) : (
             timeline.map((block, index) => (
-              <BlockView key={index} block={block} showAuthor={showAuthor} queued={block.queued === true} uncertain={block.kind === 'prompt' && uncertainSeqs.has(block.seq)} />
+              <BlockView key={index} block={block} sessionId={session.id} showAuthor={showAuthor} queued={block.queued === true} uncertain={block.kind === 'prompt' && uncertainSeqs.has(block.seq)} />
             ))
           )}
           {/* 还没写进对话的消息就是日志末尾的普通一行：发完立刻看得到「已收到 · 排队中」还是「未送达」。 */}

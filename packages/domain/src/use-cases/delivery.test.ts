@@ -86,6 +86,21 @@ async function world(overrides: Parameters<typeof inMemoryDeps>[0] = {}) {
 
 type World = Awaited<ReturnType<typeof world>>;
 
+test('atomic bus admission receives safe exact body and durable internal provenance', async () => {
+  const w = await world();
+  const messageOrigin = { kind: 'agent_message', messageId: 'm', messageKind: 'reply', initiator: 'automatic_reply', sender: 'session', sourceSessionId: 'private' } as const;
+  const result = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'runtime wrapper', messageBody: 'raw\n', messageOrigin, author: { id: 'id', name: 'secret' } }, async ({ event, payload }) => {
+    assert.equal(event.text, 'raw\n');
+    assert.equal(event.author, undefined);
+    assert.deepEqual(event.messageSource, { kind: 'agent_message', messageId: 'm', messageKind: 'reply', initiator: 'automatic_reply', sender: 'session' });
+    assert.ok(typeof payload === 'object' && payload !== null && 'text' in payload && 'messageOrigin' in payload);
+    assert.match(payload.text as string, /runtime wrapper$/);
+    assert.deepEqual(payload.messageOrigin, messageOrigin);
+    return ok({ ack: { seq: 1, deliveryId: 'd', state: 'queued', turn: 1 }, publishedSession: null });
+  });
+  assert.ok(result.ok);
+});
+
 test('atomic admission owns replay, publishes only a new event, and leaves dispatch to the durable runner', async () => {
   const w = await world({ queue: serialQueue() });
   const published: Parameters<typeof w.deps.stream.publish>[0][] = [];

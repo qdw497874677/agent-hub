@@ -5,6 +5,7 @@ import type { Principal } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, unavailable, type DomainError } from '../errors.ts';
 import { newId, type ProjectId, type SessionId, type TaskId } from '../ids.ts';
 import { requestReplayKey } from '../request-replay.ts';
+import type { PromptMessageOrigin } from '../message-provenance.ts';
 import { createSessionLane, type SessionLane } from '../session-lane.ts';
 import {
   DEFAULT_ASK_TIMEOUT_MS,
@@ -16,6 +17,7 @@ import {
   isHandle,
   externalAddress,
   isExternalSender,
+  messageSenderKind,
   privilegeTierFor,
   validateParts,
   type MessagePart,
@@ -30,6 +32,7 @@ import {
   parseAddress,
   wrapUntrusted,
   type AgentMessage,
+  type AgentMessageInitiator,
   type FailureCode,
   type HandoffOrigin,
   type HoldReason,
@@ -60,6 +63,18 @@ import {
   type TaskTreeIndex
 } from './message-reachability.ts';
 
+function initiatorKind(initiator: AgentMessageInitiator | null | undefined): PromptMessageOrigin['initiator'] {
+  if (!initiator) return 'unknown';
+  switch (initiator.kind) {
+    case 'account': return typeof initiator.accountId === 'string' && initiator.accountId.length > 0 ? 'account' : 'unknown';
+    case 'session_tool':
+    case 'automatic_reply':
+    case 'external_token':
+    case 'system': return initiator.kind;
+    default: return 'unknown';
+  }
+}
+
 /**
  * 消息总线（ADR 0018 · P2P 内核）：
  * 接收（权限 ∩、限额、幂等、审计）→ 解析地址 → 对方空闲就投、忙就排队 → 回合结束时收回复（agent_reply 优先，最后一轮文字兜底）并投下一条。
@@ -71,7 +86,7 @@ export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'project
   /** userId → 带上自定义角色和显式授权的 Principal；停用 / 不存在是 null。 */
   readonly principalOf: (userId: string) => Promise<Principal | null>;
   /** 把一段话作为一轮提问送进会话（组合根接到 promptSessionUseCase）。 */
-  readonly deliver: (sessionId: SessionId, text: string, author: { id: string; name: string; via: string }) => Promise<Result<unknown, DomainError>>;
+  readonly deliver: (sessionId: SessionId, text: string, author: { id: string; name: string; via: string }, metadata: { messageOrigin: PromptMessageOrigin; messageBody: string }) => Promise<Result<unknown, DomainError>>;
   /** 按 bot 开一条新会话（组合根：建任务 + 派生会话）。actor 是批准的人。 */
   readonly spawn: (input: { project: Project; role: PersistentAgent; actor: Principal; title: string }) => Promise<Result<Session, DomainError>>;
   readonly askTimeoutMs?: number;
@@ -209,7 +224,7 @@ export interface PeerDiscoveryOptions {
 }
 
 export interface MessageBus {
-  accept(command: SendCommand): Promise<Result<Accepted, DomainError>>;
+  accept(command: SendCommand, metadata?: { readonly initiator: AgentMessageInitiator }): Promise<Result<Accepted, DomainError>>;
   /**
    * 可信项目内交接：同一项目、明确目标会话、默认只进收件箱。
    * 只绕过「必须显式连线」；其他检查和普通发送一致（见 ProjectHandoffCommand）。
@@ -609,7 +624,13 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         ? await deps.messages.claimDelivered(next.id, now)
         : (await deps.messages.save(delivering), true);
       if (!claimed) return;
-      const sent = await deps.deliver(targetId, text, author);
+      const sender = messageSenderKind(next);
+      const messageOrigin: PromptMessageOrigin = {
+        kind: 'agent_message', messageId: next.id, messageKind: next.kind,
+        initiator: initiatorKind(next.initiator), sender,
+        ...(sender === 'session' ? { sourceSessionId: next.fromSessionId } : {})
+      };
+      const sent = await deps.deliver(targetId, text, author, { messageOrigin, messageBody: next.body });
       if (!sent.ok) {
         // 派发失败时 prompt 用例自己也会记一个 ended(failed)，turnEnded 可能已经把它判了失败：只判一次。
         const current = await deps.messages.byId(delivering.id);
@@ -633,7 +654,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     body: string | null,
     fromSessionId: SessionId | null,
     failure?: { code: FailureCode; detail: string },
-    extra?: { status?: ReplyStatus; parts?: readonly MessagePart[] }
+    extra?: { status?: ReplyStatus; parts?: readonly MessagePart[]; initiator?: AgentMessageInitiator }
   ): Promise<AgentMessage> => {
     const now = deps.now();
     const reply: AgentMessage = {
@@ -643,6 +664,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       projectId: ask.projectId,
       kind: 'reply',
       fromSessionId: fromSessionId ?? ask.targetSessionId ?? ask.fromSessionId,
+      initiator: failure ? { kind: 'system' } : extra?.initiator,
       onBehalfOf: ask.onBehalfOf,
       to: `session:${ask.fromSessionId}`,
       targetSessionId: ask.fromSessionId,
@@ -953,6 +975,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         projectId: project.id,
         kind: 'send',
         fromSessionId: from.id,
+        initiator: { kind: 'session_tool' },
         onBehalfOf: actorId,
         to: `session:${target.id}`,
         targetSessionId: target.id,
@@ -1010,7 +1033,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
   };
 
   const bus: MessageBus = {
-    async accept(command) {
+    async accept(command, metadata) {
       const body = command.body;
       if (typeof body !== 'string' || body.trim() === '') return err(invalid('消息不能为空'));
       if (body.length > MAX_BODY_CHARS) return err(invalid(`消息太长（最多 ${MAX_BODY_CHARS} 字符）`));
@@ -1126,6 +1149,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
           projectId: project.id,
           kind: command.kind,
           fromSessionId: from.id,
+          initiator: metadata?.initiator,
           onBehalfOf,
           to: command.to.trim(),
           targetSessionId: target?.id ?? null,
@@ -1227,7 +1251,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       const now = deps.now();
       await deps.messages.save({ ...ask, status: 'answered', replyBody: body, replySource: 'tool', replyStatus: status, replyParts: checked.parts, updatedAt: now });
       await audit(ask, ask, 'replied', fromSessionId, `agent_reply ${status}${checked.parts.length > 0 ? ` parts=${checked.parts.length}` : ''} ${summary(body)}`);
-      const reply = await enqueueReply(ask, body, fromSessionId, undefined, { status, parts: checked.parts });
+      const reply = await enqueueReply(ask, body, fromSessionId, undefined, { status, parts: checked.parts, initiator: { kind: 'session_tool' } });
       return ok({ messageId: reply.id, replyTo: ask.id });
     },
 
@@ -1240,7 +1264,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
             const now = deps.now();
             await deps.messages.save({ ...message, status: 'answered', replyBody: text, replySource: 'last_turn', replyStatus: 'ok', updatedAt: now });
             await audit(message, message, 'replied', sessionId, `最后一轮文字兜底 ${summary(text)}`);
-            await enqueueReply(message, text, sessionId);
+            await enqueueReply(message, text, sessionId, undefined, { initiator: { kind: 'automatic_reply' } });
           } else {
             await fail(message, 'turn_failed', outcome === 'done' ? '对方这一轮没有给出任何文字回复' : `对方这一轮${outcome === 'failed' ? '失败了' : '被打断了'}`);
           }
@@ -1444,6 +1468,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
           projectId: project.id,
           kind: command.kind,
           fromSessionId: fromId,
+          initiator: { kind: 'external_token' },
           onBehalfOf: command.onBehalfOf,
           to: `session:${target.id}`,
           targetSessionId: target.id,

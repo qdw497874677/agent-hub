@@ -415,6 +415,18 @@ export const promptPartSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mention'), name: z.string(), path: z.string() })
 ]);
 
+/** Only bounded identifiers and fixed categories cross the provenance boundary. */
+export const promptMessageSourceSchema = z.object({
+  kind: z.literal('agent_message'),
+  messageId: z.string().min(1).max(512),
+  messageKind: z.enum(['send', 'ask', 'reply']),
+  initiator: z.enum(['account', 'session_tool', 'automatic_reply', 'external_token', 'system', 'unknown']),
+  sender: z.enum(['session', 'external', 'system'])
+});
+export const promptMessageOriginSchema = promptMessageSourceSchema.extend({
+  sourceSessionId: z.string().min(1).max(512).optional()
+});
+
 /** 运行时会话里可用的斜杠命令（ACP available_commands_update）。 */
 export const sessionCommandSchema = z.object({
   name: z.string().min(1).max(200),
@@ -432,6 +444,7 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
     author: z.object({ id: z.string(), name: z.string(), via: z.string().optional() }).optional(),
     /** Hub 记录的有限发起类别；旧 journal 无此字段。 */
     promptActor: z.enum(['account', 'token', 'system', 'unknown']).optional(),
+    messageSource: promptMessageSourceSchema.optional(),
     /** 平台写的交接简报：带了多少、省略多少（ADR 0029）。 */
     handoff: z
       .object({

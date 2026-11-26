@@ -13696,6 +13696,56 @@
                                       "unknown"
                                     ]
                                   },
+                                  "messageSource": {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "agent_message"
+                                        ]
+                                      },
+                                      "messageId": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 512
+                                      },
+                                      "messageKind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "send",
+                                          "ask",
+                                          "reply"
+                                        ]
+                                      },
+                                      "initiator": {
+                                        "type": "string",
+                                        "enum": [
+                                          "account",
+                                          "session_tool",
+                                          "automatic_reply",
+                                          "external_token",
+                                          "system",
+                                          "unknown"
+                                        ]
+                                      },
+                                      "sender": {
+                                        "type": "string",
+                                        "enum": [
+                                          "session",
+                                          "external",
+                                          "system"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "messageId",
+                                      "messageKind",
+                                      "initiator",
+                                      "sender"
+                                    ]
+                                  },
                                   "handoff": {
                                     "type": "object",
                                     "properties": {

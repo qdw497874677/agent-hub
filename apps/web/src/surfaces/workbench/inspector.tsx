@@ -9,6 +9,7 @@ import type { LiveSession } from '../../atoms/live.ts';
 import { SessionAssets } from '../../atoms/session-assets.tsx';
 import { SessionPeers } from '../../atoms/session-peers.tsx';
 import { SessionMessages } from '../../atoms/session-messages.tsx';
+import { projectMessage } from '../../atoms/message-provenance.ts';
 import { SessionContext } from '../../atoms/session-context.tsx';
 import { SessionServices } from '../../atoms/services-section.tsx';
 import { SessionMcp } from '../../atoms/session-mcp-section.tsx';
@@ -323,7 +324,10 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
 export function eventLabel(event: JournalEntryDto['event']): string {
   switch (event.kind) {
     case 'prompt':
-      return `你发送了消息：${event.text.slice(0, 40)}`;
+      {
+        const projected = projectMessage(event);
+        return projected.kind === 'ordinary' ? `你发送了消息：${projected.body.slice(0, 40)}` : `${projected.heading}：${projected.body.slice(0, 40)}`;
+      }
     case 'text':
       return '回复了一段文字';
     case 'thinking':

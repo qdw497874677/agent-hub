@@ -4,16 +4,17 @@ import { inMemoryDeps, fakeSessionLinks } from '../testing/in-memory.ts';
 import { createProject, type Project } from '../project.ts';
 import { createTask, type Task } from '../task.ts';
 import { deriveSession, type Session } from '../session.ts';
-import { asAgentId, asTaskId, type SessionId } from '../ids.ts';
+import { asAgentId, asSessionId, asTaskId, type SessionId } from '../ids.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
 import type { MessageStore } from '../ports/message-store.ts';
 import type { AgentMessage, MessageAuditEntry, MessagingConfig, SpawnRecord } from '../messaging.ts';
 import type { PersistentAgentDefinition } from '../bot.ts';
-import { STORM_LIMITS, HANDOFF_BUS_ORIGIN, wrapUntrusted } from '../messaging.ts';
+import { STORM_LIMITS, HANDOFF_BUS_ORIGIN, messageSenderKind, wrapUntrusted } from '../messaging.ts';
 import { recordEvent } from './sessions.ts';
 import { createMessageBus } from './messaging.ts';
 import { canonicalLink } from '../session-link.ts';
 import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
+import type { PromptMessageOrigin } from '../message-provenance.ts';
 import { MAX_LINEAGE_DEPTH, taskTreeIndex } from './message-reachability.ts';
 
 function memoryMessages(): MessageStore & { all: Map<string, AgentMessage>; audits: MessageAuditEntry[] } {
@@ -94,6 +95,18 @@ const user = (id: string, role: Role): User => ({
   deletedAt: null
 }) as unknown as User;
 
+test('sender kind follows routing, with only system initiators or legacy failure replies as Hub notices', () => {
+  const base = { fromSessionId: asSessionId('s'), kind: 'send' as const, failure: null, initiator: null };
+  assert.equal(messageSenderKind(base), 'session');
+  assert.equal(messageSenderKind({ ...base, failure: 'target_offline' }), 'session');
+  assert.equal(messageSenderKind({ ...base, kind: 'ask', failure: 'timeout' }), 'session');
+  assert.equal(messageSenderKind({ ...base, kind: 'reply', failure: 'timeout' }), 'system');
+  assert.equal(messageSenderKind({ ...base, initiator: { kind: 'system' } }), 'system');
+  assert.equal(messageSenderKind({ ...base, initiator: { kind: 'external_token' } }), 'session');
+  assert.equal(messageSenderKind({ ...base, fromSessionId: asSessionId('external:token') }), 'external');
+  assert.equal(messageSenderKind({ ...base, fromSessionId: asSessionId('external:token'), kind: 'reply', failure: 'timeout' }), 'system');
+});
+
 async function world(options: { askTimeoutMs?: number; links?: SessionLinkRepository } = {}) {
   let clock = 1000;
   const memory = inMemoryDeps({ now: () => clock, ...(options.links ? { links: options.links } : {}) });
@@ -134,7 +147,7 @@ async function world(options: { askTimeoutMs?: number; links?: SessionLinkReposi
     return s.value;
   };
   const newSession = (owner: string): Promise<Session> => newSessionOn(task.value, owner);
-  const delivered: { sessionId: SessionId; text: string }[] = [];
+  const delivered: { sessionId: SessionId; text: string; messageOrigin: PromptMessageOrigin; messageBody: string }[] = [];
   let deliverFails = false;
   const bus = createMessageBus({
     now: () => clock,
@@ -147,9 +160,9 @@ async function world(options: { askTimeoutMs?: number; links?: SessionLinkReposi
     bots: deps.bots,
     policy: { context: async () => ({ hubTeamId: 'T', settings: { membersCanAddMachines: false } }), worker: async () => ({ kind: 'worker', id: 'w', teamId: 'T', createdBy: null }) as never },
     principalOf: async (id) => principal(id),
-    deliver: async (sessionId, text) => {
+    deliver: async (sessionId, text, _author, metadata) => {
       if (deliverFails) return { ok: false, error: { code: 'unavailable', message: 'offline' } } as never;
-      delivered.push({ sessionId, text });
+      delivered.push({ sessionId, text, ...metadata });
       await recordEvent(deps, { sessionId, event: { kind: 'prompt', text } });
       return { ok: true, value: null } as never;
     },
@@ -187,6 +200,7 @@ test('A ask B：B 用最后一轮文字兜底回复，回复排回 A 并投给 A
   assert.equal(sent.value.status, 'delivered');
   assert.equal(w.delivered[0]?.sessionId, b.id);
   assert.match(w.delivered[0]?.text ?? '', /<agent-message[^>]*kind="ask"/);
+  assert.equal(w.delivered[0]?.messageOrigin.initiator, 'unknown');
   await w.finishTurn(b.id, '等于 2');
   const ask = await w.messages.byId(sent.value.messageId);
   assert.equal(ask?.status, 'answered');
@@ -194,6 +208,9 @@ test('A ask B：B 用最后一轮文字兜底回复，回复排回 A 并投给 A
   const reply = [...w.messages.all.values()].find((m) => m.kind === 'reply');
   assert.equal(reply?.targetSessionId, a.id);
   assert.equal(reply?.status, 'delivered');
+  assert.deepEqual(reply?.initiator, { kind: 'automatic_reply' });
+  assert.deepEqual(w.delivered[1]?.messageOrigin, { kind: 'agent_message', messageId: reply?.id, messageKind: 'reply', initiator: 'automatic_reply', sender: 'session', sourceSessionId: b.id });
+  assert.equal(w.delivered[1]?.messageBody, '等于 2');
   assert.match(w.delivered[1]?.text ?? '', /等于 2/);
   const actions = w.messages.audits.filter((e) => e.traceId === sent.value.traceId).map((e) => e.action);
   assert.ok(actions.includes('accepted') && actions.includes('delivered') && actions.includes('replied'));
@@ -212,6 +229,48 @@ test('agent_reply 工具优先：回合结束时不再用文字兜底', async ()
   assert.equal(ask?.replyBody, '工具回复');
   assert.equal(ask?.replySource, 'tool');
   assert.equal([...w.messages.all.values()].filter((m) => m.kind === 'reply').length, 1);
+  assert.deepEqual((await w.messages.byId(replied.value.messageId))?.initiator, { kind: 'session_tool' });
+  assert.equal(w.delivered[1]?.messageOrigin.initiator, 'session_tool');
+});
+
+test('trusted initiator is independent of session and authority; replay preserves original', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+  const command = { fromSessionId: a.id, kind: 'send' as const, to: `session:${b.id}`, body: '<hello>', idempotencyKey: 'same' };
+  const person = await w.bus.accept(command, { initiator: { kind: 'account', accountId: 'bob' } });
+  assert.ok(person.ok);
+  assert.deepEqual((await w.messages.byId(person.value.messageId))?.initiator, { kind: 'account', accountId: 'bob' });
+  assert.deepEqual(w.delivered[0]?.messageOrigin, { kind: 'agent_message', messageId: person.value.messageId, messageKind: 'send', initiator: 'account', sender: 'session', sourceSessionId: a.id });
+  assert.equal(w.delivered[0]?.messageBody, '<hello>');
+  assert.match(w.delivered[0]!.text, /&lt;hello&gt;/);
+  const replay = await w.bus.accept(command, { initiator: { kind: 'session_tool' } });
+  assert.ok(replay.ok);
+  assert.equal(replay.value.messageId, person.value.messageId);
+  assert.deepEqual((await w.messages.byId(person.value.messageId))?.initiator, { kind: 'account', accountId: 'bob' });
+  await w.finishTurn(b.id, '');
+  const tool = await w.bus.accept({ ...command, body: 'tool', idempotencyKey: 'tool' }, { initiator: { kind: 'session_tool' } });
+  assert.ok(tool.ok);
+  assert.equal(w.delivered[1]?.messageOrigin.initiator, 'session_tool');
+  assert.equal(w.delivered[1]?.messageOrigin.sourceSessionId, a.id);
+});
+
+test('external ingress and failure reply use distinct actual origins', async () => {
+  const w = await world();
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+  const external = await w.bus.acceptExternal({ inboxId: 'tok', label: 'external', onBehalfOf: 'alice', targetSessionId: b.id, kind: 'send', body: 'outside' });
+  assert.ok(external.ok);
+  assert.deepEqual(w.delivered[0]?.messageOrigin, { kind: 'agent_message', messageId: external.value.messageId, messageKind: 'send', initiator: 'external_token', sender: 'external' });
+  await w.finishTurn(b.id, '');
+  const ask = await w.bus.accept({ fromSessionId: a.id, kind: 'ask', to: `session:${b.id}`, body: 'question' });
+  assert.ok(ask.ok);
+  await w.finishTurn(b.id, '', 'failed');
+  const reply = [...w.messages.all.values()].find((m) => m.replyTo === ask.value.messageId);
+  assert.ok(reply);
+  assert.deepEqual(reply.initiator, { kind: 'system' });
+  assert.deepEqual(w.delivered.at(-1)?.messageOrigin, { kind: 'agent_message', messageId: reply.id, messageKind: 'reply', initiator: 'system', sender: 'system' });
+  assert.equal(w.delivered.at(-1)?.messageBody, '');
 });
 
 test('对方忙：排队，等它这一轮结束再投', async () => {
@@ -768,6 +827,7 @@ test('会话通信 P1d：外部 ask → 会话被唤醒（署名外部）→ 回
   assert.ok(got.ok);
   assert.equal(got.value.message.status, 'answered');
   assert.equal(got.value.reply?.replyStatus, 'ok');
+  assert.deepEqual(got.value.reply?.initiator, { kind: 'session_tool' });
   assert.equal(got.value.reply?.to, 'external:tok_1');
   const inbox = await w.bus.externalInbox('tok_1', 0, 50);
   assert.deepEqual(inbox.map((m) => m.replyTo), [asked.value.messageId]);
@@ -803,6 +863,7 @@ test('会话通信 P1d：外部 ask 超时 → 失败通知进外部收件箱', 
   const got = await w.bus.externalMessage('tok_9', asked.value.messageId);
   assert.ok(got.ok);
   assert.equal(got.value.reply?.failure, 'timeout');
+  assert.deepEqual(got.value.reply?.initiator, { kind: 'system' });
   assert.equal(got.value.reply?.replyStatus, 'failed');
 });
 
@@ -850,6 +911,7 @@ test('会话交接 P2：同项目交接默认只进收件箱，绕过显式连�
   assert.equal(sent.value.targetSessionId, b.id);
   const stored = await w.messages.byId(sent.value.messageId);
   assert.equal(stored?.kind, 'send');
+  assert.deepEqual(stored?.initiator, { kind: 'session_tool' });
   assert.equal(stored?.wake, false);
   assert.equal(stored?.to, `session:${b.id}`);
   assert.match(stored?.idempotencyKey ?? '', /message\.handoff/);
@@ -879,6 +941,7 @@ test('会话交接 P2：wake=true 才排队并在对方空下来后投递一轮'
   assert.equal((await w.messages.byId(sent.value.messageId))?.status, 'delivered');
   assert.equal(w.delivered.length, 1);
   assert.equal(w.delivered[0]?.sessionId, b.id);
+  assert.deepEqual(w.delivered[0]?.messageOrigin, { kind: 'agent_message', messageId: sent.value.messageId, messageKind: 'send', initiator: 'session_tool', sender: 'session', sourceSessionId: a.id });
   assert.match(w.delivered[0]?.text ?? '', /醒来看看/);
 });
 
@@ -1165,6 +1228,7 @@ test('委派上报：只落收件箱，伪造的 wake / parts / handoffOrigin �
 
   const stored = await w.messages.byId(sent.value.messageId);
   assert.equal(stored?.kind, 'send');
+  assert.deepEqual(stored?.initiator, { kind: 'session_tool' });
   assert.equal(stored?.wake, false);
   assert.equal(stored?.status, 'done');
   assert.equal(stored?.to, `session:${b.id}`);

@@ -239,6 +239,27 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
         };
         return wait();
       }
+      // Deterministic real MCP message lane for provenance E2E (no native ACP provenance).
+      if (MCP_HTTP && all.includes('please-provenance-send')) {
+        const sessionId = msg.params.sessionId;
+        const server = mcpServers.find((entry) => entry && entry.type === 'http' && typeof entry.url === 'string');
+        const pick = (name) => new RegExp(`(?:^|\\s)${name}=(\\S+)`).exec(all)?.[1] ?? '';
+        try {
+          if (!server) throw new Error('session/new 没有下发 HTTP MCP server');
+          const called = await mcpCall(server, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
+            name: 'agent_send', arguments: { to: `session:${pick('target')}`, body: pick('body'), wake: pick('wake') !== 'false' }
+          } });
+          say(sessionId, `provenance-tool:${JSON.stringify(called)}`);
+        } catch (error) {
+          say(sessionId, `provenance-tool-error:${error.message}`);
+        }
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      // Confirm only the existing escaped text wrapper reaches this fake runtime.
+      if (all.includes('provenance-wake-body')) {
+        say(msg.params.sessionId, `provenance-input-wrapped:${all.includes('<agent-message ') && all.includes('provenance-wake-body &lt;tag&gt;')}`);
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
       // please-delegate：用 session/new 下发的 HTTP MCP server 真的调 workspace.delegate
       // （args 从 prompt 里的 k=v 读；只在 --mcp-http 下生效）。
       if (MCP_HTTP && all.includes('please-delegate')) {

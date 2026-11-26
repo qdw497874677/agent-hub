@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   read_at INTEGER,
   hold_reason TEXT,
   from_label TEXT,
-  handoff_origin TEXT
+  handoff_origin TEXT,
+  initiator TEXT
 );
 CREATE INDEX IF NOT EXISTS agent_messages_target ON agent_messages(target_session_id, status, created_at);
 CREATE INDEX IF NOT EXISTS agent_messages_from ON agent_messages(from_session_id, created_at);
@@ -144,7 +145,8 @@ const MESSAGE_COLUMNS: readonly [string, string][] = [
   ['read_at', 'INTEGER'],
   ['hold_reason', 'TEXT'],
   ['from_label', 'TEXT'],
-  ['handoff_origin', 'TEXT']
+  ['handoff_origin', 'TEXT'],
+  ['initiator', 'TEXT']
 ];
 
 const parseParts = (raw: unknown): AgentMessage['parts'] => {
@@ -157,6 +159,17 @@ const parseParts = (raw: unknown): AgentMessage['parts'] => {
   }
 };
 
+const parseInitiator = (raw: unknown): AgentMessage['initiator'] => {
+  if (typeof raw !== 'string') return undefined;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!isPlainObject(value)) return undefined;
+    if (value.kind === 'account' && typeof value.accountId === 'string' && value.accountId.length > 0) return { kind: 'account', accountId: value.accountId };
+    if (value.kind === 'session_tool' || value.kind === 'automatic_reply' || value.kind === 'external_token' || value.kind === 'system') return { kind: value.kind };
+  } catch { /* Old or malformed records have unknown provenance. */ }
+  return undefined;
+};
+
 const toMessage = (row: Row): AgentMessage => ({
   id: row.id as string,
   traceId: row.trace_id as string,
@@ -164,6 +177,7 @@ const toMessage = (row: Row): AgentMessage => ({
   projectId: asProjectId(row.project_id as string),
   kind: row.kind as AgentMessage['kind'],
   fromSessionId: asSessionId(row.from_session_id as string),
+  initiator: parseInitiator(row.initiator),
   onBehalfOf: row.on_behalf_of as string,
   to: row.to_address as string,
   targetSessionId: row.target_session_id ? asSessionId(row.target_session_id as string) : null,
@@ -222,8 +236,8 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
   const upsert = db.prepare(
     `INSERT INTO agent_messages (id, trace_id, depth, project_id, kind, from_session_id, on_behalf_of, to_address, target_session_id, role, reply_to, body,
        status, failure, failure_detail, reply_body, reply_source, idempotency_key, created_at, updated_at, delivered_at, deadline_at,
-       parts, wake, reply_status, reply_parts, read_at, hold_reason, from_label, handoff_origin)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       parts, wake, reply_status, reply_parts, read_at, hold_reason, from_label, handoff_origin, initiator)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET target_session_id = excluded.target_session_id, status = excluded.status, failure = excluded.failure,
        failure_detail = excluded.failure_detail, reply_body = excluded.reply_body, reply_source = excluded.reply_source,
        updated_at = excluded.updated_at, delivered_at = excluded.delivered_at, deadline_at = excluded.deadline_at,
@@ -287,7 +301,7 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
         m.status, m.failure, m.failureDetail, m.replyBody, m.replySource, m.idempotencyKey, m.createdAt, m.updatedAt, m.deliveredAt, m.deadlineAt,
         m.parts && m.parts.length > 0 ? JSON.stringify(m.parts) : null, m.wake === false ? 0 : 1, m.replyStatus ?? null,
         m.replyParts && m.replyParts.length > 0 ? JSON.stringify(m.replyParts) : null, m.readAt ?? null, m.holdReason ?? null,
-        m.fromLabel ?? null, m.handoffOrigin ?? null
+        m.fromLabel ?? null, m.handoffOrigin ?? null, m.initiator ? JSON.stringify(m.initiator) : null
       );
     },
     async claimDelivered(id, at) {

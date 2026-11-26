@@ -194,6 +194,7 @@ export * from './tools/project-tools.ts';
 export * from './tools/artifact-tools.ts';
 export * from './tools/files-tools.ts';
 export * from './messaging.ts';
+export * from './message-provenance.ts';
 export * from './groups.ts';
 export * from './session-inbox.ts';
 export * from './use-cases/groups.ts';

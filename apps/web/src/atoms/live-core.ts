@@ -1,5 +1,6 @@
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract/stall';
 import type { JournalEntryDto, SessionDto, SessionEventDto, StoredAttachmentDto } from '@agent-hub/contract';
+import type { MessageSource } from './message-provenance.ts';
 
 /**
  * 会话流的纯逻辑：块折叠、历史/实时合并、帧去重。
@@ -22,6 +23,7 @@ export type Block = Sequenced &
         readonly attachments: readonly StoredAttachmentDto[];
         /** 谁说的；老事件、共享 token 下没有。 */
         readonly author?: { readonly id: string; readonly name: string; readonly via?: string };
+        readonly messageSource?: MessageSource;
         /** 平台写的交接简报（ADR 0029）：带了多少、省略多少。 */
         readonly handoff?: HandoffDto;
         /** 客户端幂等键：本地 pending 气泡靠它对账（老事件、别的客户端没有）。 */
@@ -278,7 +280,7 @@ function withoutStall(blocks: readonly Block[]): readonly Block[] {
 function foldBlocks(blocks: readonly Block[], event: SessionEventDto, seq: number): readonly Block[] {
   switch (event.kind) {
     case 'prompt':
-      return [...blocks, { kind: 'prompt', text: event.text, attachments: event.attachments ?? [], ...(event.author ? { author: event.author } : {}), ...(event.handoff ? { handoff: event.handoff } : {}), ...(event.clientMessageId ? { clientMessageId: event.clientMessageId } : {}), seq }];
+      return [...blocks, { kind: 'prompt', text: event.text, attachments: event.attachments ?? [], ...(event.author ? { author: event.author } : {}), ...((event as typeof event & { messageSource?: MessageSource }).messageSource ? { messageSource: (event as typeof event & { messageSource: MessageSource }).messageSource } : {}), ...(event.handoff ? { handoff: event.handoff } : {}), ...(event.clientMessageId ? { clientMessageId: event.clientMessageId } : {}), seq }];
     case 'text': {
       const last = blocks[blocks.length - 1];
       if (last?.kind === 'text') {

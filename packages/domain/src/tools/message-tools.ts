@@ -197,7 +197,7 @@ export function createMessageToolProvider(bus: MessageBus, groups?: GroupChat): 
             ...(args.parts !== undefined ? { parts: args.parts } : {}),
             ...(typeof args.wake === 'boolean' ? { wake: args.wake } : {}),
             ...(typeof args.timeoutSec === 'number' ? { timeoutSec: args.timeoutSec } : {})
-          });
+          }, { initiator: { kind: 'session_tool' } });
           if (!accepted.ok) return accepted;
           const held = accepted.value.status === 'held' ? { next: 'Held for a human to release (you and this peer went back and forth too many times in one chain). Stop messaging this peer and end your turn.' } : {};
           return ok({ ...accepted.value, ...(kind === 'ask' && accepted.value.status !== 'held' ? { next: NEXT_AFTER_ASK } : {}), ...held });

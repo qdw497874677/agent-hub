@@ -1,6 +1,7 @@
 import { newId, type AgentId, type ProjectId, type SessionId } from './ids.ts';
 import { validateAgentRef } from './agent-ref.ts';
 import type { PersistentAgent, PersistentAgentDefinition } from './bot.ts';
+import type { PromptMessageOrigin } from './message-provenance.ts';
 
 /**
  * agent 间通信 · P2P 内核（ADR 0018，docs/design/agent-messaging.md）。
@@ -8,6 +9,10 @@ import type { PersistentAgent, PersistentAgentDefinition } from './bot.ts';
  */
 
 export type MessageKind = 'send' | 'ask' | 'reply';
+/** Trusted ingress identity, independent of the authority represented by onBehalfOf. */
+export type AgentMessageInitiator =
+  | { readonly kind: 'account'; readonly accountId: string }
+  | { readonly kind: 'session_tool' | 'automatic_reply' | 'external_token' | 'system' };
 /**
  * queued：排队等对方空闲；awaiting_approval：要派生新会话，等人批；delivered：已进对方对话、这一轮在处理；
  * answered：ask 已收到回复；done：send / reply 已被对方处理完；failed / denied：没成。
@@ -55,6 +60,8 @@ export interface AgentMessage {
   readonly projectId: ProjectId;
   readonly kind: MessageKind;
   readonly fromSessionId: SessionId;
+  /** Absent on historical or unrecognized records; never inferred from authority. */
+  readonly initiator?: AgentMessageInitiator | null;
   /** 代谁：链头那位人类。权限 = 发送方会话主人 ∩ onBehalfOf ∩ 被调方。 */
   readonly onBehalfOf: string;
   /** 原始地址（session:<id> / role:<name>）。reply 是 session:<提问方>。 */
@@ -105,6 +112,12 @@ export interface AgentMessage {
 export const EXTERNAL_PREFIX = 'external:';
 export const isExternalSender = (from: string): boolean => from.startsWith(EXTERNAL_PREFIX);
 export const externalAddress = (inboxId: string): string => `${EXTERNAL_PREFIX}${inboxId}`;
+
+/** Preserve actual routing, including legacy Hub failure replies without an initiator. */
+export function messageSenderKind(message: Pick<AgentMessage, 'initiator' | 'failure' | 'kind' | 'fromSessionId'>): PromptMessageOrigin['sender'] {
+  if (message.initiator?.kind === 'system' || (message.kind === 'reply' && message.failure)) return 'system';
+  return isExternalSender(message.fromSessionId) ? 'external' : 'session';
+}
 
 // ───────────── 附件（会话通信 P1a，docs/design/session-communication.md §5.2） ─────────────
 

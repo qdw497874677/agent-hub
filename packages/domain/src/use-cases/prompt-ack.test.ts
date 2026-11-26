@@ -76,8 +76,44 @@ test('prompt actor 只记录可信命令的有界类别，不从 author 或 via 
 
 test('worker 不能伪造 prompt actor', async () => {
   const w = await world();
-  assert.ok((await ingestWorkerEvent(w.deps, w.sid, { kind: 'prompt', text: 'spoof', promptActor: 'system' })).ok);
+  assert.ok((await ingestWorkerEvent(w.deps, w.sid, { kind: 'prompt', text: 'spoof', promptActor: 'system', messageSource: { kind: 'agent_message', messageId: 'spoof', messageKind: 'send', initiator: 'account', sender: 'session' } })).ok);
   assert.equal((await prompts(w.deps, w.sid))[0]?.event.promptActor, undefined);
+  assert.equal((await prompts(w.deps, w.sid))[0]?.event.messageSource, undefined);
+});
+
+test('bus journals exact body without author, but persists and sends the unchanged runtime wrapper and internal origin', async () => {
+  const w = await world();
+  const origin = { kind: 'agent_message', messageId: 'msg', messageKind: 'ask', initiator: 'account', sender: 'session', sourceSessionId: 'private-session' } as const;
+  const { sourceSessionId: _private, ...source } = origin;
+  const result = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '[wrapper] private sender', messageBody: '', messageOrigin: origin, author: { id: 'secret', name: 'secret', via: 'secret' }, promptActor: 'account' });
+  assert.ok(result.ok);
+  const event = (await prompts(w.deps, w.sid))[0]!.event;
+  assert.equal(event.text, '');
+  assert.deepEqual(event.messageSource, source);
+  assert.equal(event.author, undefined);
+  assert.doesNotMatch(JSON.stringify(event), /private-session|secret|wrapper/);
+  const delivery = (await w.deliveries.recent(w.sid, 10))[0]!;
+  assert.deepEqual((delivery.payload as { messageOrigin: unknown }).messageOrigin, origin);
+  await settle();
+  const sent = w.dispatched.find((command) => command.kind === 'prompt');
+  assert.ok(sent && sent.kind === 'prompt');
+  assert.match(sent.text, /\[wrapper\] private sender$/);
+  assert.deepEqual(sent.messageOrigin, origin);
+  assert.equal(sent.deliveryId, delivery.id);
+  const bad = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'wrapped', messageOrigin: origin });
+  assert.equal(bad.ok, false);
+});
+
+test('non-durable direct delivery keeps bus origin and wrapper', async () => {
+  const w = await world();
+  const origin = { kind: 'agent_message', messageId: 'msg', messageKind: 'send', initiator: 'system', sender: 'system' } as const;
+  const result = await promptSessionUseCase({ ...w.deps, deliveries: undefined }, { sessionId: w.sid, text: 'wrapper', messageBody: ' body\n', messageOrigin: origin });
+  assert.ok(result.ok);
+  assert.equal((await prompts(w.deps, w.sid))[0]!.event.text, ' body\n');
+  const sent = w.dispatched.find((command) => command.kind === 'prompt');
+  assert.ok(sent && sent.kind === 'prompt');
+  assert.match(sent.text, /wrapper$/);
+  assert.deepEqual(sent.messageOrigin, origin);
 });
 
 test('prompt 返回 ack：seq 是 journal 里这条 prompt 的 seq，state 合法', async () => {

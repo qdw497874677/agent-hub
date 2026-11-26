@@ -78,9 +78,17 @@ test('外部 agent：连线、同伴、ask 回复进外部收件箱、长轮询�
     expect(inbox.messages.map((m) => m.replyTo)).toContain(messageId);
     const empty = (await (await bot.get(`/openapi/v1/inbox?after=${inbox.next}`)).json()) as { messages: unknown[] };
     expect(empty.messages.length).toBe(0);
-    // 被问的会话时间线里有带「外部」署名的不可信包装
-    const events = await (await page.request.get(`/api/sessions/${verify}/events`)).text();
-    expect(events).toContain('external:');
+    // 时间线展示 Hub 确认的来源类型和原始正文，不暴露外部收件箱地址。
+    const eventResponse = await page.request.get(`/api/sessions/${verify}/events`);
+    expect(eventResponse.ok()).toBe(true);
+    const events = await eventResponse.json() as { event: { kind: string; text?: string; messageSource?: { messageId: string } } }[];
+    const incoming = events.filter(({ event }) => event.kind === 'prompt' && event.messageSource?.messageId === messageId);
+    expect(incoming).toHaveLength(1);
+    expect(incoming[0]!.event).toEqual({
+      kind: 'prompt', text: '请只回复四个字母 PONG',
+      messageSource: { kind: 'agent_message', messageId, messageKind: 'ask', initiator: 'external_token', sender: 'external' }
+    });
+    expect(JSON.stringify(events)).not.toContain(`external:${info.id}`);
 
     // waitSec：get_session 等这一轮结束；events 没新事件时等到点返回
     const session = (await (await bot.get(`/openapi/v1/sessions/${verify}?waitSec=20`, { timeout: 40_000 })).json()) as { status: string; lastSeq?: number };

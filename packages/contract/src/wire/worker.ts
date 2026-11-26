@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { rpcFrameSchema } from '../rpc/frames.ts';
 import { id } from './common.ts';
 import { workerMetricsSchema } from './resources.ts';
-import { agentSchema, optionCategorySchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema, sessionEventSchema, sessionOriginSchema } from './entities.ts';
+import { agentSchema, optionCategorySchema, optionValuesSchema, promptMessageOriginSchema, promptPartSchema, runtimeOptionSchema, sessionEventSchema, sessionOriginSchema } from './entities.ts';
 
 /** hub ↔ worker 长连接协议：握手、上下行帧、更新。 */
 
@@ -512,7 +512,7 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
     capabilities: z.array(z.string().max(32)).max(16).optional()
   }),
   startSessionCommandSchema,
-  z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]), deliveryId: z.string().max(128).optional(), startAttemptId: startAttemptIdSchema.optional() }),
+  z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]), deliveryId: z.string().max(128).optional(), startAttemptId: startAttemptIdSchema.optional(), messageOrigin: promptMessageOriginSchema.optional() }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),
   /** 手动压缩上下文（ADR 0020）。老 worker 不认，只记一条日志。 */
   z.object({ kind: z.literal('compact'), sessionId: id, instructions: z.string().max(2000).optional() }),

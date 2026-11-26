@@ -93,7 +93,7 @@ export function wireConnectors(input: ConnectorWiringInput): ConnectorWiring {
     links: store.links,
     policy: deps.access,
     principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-message'),
-    deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
+    deliver: (sessionId, text, author, { messageOrigin, messageBody }) => promptSessionUseCase(deps, { sessionId, text, author, messageOrigin, messageBody }),
     spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
       projectId: project.id, title, ownerId: actor.user.id, ...roleSessionAgentRef(role), actor, via: 'bot'
     })

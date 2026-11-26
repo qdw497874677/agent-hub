@@ -5,6 +5,7 @@ import { notFound, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { SessionId, Seq } from '../ids.ts';
 import type { PromptPart } from '../attachment.ts';
+import type { PromptMessageOrigin } from '../message-provenance.ts';
 import type { Deps } from './deps.ts';
 import type { DeliveryQueue } from '../ports/delivery-queue.ts';
 import { ensureHosted } from './hosting.ts';
@@ -26,6 +27,7 @@ export type DeliveryDeps = Pick<
 export interface PromptPayload {
   readonly text: string;
   readonly parts: readonly PromptPart[];
+  readonly messageOrigin?: PromptMessageOrigin;
 }
 
 /** 上一轮还在跑时，排队的消息隔多久再看一眼（回合结束时也会被立刻叫醒）。 */
@@ -218,7 +220,7 @@ async function attemptClaimed(deps: DeliveryDeps, delivery: Delivery): Promise<R
     }
     if (!failure && session) {
       const payload = delivery.payload as PromptPayload;
-      const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text: payload.text, parts: payload.parts, deliveryId: delivery.id, ...(startAttemptId === undefined ? {} : { startAttemptId }) });
+      const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text: payload.text, parts: payload.parts, deliveryId: delivery.id, ...(payload.messageOrigin === undefined ? {} : { messageOrigin: payload.messageOrigin }), ...(startAttemptId === undefined ? {} : { startAttemptId }) });
       if (!sent.ok) failure = sent.error;
     }
     const now = deps.now();
