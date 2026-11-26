@@ -169,6 +169,26 @@ test('组合会话：指定 member 时 root 指向该成员，context 标出当�
   assert.deepEqual(w.calls, ['remote-1:list:/srv/work/groups/group_test/web:']);
 });
 
+test('AMP implicit primary reports canonical member but cannot issue ambiguous review anchor', async () => {
+  const w = await world();
+  await w.groups.save({ ...w.group, layout: 'amp', primaryRepoId: 'repo_web' });
+  w.bases.set(w.session.id, 'legacy-base');
+  w.bases.set(`${w.session.id}:${w.webId}`, 'member-base');
+  const implicit = await w.svc.reviewDiff(null, w.session.id, 'a.ts', 'session');
+  const explicit = await w.svc.reviewDiff(null, w.session.id, 'a.ts', 'session', undefined, w.webId);
+  assert.ok(implicit.ok && explicit.ok);
+  assert.equal(implicit.value.member, w.webId);
+  assert.equal(implicit.value.reviewable, false);
+  assert.equal(implicit.value.commit, 'legacy-base');
+  assert.equal(explicit.value.member, w.webId);
+  assert.equal(explicit.value.reviewable, true);
+  assert.equal(explicit.value.commit, 'member-base');
+  assert.deepEqual(w.calls, [
+    'remote-1:diff:/srv/work/groups/group_test/web:a.ts:legacy-base',
+    'remote-1:diff:/srv/work/groups/group_test/web:a.ts:member-base'
+  ]);
+});
+
 test('组合会话：member 不属于这组 → 拒绝', async () => {
   const w = await world();
   const other = newWorkspace({ projectId: w.project.id, workerId: 'remote-1', path: '/srv/work/other', kind: 'long_lived', source: 'linked', now: 1 });

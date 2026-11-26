@@ -7,6 +7,7 @@ import type { RuntimeOption } from '../option.ts';
 import type { SessionId } from '../ids.ts';
 import { asSessionId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
+import type { Delivery } from '../delivery.ts';
 import { invalid, notFound, unavailable } from '../errors.ts';
 import { promptOpening } from '../messaging.ts';
 import type { AttachmentInput, PromptPart, StoredAttachment } from '../attachment.ts';
@@ -157,13 +158,17 @@ type PromptSessionDeps = Pick<
 
 export async function promptSessionUseCase(
   deps: PromptSessionDeps,
-  command: PromptCommand
+  command: PromptCommand,
+  admission?: (input: { event: Extract<SessionEvent, { kind: 'prompt' }>; payload: Delivery['payload']; now: number }) => Promise<Result<{ ack: PromptAck; publishedSession: Session | null }, DomainError>>
 ): Promise<Result<PromptAck, DomainError>> {
+  // Reserved for internally admitted reviews; public prompt IDs cannot impersonate them.
+  if (!admission && command.clientMessageId?.startsWith('diff-review:')) return err(invalid('clientMessageId 使用了保留前缀'));
   const sessionId = asSessionId(command.sessionId);
   const session = await deps.sessions.byId(sessionId);
   if (!session) return err(notFound('会话不存在'));
   const ingress = await admitHandoffIngress(deps, sessionId, command.clientMessageId);
   if (!ingress.ok) return ingress;
+  if (admission && !deps.deliveries) return err(unavailable('送达队列不可用，暂时不能继续'));
   if (!deps.deliveries) {
     const handoff = await handoffRecord(deps, sessionId);
     if (!handoff.ok) return handoff;
@@ -172,7 +177,7 @@ export async function promptSessionUseCase(
 
   // 幂等（§5.3）：客户端超时重试用同一个 clientMessageId。已经收过就只回执，
   // 不再写 journal、不再派发；没带 id 的老调用方行为完全不变。
-  if (command.clientMessageId !== undefined) {
+  if (!admission && command.clientMessageId !== undefined) {
     const hit = findClientMessage(await deps.sessions.tail(sessionId, CLIENT_MESSAGE_WINDOW), command.clientMessageId);
     if (hit) {
       return ok({ seq: hit.seq, deliveryId: await deliveryIdOf(deps, sessionId, hit.seq), state: 'queued', turn: session.turn });
@@ -181,17 +186,53 @@ export async function promptSessionUseCase(
 
   const admitted = await admitBranchSession(deps, sessionId);
   if (!admitted.ok) return admitted;
-  return withActiveTask(deps, session.taskId, () => promptSessionAdmitted(deps, command, session, sessionId));
+  return withActiveTask(deps, session.taskId, () => promptSessionAdmitted(deps, command, session, sessionId, admission));
 }
 
 async function promptSessionAdmitted(
   deps: PromptSessionDeps,
   command: PromptCommand,
   session: Session,
-  sessionId: SessionId
+  sessionId: SessionId,
+  admission?: (input: { event: Extract<SessionEvent, { kind: 'prompt' }>; payload: Delivery['payload']; now: number }) => Promise<Result<{ ack: PromptAck; publishedSession: Session | null }, DomainError>>
 ): Promise<Result<PromptAck, DomainError>> {
   const attachments = command.attachments ?? [];
   if (command.text.trim() === '' && attachments.length === 0) return err(invalid('消息不能为空'));
+  if (admission) {
+    return deps.queue.run(sessionId, async () => {
+      const ingress = await admitHandoffIngress(deps, sessionId, command.clientMessageId);
+      if (!ingress.ok) return ingress;
+      const current = await deps.sessions.byId(sessionId);
+      if (!current) return err(notFound('会话不存在'));
+      const prepared = await prepareAttachments(deps, current, attachments);
+      if (!prepared.ok) return prepared;
+      const { stored, parts } = prepared.value;
+      const briefing = current.lastSeq === 0 && command.briefing !== false ? await briefingFor(deps, current) : null;
+      const instructions = current.lastSeq === 0 && deps.sessionInstructions ? await deps.sessionInstructions(sessionId).catch(() => null) : null;
+      const peers = deps.peerBriefing ? await deps.peerBriefing(current).catch(() => null) : await peerBriefingFor(deps, current);
+      const membersNote = await comboMembersNoteFor(deps, current, briefing !== null, false);
+      const guidance = current.lastSeq === 0 && deps.memoryGuidance ? deps.memoryGuidance : null;
+      const text = [instructions, guidance?.text, briefing, peers, membersNote, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
+      const event: Extract<SessionEvent, { kind: 'prompt' }> = {
+        kind: 'prompt', text: command.text,
+        ...(stored.length > 0 ? { attachments: stored } : {}),
+        ...(command.author ? { author: { id: command.author.id, name: command.author.name, ...(command.author.via ? { via: command.author.via } : {}) } } : {}),
+        ...(command.promptActor === 'account' || command.promptActor === 'token' || command.promptActor === 'system' || command.promptActor === 'unknown' ? { promptActor: command.promptActor } : {}),
+        ...(command.handoff ? { handoff: command.handoff } : {}),
+        ...(command.clientMessageId !== undefined ? { clientMessageId: command.clientMessageId } : {})
+      };
+      const result = await admission({ event, payload: { text, parts }, now: deps.now() });
+      if (!result.ok) return result;
+      const published = result.value.publishedSession;
+      if (published) {
+        deps.stream.publish({ sessionId, seq: published.lastSeq, event, status: published.status });
+        if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
+        // Do not clear a pending members briefing here: group changes are not
+        // protected by the session queue and could otherwise be lost after admission.
+      }
+      return ok(result.value.ack);
+    });
+  }
   const prepared = await prepareAttachments(deps, session, attachments);
   if (!prepared.ok) return prepared;
   const { stored, parts } = prepared.value;
@@ -328,12 +369,13 @@ async function comboMemberContext(
 async function comboMembersNoteFor(
   deps: Partial<Pick<Deps, 'workspaces' | 'workspaceGroups'>>,
   session: Session,
-  alreadyInBriefing: boolean
+  alreadyInBriefing: boolean,
+  clearPending = true
 ): Promise<string | null> {
   const packed = await comboMemberContext(deps, session);
   if (!packed) return null;
   const pending = packed.group.pendingBriefing === true;
-  if (pending && deps.workspaceGroups) {
+  if (pending && clearPending && deps.workspaceGroups) {
     await deps.workspaceGroups.save({ ...packed.group, pendingBriefing: false });
   }
   const should = session.lastSeq === 0 || pending;

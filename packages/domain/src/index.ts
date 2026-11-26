@@ -246,6 +246,7 @@ export type { PullRequestLink, PullRequestRepository, GitHostTokenStore, GitHost
 export * from './git-workflow.ts';
 export * from './use-cases/git-workflow.ts';
 export * from './delivery.ts';
+export type * from './diff-review.ts';
 export type { DeliveryQueue } from './ports/delivery-queue.ts';
 export { attemptDelivery, pumpDeliveries, releaseAfterTurn, recoverOrphanedTurns, resolveOrphanTurnMs, findDeliveryEnded, reconcileInFlightDelivery, reconcileSendingDeliveries, requeueRefusedPrompt, TURN_WAIT_MS, ORPHAN_TURN_MS, ORPHAN_TURN_MARKER, retryDeliveryNow, cancelDelivery, type DeliveryDeps, type PromptPayload } from './use-cases/delivery.ts';
 export { handoffRecord, handoffFirstEnded } from './use-cases/handoff-admission.ts';

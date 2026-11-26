@@ -13,6 +13,7 @@ import { cancelDelivery, attemptDelivery, findDeliveryEnded, pumpDeliveries, rec
 import { recordEvent } from './sessions.ts';
 import type { SessionStartReadiness, WorkerCommand } from '../ports/node-gateway.ts';
 import type { SessionQueue } from '../ports/session-queue.ts';
+import { applyEvent } from '../session.ts';
 
 /**
  * 真串行版 per-session 队列：默认的 immediateQueue 直接执行 work，测不出「队列不可
@@ -84,6 +85,96 @@ async function world(overrides: Parameters<typeof inMemoryDeps>[0] = {}) {
 }
 
 type World = Awaited<ReturnType<typeof world>>;
+
+test('atomic admission owns replay, publishes only a new event, and leaves dispatch to the durable runner', async () => {
+  const w = await world({ queue: serialQueue() });
+  const published: Parameters<typeof w.deps.stream.publish>[0][] = [];
+  let injections = 0;
+  const deps = { ...w.deps,
+    stream: { ...w.deps.stream, publish: (event: Parameters<typeof w.deps.stream.publish>[0]) => published.push(event) },
+    sessionInstructions: async () => 'instructions',
+    peerBriefing: async () => 'peers',
+    memoryGuidance: { text: 'memory', version: 1, injected: async () => { injections++; } }
+  };
+  const command = { sessionId: w.sid, text: 'hello', clientMessageId: 'same', author: { id: 'u', name: 'User', via: 'web' }, promptActor: 'account' as const };
+  let calls = 0;
+  let receipt: { seq: number; deliveryId: string; state: 'queued'; turn: number } | undefined;
+  const admission: NonNullable<Parameters<typeof promptSessionUseCase>[2]> = async ({ event, payload, now }) => {
+    calls++;
+    if (receipt) return ok({ ack: receipt, publishedSession: null });
+    assert.deepEqual(event, { kind: 'prompt', text: 'hello', clientMessageId: 'same', author: command.author, promptActor: 'account' });
+    assert.ok(typeof payload === 'object' && payload !== null && 'text' in payload && 'parts' in payload);
+    assert.equal(typeof payload.text, 'string');
+    assert.match(payload.text as string, /^instructions\n\nmemory\n\n\[agent-hub 任务背景\]/);
+    assert.match(payload.text as string, /\[\/任务背景\]\n\npeers\n\nhello$/);
+    assert.deepEqual(payload.parts, []);
+    const session = await deps.sessions.byId(w.sid);
+    assert.ok(session);
+    const next = applyEvent(session, event, now);
+    await deps.sessions.append(next, event, now);
+    await w.deliveries.save({ id: 'atomic', sessionId: w.sid, seq: next.lastSeq, kind: 'prompt', payload, state: 'queued', attempt: 0, nextAt: now, lastError: null, createdAt: now, updatedAt: now });
+    receipt = { seq: next.lastSeq, deliveryId: 'atomic', state: 'queued', turn: next.turn };
+    return ok({ ack: receipt, publishedSession: next });
+  };
+  const first = await promptSessionUseCase(deps, command, admission);
+  const replay = await promptSessionUseCase(deps, command, admission);
+  assert.ok(first.ok && replay.ok);
+  assert.deepEqual(replay.value, first.value);
+  assert.equal(calls, 2); // journal idempotency must not bypass admission
+  assert.equal(published.length, 1);
+  assert.deepEqual(published[0], { sessionId: w.sid, seq: first.value.seq, event: { kind: 'prompt', text: 'hello', clientMessageId: 'same', author: command.author, promptActor: 'account' }, status: 'running' });
+  assert.equal(injections, 1);
+  assert.equal(w.sent.length, 0);
+  assert.equal((await w.deliveries.pendingFor(w.sid)).length, 1);
+});
+
+test('atomic admission is blocked by missing queue, branch and active task gates and does not publish errors', async () => {
+  const w = await world();
+  let calls = 0;
+  let publications = 0;
+  const admission: NonNullable<Parameters<typeof promptSessionUseCase>[2]> = async () => { calls++; return err(invalid('rejected')); };
+  const command = { sessionId: w.sid, text: 'hello' };
+  const deps = { ...w.deps, stream: { ...w.deps.stream, publish: () => { publications++; } } };
+  const missing = await promptSessionUseCase({ ...deps, deliveries: undefined }, command, admission);
+  assert.ok(!missing.ok && missing.error.code === 'unavailable');
+  const branch = await promptSessionUseCase({ ...deps, branchAttempts: { bySession: async () => ({ id: 'branch', sessionId: w.sid, workerId: 'worker', brief: {} as never, state: 'pending' as const, createdAt: 0, updatedAt: 0 }) } }, command, admission);
+  assert.ok(!branch.ok && branch.error.code === 'conflict');
+  const archived = await promptSessionUseCase({ ...deps, tasks: { ...deps.tasks, byId: async (id) => {
+    const task = await deps.tasks.byId(id);
+    return task && { ...task, archivedAt: 123 };
+  } } }, command, admission);
+  assert.ok(!archived.ok && archived.error.code === 'conflict');
+  assert.equal(calls, 0);
+  const rejected = await promptSessionUseCase(deps, command, admission);
+  assert.ok(!rejected.ok && rejected.error.message === 'rejected');
+  assert.equal(calls, 1);
+  assert.equal(publications, 0);
+  assert.deepEqual(await w.deliveries.recent(w.sid, 10), []);
+});
+
+test('review IDs are reserved from ordinary prompts and ordinary journal IDs cannot bypass review admission', async () => {
+  const w = await world({ queue: serialQueue() });
+  const spoof = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'spoof', clientMessageId: 'diff-review:123' });
+  assert.ok(!spoof.ok && spoof.error.code === 'invalid');
+  assert.deepEqual(await w.deps.sessions.eventsAfter(w.sid, 0), []);
+  let reservedCalls = 0;
+  const reservedReview = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'review', clientMessageId: 'diff-review:123' }, async ({ event }) => {
+    reservedCalls++;
+    assert.equal(event.clientMessageId, 'diff-review:123');
+    return ok({ ack: { seq: 1, deliveryId: 'review', state: 'queued', turn: 1 }, publishedSession: null });
+  });
+  assert.ok(reservedReview.ok);
+  assert.equal(reservedCalls, 1);
+  const normal = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'ordinary', clientMessageId: 'same' });
+  assert.ok(normal.ok);
+  let calls = 0;
+  const review = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'review', clientMessageId: 'same' }, async () => {
+    calls++;
+    return err(invalid('review admission decides'));
+  });
+  assert.ok(!review.ok && review.error.message === 'review admission decides');
+  assert.equal(calls, 1);
+});
 
 test('readiness keeps two prompts queued until ready, then preserves exact turn order', async () => {
   const w = await world({ queue: serialQueue() });

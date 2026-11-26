@@ -235,6 +235,15 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
   };
 
   return {
+    /** Check review access without contacting the worker, so offline drafts remain accessible. */
+    async authorizeReview(subject: Subject | null, sessionId: string): Promise<Result<void, DomainError>> {
+      const session = await deps.sessions.byId(asSessionId(sessionId));
+      const project = session ? await projectOfSession(deps, session) : null;
+      const seen = await authorizeSession(deps.access, subject, project, session, 'session.read');
+      if (!seen.ok) return seen;
+      const allowed = await authorizeProject(deps.access, subject, project, 'workspace.files.read');
+      return allowed.ok ? ok(undefined) : allowed;
+    },
     async context(subject: Subject | null, sessionId: string, member?: string): Promise<Result<FilesContext, DomainError>> {
       const found = await locate(subject, sessionId, { member });
       if (!found.ok) return found;
@@ -352,7 +361,7 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
         ? ok({ base, commit: range.value.base, target: range.value.target, turn: range.value.turn?.turn ?? null, ...(range.value.branch !== undefined ? { branch: range.value.branch } : {}), files: files.value })
         : files;
     },
-    async diff(subject: Subject | null, sessionId: string, path: string, base: DiffBase, turn?: number, member?: string): Promise<Result<FileDiff, DomainError>> {
+    async reviewDiff(subject: Subject | null, sessionId: string, path: string, base: DiffBase, turn?: number, member?: string): Promise<Result<{ diff: FileDiff; member: string | null; reviewable: boolean; scopeKey: string; commit: string | null; target: string | null; turn: number | null; branch: string | null }, DomainError>> {
       const bad = checkPath(path);
       if (!bad.ok || path === '') return err(invalid('路径不合法'));
       const found = await locate(subject, sessionId, { member });
@@ -363,7 +372,13 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
       const range = await rangeFor(found.value, base, turn);
       if (!range.ok) return range;
       // 没有可对比的默认分支：这个文件不属于任何分支改动，空 diff（和 changes 的空列表对上）。
-      if (base === 'branch' && range.value.base === null) return ok({ path, patch: '', truncated: false, binary: false });
+      // AMP's implicit primary uses the legacy session baseline key, not the explicit
+      // member's key. Expose its identity but do not issue an ambiguous review token.
+      const implicitGroup = found.value.location.group !== null && found.value.member === null;
+      const canonicalMember = found.value.member ?? (implicitGroup ? found.value.location.members.find(m => m.root === found.value.root) : undefined);
+      const scopeKey = JSON.stringify([found.value.session.taskId, found.value.project.id, found.value.session.workspaceId, found.value.session.groupId, found.value.workerId, found.value.root]);
+      const metadata = { member: canonicalMember?.workspaceId ?? null, reviewable: !implicitGroup, scopeKey, commit: range.value.base, target: range.value.target, turn: range.value.turn?.turn ?? null, branch: range.value.branch ?? null };
+      if (base === 'branch' && range.value.base === null) return ok({ diff: { path, patch: '', truncated: false, binary: false }, ...metadata });
       const got = await found.value.browser.diff(found.value.root, path, range.value.base, FILES_LIMITS.diffBytes, range.value.target);
       if (!got.ok) return got;
       // 改名 / 复制只要源或目标命中敏感文件名就整段省略（和整树 diff 同一规则），
@@ -372,7 +387,11 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
       // 适配器必须按字面量返回这一个文件；路径被当成模式 / 目录时会带出别的文件，此时不返回内容。
       // 除了回执路径，patch 自己的 section 头也要只提到这个路径（老 Worker / 竞态都按 fail closed 处理）。
       if (got.value.path !== path || !patchOnlyTouches(got.value.patch, path)) return err(unavailable('无法确认这是单个文件的 diff，本次未返回内容'));
-      return got;
+      return ok({ diff: got.value, ...metadata });
+    },
+    async diff(subject: Subject | null, sessionId: string, path: string, base: DiffBase, turn?: number, member?: string): Promise<Result<FileDiff, DomainError>> {
+      const got = await this.reviewDiff(subject, sessionId, path, base, turn, member);
+      return got.ok ? ok(got.value.diff) : got;
     },
     /** 这条会话的回合列表（新的在后）。 */
     async turns(subject: Subject | null, sessionId: string): Promise<Result<readonly TurnCheckpoint[], DomainError>> {
