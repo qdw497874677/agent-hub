@@ -175,8 +175,8 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
 
     // —— 工作区抽屉：分支、路径、复制、添加仓库、去 git 都在里面
     await expect(page.getByTestId('git-branch')).toHaveCount(0); // 窄屏不再平铺
-    await expect(page.getByTestId('composer-status').getByTestId('workspace-entry')).toBeVisible();
-    await page.getByTestId('workspace-entry').click();
+    await page.getByTestId('session-more-trigger').click();
+    await page.getByTestId('session-more-workspace').click();
     const sheet = page.getByTestId('workspace-sheet');
     await expect(sheet).toBeVisible();
     await expect(sheet.getByTestId('workspace-branch')).toHaveText('main');
@@ -205,7 +205,9 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     // —— 320：一格也不横向溢出，入口还在
     await page.setViewportSize({ width: 320, height: 720 });
     await expect(hint).toBeVisible();
-    await expect(page.getByTestId('workspace-entry')).toBeVisible();
+    await page.getByTestId('session-more-trigger').click();
+    await expect(page.getByTestId('session-more-workspace')).toBeVisible();
+    await page.keyboard.press('Escape');
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow, '320 宽不该横向滚动').toBeLessThanOrEqual(1);
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'mobile-signal-320.png') });

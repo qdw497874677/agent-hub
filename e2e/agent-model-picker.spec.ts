@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { hideSessionOptions, showSessionHandoff, showSessionOptions } from './session-composer-controls.ts';
 import { ensureFakeWorker, stopFakeWorker } from './fake-worker.ts';
 
 test.afterAll(() => stopFakeWorker());
@@ -93,9 +94,14 @@ for (const width of [1280, 390]) {
       const draft = page.getByLabel('发送消息');
       await draft.fill('保留草稿');
       const picker = page.getByTestId('session-model-trigger');
+      const compact = width < 640;
+      const showOptions = async () => { if (compact) await showSessionOptions(page); };
+      const hideOptions = async () => { if (compact) await hideSessionOptions(page); };
       await expect(picker).toContainText('a');
+      await showOptions();
       await expect(page.getByRole('combobox', { name: '思考强度' })).toBeVisible();
       await expect(page.getByRole('combobox', { name: '模式 Agent' })).toBeVisible();
+      await hideOptions();
       await picker.click();
       const dialog = page.getByRole('dialog', { name: '选择模型' });
       await expect(dialog.getByTestId('session-model-current')).toContainText('当前会话：');
@@ -103,9 +109,10 @@ for (const width of [1280, 390]) {
       await expect(dialog).toContainText('Hub · hub-demo');
       await expect(dialog.getByRole('option', { name: /hub-demo\/c.*用此模型新开会话/ })).toBeVisible();
       await expect(dialog.getByRole('button', { name: '换 Agent', exact: true })).toHaveCount(0);
-      await expect(page.getByTestId('agent-handoff-trigger')).toBeVisible();
       await dialog.getByRole('button', { name: '取消' }).click();
       await expect(picker).toBeFocused();
+      await expect(await showSessionHandoff(page, compact)).toBeVisible();
+      if (compact) await page.keyboard.press('Escape');
       expect(posts).toBe(0);
       await expect(draft).toHaveValue('保留草稿');
       await picker.click();
@@ -123,11 +130,13 @@ for (const width of [1280, 390]) {
       await expect(notice).toHaveAttribute('data-state', 'confirmed');
       await expect(picker).toContainText('b');
       await expect.poll(() => releaseRead !== undefined).toBe(true);
+      await showOptions();
       await page.getByRole('combobox', { name: '思考强度' }).selectOption('high');
       await expect(page.getByRole('combobox', { name: '思考强度' })).toHaveValue('high');
       releaseRead?.();
       await expect(page.getByRole('combobox', { name: '思考强度' }).locator('option[value="max"]')).toHaveCount(1);
       await expect(page.getByRole('combobox', { name: '思考强度' })).toHaveValue('high');
+      await hideOptions();
       mode = 'saved';
       await picker.click();
       await dialog.getByRole('option', { name: /local\/a/ }).last().click();
@@ -137,8 +146,10 @@ for (const width of [1280, 390]) {
       await expect(page.getByTestId('model-observation')).toContainText('当前运行时报告：local/b；保存的启动模型：local/a');
       current = 'local/a';
       revision += 1000;
+      await showOptions();
       await page.getByRole('combobox', { name: '思考强度' }).selectOption('high');
       await expect(page.getByRole('combobox', { name: '思考强度' })).toHaveValue('high');
+      await hideOptions();
       // A newer runtime observation can supersede a historic saved action.
       await page.goto(`/#/p/${project.id}/canvas`);
       await page.goto(`/#/p/${project.id}/focus/${session.id}`);
@@ -165,7 +176,9 @@ for (const width of [1280, 390]) {
       release?.();
       await expect(notice).toHaveAttribute('data-state', 'confirmed');
       await expect(picker).toContainText('b');
+      await showOptions();
       await expect(page.getByRole('combobox', { name: '思考强度' })).toHaveValue('high');
+      await hideOptions();
       mode = 'mismatch';
       await picker.click();
       await dialog.getByRole('option', { name: /local\/a/ }).last().click();

@@ -7,10 +7,10 @@ import { useDelegations } from '../../shell/delegations.ts';
 import { DelegationOriginBanner, DelegationPanel } from './delegation-panel.tsx';
 import { DelegateDialog } from './delegate-dialog.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
 import { api, sessionGroupId, sessionStartupApi } from '../../shell/api.ts';
-import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
+import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, questionOf, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
 import { groupTimeline } from '../../atoms/timeline-groups.ts';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
 import { Composer } from '../../atoms/composer.tsx';
@@ -73,6 +73,9 @@ import { WorktreeStatusLine } from './worktree-status.tsx';
 import { SessionGroupLine } from './session-group.tsx';
 import { FindInSession } from '../../atoms/find-in-session.tsx';
 import { isTypingTarget } from '../../atoms/find-in-text.ts';
+import { Sheet } from '../../shell/dialog-shell.tsx';
+import { useHandoffCandidates } from '../../atoms/agent-handoff.tsx';
+import { ModelPicker } from '../../atoms/model-picker.tsx';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -87,6 +90,8 @@ interface Props {
   readonly onDraftChange: (text: string) => void;
   /** 整页时的「← 返回」；画布窗口里没有（窗口自己有关闭）。 */
   readonly onBack?: () => void;
+  readonly onProjectNavigation?: () => void;
+  readonly onSearch?: () => void;
   /** 画布窗口：顶栏变成拖动把手，右边挂窗口按钮（最小化/最大化/打开/关闭）。 */
   readonly windowChrome?: { readonly actions: ReactNode };
   readonly onChanged: () => void;
@@ -131,6 +136,8 @@ export function FocusView({
   draft,
   onDraftChange,
   onBack,
+  onProjectNavigation,
+  onSearch,
   onChanged,
   onOpenSession,
   onSeedDraft,
@@ -158,6 +165,7 @@ export function FocusView({
   const [subagentPath, setSubagentPath] = useState<readonly string[]>([]);
   const subagentTrackRef = useRef<HTMLButtonElement | null>(null);
   const moreRef = useRef<HTMLButtonElement | null>(null);
+  const [mobileHandoffSession, setMobileHandoffSession] = useState<string | null>(null);
   // 这棵会话视图的根：⌘F 只归焦点所在的那一个（画布上可能同时开着几条会话窗口）。
   const viewRef = useRef<HTMLDivElement | null>(null);
   // 会话内搜索条开着没有；查询本身和命中由 FindInSession 自己管。
@@ -221,8 +229,6 @@ export function FocusView({
    * nonce 让 Composer 知道「这是新引用，去同步一次」。切回对话页，人接着写问题。
    */
   const [quote, setQuote] = useState<{ text: string; nonce: number } | null>(null);
-  // 「回复此问题」只递增这个信号：输入框收到后聚焦，草稿和发送都还是人的事。
-  const [replyFocus, setReplyFocus] = useState(0);
   const quoteSeq = useRef(0);
   const quoteToChat = (ref: string) => {
     const text = appendRef(draft, ref);
@@ -555,6 +561,7 @@ export function FocusView({
   const forkable = !busy && forkHint === null;
   const [gitOpen, setGitOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [provenanceOpen, setProvenanceOpen] = useState(false);
   const [rewindAt, setRewindAt] = useState<number | null>(null);
   useEffect(() => setRewindAt(null), [session.id]);
   // 每轮「改了 N 个文件」（ADR 0027 阶段 1 的检查点）：挂在这一轮最后、下一句问话之前
@@ -565,10 +572,15 @@ export function FocusView({
   // 跳三次，观感很碎，所以现在只打标不改变顺序。
   const held = heldPromptSeqs(deliveriesBySeq);
   const timelineBlocks = markQueued(blocks, held);
-  // 时间线 v2：每轮连续的工具调用 + 思考并成一组（摘要可收起）；工具设成「隐藏」时不分组
+  // 显式要求显示的内容、需要回答的问题与失败工具都留在摘要外。
   const timelineItems = useMemo(
-    () => (settings.tools === 'hidden' ? timelineBlocks.map((block, index) => ({ type: 'block' as const, block, index, recovered: false })) : groupTimeline(timelineBlocks, { running: turnRunning })),
-    [timelineBlocks, settings.tools, turnRunning]
+    () => groupTimeline(timelineBlocks, {
+      running: turnRunning,
+      groupable: (block) => block.kind === 'tool'
+        ? settings.tools === 'collapsed' && questionOf(block) === null && block.result?.ok !== false
+        : block.kind === 'thinking' && settings.thinking === 'collapsed'
+    }),
+    [timelineBlocks, settings.tools, settings.thinking, turnRunning]
   );
   const promptSeqs = timelineBlocks.filter((b) => b.kind === 'prompt').map((b) => b.seq);
   /** 问话 seq 之前那一轮（上一句问话开头的那轮）。 */
@@ -599,9 +611,7 @@ export function FocusView({
    * 输入框上方那条：桌面是「正在做什么 / 分支」，窄屏不重复进度（已移到对话末尾），
    * 只留一个「工作区」入口——分支、路径、加仓库都在里面。
    */
-  const showStatusRow = narrow
-    ? workspacePath !== null
-    : Boolean(gitState?.isGit || live?.contextUsage || repo.isCombo);
+  const showStatusRow = Boolean(live?.contextUsage || (!narrow && (gitState?.isGit || repo.isCombo)));
   const [turnBase, setTurnBase] = useState<{ base: string; nonce: number } | null>(null);
   const openTurn = (turn: number) => {
     setTurnBase({ base: `turn:${turn}`, nonce: Date.now() });
@@ -780,6 +790,7 @@ export function FocusView({
             ←<span className="hidden sm:inline">&nbsp;返回</span>
           </button>
         ) : null}
+        {onProjectNavigation ? <button type="button" className="flex size-[44px] shrink-0 items-center justify-center text-tertiary hover:text-primary md:hidden" aria-label="项目与全部会话" title="项目与全部会话" onClick={onProjectNavigation}>☰</button> : null}
         <div className="min-w-0 flex-1">
           {renaming ? (
             <input
@@ -799,7 +810,7 @@ export function FocusView({
               }}
             />
           ) : (
-            <button
+            <div className="flex min-w-0 items-center gap-1"><button
               type="button"
               className="block max-w-full truncate text-left text-body text-primary hover:underline decoration-dotted"
               title="点击重命名"
@@ -807,9 +818,9 @@ export function FocusView({
               onClick={startRename}
             >
               {session.title || task?.title || (coordinatorIds.has(session.id) ? COORDINATOR_TITLE : UNASSIGNED_TITLE)}
-            </button>
+            </button>{pinned ? <PinnedMark testId="session-pinned-mobile" className="size-3 text-secondary md:hidden" /> : null}</div>
           )}
-          <p className="flex min-w-0 items-center gap-1 font-mono text-meta text-tertiary">
+          <p className="hidden min-w-0 items-center gap-1 font-mono text-meta text-tertiary md:flex">
             <span className="truncate">
               {session.title && task ? `${task.title} · ` : ''}{agentLabel} · 配置模型：{modelLabel(session.model)}
               {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
@@ -826,7 +837,7 @@ export function FocusView({
         />
         <span className="flex shrink-0 items-center">
           <button
-            className="hidden h-11 shrink-0 items-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary sm:flex sm:px-2 md:h-9"
+            className="hidden h-11 shrink-0 items-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary md:flex md:px-2 md:h-9"
             aria-label={`连接 ${linkedSessions.length}`}
             onClick={() => setLinksOpen(true)}
             title="连接同项目的其他会话"
@@ -834,21 +845,27 @@ export function FocusView({
             连接 {linkedSessions.length}
           </button>
           <button
-            className="hidden h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary sm:flex md:h-9"
+            className="hidden h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary md:flex md:h-9"
             aria-pressed={details}
             onClick={() => setDetails((open) => !open)}
           >
             详情
           </button>
-          <span className="hidden sm:flex">
+          <span className="hidden md:flex">
             <DisplayMenu settings={settings} onChange={changeSettings} />
           </span>
-          <Dropdown label="更多" icon="⋯" triggerRef={moreRef}>
+          <Dropdown key={session.id} label="更多" icon="⋯" triggerRef={moreRef} testId="session-more-trigger" menuClassName="max-h-[min(75dvh,640px)] overflow-y-auto overscroll-contain">
             {(close) => (
-              <>
-                {/* 手机上 header 只留标题、状态和「⋯」（连接 / 详情 / Aa 都在 sm 以上才显示），
-                    这三个入口在这里补一份；桌面上不渲染，避免和 header 重复。 */}
-                <MenuGroup label="详情与显示" className="sm:hidden">
+              <SessionMenuPages narrow={narrow}>{(page, navigate) => <>
+                {narrow && page === 'home' ? <MenuGroup label="工具">
+                  {tabs.filter((t) => t !== 'chat').map((t) => <MenuItem key={t} className="min-h-[44px]" title={sessionTabLabel(t, t === 'changes' ? changeCount : undefined)} testId={`session-more-${t}`} onClick={() => { close(); setTab(t); }} />)}
+                  <MenuItem className="min-h-[44px]" title="工作区" testId="session-more-workspace" onClick={() => { close(); setWorkspaceOpen(true); }} />
+                  {onSearch ? <MenuItem className="min-h-[44px]" title="搜索任务与会话" onClick={() => { close(); onSearch(); }} /> : null}
+                  <MenuItem className="min-h-[44px] border-t border-hair" title="会话与显示 ›" testId="session-more-details" onClick={() => navigate('details')} />
+                  <MenuItem className="min-h-[44px]" title="会话操作与预设 ›" testId="session-more-actions" onClick={() => navigate('actions')} />
+                </MenuGroup> : null}
+                {narrow && page === 'details' ? <MenuGroup label="会话与显示">
+                  <MenuItem title="会话来历" testId="session-more-provenance" onClick={() => { close(); setProvenanceOpen(true); }} />
                   <MenuItem
                     title="详情"
                     hint="查看会话、工作目录和用量"
@@ -873,8 +890,10 @@ export function FocusView({
                       setDisplayOpen(true);
                     }}
                   />
-                </MenuGroup>
-                <MenuGroup label="这次会话" className="border-t border-hair sm:border-t-0">
+                </MenuGroup> : null}
+                {!narrow || page === 'actions' ? <>
+                {narrow ? <MenuGroup label="继续会话"><MenuItem title="交给其他 Agent 继续" hint="新建会话，带上下文继续" testId="agent-handoff-trigger" onClick={() => { close(); moreRef.current?.focus(); setMobileHandoffSession(session.id); }} /></MenuGroup> : null}
+                <MenuGroup label="这次会话" className="border-t border-hair md:border-t-0">
                   <MenuItem
                     title="分叉"
                     hint={forkHint ?? FORK_HINT}
@@ -987,12 +1006,14 @@ export function FocusView({
                     }}
                   />
                 </MenuGroup>
-              </>
+                </> : null}
+              </>}</SessionMenuPages>
             )}
           </Dropdown>
           {windowChrome?.actions}
         </span>
       </header>
+      {narrow ? <MobileHandoff key={session.id} session={session} projectId={canvas.project.id} open={mobileHandoffSession === session.id} onClose={() => setMobileHandoffSession(null)} restoreFocusRef={moreRef} /> : null}
       {session.kind === 'side' ? (
         <button
           type="button"
@@ -1005,9 +1026,10 @@ export function FocusView({
           <span className="shrink-0 text-link">返回主会话</span>
         </button>
       ) : null}
-      <ProvenanceRow sessionId={session.id} />
+      <div className="hidden md:contents"><ProvenanceRow sessionId={session.id} />
       <WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} />
-      {groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}
+      {groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}</div>
+      {narrow && provenanceOpen ? <Sheet title="会话来历" testId="session-provenance-sheet" onClose={() => setProvenanceOpen(false)}><ProvenanceRow sessionId={session.id} /><WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} />{groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}</Sheet> : null}
       <AttentionAutoAck sessionId={session.id} />
       {isCoordinatorSession ? (
         <DelegationPanel
@@ -1066,7 +1088,7 @@ export function FocusView({
           onDone={(id, prompt) => { setRewindAt(null); onSeedDraft?.(id, prompt); onChanged(); onOpenSession(id); }} />
       ) : null}
       {/* 右侧 pr 是给绝对定位的刷新指示器留的固定位置：它永远占这么宽，指示器出现或消失都不会让页签重排 */}
-      <div role="tablist" aria-label="会话视图" className="relative flex shrink-0 gap-1 border-b border-hair py-1.5 pl-2 pr-5 md:pl-3 md:pr-6" data-testid="session-tabs">
+      <div role="tablist" aria-label="会话视图" className="relative hidden shrink-0 gap-1 border-b border-hair py-1.5 pl-2 pr-5 md:flex md:pl-3 md:pr-6" data-testid="session-tabs">
         {tabs.map((t) => (
           <button
             key={t}
@@ -1107,6 +1129,7 @@ export function FocusView({
           </span>
         ) : null}
       </div>
+      {tab !== 'chat' ? <div className="flex min-h-[44px] shrink-0 items-center gap-3 border-b border-hair px-3 md:hidden"><button type="button" data-testid="session-back-to-chat" className="min-h-[44px] text-sub text-link" onClick={() => setTab('chat')}>← 返回对话</button><span className="text-sub text-secondary">{sessionTabLabel(tab, tab === 'changes' ? changeCount : undefined)}</span></div> : null}
       {(['files', 'changes'] as const).map((t) =>
         visited.has(t) ? (
           <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
@@ -1257,86 +1280,89 @@ export function FocusView({
               <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
             ) : null : (
               <FileLinksContext.Provider value={fileLinks}>
-              <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: visibleHint && delivery.pending.length === 0 ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed', uncertainDeliveryIds: live?.uncertainDeliveryIds }}>
-              {timelineItems.map((item) => {
-                const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }) => (
-                  <ChatBlock
-                    key={index}
-                    block={block}
-                    agentLabel={agentLabel}
-                    sessionId={session.id}
-                    settings={settings}
-                    last={index === timelineBlocks.length - 1}
-                    running={turnRunning}
-                    stale={Boolean(syncState)}
-                    showAuthor={showAuthor}
-                    queued={block.queued === true}
-                    recovered={recovered}
+                <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: visibleHint && delivery.pending.length === 0 ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed', uncertainDeliveryIds: live?.uncertainDeliveryIds }}>
+                  {timelineItems.map((item) => {
+                    const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }, inWork = false) => (
+                      <ChatBlock
+                        key={index}
+                        block={block}
+                        agentLabel={agentLabel}
+                        sessionId={session.id}
+                        settings={inWork && block.kind === 'thinking' ? { ...settings, thinking: 'shown' } : settings}
+                        last={index === timelineBlocks.length - 1}
+                        running={turnRunning}
+                        stale={Boolean(syncState)}
+                        showAuthor={showAuthor}
+                        queued={block.queued === true}
+                        recovered={recovered}
+                        searchOpen={findOpen}
+                      />
+                    );
+                    if (item.type === 'work') {
+                      return (
+                        <WorkGroup key={`${session.id}:${item.key}`} summary={item.summary} defaultOpen={item.open} live={item.live} stale={Boolean(syncState)} forceOpen={findOpen}>
+                          {(open, mounted) => item.items.map((entry) => entry.block.kind === 'text' ? renderBlock(entry) : (
+                            <div key={entry.index} data-testid="work-group-entry" hidden={!open}>{mounted ? renderBlock(entry, true) : null}</div>
+                          ))}
+                        </WorkGroup>
+                      );
+                    }
+                    const { block, index } = item;
+                    return (
+                      <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
+                        onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
+                        {renderBlock(item)}
+                      </TurnFrag>
+                    );
+                  })}
+                  {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
+                  {/* 还没写进对话的消息：就是列表末尾的普通气泡，和 journal 用的是同一套外壳 */}
+                  <PendingPrompts
+                    pending={delivery.pending}
+                    onRetry={(pending) => void retryPending(pending)}
+                    onDiscard={delivery.discard}
+                    quiet={visibleHint !== null}
+                    hasDelivery={(pending) => pending.seq !== undefined && deliveriesBySeq.has(pending.seq)}
+                    className={settings.compact ? 'gap-2' : 'gap-4'}
+                    renderPrompt={(pending, _index, seq) => (
+                      <ChatBlock
+                        block={{ kind: 'prompt', text: pending.text, attachments: [], seq: pending.seq ?? seq }}
+                        agentLabel={agentLabel}
+                        sessionId={session.id}
+                        settings={settings}
+                        last={false}
+                        running={false}
+                        showAuthor={showAuthor}
+                        queued={pending.state === 'queued'}
+                      />
+                    )}
                   />
-                );
-                if (item.type === 'work') {
-                  return (
-                    <WorkGroup key={item.key} summary={item.summary} defaultOpen={item.open} live={item.live} stale={Boolean(syncState)} forceOpen={settings.tools === 'expanded'}>
-                      {item.items.map(renderBlock)}
-                    </WorkGroup>
-                  );
-                }
-                const { block, index } = item;
-                return (
-                  <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
-                    onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
-                    {renderBlock(item)}
-                  </TurnFrag>
-                );
-              })}
-              {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
-              {/* 还没写进对话的消息：就是列表末尾的普通气泡，和 journal 用的是同一套外壳 */}
-              <PendingPrompts
-                pending={delivery.pending}
-                onRetry={(pending) => void retryPending(pending)}
-                onDiscard={delivery.discard}
-                quiet={visibleHint !== null}
-                hasDelivery={(pending) => pending.seq !== undefined && deliveriesBySeq.has(pending.seq)}
-                className={settings.compact ? 'gap-2' : 'gap-4'}
-                renderPrompt={(pending, _index, seq) => (
-                  <ChatBlock
-                    block={{ kind: 'prompt', text: pending.text, attachments: [], seq: pending.seq ?? seq }}
-                    agentLabel={agentLabel}
-                    sessionId={session.id}
-                    settings={settings}
-                    last={false}
-                    running={false}
-                    showAuthor={showAuthor}
-                    queued={pending.state === 'queued'}
-                  />
-                )}
-              />
-              {reason && !['error', 'stopped'].includes(timelineBlocks[timelineBlocks.length - 1]?.kind ?? '') ? (
-                <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
-              ) : null}
-              {/* 两端唯一的当前进度：贴在对话末尾，不再在输入框上方重复。 */}
-              {visibleHint ? (
-                <p
-                  className="flex min-h-8 min-w-0 items-center gap-2 self-start text-meta text-tertiary"
-                  data-testid="turn-hint"
-                  data-stage={visibleHint.stage}
-                  data-phase={visibleHint.phase}
-                  title={visibleHint.detail}
-                  aria-label={visibleHint.detail}
-                  role="status"
-                >
-                  {visibleHint.text === '暂未确认这一轮的结果' || hasPendingApproval || syncState ? null : (
-                    <span data-testid="turn-active-spinner" aria-hidden="true" className="relative size-[15px] shrink-0">
-                      <span className="absolute inset-0 animate-spin rounded-full border-[1.5px] border-current/25 border-t-current motion-reduce:hidden" />
-                      <svg viewBox="0 0 16 16" fill="none" className="hidden size-full motion-reduce:block" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M4 2h8M4 14h8M5 2c0 3 1 4 3 6-2 2-3 3-3 6m6-12c0 3-1 4-3 6 2 2 3 3 3 6" />
-                      </svg>
-                    </span>
-                  )}
-                  <span className="min-w-0 break-words">{visibleHint.text}</span>
-                </p>
-              ) : null}
-              </DeliveryContext.Provider>
+                  {reason && !['error', 'stopped'].includes(timelineBlocks[timelineBlocks.length - 1]?.kind ?? '') ? (
+                    <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
+                  ) : null}
+                  {/* 两端唯一的当前进度：贴在对话末尾，不再在输入框上方重复。 */}
+                  {visibleHint ? (
+                    <p
+                      className="flex min-h-8 min-w-0 items-center gap-2 self-start text-meta text-tertiary"
+                      data-testid="turn-hint"
+                      data-stage={visibleHint.stage}
+                      data-phase={visibleHint.phase}
+                      title={visibleHint.detail}
+                      aria-label={visibleHint.detail}
+                      role="status"
+                    >
+                      {visibleHint.text === '暂未确认这一轮的结果' || hasPendingApproval || syncState ? null : (
+                        <span data-testid="turn-active-spinner" aria-hidden="true" className="relative size-[15px] shrink-0">
+                          <span className="absolute inset-0 animate-spin rounded-full border-[1.5px] border-current/25 border-t-current motion-reduce:hidden" />
+                          <svg viewBox="0 0 16 16" fill="none" className="hidden size-full motion-reduce:block" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M4 2h8M4 14h8M5 2c0 3 1 4 3 6-2 2-3 3-3 6m6-12c0 3-1 4-3 6 2 2 3 3 3 6" />
+                          </svg>
+                        </span>
+                      )}
+                      <span className="min-w-0 break-words">{visibleHint.text}</span>
+                    </p>
+                  ) : null}
+                </DeliveryContext.Provider>
               </FileLinksContext.Provider>
             )}
           </div>
@@ -1386,22 +1412,7 @@ export function FocusView({
             <div className="mb-1.5 flex min-h-5 items-center justify-between gap-3 px-1" data-testid="composer-status">
               <span />
               <div className="flex min-w-0 shrink-0 items-center gap-3">
-                {narrow ? (
-                  <button
-                    type="button"
-                    className="flex min-h-[44px] min-w-0 items-center gap-1 rounded-full border border-hair px-3 text-meta text-secondary hover:border-strong hover:text-primary"
-                    data-testid="workspace-entry"
-                    aria-haspopup="dialog"
-                    title={workspacePath ?? undefined}
-                    onClick={() => setWorkspaceOpen(true)}
-                  >
-                    <span aria-hidden>▦</span>
-                    <span className="shrink-0">工作区</span>
-                    {gitState !== undefined && gitState.files.length > 0 ? (
-                      <span className="shrink-0 text-tertiary">{gitState.files.length} 改动</span>
-                    ) : null}
-                  </button>
-                ) : (
+                {!narrow ? (
                   <>
                     {switcher}
                     {gitState?.isGit ? (
@@ -1419,7 +1430,7 @@ export function FocusView({
                       </button>
                     ) : null}
                   </>
-                )}
+                ) : null}
                 {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
               </div>
             </div>
@@ -1457,29 +1468,6 @@ export function FocusView({
               <span className="min-w-0">{envNotice.text}</span>
             </p>
           ) : null}
-          {/* 当前这条会话还挂着「等回答」时才出现：上一轮确实把话留给了人，不是只把运行状态改成阻塞。
-              历史提问卡仍只说明「当时问了什么」，操作入口放在这里，人不用去旧卡上猜。 */}
-          {answerItem ? (
-            <div
-              data-testid="answer-prompt"
-              data-possible={answerItem.possible ? 'true' : 'false'}
-              title={answerItem.possible ? '上一轮已结束；最后一句是问句，可能还需要你回复。' : '上一轮已结束；问题留给了你，回复会接着这条会话。'}
-              className="mb-1.5 flex items-center gap-2 border-l-2 border-link bg-link/5 py-1.5 pl-3 pr-1.5 text-meta"
-            >
-              <p className="min-w-0 flex-1 text-secondary">
-                <span className="block">{answerItem.possible ? 'Agent 可能在等你回答' : 'Agent 在等你回答'}</span>
-                <span className="block text-[11px] leading-4 text-tertiary">上一轮已结束</span>
-              </p>
-              <button
-                type="button"
-                data-testid="answer-reply"
-                className="flex min-h-[44px] shrink-0 items-center rounded-sm px-2 text-link hover:bg-card focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring md:min-h-0 md:py-1"
-                onClick={() => setReplyFocus((nonce) => nonce + 1)}
-              >
-                回复此问题
-              </button>
-            </div>
-          ) : null}
           <HandoffGate key={session.id} session={session} projectId={canvas.project.id} draft={draft} onDraftChange={onDraftChange}><Composer
             large
             allowOfflineSend
@@ -1500,7 +1488,6 @@ export function FocusView({
             commands={sessionCommands(session, runtimeCommands, forkHint)}
             projectId={canvas.project.id}
             quote={quote}
-            focusRequest={replyFocus}
           /></HandoffGate>
         </div>
       </div>
@@ -1508,6 +1495,39 @@ export function FocusView({
     {docked ? detailsPanel : null}
     </div>
   );
+}
+
+type SessionMenuPage = 'home' | 'details' | 'actions';
+
+/** 菜单卸载时丢弃层级，回到上一层时把焦点交还对应入口。 */
+function SessionMenuPages({ narrow, children }: { narrow: boolean; children: (page: SessionMenuPage, navigate: (page: SessionMenuPage) => void) => ReactNode }) {
+  const [page, setPage] = useState<SessionMenuPage>('home');
+  const root = useRef<HTMLDivElement>(null);
+  const focusAfterNavigation = useRef<{ next: SessionMenuPage; previous: SessionMenuPage } | null>(null);
+  useLayoutEffect(() => {
+    const pending = focusAfterNavigation.current;
+    if (!pending || pending.next !== page) return;
+    focusAfterNavigation.current = null;
+    const selector = page === 'home' ? `[data-testid="session-more-${pending.previous}"]` : '[data-testid="session-more-back"]';
+    root.current?.querySelector<HTMLButtonElement>(selector)?.focus();
+  }, [page]);
+  const navigate = (next: SessionMenuPage) => {
+    if (next === page) return;
+    focusAfterNavigation.current = { next, previous: page };
+    setPage(next);
+  };
+  return <div ref={root} onKeyDown={(event) => {
+    if (narrow && page !== 'home' && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); navigate('home'); }
+  }}>
+    {narrow && page !== 'home' ? <button type="button" role="menuitem" data-testid="session-more-back" className="sticky top-0 z-10 flex min-h-[44px] w-full items-center gap-2 border-b border-hair bg-overlay px-3 text-left text-sub text-secondary hover:text-primary" onClick={() => navigate('home')}>← 返回</button> : null}
+    {children(page, navigate)}
+  </div>;
+}
+
+/** 手机交接的确认状态跟随来源会话销毁，不覆盖新会话。 */
+function MobileHandoff({ session, projectId, open, onClose, restoreFocusRef }: { session: SessionDto; projectId: string; open: boolean; onClose: () => void; restoreFocusRef: RefObject<HTMLButtonElement | null> }) {
+  const handoff = useHandoffCandidates(session, projectId);
+  return <><ModelPicker label="换 Agent" dialogTitle="选择要换的 Agent" controlledOpen={open} onOpenChange={(next) => { if (!next) onClose(); }} restoreFocusRef={restoreFocusRef} deferPick sessionPicker scope={`handoff:${session.id}`} items={handoff.items} value="" note={handoff.note} onChange={handoff.choose} />{handoff.dialog}</>;
 }
 
 /** 会话在界面上的名字：任务标题 · agent；没有任务的会话只用 agent（不拼出 null）。 */

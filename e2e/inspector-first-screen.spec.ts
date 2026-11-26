@@ -62,9 +62,10 @@ async function openDetails(page: Page) {
   const panel = page.getByRole('complementary', { name: '会话详情' });
   await panel.waitFor({ state: 'visible', timeout: 2_000 }).catch(() => undefined);
   if (await panel.isVisible()) return panel;
-  const narrow = (page.viewportSize()?.width ?? 1280) < 640;
+  const narrow = (page.viewportSize()?.width ?? 1280) < 768;
   if (narrow) {
     await page.getByRole('button', { name: '更多' }).click();
+    await page.getByTestId('session-more-details').click();
     await page.getByRole('menuitem', { name: '详情' }).click();
   } else {
     await page.getByRole('button', { name: '详情', exact: true }).click();

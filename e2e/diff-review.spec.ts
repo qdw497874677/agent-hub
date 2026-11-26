@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 import { loginByApi } from './login.ts';
+import { openSessionTool } from './session-tools.ts';
 
 test.afterAll(stopFakeWorker);
 
@@ -52,8 +53,7 @@ for (const width of [1280, 390]) {
         const sourceApi = `/api/sessions/${source.id}/git/review`;
         const targetApi = `/api/sessions/${target.id}`;
         await page.goto(`/#/p/${project.id}/focus/${source.id}`);
-        const tab = page.getByTestId('session-tab-changes');
-        await tab.click();
+        await openSessionTool(page, 'changes');
         const changes = page.getByTestId('files-panel-changes');
         const panel = changes.getByTestId('review-panel');
         const diff = changes.getByTestId('diff-view');
@@ -79,7 +79,7 @@ for (const width of [1280, 390]) {
         await add('gamma.txt', '这条版本会变化', 'new', 1);
 
         await page.reload();
-        await tab.click();
+        await openSessionTool(page, 'changes');
         await expect(panel.getByTestId('review-note')).toHaveCount(3);
         await note('检查改后两行').getByTestId('review-open').click();
         await expect(diff).toContainText('after two');

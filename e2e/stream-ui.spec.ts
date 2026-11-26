@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 写和读这两处最容易在真实内容下塌掉的地方：
@@ -15,26 +15,24 @@ import { piModel } from './hub-model.ts';
 
 const SHOTS = process.env['E2E_SCREENSHOTS'];
 const LINES = 60;
+test.afterAll(stopFakeWorker);
 
 type Entry = { seq: number; at: number; event: { kind: string; text?: string; delta?: string } };
 
 async function setup(page: Page, baseURL: string) {
   await loginByApi(page);
+  const workerId = await ensureFakeWorker(page, baseURL);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
   const dir = mkdtempSync(join(tmpdir(), 'e2e-stream-ui-'));
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 流 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 流 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '写和读' }, headers })).json()) as { id: string };
-  const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' }, headers });
+  expect(derived.status(), await derived.text()).toBe(201);
+  const session = (await derived.json()) as { id: string };
   expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '先问一句' }, headers })).status()).toBe(202);
-  await page.request.post(`/api/sessions/${session.id}/interrupt`, { headers });
+  await expect.poll(async () => ((await (await page.request.get(`/api/sessions/${session.id}/events`)).json()) as Entry[])
+    .some((entry) => entry.event.kind === 'ended'), { timeout: 30_000 }).toBe(true);
   return { project: project.id, session: session.id };
 }
 
@@ -48,11 +46,11 @@ function withLongThinking(entries: Entry[]): Entry[] {
   const thinking = Array.from({ length: LINES }, (_, i) => `第 ${i + 1} 步：先把这件事想清楚，再决定要不要动手。`).join('\n');
   const reply = Array.from({ length: LINES }, (_, i) => `回答第 ${i + 1} 行：这是用来把外层会话撑到需要滚动的正文。`).join('\n\n');
   const injected: Entry[] = [
-    { seq: first.seq + 0.5, at: first.at, event: { kind: 'thinking', delta: thinking } },
-    { seq: first.seq + 0.6, at: first.at, event: { kind: 'text', delta: reply } }
+    { seq: first.seq + 1, at: first.at, event: { kind: 'thinking', delta: thinking } },
+    { seq: first.seq + 2, at: first.at, event: { kind: 'text', delta: reply } }
   ];
   const index = entries.indexOf(first) + 1;
-  return [...entries.slice(0, index), ...injected, ...entries.slice(index)];
+  return [...entries.slice(0, index), ...injected, ...entries.slice(index).map((entry) => ({ ...entry, seq: entry.seq + injected.length }))];
 }
 
 async function seedLongThinking(page: Page, session: string) {
@@ -94,9 +92,10 @@ test.describe('桌面', () => {
     // 清掉草稿：下面的断言不该受它影响，也别把它留在会话里。
     await area.fill('');
 
-    // ② 思考块：默认折叠，展开后内容超过窗口 → 有窗口、有遮罩、能内部滚。
+    // ② 展开工作过程后，思考内容超过窗口 → 有窗口、有遮罩、能内部滚。
+    await page.getByTestId('work-group-toggle').first().click();
     const thinking = page.getByTestId('thinking').first();
-    await thinking.locator('summary').click();
+    await expect(thinking).toHaveAttribute('open', '');
     const windowNode = thinking.getByTestId('thinking-window');
     await expect(windowNode, '内容高过窗口才切成窗口形态').toHaveAttribute('data-windowed', 'true');
 
@@ -149,8 +148,9 @@ test.describe('手机', () => {
     await seedLongThinking(page, session);
     await page.goto(`/#/p/${project}/focus/${session}`);
 
+    await page.getByTestId('work-group-toggle').first().click();
     const thinking = page.getByTestId('thinking').first();
-    await thinking.locator('summary').click();
+    await expect(thinking).toHaveAttribute('open', '');
     const windowNode = thinking.getByTestId('thinking-window');
     await expect(windowNode).toHaveAttribute('data-windowed', 'false');
 

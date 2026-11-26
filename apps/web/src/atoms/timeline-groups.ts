@@ -1,17 +1,11 @@
-/**
- * 时间线 v2 的分组（纯逻辑，不碰 DOM）：每轮里连续的「干活」块（工具调用 + 思考）并成一个工作组，
- * 组头一行写摘要（几步、读/改/命令各几次、失败几处、用时），可以整组收起。
- *
- * - 至少两个工具调用才成组；只有一个就照旧单独画一行，不为它多套一层。
- * - 最后一轮（以及正在跑的那一轮）默认展开；更早、已经结束的轮默认收起——往回翻时看到的是摘要。
- * - 失败分级：同一组里失败之后，同类工具又成功了，算「可恢复」（警告色）；否则是真失败（危险色）。
- */
+/** 按轮汇总活动；正文保留在原位置，操作和状态块是不可跨越的边界。 */
 import { toolRowKind, type ToolRowKind } from './tool-rows.ts';
 import { toolView } from './tool-format.ts';
 
 interface Groupable {
   readonly kind: string;
   readonly seq: number;
+  readonly queued?: boolean;
 }
 interface ToolLike extends Groupable {
   readonly kind: 'tool';
@@ -22,6 +16,7 @@ interface ToolLike extends Groupable {
 
 export interface WorkSummary {
   readonly steps: number;
+  readonly thinking: number;
   readonly counts: Readonly<Partial<Record<ToolRowKind, number>>>;
   /** 最终没救回来的失败数。 */
   readonly failed: number;
@@ -58,50 +53,52 @@ export function recoveredFailures(tools: readonly { kind: ToolRowKind; ok: boole
   return out;
 }
 
-export function groupTimeline<B extends Groupable>(blocks: readonly B[], opts: { readonly running: boolean }): TimelineItem<B>[] {
-  // 先标出每块属于第几轮（问话开新一轮）
-  let turn = 0;
-  const turnOf = blocks.map((block) => (block.kind === 'prompt' ? ++turn : turn));
-  const lastTurn = turn;
+export function groupTimeline<B extends Groupable>(blocks: readonly B[], opts: {
+  readonly running: boolean;
+  /** 显式显示/隐藏设置及需要立即显示的问题由调用方判断。 */
+  readonly groupable?: (block: B) => boolean;
+}): TimelineItem<B>[] {
+  const groupable = (block: B) => isWork(block) && (opts.groupable?.(block) ?? true);
+  const lastPrompt = blocks.reduce((last, block, index) => block.kind === 'prompt' && !block.queued ? index : last, -1);
   const out: TimelineItem<B>[] = [];
   let i = 0;
   while (i < blocks.length) {
-    if (!isWork(blocks[i]!)) {
+    if (!groupable(blocks[i]!)) {
       out.push({ type: 'block', block: blocks[i]!, index: i, recovered: false });
       i += 1;
       continue;
     }
     let j = i;
-    while (j < blocks.length && isWork(blocks[j]!)) j += 1;
+    // 正文可以夹在活动之间，但不可移位；其他任何块都是硬边界。
+    while (j < blocks.length && (groupable(blocks[j]!) || blocks[j]!.kind === 'text')) j += 1;
+    while (j > i && !groupable(blocks[j - 1]!)) j -= 1;
     const run = blocks.slice(i, j).map((block, k) => ({ block, index: i + k }));
     const tools = run.filter((item) => isTool(item.block)) as { block: B & ToolLike; index: number }[];
     const probes = tools.map((item) => ({ kind: toolRowKind(item.block.name, toolView(item.block.name, item.block.input)), ok: item.block.result === null ? null : item.block.result.ok }));
     const rec = recoveredFailures(probes);
     const recoveredIdx = new Set([...rec].map((k) => tools[k]!.index));
     const items = run.map((item) => ({ ...item, recovered: recoveredIdx.has(item.index) }));
-    if (tools.length < 2) {
-      for (const item of items) out.push({ type: 'block', ...item });
-    } else {
+    {
       const counts: Partial<Record<ToolRowKind, number>> = {};
       for (const probe of probes) counts[probe.kind] = (counts[probe.kind] ?? 0) + 1;
       const failed = probes.filter((probe) => probe.ok === false).length - rec.size;
       const running = probes.some((probe) => probe.ok === null);
-      const groupTurn = turnOf[i]!;
-      const isLastTurn = groupTurn === lastTurn;
-      const live = opts.running && isLastTurn && j === blocks.length;
+      const live = opts.running && i > lastPrompt && !blocks.slice(j).some((block) => block.kind !== 'prompt' || !block.queued);
       out.push({
         type: 'work',
-        key: `work-${blocks[i]!.seq}`,
+        // 流式思考的 seq 会随每个 delta 更新；块的位置在追加过程中稳定。
+        key: `work-${i}`,
         items,
         summary: {
           steps: tools.length,
+          thinking: run.filter((item) => item.block.kind === 'thinking').length,
           counts,
           failed,
           recovered: rec.size,
           durationMs: tools.reduce((sum, item) => sum + (item.block.result?.durationMs ?? 0), 0),
           running
         },
-        open: isLastTurn || running || failed > 0,
+        open: false,
         live
       });
     }

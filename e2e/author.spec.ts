@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 谁说的话、谁做的事：prompt 记下发送人；同一条会话里只有一个人说过话时不标，
@@ -12,22 +12,19 @@ import { piModel } from './hub-model.ts';
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'];
 const OTHER = { id: 'ghost-user-e2e', name: '已删除的用户' };
+test.afterAll(() => stopFakeWorker());
 
 async function setup(page: Page, baseURL: string) {
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const workerId = await ensureFakeWorker(page, baseURL);
   const dir = mkdtempSync(join(tmpdir(), 'e2e-author-'));
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 作者 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 作者 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '谁说的' }, headers })).json()) as { id: string };
-  const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, workerId, model: '' }, headers });
+  expect(derived.status(), await derived.text()).toBe(201);
+  const session = (await derived.json()) as { id: string };
   expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '我是本人' }, headers })).status()).toBe(202);
   await page.request.post(`/api/sessions/${session.id}/interrupt`, { headers });
   return { project: project.id, session: session.id };
@@ -65,8 +62,9 @@ for (const width of [1280, 390]) {
     await expect(page.getByTestId('msg-user').first()).toContainText('我是本人');
     await expect(page.getByTestId('msg-author'), '只有一个人说过话：不标').toHaveCount(0);
 
-    if (width < 640) {
+    if (width < 768) {
       await page.getByRole('button', { name: '更多' }).click();
+      await page.getByTestId('session-more-details').click();
       await page.getByRole('menuitem', { name: /^详情/ }).click();
     } else {
       await page.getByRole('button', { name: '详情' }).click();

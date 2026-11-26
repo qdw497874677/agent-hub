@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 项目主会话：人手动开在项目长期工作目录里、暂时没有归属任务的常驻会话。
@@ -12,7 +12,7 @@ import { piModel } from './hub-model.ts';
  * （那条流程在 workspace-delegation 的专用用例里）。
  *
  * `/api/coordinators` 是必需门禁，不是可选依赖：路由没挂上这里就会红，别用 skip 掩盖。
- * 唯一保留的跳过条件是「这台机器上没有在线 agent」——那是环境，不是代码。
+ * 测试自带远端假 ACP Worker，不依赖本机 agent。
  */
 
 interface Seed {
@@ -27,37 +27,29 @@ const headers = async (page: Page, baseURL: string | undefined) => {
   return { origin: baseURL!, 'x-hub-csrf': csrf };
 };
 
-async function onlineAgent(page: Page): Promise<string | undefined> {
-  for (let i = 0; i < 40; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    const agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (agentId) return agentId;
-    await page.waitForTimeout(500);
-  }
-  return undefined;
-}
+test.afterAll(stopFakeWorker);
 
 /** 一个空项目 + 一条长期工作目录：主会话只能开在这种目录里。 */
 async function seedProject(page: Page, h: Record<string, string>) {
+  const workerId = await ensureFakeWorker(page, h.origin!);
   const dir = mkdtempSync(join(tmpdir(), 'e2e-coordinator-'));
   const name = `e2e 主会话 ${Date.now().toString(36)}`;
-  const project = (await (await page.request.post('/api/projects', { data: { name, rootPath: dir }, headers: h })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name, rootPath: dir, workerId }, headers: h })).json()) as { id: string };
   const workspace = await page.request.post(`/api/projects/${project.id}/workspaces`, {
     // 工作目录不能放在项目根路径里面：服务端按「目录不能互相嵌套」校验（上一轮的同名前缀也会撞上）。
-    data: { kind: 'long_lived', mode: 'create', path: mkdtempSync(join(tmpdir(), 'e2e-coordinator-ws-')) },
+    data: { kind: 'long_lived', mode: 'create', path: mkdtempSync(join(tmpdir(), 'e2e-coordinator-ws-')), workerId },
     headers: h
   });
   expect(workspace.ok(), await workspace.text()).toBeTruthy();
-  const workspaceId = ((await workspace.json()) as { id: string }).id;
-  return { projectId: project.id, workspaceId, name };
+  const created = (await workspace.json()) as { id: string; workerId: string | null };
+  expect(created.workerId).toBe(workerId);
+  return { projectId: project.id, workspaceId: created.id, workerId, name };
 }
 
-async function seedCoordinator(page: Page, h: Record<string, string>): Promise<Seed | null> {
-  const agentId = await onlineAgent(page);
-  if (!agentId) return null;
+async function seedCoordinator(page: Page, h: Record<string, string>): Promise<Seed> {
   const { projectId, workspaceId, name } = await seedProject(page, h);
   const started = await page.request.post('/api/coordinators', {
-    data: { projectId, workspaceId, agentId, model: piModel() },
+    data: { projectId, workspaceId, agentId: FAKE_AGENT_ID, model: '' },
     headers: h
   });
   // 路由是必需门禁：这里必须 201，404 说明 hub 没把这个能力挂上。
@@ -80,7 +72,6 @@ test.use({ viewport: { width: 390, height: 844 } });
 test('列表视图：主会话单独成组，行上写明「没有任务」，手机上照样点得到', async ({ page, baseURL }, testInfo) => {
   await loginByApi(page);
   const seed = await seedCoordinator(page, await headers(page, baseURL));
-  test.skip(seed === null, '这台机器上没有在线的 agent，开不了会话');
 
   await page.goto(`/#/p/${seed!.projectId}`);
   await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '列表', exact: true }).click();
@@ -102,7 +93,6 @@ test('侧栏：主会话在任务下面单独一组，动作还是原来那套',
   await page.setViewportSize({ width: 1280, height: 900 });
   await loginByApi(page);
   const seed = await seedCoordinator(page, await headers(page, baseURL));
-  test.skip(seed === null, '这台机器上没有在线的 agent，开不了会话');
 
   await page.goto(`/#/p/${seed!.projectId}`);
   const group = page.getByTestId('sidebar-coordinators');
@@ -120,7 +110,6 @@ test('侧栏：主会话在任务下面单独一组，动作还是原来那套',
 test('专注页：标题是「主会话」，缺任务的动作禁用并说清原因', async ({ page, baseURL }) => {
   await loginByApi(page);
   const seed = await seedCoordinator(page, await headers(page, baseURL));
-  test.skip(seed === null, '这台机器上没有在线的 agent，开不了会话');
 
   await page.goto(`/#/p/${seed!.projectId}/focus/${seed!.sessionId}`);
   // 主会话还没有说过话：标题栏用「主会话」，不能出现 null / undefined 这种漏出来的字段名
@@ -134,6 +123,7 @@ test('专注页：标题是「主会话」，缺任务的动作禁用并说清�
   await expect(title).not.toContainText('null');
 
   await page.getByRole('button', { name: '更多' }).click();
+  await page.getByTestId('session-more-actions').click();
   const side = page.getByTestId('session-side-open');
   await expect(side).toBeDisabled();
   await expect(side).toContainText('先派工到任务');
@@ -146,7 +136,6 @@ test('专注页：标题是「主会话」，缺任务的动作禁用并说清�
 test('首页把主会话列出来，标题是「主会话」而不是空字符串', async ({ page, baseURL }) => {
   await loginByApi(page);
   const seed = await seedCoordinator(page, await headers(page, baseURL));
-  test.skip(seed === null, '这台机器上没有在线的 agent，开不了会话');
 
   await page.goto('/');
   const row = page.getByTestId('home-session-row').filter({ hasText: seed!.name }).first();
@@ -158,8 +147,6 @@ test('首页把主会话列出来，标题是「主会话」而不是空字符�
 test('侧栏「新开主会话」从界面走同一条 POST：选长期目录 → 直接进会话', async ({ page, baseURL }) => {
   await loginByApi(page);
   const h = await headers(page, baseURL);
-  const agentId = await onlineAgent(page);
-  test.skip(!agentId, '这台机器上没有在线的 agent，开不了会话');
   const seeded = await seedProject(page, h);
 
   await page.goto(`/#/p/${seeded.projectId}`);
@@ -169,11 +156,22 @@ test('侧栏「新开主会话」从界面走同一条 POST：选长期目录 �
 
   const dialog = page.getByTestId('coordinator-dialog');
   await expect(dialog).toBeVisible();
+  await dialog.getByTestId('coordinator-agent').selectOption(FAKE_AGENT_ID);
+  const machines = dialog.getByRole('radiogroup', { name: '在哪台跑' });
+  if (await machines.isVisible()) {
+    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ workerId: string; label: string }>;
+    const worker = workers.find((item) => item.workerId === seeded.workerId);
+    expect(worker).toBeDefined();
+    await machines.getByRole('radio', { name: worker!.label, exact: false }).click();
+  }
   // 这条项目只有一条长期目录：它就是这里能选的唯一一行
-  await dialog.getByRole('radio').first().click();
+  await dialog.getByRole('radiogroup', { name: '选择工作目录' }).getByRole('radio').first().click();
   const start = page.getByTestId('coordinator-start');
   await expect(start).toBeEnabled();
+  const started = page.waitForResponse((response) => response.url().endsWith('/api/coordinators') && response.request().method() === 'POST');
   await start.click();
+  const response = await started;
+  expect(response.status(), await response.text()).toBe(201);
 
   // 开好就进去：登记表里能查到，界面标题是「主会话」
   await expect(page.getByTestId('session-title')).toHaveText('主会话', { timeout: 30_000 });

@@ -133,6 +133,7 @@ test('派工表单：失败重试只发一个 requestKey，请求体里没有选
 
   await page.goto(`/#/p/${seedValue.projectId}/focus/${seedValue.sessionId}`);
   await page.getByRole('button', { name: '更多' }).click();
+  await page.getByTestId('session-more-actions').click();
   await page.getByTestId('session-delegate').click();
 
   const dialog = page.getByTestId('delegate-dialog');

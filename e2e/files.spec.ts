@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
+import { backToChat, openSessionTool } from './session-tools.ts';
 
 /**
  * ADR 0025 · 工作目录文件浏览 P1（390px 手机）：目录下钻、预览、敏感文件确认、被忽略的灰显、
@@ -12,6 +13,7 @@ import { piModel } from './hub-model.ts';
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/files';
 mkdirSync(SHOTS, { recursive: true });
+test.afterAll(stopFakeWorker);
 
 test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新', async ({ page, baseURL }) => {
   await loginByApi(page);
@@ -19,13 +21,7 @@ test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
   expect((await page.request.get('/api/sessions/no-such/files?path=')).status()).toBe(404);
 
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const workerId = await ensureFakeWorker(page, baseURL!);
 
   const root = mkdtempSync(join(tmpdir(), 'e2e-files-'));
   const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@x', ...args], { cwd: root });
@@ -39,9 +35,9 @@ test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新
   git('add', 'src', '.gitignore');
   git('commit', '-qm', 'init');
 
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 文件 ${Date.now().toString(36)}`, rootPath: root }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 文件 ${Date.now().toString(36)}`, rootPath: root, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '文件' }, headers })).json()) as { id: string };
-  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' }, headers });
   expect(derived.status(), await derived.text()).toBe(201);
   const sid = ((await derived.json()) as { id: string }).id;
 
@@ -67,10 +63,11 @@ test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新
   await page.goto(`/#/p/${project.id}/focus/${sid}`);
   // 手机上「详情」收进了「更多」菜单（IA 分层改动之后）。
   await page.getByRole('button', { name: '更多' }).click();
+  await page.getByTestId('session-more-details').click();
   await page.getByRole('menuitem', { name: /^详情/ }).click();
   await page.getByTestId('open-files').click();
   // 详情 → 浏览文件：关掉详情，切到会话的「文件」标签页（不再是全屏浮层）
-  await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByTestId('session-back-to-chat')).toBeVisible();
   await expect(page.getByTestId('open-files')).toHaveCount(0);
   const browser = page.getByTestId('files-panel-files');
   await expect(browser.locator('[data-path="src"]')).toBeVisible();
@@ -95,13 +92,13 @@ test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新
   await browser.getByTestId('files-back').click();
 
   // 改动：列表 + diff
-  await page.getByTestId('session-tab-changes').click();
+  await openSessionTool(page, 'changes');
   const changesPanel = page.getByTestId('files-panel-changes');
   await changesPanel.getByTestId('changes-base').selectOption('head');
   await changesPanel.getByTestId('change-row').filter({ hasText: 'src/app.ts' }).click();
   await expect(changesPanel.getByTestId('diff-view')).toContainText('42');
   await page.screenshot({ path: `${SHOTS}/diff-390.png` });
-  await page.getByTestId('session-tab-chat').click();
+  await backToChat(page);
   await expect(page.getByTestId('files-panel-changes')).toBeHidden();
 });
 
@@ -110,20 +107,14 @@ test('文件浏览（桌面）：根目录完整、列表宽度可拖动并记�
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const workerId = await ensureFakeWorker(page, baseURL!);
 
   const root = mkdtempSync(join(tmpdir(), 'e2e-files-desktop-'));
   execFileSync('git', ['init', '-q'], { cwd: root });
   writeFileSync(join(root, 'a.ts'), 'export const a = 1;\n');
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 桌面 ${Date.now().toString(36)}`, rootPath: root }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 桌面 ${Date.now().toString(36)}`, rootPath: root, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '文件' }, headers })).json()) as { id: string };
-  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' }, headers });
   expect(derived.status(), await derived.text()).toBe(201);
   const sid = ((await derived.json()) as { id: string }).id;
 

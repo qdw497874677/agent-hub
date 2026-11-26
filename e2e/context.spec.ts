@@ -3,13 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * ADR 0020 · 上下文策略 P1：会话详情显示生效策略（默认 compaction / 运行时原生）、估算用量和 L1 缺口；
  * 项目 / 会话选择的接口校验和 404（390px 手机宽度）。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/context';
+test.afterAll(() => stopFakeWorker());
 
 test('上下文策略：默认 compaction，会话详情显示用量和缺口；只能从启用的里选', async ({ page, baseURL }) => {
   await loginByApi(page);
@@ -20,16 +21,10 @@ test('上下文策略：默认 compaction，会话详情显示用量和缺口；
   expect((await page.request.get('/api/sessions/no-such/context')).status()).toBe(404);
   expect((await page.request.put('/api/sessions/no-such/context', { headers, data: { strategy: null } })).status()).toBe(404);
 
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 上下文 ${Date.now().toString(36)}`, rootPath: mkdtempSync(join(tmpdir(), 'e2e-ctx-')) }, headers })).json()) as { id: string };
+  const workerId = await ensureFakeWorker(page, baseURL!);
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 上下文 ${Date.now().toString(36)}`, rootPath: mkdtempSync(join(tmpdir(), 'e2e-ctx-')), workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '上下文' }, headers })).json()) as { id: string };
-  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, workerId, model: '' }, headers });
   expect(derived.status(), await derived.text()).toBe(201);
   const sid = ((await derived.json()) as { id: string }).id;
 
@@ -58,6 +53,7 @@ test('上下文策略：默认 compaction，会话详情显示用量和缺口；
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/p/${project.id}/focus/${sid}`);
   await page.getByRole('button', { name: '更多' }).click();
+  await page.getByTestId('session-more-details').click();
   await page.getByRole('menuitem', { name: /^详情/ }).click();
   const panel = page.getByRole('complementary', { name: '会话详情' }).getByTestId('session-context');
   await expect(panel.getByTestId('context-strategy')).toContainText('自动压缩');
@@ -71,7 +67,7 @@ test('上下文策略：默认 compaction，会话详情显示用量和缺口；
 
   // 项目设置 · 上下文策略：给角色单独设置，再改回跟随项目
   await page.getByRole('complementary', { name: '会话详情' }).getByRole('button', { name: '关闭' }).click();
-  await page.getByRole('button', { name: '打开侧栏' }).click();
+  await page.getByRole('button', { name: '项目与全部会话' }).click();
   await page.getByRole('button', { name: '项目设置' }).click();
   await page.getByRole('tab', { name: '上下文' }).click();
   const box = page.getByTestId('project-context');

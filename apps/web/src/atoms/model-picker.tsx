@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Command } from 'cmdk';
 import { Sheet } from '../shell/dialog-shell.tsx';
@@ -48,6 +48,10 @@ export function ModelPicker({
   deferPick = false,
   newSessionModels,
   onNewSession,
+  testId,
+  controlledOpen,
+  onOpenChange,
+  restoreFocusRef,
   placeholder = '默认'
 }: {
   items: readonly ModelItem[];
@@ -75,13 +79,20 @@ export function ModelPicker({
   deferPick?: boolean;
   newSessionModels?: ReadonlySet<string>;
   onNewSession?: (value: string) => void;
+  testId?: string;
+  controlledOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  restoreFocusRef?: RefObject<HTMLButtonElement | null>;
   /** 值为空时按钮上写什么（派生对话框里只能用 hub 模型时写「选择模型…」）。 */
   placeholder?: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (next: boolean) => { if (controlledOpen === undefined) setInternalOpen(next); else onOpenChange?.(next); };
   const trigger = useRef<HTMLButtonElement>(null);
   const restoreFocus = () => requestAnimationFrame(() => {
-    if (trigger.current && !trigger.current.disabled) trigger.current.focus({ preventScroll: true });
+    const target = restoreFocusRef?.current ?? trigger.current;
+    if (target && !target.disabled) target.focus({ preventScroll: true });
   });
   const current = items.find((item) => item.value === value);
   const full = current?.label ?? value;
@@ -89,10 +100,10 @@ export function ModelPicker({
   const display = triggerText ?? (agentLabel ? shown || '当前模型未确认' : shown || placeholder);
   return (
     <>
-      <button
+      {controlledOpen === undefined ? <button
         ref={trigger}
         type="button"
-        data-testid={sessionPicker ? (triggerText ? 'agent-handoff-trigger' : 'session-model-trigger') : undefined}
+        data-testid={testId ?? (sessionPicker ? (triggerText ? 'agent-handoff-trigger' : 'session-model-trigger') : undefined)}
         id={id}
         aria-label={triggerText ?? `${label}：${agentLabel ? `${agentLabel} · ` : ''}${full || (agentLabel ? '当前模型未确认' : placeholder)}${pending ? '（切换中…）' : ''}`}
         aria-haspopup="dialog"
@@ -113,7 +124,7 @@ export function ModelPicker({
         <span aria-hidden className="shrink-0 text-tertiary">
           ▾
         </span>
-      </button>
+      </button> : null}
       {open
         ? createPortal(
             <ModelSheet

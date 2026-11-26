@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
+import { openSessionTool } from './session-tools.ts';
 
 /**
  * VibeX 第三期：仓库阅读的导航（docs/design/vibex-borrowing.md）。
@@ -16,18 +17,13 @@ import { piModel } from './hub-model.ts';
  * - 只取真正打开的那一个文件的 diff：换范围、切文件都不会顺手把别的文件或范围拉下来。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS_NAV'] ?? '/tmp/opencode/shots/files-nav';
+test.afterAll(stopFakeWorker);
 
 async function setup(page: Page, baseURL: string) {
   await loginByApi(page);
+  const workerId = await ensureFakeWorker(page, baseURL);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
   const root = mkdtempSync(join(tmpdir(), 'e2e-files-nav-'));
   const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@x', ...args], { cwd: root });
   git('init', '-q');
@@ -39,9 +35,9 @@ async function setup(page: Page, baseURL: string) {
   for (let i = 0; i < 40; i++) writeFileSync(join(root, 'many', `f${i}.ts`), `export const n${i} = ${i}; // file ${i}\n`);
   git('add', '.');
   git('commit', '-qm', 'init');
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 导航 ${Date.now().toString(36)}`, rootPath: root }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 导航 ${Date.now().toString(36)}`, rootPath: root, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '仓库导航' }, headers })).json()) as { id: string };
-  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' }, headers });
   expect(derived.status(), await derived.text()).toBe(201);
   const sid = ((await derived.json()) as { id: string }).id;
   // 会话开始之后才改：和会话起点比时看得到
@@ -66,7 +62,7 @@ test('手机读文件：返回后列表还是那一页，焦点回到刚看过�
   const { projectId, sid } = await setup(page, baseURL!);
   const diffs = watchDiffs(page);
   await page.goto(`/#/p/${projectId}/focus/${sid}`);
-  await page.getByTestId('session-tab-files').click();
+  await openSessionTool(page, 'files');
   const files = page.getByTestId('files-panel-files');
   const list = files.getByTestId('files-list');
   const tree = files.getByTestId('files-tree');
@@ -113,7 +109,7 @@ test('手机改动页：返回后范围与选中文件都还在，正文自己�
   const { projectId, sid } = await setup(page, baseURL!);
   const diffs = watchDiffs(page);
   await page.goto(`/#/p/${projectId}/focus/${sid}`);
-  await page.getByTestId('session-tab-changes').click();
+  await openSessionTool(page, 'changes');
   const changes = page.getByTestId('files-panel-changes');
   await expect(changes.getByTestId('changes-base')).toHaveValue('session');
   await expect(changes.getByTestId('changes-scope')).toContainText('工作树 vs 会话起点');

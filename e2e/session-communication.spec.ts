@@ -257,6 +257,7 @@ test('P1e 界面：检查器看同伴、改短名；消息行带附件与「不�
       if (await direct.isVisible()) await direct.click({ timeout: 15_000 });
       else {
         await page.getByRole('button', { name: '更多' }).click({ timeout: 15_000 });
+        await page.getByTestId('session-more-details').click({ timeout: 15_000 });
         await page.getByRole('menuitem', { name: /^详情/ }).click({ timeout: 15_000 });
       }
     }

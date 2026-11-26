@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
+import { backToChat } from './session-tools.ts';
 
 /**
  * 对话里工具调用参数的文件路径可点：点了切到会话「文件」页并打开那个文件，知道行号就滚到那一行。
@@ -11,28 +12,25 @@ import { piModel } from './hub-model.ts';
  * 真 worker（假 agent）不会调工具：跑一轮真的，再往历史接口里插几条 tool_call。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/tool-path-links';
+test.afterAll(stopFakeWorker);
 
 async function setup(page: Page, baseURL: string) {
   await loginByApi(page);
+  const workerId = await ensureFakeWorker(page, baseURL);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
   const root = mkdtempSync(join(tmpdir(), 'e2e-toolpath-'));
   mkdirSync(join(root, 'src'));
   writeFileSync(join(root, 'src/app.ts'), Array.from({ length: 120 }, (_, i) => `export const v${i + 1} = ${i + 1};`).join('\n') + '\n');
   writeFileSync(join(root, 'README.md'), '# 说明\n');
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 工具路径 ${Date.now().toString(36)}`, rootPath: root }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 工具路径 ${Date.now().toString(36)}`, rootPath: root, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '工具路径' }, headers })).json()) as { id: string };
-  const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' }, headers });
+  expect(derived.status(), await derived.text()).toBe(201);
+  const { id } = (await derived.json()) as { id: string };
   await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: '你好 src/app.ts', attachments: [] }, headers });
   await expect
-    .poll(async () => ((await (await page.request.get(`/api/sessions/${id}/events`)).json()) as unknown[]).length > 0, { timeout: 30_000 })
+    .poll(async () => ((await (await page.request.get(`/api/sessions/${id}/events`)).json()) as Array<{ event: { kind: string } }>).some(({ event }) => event.kind === 'ended'), { timeout: 30_000 })
     .toBe(true);
   const calls = [
     { name: 'read', input: JSON.stringify({ path: 'src/app.ts', offset: 80, limit: 10 }) },
@@ -59,6 +57,7 @@ for (const viewport of [{ width: 390, height: 844, tag: 'mobile-390' }, { width:
     const { project, id } = await setup(page, baseURL!);
     await page.goto(`/#/p/${project.id}/focus/${id}`);
     const log = page.getByRole('log', { name: '会话记录' });
+    await log.getByTestId('work-group-toggle').click();
     await expect(log.getByTestId('tool-card')).toHaveCount(4);
     await log.getByTestId('tool-card').evaluateAll((cards) => cards.forEach((card) => ((card as HTMLDetailsElement).open = true)));
     const links = log.getByTestId('tool-path-link');
@@ -75,7 +74,8 @@ for (const viewport of [{ width: 390, height: 844, tag: 'mobile-390' }, { width:
     await page.screenshot({ path: `${SHOTS}/${viewport.tag}-chat.png` });
 
     await links.nth(0).click();
-    await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
+    if (viewport.width < 768) await expect(page.getByTestId('session-back-to-chat')).toBeVisible();
+    else await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
     const panel = page.getByTestId('files-panel-files');
     await expect(panel.getByTestId('file-content')).toContainText('v80 = 80');
     const target = panel.locator('[data-target-line="80"]');
@@ -86,9 +86,15 @@ for (const viewport of [{ width: 390, height: 844, tag: 'mobile-390' }, { width:
     await page.screenshot({ path: `${SHOTS}/${viewport.tag}-file.png` });
 
     // 回到对话点第二个（绝对路径、在工作目录内，没有行号）
-    await page.getByTestId('session-tab-chat').click();
+    await backToChat(page);
+    const toggle = log.getByTestId('work-group-toggle');
+    if (await toggle.getAttribute('aria-expanded') === 'false') {
+      await toggle.click();
+      await log.getByTestId('tool-card').evaluateAll((cards) => cards.forEach((card) => ((card as HTMLDetailsElement).open = true)));
+    }
     await links.nth(1).click();
-    await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
+    if (viewport.width < 768) await expect(page.getByTestId('session-back-to-chat')).toBeVisible();
+    else await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
     await expect(panel.getByTestId('file-content')).toContainText('说明');
   });
 }

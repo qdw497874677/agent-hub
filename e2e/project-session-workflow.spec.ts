@@ -63,8 +63,9 @@ type Delegation = {
 async function openDetails(page: Page): Promise<void> {
   const panel = page.getByRole('complementary', { name: '会话详情' });
   if (await panel.isVisible().catch(() => false)) return;
-  if ((page.viewportSize()?.width ?? 1280) < 640) {
+  if ((page.viewportSize()?.width ?? 1280) < 768) {
     await page.getByRole('button', { name: '更多' }).click();
+    await page.getByTestId('session-more-details').click();
     await page.getByRole('menuitem', { name: /^详情/ }).click();
   } else {
     await page.getByRole('button', { name: '详情', exact: true }).click();

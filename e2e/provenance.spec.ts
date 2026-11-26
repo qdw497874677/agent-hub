@@ -86,7 +86,13 @@ test('来历：网页开的、分叉的都有一行来历，可展开；审计�
       expect(cp.via).toBe('fork');
       expect(cp.parent.sessionId).toBe(session.id);
       await page.setViewportSize({ width: 390, height: 844 });
-      await expect(page.getByTestId('provenance-row')).toBeVisible();
+      await expect(page.getByTestId('provenance-row')).toBeHidden();
+      await page.getByTestId('session-more-trigger').click();
+      await page.getByTestId('session-more-details').click();
+      await page.getByTestId('session-more-provenance').click();
+      const mobileRow = page.getByTestId('session-provenance-sheet').getByTestId('provenance-row');
+      await expect(mobileRow).toBeVisible();
+      await expect(mobileRow).toContainText(/从「.+」分叉/);
       if (SHOTS) await page.screenshot({ path: `${SHOTS}/provenance-fork-390.png` });
     }
   } finally {

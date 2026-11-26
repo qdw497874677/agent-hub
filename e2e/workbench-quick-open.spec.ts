@@ -101,7 +101,10 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     expect(ackCount).toBe(0);
     // 非空查询仍走原项目搜索。
     if (viewport.width > 640) await page.keyboard.press('Control+k');
-    else await page.getByRole('button', { name: '搜索', exact: true }).first().click();
+    else {
+      await page.getByTestId('session-more-trigger').click();
+      await page.getByRole('menuitem', { name: '搜索任务与会话', exact: true }).click();
+    }
     await page.getByLabel('搜索任务或会话').fill('快捷任务');
     await expect(dialog).toContainText('任务与会话');
     await expect(dialog).toContainText('快捷任务');

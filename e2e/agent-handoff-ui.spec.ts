@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
 import { ensureFakeWorker, stopFakeWorker } from './fake-worker.ts';
+import { showSessionHandoff } from './session-composer-controls.ts';
 
 test.afterAll(() => stopFakeWorker());
 
@@ -70,8 +71,8 @@ for (const width of [1280, 390]) {
       await page.goto(`/#/p/${project.id}/focus/${source.id}`);
       const draft = page.getByLabel('发送消息');
       await draft.fill('原会话草稿');
-      const picker = page.getByTestId('agent-handoff-trigger');
-      await picker.click();
+      const openPicker = async () => (await showSessionHandoff(page, width < 640)).click();
+      await openPicker();
       const pickerDialog = page.getByRole('dialog', { name: '选择要换的 Agent' });
       const unsupported = pickerDialog.getByRole('option', { name: /old-agent.*old\/model/ }).last();
       await expect(unsupported).toHaveAttribute('aria-disabled', 'true');
@@ -81,20 +82,20 @@ for (const width of [1280, 390]) {
       await page.getByTestId('handoff-confirm').getByRole('button', { name: '取消' }).click();
       expect(creates).toHaveLength(0);
       await expect(draft).toHaveValue('原会话草稿');
-      await picker.click();
+      await openPicker();
       await pickerDialog.getByRole('option', { name: /other-agent.*other\/model/ }).last().click();
       await page.getByRole('button', { name: '确认新建会话' }).click();
       await expect(page.getByTestId('handoff-confirm')).toContainText('未能确认是否创建成功');
       await expect(page.getByTestId('handoff-confirm')).not.toContainText('secret network detail');
       await page.reload();
-      await picker.click();
+      await openPicker();
       await pickerDialog.getByRole('option', { name: /other-agent.*other\/model/ }).last().click();
       await page.getByRole('button', { name: '确认新建会话' }).click();
       await expect(page.getByTestId('handoff-confirm')).toContainText('未能确认是否创建成功');
       expect(creates[0]).toEqual(creates[1]);
       await page.getByTestId('handoff-confirm').getByRole('button', { name: '取消' }).click();
       await draft.fill('原会话草稿');
-      await picker.click();
+      await openPicker();
       await pickerDialog.getByRole('option', { name: /other-agent.*other\/model/ }).last().click();
       holdMetadata = true;
       await page.getByRole('button', { name: '确认新建会话' }).click();

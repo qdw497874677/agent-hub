@@ -407,6 +407,7 @@ test('窄屏：专注视图的更多菜单与连接会话', async ({ page, baseU
   await expect(page.getByRole('textbox', { name: '发送消息' })).toBeVisible();
 
   await page.getByRole('button', { name: '更多', exact: true }).click();
+  await page.getByTestId('session-more-details').click();
   await expect(page.getByRole('menuitem', { name: '连接会话' })).toBeVisible();
   await expect(page.getByRole('menuitem', { name: '显示设置' })).toBeVisible();
   await page.getByRole('menuitem', { name: '显示设置' }).click();

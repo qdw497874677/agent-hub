@@ -4,10 +4,11 @@ import { join } from 'node:path';
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
 import { ensureFakeWorker, stopFakeWorker, FAKE_AGENT_ID } from './fake-worker.ts';
+import { hideSessionOptions, showSessionOptions } from './session-composer-controls.ts';
 
 /**
- * 输入框底栏：「+ / 拍照 / 模型 / Agent / 思考强度 / 发送」一样高、垂直居中对齐——
- * 画布窗口和会话页、手机（触屏，下拉被抬到 16px）和桌面都是。按钮都能用：附件能选、可调项能改、有字才能发。
+ * 输入框底栏的主控件垂直对齐；手机把模式与思考强度收入非模态设置，不与模型抢宽度。
+ * 两种宿主都可选附件、有草稿才可发送，桌面仍可直接调设置。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'];
 
@@ -40,7 +41,7 @@ async function setup(page: Page, baseURL: string) {
 }
 
 /** 底栏里每个控件的盒子：高度相同、垂直中线相同（容差 1px）。 */
-async function expectAligned(row: Locator, label: string, touch: boolean) {
+async function expectAligned(row: Locator, label: string, touch: boolean, compact: boolean) {
   const controls = row.locator('button:visible, select:visible');
   const boxes = (await controls.evaluateAll((nodes) => nodes.map((n) => { const r = n.getBoundingClientRect(); return { name: n.getAttribute('aria-label') ?? n.tagName, top: r.top, left: r.left, right: r.right, width: r.width, height: r.height }; })));
   expect(boxes.length, `${label}：底栏控件`).toBeGreaterThanOrEqual(4);
@@ -61,7 +62,10 @@ async function expectAligned(row: Locator, label: string, touch: boolean) {
   const effort = boxes.find((b) => b.name === '思考强度');
   const agent = boxes.find((b) => b.name === 'Agent');
   expect(model, `${label}：当前会话的模型选择器存在`).toBeDefined();
-  expect(effort, `${label}：思考强度选择器存在`).toBeDefined();
+  if (compact) {
+    expect(effort, `${label}：思考强度不会挤占模型宽度`).toBeUndefined();
+    expect(model?.width, `${label}：模型名称有足够宽度`).toBeGreaterThanOrEqual(105);
+  } else expect(effort, `${label}：思考强度选择器存在`).toBeDefined();
   if (model && effort) {
     expect(model.left, `${label}：模型在思考强度左边`).toBeLessThan(effort.left);
     if (agent) expect(agent.left, `${label}：Agent 在思考强度右边`).toBeGreaterThan(effort.left);
@@ -72,13 +76,22 @@ async function expectAligned(row: Locator, label: string, touch: boolean) {
 async function exercise(page: Page, scope: Locator, label: string, touch: boolean) {
   const attach = scope.getByRole('button', { name: '添加附件' });
   await expect(attach).toBeVisible({ timeout: 10_000 });
-  const row = attach.locator('xpath=ancestor::div[contains(@class,"justify-between")][1]');
+  const row = attach.locator('xpath=ancestor::*[@data-testid="composer-controls"][1]');
   if (SHOTS) await page.screenshot({ path: join(SHOTS, `${label.replace(/\s+/g, '-')}.png`) });
-  const boxes = await expectAligned(row, label, touch);
-  void boxes;
-  await expect(row.getByRole('combobox', { name: '思考强度' })).toHaveValue('high');
+  const compact = (page.viewportSize()?.width ?? 0) < 768;
+  await expectAligned(row, label, touch, compact);
   await expect(row.getByRole('button', { name: /^模型：.+ · .+$/ })).toBeVisible();
-  const send = scope.getByRole('button', { name: '发送' });
+  if (compact) {
+    await expect(row.getByTestId('session-model-trigger')).toContainText('glm-5.3-flash');
+    await expect(row.getByRole('combobox', { name: 'Agent', exact: true })).toHaveCount(0);
+    await showSessionOptions(scope);
+  }
+  await expect(scope.getByRole('combobox', { name: '思考强度' })).toHaveValue('high');
+  if (compact) {
+    await expect(scope.getByTestId('session-options-panel').getByRole('combobox', { name: 'Agent', exact: true })).toHaveValue('orchestrator');
+    await hideSessionOptions(scope);
+  }
+  const send = scope.getByRole('button', { name: '发送', exact: true });
   await expect(send).toBeDisabled();
   await scope.getByRole('textbox', { name: '发送消息' }).fill('你好');
   await expect(send).toBeEnabled();
@@ -90,7 +103,7 @@ async function exercise(page: Page, scope: Locator, label: string, touch: boolea
   await expect(send, '有附件就能发').toBeEnabled();
 }
 
-for (const mode of [{ name: '390px 触屏', w: 390, h: 844, touch: true }, { name: '1280px', w: 1280, h: 844, touch: false }]) {
+for (const mode of [{ name: '320px 触屏', w: 320, h: 700, touch: true }, { name: '390px 触屏', w: 390, h: 844, touch: true }, { name: '1280px', w: 1280, h: 844, touch: false }]) {
   test.describe(mode.name, () => {
     test.use({ hasTouch: mode.touch, viewport: { width: mode.w, height: mode.h } });
     test(`${mode.name}：输入框底栏对齐，会话页和画布窗口一致`, async ({ page, baseURL }) => {
@@ -98,12 +111,76 @@ for (const mode of [{ name: '390px 触屏', w: 390, h: 844, touch: true }, { nam
       const { projectId, id, dir } = await setup(page, baseURL!);
       try {
         await page.goto(`/#/p/${projectId}/focus/${id}`);
+        const header = page.getByTestId('focus-header');
+        await expect(header).toBeVisible();
+        await expect(header.getByRole('button', { name: '新建任务', exact: true })).toHaveCount(0);
+        if (mode.touch) {
+          await expect(page.getByTestId('session-tabs')).toBeHidden();
+          await expect(page.getByTestId('workspace-entry')).toHaveCount(0);
+          await expect(page.getByTestId('provenance-row')).toBeHidden();
+          const headerHeight = (await header.boundingBox())!.height;
+          expect(headerHeight, '只有一行会话页头').toBeLessThanOrEqual(52);
+          expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+          const more = page.getByTestId('session-more-trigger');
+          const moreBox = (await more.boundingBox())!;
+          expect(moreBox.width).toBeGreaterThanOrEqual(44);
+          expect(moreBox.height).toBeGreaterThanOrEqual(44);
+          await more.click();
+          const menu = header.getByRole('menu');
+          const details = menu.getByTestId('session-more-details');
+          const actions = menu.getByTestId('session-more-actions');
+          for (const item of ['files', 'changes', 'preview', 'workspace']) {
+            await expect(menu.getByTestId(`session-more-${item}`)).toBeVisible();
+          }
+          await expect(menu.getByRole('menuitem', { name: '搜索任务与会话' })).toBeVisible();
+          await expect(menu.getByTestId('session-more-provenance')).toHaveCount(0);
+          await expect(menu.getByTestId('agent-handoff-trigger')).toHaveCount(0);
+          expect(await menu.evaluate((el) => el.scrollHeight <= el.clientHeight + 1), '手机首层无需滚动').toBe(true);
+          if (SHOTS) await page.screenshot({ path: join(SHOTS, `more-${mode.w}.png`) });
+
+          await details.click();
+          await expect(menu.getByTestId('session-more-provenance')).toBeVisible();
+          await expect(menu.getByTestId('session-more-workspace')).toHaveCount(0);
+          await menu.getByTestId('session-more-back').click();
+          await expect(details).toBeFocused();
+
+          await actions.click();
+          await expect(menu.getByTestId('agent-handoff-trigger')).toBeVisible();
+          await page.keyboard.press('Escape');
+          await expect(actions).toBeFocused();
+          await page.keyboard.press('Escape');
+          await expect(menu).toBeHidden();
+          await expect(more).toBeFocused();
+
+          await more.click();
+          await details.click();
+          await page.getByRole('textbox', { name: '发送消息' }).click();
+          await expect(menu).toBeHidden();
+          await more.click();
+          await expect(details).toBeVisible();
+          await expect(menu.getByTestId('session-more-back')).toHaveCount(0);
+          await page.keyboard.press('Escape');
+        } else {
+          const more = header.getByTestId('session-more-trigger');
+          await more.click();
+          await expect(header.getByRole('menuitem', { name: /^分叉/ })).toBeVisible();
+          await expect(header.getByTestId('session-more-actions')).toHaveCount(0);
+          await page.keyboard.press('Escape');
+        }
         await exercise(page, page.locator('body'), `${mode.name} 会话页`, mode.touch);
         await page.goto(`/#/p/${projectId}/canvas`);
         const card = page.locator(`.react-flow__node-session[data-id="${id}"]`);
         await card.locator('header').dblclick({ position: { x: 60, y: 8 } });
         const win = page.locator(`[data-testid="canvas-window"][data-session-id="${id}"]`);
         await expect(win).toBeVisible();
+        if (mode.touch) {
+          await win.getByTestId('session-more-trigger').click();
+          await win.getByTestId('session-more-actions').click();
+          await expect(win.getByTestId('session-side-open')).toBeVisible();
+          await win.getByTestId('session-more-back').click();
+          await expect(win.getByTestId('session-more-workspace')).toBeVisible();
+          await page.keyboard.press('Escape');
+        }
         await exercise(page, win, `${mode.name} 画布窗口`, mode.touch);
       } finally {
         stopFakeWorker();

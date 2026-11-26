@@ -85,7 +85,7 @@ async function setup(page: import('@playwright/test').Page, baseURL: string) {
   const session = (await derived.json()) as { id: string };
   const prompted = await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '看看 diff' }, headers });
   expect(prompted.ok(), await prompted.text()).toBe(true);
-  await expect.poll(async () => ((await (await page.request.get(`/api/sessions/${session.id}/events`)).json()) as unknown[]).length > 0, { timeout: 30_000 }).toBe(true);
+  await expect.poll(async () => ((await (await page.request.get(`/api/sessions/${session.id}/events`)).json()) as Array<{ event: { kind: string } }>).some(({ event }) => event.kind === 'ended'), { timeout: 30_000 }).toBe(true);
 
   const calls = [
     { input: { command: 'git diff src/a.ts' }, output: DIFF_SMALL },
@@ -126,6 +126,7 @@ test('会话 diff 词级高亮 + 两栏行号 + 复制不带行号', async ({ pa
   try {
     await page.goto(`/#/p/${project.id}/focus/${session}`);
     const log = page.getByRole('log', { name: '会话记录' });
+    await log.getByTestId('work-group-toggle').click();
     await expect(log.getByTestId('tool-card')).toHaveCount(3);
     await log.getByTestId('tool-card').evaluateAll((cards) => cards.forEach((card) => ((card as HTMLDetailsElement).open = true)));
 
@@ -188,6 +189,7 @@ test('会话 diff 词级高亮 + 两栏行号 + 复制不带行号', async ({ pa
     // 手机宽度：两栏行号不把页面撑横，diff 仍然可读
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload();
+    await log.getByTestId('work-group-toggle').click();
     await expect(log.getByTestId('tool-card')).toHaveCount(3);
     await log.getByTestId('tool-card').evaluateAll((cards) => cards.forEach((card) => ((card as HTMLDetailsElement).open = true)));
     await expect(page.getByTestId('diff-word').first()).toBeVisible();
