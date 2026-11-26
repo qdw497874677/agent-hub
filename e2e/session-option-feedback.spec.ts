@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
 import { ensureFakeWorker, stopFakeWorker } from './fake-worker.ts';
+import { showSessionOptions } from './session-composer-controls.ts';
 
 test.afterAll(() => stopFakeWorker());
 
@@ -50,6 +51,8 @@ for (const width of [1280, 390]) {
         await route.fulfill({ json: { state: mode === 'saved' ? 'saved' : mode === 'rejected' ? 'rejected' : 'confirmed', session: inject(body) } }).catch(() => {});
       });
       await page.goto(`/#/p/${project.id}/focus/${session.id}`);
+      const showOptions = async () => { if (width < 640) await showSessionOptions(page); };
+      await showOptions();
       const select = page.getByRole('combobox', { name: '思考强度' });
       const notice = page.getByTestId('option-feedback');
       await select.focus();
@@ -66,6 +69,7 @@ for (const width of [1280, 390]) {
       await expect(select).toBeDisabled();
       await page.getByLabel('发送消息').fill('可以发送');
       await expect(page.getByRole('button', { name: '发送', exact: true })).toBeEnabled();
+      await showOptions();
       release?.();
       await expect(notice).toHaveAttribute('data-state', 'confirmed');
       await expect(select).toHaveValue('high');

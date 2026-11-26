@@ -600,7 +600,7 @@ function Workspace() {
       ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ProjectBar project={project} view={view} stream={stream} onView={setView} />
-        <div className="lg:hidden">
+        <div className={view === 'focus' && canvas.data && selectedSession ? 'hidden md:block lg:hidden' : 'lg:hidden'}>
           <ProjectHeader
             project={project}
             projects={projects.data ?? []}
@@ -629,6 +629,9 @@ function Workspace() {
           draft={drafts[selectedSession.id] ?? ''}
           onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
           onBack={backFromFocus}
+          onProjectNavigation={() => setSidebarOpen(true)}
+          onNewTask={() => setNewTask(true)}
+          onSearch={() => setSearch(true)}
           onChanged={refresh}
           onOpenSession={openSession}
           onSeedDraft={(id, text) => setDrafts((current) => ({ ...current, [id]: text }))}

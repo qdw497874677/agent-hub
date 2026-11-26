@@ -43,6 +43,12 @@ export function useHandoffCandidates(session: SessionDto, projectId: string): { 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lock = useRef(false);
+  const scope = `${projectId}:${session.id}`;
+  const activeScope = useRef(scope);
+  const scopeVersion = useRef(0);
+  if (activeScope.current !== scope) { activeScope.current = scope; scopeVersion.current += 1; }
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const candidates = (worker?.agentModels ?? []).filter((agent) => agent.agentId !== session.agentId);
   const items = candidates.flatMap((agent) => agent.models.map((model) => ({
     value: `handoff:${encodeURIComponent(agent.agentId)}:${encodeURIComponent(model)}`,
@@ -66,6 +72,8 @@ export function useHandoffCandidates(session: SessionDto, projectId: string): { 
   };
   const confirm = async () => {
     if (!target || lock.current) return;
+    const version = scopeVersion.current;
+    const isCurrent = () => mounted.current && scopeVersion.current === version;
     lock.current = true;
     setBusy(true);
     setError(null);
@@ -77,14 +85,18 @@ export function useHandoffCandidates(session: SessionDto, projectId: string): { 
       }
       const result = await api.createAgentHandoff(session.id, target);
       remove(key);
+      if (!isCurrent()) return;
+      setTarget(null);
       await queryClient.invalidateQueries({ queryKey: projectKeys.canvas(projectId) }).catch(() => undefined);
+      if (!isCurrent()) return;
       window.location.hash = `#/p/${encodeURIComponent(projectId)}/focus/${encodeURIComponent(result.sessionId)}`;
     } catch (failure) {
+      if (!isCurrent()) return;
       const denied = refusal(failure);
       setError(denied ? `本次创建请求被拒绝。${refusalAdvice[denied]} 如果之前请求结果未知，仍需核对；不会自动重试，再次确认使用原请求编号。` : '未能确认是否创建成功。不会自动重试；可再次确认，同一次请求使用原请求编号。');
     } finally {
       lock.current = false;
-      setBusy(false);
+      if (isCurrent()) setBusy(false);
     }
   };
   const dialog = target ? <DialogShell title="换 Agent，带上下文继续" onClose={() => { if (!busy) setTarget(null); }}>

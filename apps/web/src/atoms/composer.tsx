@@ -474,14 +474,14 @@ export function Composer({
           }}
         />
         {notice ? <p className="mt-1 text-meta text-rust">{notice}</p> : null}
-        <div className="mt-1 flex items-center justify-between gap-2">
+        <div data-testid="composer-controls" className="mt-1 flex items-center justify-between gap-2">
           <div className="flex min-w-0 flex-1 items-center gap-1">
             <button
               type="button"
               aria-label="添加附件"
               title={attachTitle}
               disabled={denied}
-              className="grid h-10 w-10 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30 md:h-7 md:w-7"
+              className="grid h-[44px] w-[44px] shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30 md:h-7 md:w-7"
               onClick={() => filePicker.current?.click()}
             >
               +
@@ -529,6 +529,7 @@ export function Composer({
               values={session.options}
               onChange={onChangeOption}
               compact
+              mobileLayout
             />
           </div>
           <ActionDot

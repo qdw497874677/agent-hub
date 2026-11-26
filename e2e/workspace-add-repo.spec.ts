@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 窄屏工作区抽屉里的「添加仓库」：点了必须真的在做事。
@@ -27,21 +28,13 @@ function makeRepo(root: string, name: string, url: string): string {
   return dir;
 }
 
-async function onlineAgent(page: Page): Promise<string | undefined> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    const agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (agentId !== undefined) return agentId;
-    await page.waitForTimeout(500);
-  }
-  return undefined;
-}
+test.afterAll(stopFakeWorker);
 
 /**
  * 建一个真实的组合工作目录（只含第一个仓库）+ 派生一条会话：加仓库 UI 只在组上才有意义，
  * 而且组里每个仓库都得有 link 工作空间当基座（见 workspace-groups.ts 的 baseForRepo）。
  */
-async function setupCombo(page: Page, headers: Record<string, string>, agentId: string, names: readonly string[]) {
+async function setupCombo(page: Page, headers: Record<string, string>, workerId: string, names: readonly string[]) {
   const root = mkdtempSync(join(tmpdir(), 'e2e-add-repo-'));
   const projectRoot = join(root, 'project');
   mkdirSync(projectRoot, { recursive: true });
@@ -49,7 +42,7 @@ async function setupCombo(page: Page, headers: Record<string, string>, agentId: 
   const dirs = repos.map((repo) => makeRepo(join(root, 'repos'), repo.name, repo.url));
 
   const project = (await (
-    await page.request.post('/api/projects', { data: { name: `e2e 加仓库 ${Date.now().toString(36)}`, rootPath: projectRoot }, headers })
+    await page.request.post('/api/projects', { data: { name: `e2e 加仓库 ${Date.now().toString(36)}`, rootPath: projectRoot, workerId }, headers })
   ).json()) as { id: string };
   const patched = await page.request.patch(`/api/projects/${project.id}`, {
     data: { repos: repos.map((repo) => ({ ...repo, defaultBranch: 'main' })) },
@@ -64,7 +57,7 @@ async function setupCombo(page: Page, headers: Record<string, string>, agentId: 
 
   for (const [index, repo] of repos.entries()) {
     const linked = await page.request.post('/api/workspaces', {
-      data: { workerId: null, mode: 'link', path: dirs[index], repoUrl: repo.url, branch: 'main', name: repo.name, projectId: project.id },
+      data: { workerId, mode: 'link', path: dirs[index], repoUrl: repo.url, branch: 'main', name: repo.name, projectId: project.id },
       headers
     });
     expect(linked.status(), await linked.text()).toBe(201);
@@ -74,7 +67,7 @@ async function setupCombo(page: Page, headers: Record<string, string>, agentId: 
     await page.request.post('/api/tasks', { data: { projectId: project.id, title: '加仓库' }, headers })
   ).json()) as { id: string };
   const built = await page.request.post(`/api/projects/${project.id}/workspace-groups`, {
-    data: { taskId: task.id, workerId: null, repoIds: [repoIds[0]] },
+    data: { taskId: task.id, workerId, repoIds: [repoIds[0]] },
     headers
   });
   expect(built.status(), await built.text()).toBe(201);
@@ -87,7 +80,7 @@ async function setupCombo(page: Page, headers: Record<string, string>, agentId: 
   expect(group.state, group.error ?? '').toBe('ready');
 
   const derived = await page.request.post('/api/sessions/derive', {
-    data: { taskId: task.id, agentId, model: '', groupId: group.id },
+    data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '', groupId: group.id, workerId },
     headers
   });
   expect(derived.status(), await derived.text()).toBe(201);
@@ -102,10 +95,9 @@ test('窄屏添加仓库：短名单在抽屉里，挂着时不重复发，失�
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
-  const agentId = await onlineAgent(page);
-  test.skip(agentId === undefined, '这台机器上没有可用的 agent');
+  const workerId = await ensureFakeWorker(page, baseURL!);
 
-  const { projectId, sessionId, groupId, repoIdOf } = await setupCombo(page, headers, agentId, ['web', 'api', 'docs']);
+  const { projectId, sessionId, groupId, repoIdOf } = await setupCombo(page, headers, workerId, ['web', 'api', 'docs']);
 
   // 只截「加仓库」这一对请求（POST 提交 + 判真伪的那次 GET），其余照常打到真服务端。
   // post 侧：missing = 回 201 但名单里没有这次要加的仓库（前端不许当成功）；
@@ -169,7 +161,8 @@ test('窄屏添加仓库：短名单在抽屉里，挂着时不重复发，失�
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/p/${projectId}/focus/${sessionId}`);
-  await page.getByTestId('workspace-entry').click();
+  await page.getByTestId('session-more-trigger').click();
+  await page.getByTestId('session-more-workspace').click();
 
   const sheet = page.getByTestId('workspace-sheet');
   await expect(sheet).toBeVisible();
@@ -303,12 +296,11 @@ test('短名单空了，没确认的结论还得留在抽屉里', async ({ page,
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
-  const agentId = await onlineAgent(page);
-  test.skip(agentId === undefined, '这台机器上没有可用的 agent');
+  const workerId = await ensureFakeWorker(page, baseURL!);
 
   // 两个仓库、组里只有一个：docs 一旦结论没定，短名单就彻底空了。
   // 这时抽屉不能连「没确认」那句一起消失（旧的 `members.length < 2 && addable.length === 0` 就会）。
-  const { projectId, sessionId, groupId, repoIdOf } = await setupCombo(page, headers, agentId, ['web', 'docs']);
+  const { projectId, sessionId, groupId, repoIdOf } = await setupCombo(page, headers, workerId, ['web', 'docs']);
 
   let posts = 0;
   await page.route('**/api/workspace-groups/*/members', async (route) => {
@@ -330,7 +322,8 @@ test('短名单空了，没确认的结论还得留在抽屉里', async ({ page,
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/p/${projectId}/focus/${sessionId}`);
-  await page.getByTestId('workspace-entry').click();
+  await page.getByTestId('session-more-trigger').click();
+  await page.getByTestId('session-more-workspace').click();
 
   const sheet = page.getByTestId('workspace-sheet');
   await expect(sheet).toBeVisible();

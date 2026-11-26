@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { ensureFakeWorker, stopFakeWorker } from './fake-worker.ts';
 import { loginByApi } from './login.ts';
+import { showSessionHandoff } from './session-composer-controls.ts';
 
 // Both aliases are actual ACP descriptors on the same real remote Worker. The
 // startup and prompt files count invocations in the fake ACP process itself.
@@ -56,7 +57,7 @@ for (const width of [1280, 390]) {
         else if (/\/api\/sessions\/[^/]+\/agent-handoff\/first$/.test(url)) firsts.push(request.postDataJSON());
       });
       await page.goto(`/#/p/${project.id}/focus/${source.id}`);
-      const picker = page.getByTestId('agent-handoff-trigger');
+      const picker = await showSessionHandoff(page, width < 640);
       await expect(picker).toBeVisible();
       await picker.click();
       const dialog = page.getByRole('dialog', { name: '选择要换的 Agent' });

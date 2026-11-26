@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { openSessionTool } from './session-tools.ts';
 import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
@@ -156,7 +157,7 @@ test('回合检查点：两轮真对话，本轮 / 整个会话 / 对比 HEAD，
       await page.setViewportSize({ width, height: width > 500 ? 860 : 844 });
       await page.goto(`/#/p/${project.id}/focus/${sid}`);
       await page.reload();
-      await page.getByTestId('session-tab-changes').click();
+      await openSessionTool(page, 'changes');
       const panel = page.getByTestId('files-panel-changes');
       await panel.getByTestId('changes-base').selectOption('turn');
       // files-error 只在失败时才挂上。textContent() 会等到整段测试超时，改动行其实已经画出来。

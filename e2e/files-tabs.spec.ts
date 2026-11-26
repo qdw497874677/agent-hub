@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
 import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
+import { backToChat, openSessionTool } from './session-tools.ts';
 
 /**
- * PR #156 方案 A：会话头部「对话 / 文件 / 改动」标签切换，手机 390 与桌面 1280 都要好用。
+ * 会话视图切换：手机通过更多菜单，桌面通过标签，390 与 1280 都要好用。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS_TABS'] ?? '/tmp/opencode/shots/files-tabs';
 test.afterAll(() => stopFakeWorker());
@@ -41,16 +42,25 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
     const { projectId, sid } = await setup(page, baseURL!);
     await page.goto(`/#/p/${projectId}/focus/${sid}`);
     const tabs = page.getByTestId('session-tabs');
-    await expect(tabs).toBeVisible();
-    await expect(page.getByTestId('session-tab-chat')).toHaveAttribute('aria-selected', 'true');
+    if (width < 768) {
+      await expect(tabs).toBeHidden();
+      await expect(page.getByTestId('session-back-to-chat')).toHaveCount(0);
+      await page.getByTestId('session-more-trigger').click();
+      await expect(page.getByTestId('session-more-changes')).toHaveText('改动 1');
+      await page.keyboard.press('Escape');
+    } else {
+      await expect(tabs).toBeVisible();
+      await expect(page.getByTestId('session-tab-chat')).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByTestId('session-tab-changes')).toHaveText('改动 1');
+    }
     await expect(page.getByRole('log', { name: '会话记录' })).toBeVisible();
-    await expect(page.getByTestId('session-tab-changes')).toHaveText('改动 1');
     const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
     expect(await fits()).toBe(true);
     await page.screenshot({ path: `${SHOTS}/chat-${name}.png` });
 
-    await page.getByTestId('session-tab-files').click();
+    await openSessionTool(page, 'files');
     const files = page.getByTestId('files-panel-files');
+    await expect(files).toBeVisible();
     await expect(page.getByRole('log', { name: '会话记录' })).toBeHidden();
     await files.locator('[data-path="src"]').click();
     await files.locator('[data-path="src/app.ts"]').click();
@@ -62,32 +72,46 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
       await expect(files.locator('[data-path="README.md"]')).toBeVisible();
     }
 
-    await page.getByTestId('session-tab-changes').click();
+    await openSessionTool(page, 'changes');
     const changes = page.getByTestId('files-panel-changes');
+    await expect(changes).toBeVisible();
     await expect(changes.getByTestId('changes-base')).toHaveValue('session');
     await changes.getByTestId('change-row').filter({ hasText: 'src/app.ts' }).click();
     await expect(changes.getByTestId('diff-view')).toContainText('42');
     expect(await fits()).toBe(true);
     await page.screenshot({ path: `${SHOTS}/changes-${name}.png` });
 
-    // 键盘：← 回到文件，再点对话，输入框回来
-    await page.getByTestId('session-tab-changes').focus();
-    await page.keyboard.press('ArrowLeft');
-    await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
-    await page.getByTestId('session-tab-chat').click();
+    // 手机键盘打开菜单并用 Escape 收起；桌面保留标签的方向键语义。
+    if (width < 768) {
+      const trigger = page.getByTestId('session-more-trigger');
+      await trigger.focus();
+      await page.keyboard.press('Enter');
+      await expect(page.getByTestId('session-more-files')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      await expect(trigger).toBeFocused();
+      await openSessionTool(page, 'files');
+      await expect(files).toBeVisible();
+    } else {
+      await page.getByTestId('session-tab-changes').focus();
+      await page.keyboard.press('ArrowLeft');
+      await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
+    }
+    await backToChat(page);
     await expect(page.getByRole('log', { name: '会话记录' })).toBeVisible();
     await expect(page.getByTestId('files-panel-files')).toBeHidden();
 
     // 详情 → 浏览文件：切到会话的「文件」标签页，详情关掉，旧浮层不再出现
     // 桌面走 header 的「详情」按钮；手机上 header 收起来了，入口在「更多」菜单第一组。
     if (width < 640) {
-      await page.getByRole('button', { name: '更多' }).click();
+      await page.getByTestId('session-more-trigger').click();
       await page.getByRole('menuitem', { name: /^详情/ }).click();
     } else {
       await page.getByRole('button', { name: '详情' }).click();
     }
     await page.getByTestId('open-files').click();
-    await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
+    if (width < 768) await expect(page.getByTestId('session-back-to-chat')).toBeVisible();
+    else await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByTestId('files-panel-files')).toBeVisible();
     await expect(page.getByTestId('open-files')).toHaveCount(0);
     await expect(page.getByTestId('files-browser')).toHaveCount(0);
@@ -100,24 +124,24 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
     await page.setViewportSize({ width, height });
     const { projectId, sid, root } = await setup(page, baseURL!);
     await page.goto(`/#/p/${projectId}/focus/${sid}`);
-    await page.getByTestId('session-tab-files').click();
+    await openSessionTool(page, 'files');
     const files = page.getByTestId('files-panel-files');
     await files.locator('[data-path="src"]').click();
     await files.locator('[data-path="src/app.ts"]').click();
     await expect(files.getByTestId('file-content')).toContainText('answer = 42');
-    await page.getByTestId('session-tab-changes').click();
+    await openSessionTool(page, 'changes');
     const changes = page.getByTestId('files-panel-changes');
     await changes.getByTestId('change-row').filter({ hasText: 'src/app.ts' }).click();
     await expect(changes.getByTestId('diff-view')).toContainText('42');
 
     // 第二次切回：内容立即在，没有「读取中」
-    await page.getByTestId('session-tab-chat').click();
+    await backToChat(page);
     writeFileSync(join(root, 'src/app.ts'), 'export const answer = 43;\n');
-    await page.getByTestId('session-tab-files').click();
+    await openSessionTool(page, 'files');
     await expect(files.getByTestId('file-content')).toBeVisible({ timeout: 300 });
     await expect(files.getByText('读取中…')).toHaveCount(0);
     await expect(files.getByTestId('file-content')).toContainText('answer = 43', { timeout: 15_000 });
-    await page.getByTestId('session-tab-changes').click();
+    await openSessionTool(page, 'changes');
     await expect(changes.getByTestId('diff-view')).toBeVisible({ timeout: 300 });
     await expect(changes.getByText('读取中…')).toHaveCount(0);
     await expect(changes.getByTestId('diff-view')).toContainText('43', { timeout: 15_000 });
@@ -128,12 +152,17 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
         ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'Worker「e2e」不在线' } }) })
         : route.fallback()
     );
-    await page.getByTestId('session-tab-files').click();
+    await openSessionTool(page, 'files');
     await expect(files.getByTestId('files-error').first()).toContainText('机器离线');
     await expect(files.getByTestId('file-content')).toHaveCount(0);
-    await page.getByTestId('session-tab-changes').click();
+    await openSessionTool(page, 'changes');
     await expect(changes.getByTestId('files-error').first()).toContainText('机器离线');
     await expect(changes.getByTestId('change-row')).toHaveCount(0);
-    await expect(page.getByTestId('session-tab-changes')).toHaveText('改动');
+    if (width < 768) {
+      await page.getByTestId('session-more-trigger').click();
+      await expect(page.getByTestId('session-more-changes')).toHaveText('改动');
+    } else {
+      await expect(page.getByTestId('session-tab-changes')).toHaveText('改动');
+    }
   });
 }

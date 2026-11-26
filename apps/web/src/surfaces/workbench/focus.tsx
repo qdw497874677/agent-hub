@@ -7,7 +7,7 @@ import { useDelegations } from '../../shell/delegations.ts';
 import { DelegationOriginBanner, DelegationPanel } from './delegation-panel.tsx';
 import { DelegateDialog } from './delegate-dialog.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
 import { api, sessionGroupId, sessionStartupApi } from '../../shell/api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
@@ -73,6 +73,9 @@ import { WorktreeStatusLine } from './worktree-status.tsx';
 import { SessionGroupLine } from './session-group.tsx';
 import { FindInSession } from '../../atoms/find-in-session.tsx';
 import { isTypingTarget } from '../../atoms/find-in-text.ts';
+import { Sheet } from '../../shell/dialog-shell.tsx';
+import { useHandoffCandidates } from '../../atoms/agent-handoff.tsx';
+import { ModelPicker } from '../../atoms/model-picker.tsx';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -87,6 +90,9 @@ interface Props {
   readonly onDraftChange: (text: string) => void;
   /** 整页时的「← 返回」；画布窗口里没有（窗口自己有关闭）。 */
   readonly onBack?: () => void;
+  readonly onProjectNavigation?: () => void;
+  readonly onNewTask?: () => void;
+  readonly onSearch?: () => void;
   /** 画布窗口：顶栏变成拖动把手，右边挂窗口按钮（最小化/最大化/打开/关闭）。 */
   readonly windowChrome?: { readonly actions: ReactNode };
   readonly onChanged: () => void;
@@ -131,6 +137,9 @@ export function FocusView({
   draft,
   onDraftChange,
   onBack,
+  onProjectNavigation,
+  onNewTask,
+  onSearch,
   onChanged,
   onOpenSession,
   onSeedDraft,
@@ -158,6 +167,7 @@ export function FocusView({
   const [subagentPath, setSubagentPath] = useState<readonly string[]>([]);
   const subagentTrackRef = useRef<HTMLButtonElement | null>(null);
   const moreRef = useRef<HTMLButtonElement | null>(null);
+  const [mobileHandoffSession, setMobileHandoffSession] = useState<string | null>(null);
   // 这棵会话视图的根：⌘F 只归焦点所在的那一个（画布上可能同时开着几条会话窗口）。
   const viewRef = useRef<HTMLDivElement | null>(null);
   // 会话内搜索条开着没有；查询本身和命中由 FindInSession 自己管。
@@ -555,6 +565,7 @@ export function FocusView({
   const forkable = !busy && forkHint === null;
   const [gitOpen, setGitOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [provenanceOpen, setProvenanceOpen] = useState(false);
   const [rewindAt, setRewindAt] = useState<number | null>(null);
   useEffect(() => setRewindAt(null), [session.id]);
   // 每轮「改了 N 个文件」（ADR 0027 阶段 1 的检查点）：挂在这一轮最后、下一句问话之前
@@ -599,9 +610,7 @@ export function FocusView({
    * 输入框上方那条：桌面是「正在做什么 / 分支」，窄屏不重复进度（已移到对话末尾），
    * 只留一个「工作区」入口——分支、路径、加仓库都在里面。
    */
-  const showStatusRow = narrow
-    ? workspacePath !== null
-    : Boolean(gitState?.isGit || live?.contextUsage || repo.isCombo);
+  const showStatusRow = Boolean(live?.contextUsage || (!narrow && (gitState?.isGit || repo.isCombo)));
   const [turnBase, setTurnBase] = useState<{ base: string; nonce: number } | null>(null);
   const openTurn = (turn: number) => {
     setTurnBase({ base: `turn:${turn}`, nonce: Date.now() });
@@ -780,6 +789,7 @@ export function FocusView({
             ←<span className="hidden sm:inline">&nbsp;返回</span>
           </button>
         ) : null}
+        {onProjectNavigation ? <button type="button" className="flex size-[44px] shrink-0 items-center justify-center text-tertiary hover:text-primary md:hidden" aria-label="项目与全部会话" title="项目与全部会话" onClick={onProjectNavigation}>☰</button> : null}
         <div className="min-w-0 flex-1">
           {renaming ? (
             <input
@@ -799,7 +809,7 @@ export function FocusView({
               }}
             />
           ) : (
-            <button
+            <div className="flex min-w-0 items-center gap-1"><button
               type="button"
               className="block max-w-full truncate text-left text-body text-primary hover:underline decoration-dotted"
               title="点击重命名"
@@ -807,9 +817,9 @@ export function FocusView({
               onClick={startRename}
             >
               {session.title || task?.title || (coordinatorIds.has(session.id) ? COORDINATOR_TITLE : UNASSIGNED_TITLE)}
-            </button>
+            </button>{pinned ? <PinnedMark testId="session-pinned-mobile" className="size-3 text-secondary md:hidden" /> : null}</div>
           )}
-          <p className="flex min-w-0 items-center gap-1 font-mono text-meta text-tertiary">
+          <p className="hidden min-w-0 items-center gap-1 font-mono text-meta text-tertiary md:flex">
             <span className="truncate">
               {session.title && task ? `${task.title} · ` : ''}{agentLabel} · 配置模型：{modelLabel(session.model)}
               {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
@@ -824,9 +834,10 @@ export function FocusView({
           lastSeq={live?.lastSeq ?? session.lastSeq}
           attention={status === 'done' && answerItem ? { possible: answerItem.possible } : null}
         />
+        {onNewTask ? <button type="button" className="flex size-[44px] shrink-0 items-center justify-center text-sub text-tertiary hover:text-primary md:hidden" aria-label="新建任务" onClick={onNewTask}>＋</button> : null}
         <span className="flex shrink-0 items-center">
           <button
-            className="hidden h-11 shrink-0 items-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary sm:flex sm:px-2 md:h-9"
+            className="hidden h-11 shrink-0 items-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary md:flex md:px-2 md:h-9"
             aria-label={`连接 ${linkedSessions.length}`}
             onClick={() => setLinksOpen(true)}
             title="连接同项目的其他会话"
@@ -834,21 +845,28 @@ export function FocusView({
             连接 {linkedSessions.length}
           </button>
           <button
-            className="hidden h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary sm:flex md:h-9"
+            className="hidden h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary md:flex md:h-9"
             aria-pressed={details}
             onClick={() => setDetails((open) => !open)}
           >
             详情
           </button>
-          <span className="hidden sm:flex">
+          <span className="hidden md:flex">
             <DisplayMenu settings={settings} onChange={changeSettings} />
           </span>
-          <Dropdown label="更多" icon="⋯" triggerRef={moreRef}>
+          <Dropdown label="更多" icon="⋯" triggerRef={moreRef} testId="session-more-trigger" menuClassName="max-h-[min(75dvh,640px)] overflow-y-auto overscroll-contain">
             {(close) => (
               <>
+                <MenuGroup label="工具" className="md:hidden">
+                  {tabs.filter((t) => t !== 'chat').map((t) => <MenuItem key={t} title={sessionTabLabel(t, t === 'changes' ? changeCount : undefined)} testId={`session-more-${t}`} onClick={() => { close(); setTab(t); }} />)}
+                  <MenuItem title="工作区" testId="session-more-workspace" onClick={() => { close(); setWorkspaceOpen(true); }} />
+                  <MenuItem title="会话来历" testId="session-more-provenance" onClick={() => { close(); setProvenanceOpen(true); }} />
+                  <MenuItem title="交给其他 Agent 继续" hint="新建会话，带上下文继续" testId="agent-handoff-trigger" onClick={() => { close(); moreRef.current?.focus(); setMobileHandoffSession(session.id); }} />
+                  {onSearch ? <MenuItem title="搜索任务与会话" onClick={() => { close(); onSearch(); }} /> : null}
+                </MenuGroup>
                 {/* 手机上 header 只留标题、状态和「⋯」（连接 / 详情 / Aa 都在 sm 以上才显示），
                     这三个入口在这里补一份；桌面上不渲染，避免和 header 重复。 */}
-                <MenuGroup label="详情与显示" className="sm:hidden">
+                <MenuGroup label="详情与显示" className="md:hidden">
                   <MenuItem
                     title="详情"
                     hint="查看会话、工作目录和用量"
@@ -874,7 +892,7 @@ export function FocusView({
                     }}
                   />
                 </MenuGroup>
-                <MenuGroup label="这次会话" className="border-t border-hair sm:border-t-0">
+                <MenuGroup label="这次会话" className="border-t border-hair md:border-t-0">
                   <MenuItem
                     title="分叉"
                     hint={forkHint ?? FORK_HINT}
@@ -993,6 +1011,7 @@ export function FocusView({
           {windowChrome?.actions}
         </span>
       </header>
+      {narrow ? <MobileHandoff key={session.id} session={session} projectId={canvas.project.id} open={mobileHandoffSession === session.id} onClose={() => setMobileHandoffSession(null)} restoreFocusRef={moreRef} /> : null}
       {session.kind === 'side' ? (
         <button
           type="button"
@@ -1005,9 +1024,10 @@ export function FocusView({
           <span className="shrink-0 text-link">返回主会话</span>
         </button>
       ) : null}
-      <ProvenanceRow sessionId={session.id} />
+      <div className="hidden md:contents"><ProvenanceRow sessionId={session.id} />
       <WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} />
-      {groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}
+      {groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}</div>
+      {narrow && provenanceOpen ? <Sheet title="会话来历" testId="session-provenance-sheet" onClose={() => setProvenanceOpen(false)}><ProvenanceRow sessionId={session.id} /><WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} />{groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}</Sheet> : null}
       <AttentionAutoAck sessionId={session.id} />
       {isCoordinatorSession ? (
         <DelegationPanel
@@ -1066,7 +1086,7 @@ export function FocusView({
           onDone={(id, prompt) => { setRewindAt(null); onSeedDraft?.(id, prompt); onChanged(); onOpenSession(id); }} />
       ) : null}
       {/* 右侧 pr 是给绝对定位的刷新指示器留的固定位置：它永远占这么宽，指示器出现或消失都不会让页签重排 */}
-      <div role="tablist" aria-label="会话视图" className="relative flex shrink-0 gap-1 border-b border-hair py-1.5 pl-2 pr-5 md:pl-3 md:pr-6" data-testid="session-tabs">
+      <div role="tablist" aria-label="会话视图" className="relative hidden shrink-0 gap-1 border-b border-hair py-1.5 pl-2 pr-5 md:flex md:pl-3 md:pr-6" data-testid="session-tabs">
         {tabs.map((t) => (
           <button
             key={t}
@@ -1107,6 +1127,7 @@ export function FocusView({
           </span>
         ) : null}
       </div>
+      {tab !== 'chat' ? <div className="flex min-h-[44px] shrink-0 items-center gap-3 border-b border-hair px-3 md:hidden"><button type="button" data-testid="session-back-to-chat" className="min-h-[44px] text-sub text-link" onClick={() => setTab('chat')}>← 返回对话</button><span className="text-sub text-secondary">{sessionTabLabel(tab, tab === 'changes' ? changeCount : undefined)}</span></div> : null}
       {(['files', 'changes'] as const).map((t) =>
         visited.has(t) ? (
           <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
@@ -1386,22 +1407,7 @@ export function FocusView({
             <div className="mb-1.5 flex min-h-5 items-center justify-between gap-3 px-1" data-testid="composer-status">
               <span />
               <div className="flex min-w-0 shrink-0 items-center gap-3">
-                {narrow ? (
-                  <button
-                    type="button"
-                    className="flex min-h-[44px] min-w-0 items-center gap-1 rounded-full border border-hair px-3 text-meta text-secondary hover:border-strong hover:text-primary"
-                    data-testid="workspace-entry"
-                    aria-haspopup="dialog"
-                    title={workspacePath ?? undefined}
-                    onClick={() => setWorkspaceOpen(true)}
-                  >
-                    <span aria-hidden>▦</span>
-                    <span className="shrink-0">工作区</span>
-                    {gitState !== undefined && gitState.files.length > 0 ? (
-                      <span className="shrink-0 text-tertiary">{gitState.files.length} 改动</span>
-                    ) : null}
-                  </button>
-                ) : (
+                {!narrow ? (
                   <>
                     {switcher}
                     {gitState?.isGit ? (
@@ -1419,7 +1425,7 @@ export function FocusView({
                       </button>
                     ) : null}
                   </>
-                )}
+                ) : null}
                 {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
               </div>
             </div>
@@ -1508,6 +1514,12 @@ export function FocusView({
     {docked ? detailsPanel : null}
     </div>
   );
+}
+
+/** 手机交接的确认状态跟随来源会话销毁，不覆盖新会话。 */
+function MobileHandoff({ session, projectId, open, onClose, restoreFocusRef }: { session: SessionDto; projectId: string; open: boolean; onClose: () => void; restoreFocusRef: RefObject<HTMLButtonElement | null> }) {
+  const handoff = useHandoffCandidates(session, projectId);
+  return <><ModelPicker label="换 Agent" dialogTitle="选择要换的 Agent" controlledOpen={open} onOpenChange={(next) => { if (!next) onClose(); }} restoreFocusRef={restoreFocusRef} deferPick sessionPicker scope={`handoff:${session.id}`} items={handoff.items} value="" note={handoff.note} onChange={handoff.choose} />{handoff.dialog}</>;
 }
 
 /** 会话在界面上的名字：任务标题 · agent；没有任务的会话只用 agent（不拼出 null）。 */

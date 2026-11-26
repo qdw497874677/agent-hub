@@ -176,6 +176,8 @@ export function Dropdown({
   icon,
   width = 'w-60',
   triggerRef,
+  testId,
+  menuClassName = '',
   children
 }: {
   label: string;
@@ -183,15 +185,28 @@ export function Dropdown({
   width?: string;
   /** 外面要收回焦点时（例如关掉选项打开的弹窗后）能找到这个「⋯」按钮。 */
   triggerRef?: Ref<HTMLButtonElement>;
+  testId?: string;
+  menuClassName?: string;
   children: (close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const root = useDismiss(open, () => setOpen(false));
   return (
-    <div ref={root} className="relative">
+    <div ref={root} className="relative" onKeyDown={(event) => {
+      if (!open) return;
+      if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); root.current?.querySelector('button')?.focus(); return; }
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
+      const items = [...(root.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])].filter((item) => item.getClientRects().length > 0);
+      if (!items.length) return;
+      event.preventDefault();
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      const index = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : current < 0 ? (event.key === 'ArrowDown' ? 0 : items.length - 1) : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      items[index]?.focus();
+    }}>
       <button
         ref={triggerRef}
-        className="flex h-11 min-w-9 items-center justify-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary md:h-9"
+        data-testid={testId}
+        className="flex h-[44px] min-w-[44px] items-center justify-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary md:h-9 md:min-w-9"
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -200,7 +215,7 @@ export function Dropdown({
         {icon}
       </button>
       {open ? (
-        <div role="menu" className={`absolute right-0 z-30 mt-1 ${width} rounded-lg border border-strong bg-overlay py-1 shadow-overlay`}>
+        <div role="menu" className={`absolute right-0 z-30 mt-1 ${width} rounded-lg border border-strong bg-overlay py-1 shadow-overlay ${menuClassName}`}>
           {children(() => setOpen(false))}
         </div>
       ) : null}
