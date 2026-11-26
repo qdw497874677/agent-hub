@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { consumeWorkerCredentials, rewriteCredentialEnv } from './credential-env.ts';
+import { workdirTerminalEnabled } from './workdir-terminal-config.ts';
 import { arch, homedir, hostname, platform } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,7 @@ import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/node-kit';
 import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, createServiceHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, defaultGroupsDir, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot, createPreviewClient, scanProcesses, isEqualOrDescendantPath, isStrictDescendantPath } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
+import { createWorkdirTerminalHost } from '@agent-hub/node-gateway';
 import type { AgentAlias, AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 import { applyAgentAliases, readAgentAliases, type BuiltAliasHarness } from './agent-aliases.ts';
 
@@ -397,6 +399,14 @@ const terminal = createTerminalHost({
   onOutput: (sessionId, text) => link.forwardTerminalOutput(sessionId, text),
   log
 });
+const workdirTerminal = workdirTerminalEnabled(env) ? createWorkdirTerminalHost({
+  shell: terminalShell(),
+  ...(terminalMax !== undefined ? { max: terminalMax } : {}),
+  check: (path) => files.check(path),
+  backpressure: () => link.bufferedAmount(),
+  onData: (epoch, id, chunk) => link.sendWorkdirTerminalData(epoch, id, chunk),
+  onExit: (epoch, id, code) => link.sendWorkdirTerminalExit(epoch, id, code)
+}) : null;
 
 /**
  * 会话服务（docs/design/session-service.md §5）：这台机器上长驻的本地服务（vite、dev server 之类）。
@@ -448,6 +458,7 @@ const link = connectWorkerLink({
   groupsDir,
   assets,
   ...(terminal ? { terminal } : {}),
+  ...(workdirTerminal ? { workdirTerminal } : {}),
   service: serviceHost,
   /** 只读进程 / 端口清单：只报 cwd 落在 WORKER_ROOTS 里的进程。 */
   processes: () => scanProcesses({ roots }),

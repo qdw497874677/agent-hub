@@ -4,7 +4,7 @@ import { normalizeDefaultAgent } from '../agent-ref.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project, ProjectRepo } from '../project.ts';
 import type { DomainError } from '../errors.ts';
-import { invalid, notFound } from '../errors.ts';
+import { conflict, invalid, notFound } from '../errors.ts';
 import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import type { Deps } from './deps.ts';
@@ -13,6 +13,7 @@ import { ambiguousPlaceError, newWorkspace, type Workspace } from '../workspace.
 import { claimOf, directoryOwner, listOn, normalize, parentOf, remoteExists, resolveMachine, rootsOf } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
 import { claimConflictError } from './workspaces.ts';
+import { workdirTarget } from './workdir-safety.ts';
 
 export { createDirectory, directoryOwner } from './machine-dirs.ts';
 import { managedDirectory, projectSlug, sortDirectoryEntries } from '../directories.ts';
@@ -40,7 +41,7 @@ export interface CreateProjectCommand {
 }
 
 export async function createProjectUseCase(
-  deps: Pick<Deps, 'fs' | 'now' | 'projects' | 'gateway' | 'workspaces' | 'access' | 'secrets'>,
+  deps: Pick<Deps, 'fs' | 'now' | 'projects' | 'gateway' | 'workspaces' | 'access' | 'secrets'> & Partial<Pick<Deps, 'workdirSafety'>>,
   command: CreateProjectCommand
 ): Promise<Result<Project, DomainError>> {
   const hasLegacyRepo = (command.repoUrl?.trim() ?? '') !== '' || (command.defaultBranch?.trim() ?? '') !== '';
@@ -148,12 +149,20 @@ export async function createProjectUseCase(
   // 冲突 / 历史重复时不写项目；写项目失败会连同认领一起回滚，工作空间本身可以保持未认领。
   try {
     if (target) {
-      const claimed = await deps.projects.saveWithWorkspaceClaim(project, {
+      const workspaceId = target.id;
+      const claim = () => deps.projects.saveWithWorkspaceClaim(project, {
         projectId: project.id,
-        workspaceId: target.id,
+        workspaceId,
         linkedBy: project.createdBy,
         linkedAt: deps.now()
       });
+      const claimed = deps.workdirSafety ? await deps.workdirSafety.runExclusive(async () => {
+        const current = await deps.workspaces.byId(workspaceId);
+        if (!current || current.state === 'removed') return null;
+        try { deps.workdirSafety!.assertNoRemoval(workdirTarget(current)); } catch { return null; }
+        return claim();
+      }) : await claim();
+      if (!claimed) { await forgetTokens(); return err(conflict('工作目录不存在或有待确认的删除')); }
       if (claimed.status === 'conflict') {
         await forgetTokens();
         return err(claimConflictError());

@@ -18,6 +18,7 @@ import { SessionRowMenu } from './session-row-menu.tsx';
 import { COORDINATOR_TITLE } from '../../atoms/session-groups.ts';
 import { useCoordinators } from '../../shell/coordinators.ts';
 import { workspaceSessionGroups, workspaceWorkerLabel } from './list-workspaces.ts';
+import { WorkdirEntries } from './workdir-tabs.tsx';
 
 /** 平台修饰键（⌘ / Ctrl）：提示写对，快捷键本身两个都收。 */
 const MOD = modKeyLabel();
@@ -74,6 +75,7 @@ interface Props {
   readonly onHome: () => void;
   readonly onSwitchProject: (project: ProjectDto) => void;
   readonly onOpenSession: (sessionId: string) => void;
+  readonly onOpenWorkdir: (id: string) => void;
   readonly onSearch: () => void;
   readonly onNewTask: () => void;
   readonly onDerive: (taskId: string) => void;
@@ -99,6 +101,7 @@ export function ProjectSidebar({
   onHome,
   onSwitchProject,
   onOpenSession,
+  onOpenWorkdir,
   onSearch,
   onNewTask,
   onDerive,
@@ -423,6 +426,7 @@ export function ProjectSidebar({
       {!drawer ? projectActions : null}
 
       <nav ref={listRef} onKeyDown={onListKey} className={drawer ? 'shrink-0 border-t border-hair px-2 py-0.5' : 'min-h-0 flex-1 overflow-y-auto border-t border-hair px-2 py-2'} aria-label="任务与会话">
+        <WorkdirEntries projectId={project.id} onOpen={onOpenWorkdir} />
         <p className="sr-only px-2 pb-1 text-meta text-tertiary lg:not-sr-only">工作空间</p>
         {workspaceGroups.map((workspace) => {
           const expanded = !foldedWorkspaces.has(workspace.key);

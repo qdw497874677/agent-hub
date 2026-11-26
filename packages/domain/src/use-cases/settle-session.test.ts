@@ -10,6 +10,8 @@ import type { AuditEntry, Principal } from '../account.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { AccessPolicy } from './authorization.ts';
 import { settleSessionUseCase } from './settle-session.ts';
+import { releaseSessionWorktrees } from './session-worktrees.ts';
+import type { WorkdirSafety } from '../workdir-safety.ts';
 
 const policy: AccessPolicy = {
   context: async () => ({ hubTeamId: 't1', settings: { membersCanAddMachines: true } }),
@@ -199,6 +201,18 @@ test('收起会话：干净的独占 worktree 会摘掉；恢复时按原分支�
   await w.deps.workspaces.save(base.value);
   await w.deps.workspaces.save(tree.value);
   await w.deps.sessions.save({ ...session.value, status: 'stopped', workspaceId: tree.value.id, workerId: 'w1' });
+
+  const safety: WorkdirSafety = {
+    hasOutstanding: () => false,
+    runExclusive: async (fn) => fn(), assertNoRemoval() {}, assertUnoccupied() {}, assertProjectUnoccupied() {},
+    beginRemoval() { throw new Error('occupied'); }, finishRemoval() {}
+  };
+  for (const force of [false, true]) {
+    const blocked = await releaseSessionWorktrees({ ...w.deps, workdirSafety: safety }, session.value, { force });
+    assert.equal(blocked[0]?.action, 'deferred');
+    assert.equal((await w.deps.workspaces.byId(tree.value.id))?.state, 'ready');
+    assert.equal(w.git.calls.some((call) => call.includes(':remove:')), false);
+  }
 
   const settled = await settleSessionUseCase(w.deps, {
     sessionId: session.value.id,

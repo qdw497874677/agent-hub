@@ -17,6 +17,10 @@ import {
   WORKER_CAPABILITY_SESSION_START_READY,
   WORKER_CAPABILITY_SESSION_START_NATIVE_REF,
   WORKER_CAPABILITY_OPTION_RECEIPT,
+  WORKER_CAPABILITY_WORKDIR_TERMINAL_V1,
+  WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1,
+  workdirTerminalInventory, workdirTerminalCreate, workdirTerminalAttach, workdirTerminalResize, workdirTerminalClose,
+  serverToWorkerSchema,
   assetsSync,
   providerTest,
   createRpcChannel,
@@ -174,6 +178,9 @@ export interface GatewayHooks {
   knownTerminals?(workerId: string): ReadonlySet<string>;
   onTerminalData?(workerId: string, terminalId: string, data: string): void;
   onTerminalExit?(workerId: string, terminalId: string, code: number, signal?: number): void;
+  onWorkdirTerminalData?(workerId: string, epoch: string, terminalId: string, data: string): void;
+  onWorkdirTerminalExit?(workerId: string, epoch: string, terminalId: string, code: number): void;
+  onWorkdirTerminalConnected?(workerId: string): void;
   /**
    * 会话服务（docs/design/session-service.md）：
    * - `onServiceState` / `onServiceLog`：worker 主动推的状态与输出，hub 据此落库。
@@ -216,6 +223,8 @@ export interface GatewayHooks {
 }
 
 export interface GatewayOptions {
+  /** Frozen at startup: block affected workspace mutations on unverified or incompatible Workers. */
+  readonly workspaceMutationSafetyRequired?: boolean;
   /** 心跳间隔。连续一个间隔没收到 pong 就判定离线并断开。 */
   readonly heartbeatMs?: number;
   /** 试运行检查间隔（ADR 0030 D2）；默认 2 秒。 */
@@ -317,6 +326,8 @@ interface Registered {
   branchAttempts: Map<string, { attemptId: string; sourceRef: string }>;
   /** 这条连接的 Worker 显式 opt-in 了项目 Git bundle 导入没有（hello 能力）；每次 hello 重建。 */
   projectGitBundleImport: boolean;
+  workdirTerminal: boolean;
+  workspaceMutationSafety: boolean;
   /** 这条连接做过终端对账没有（重连 / inventory 只做一次）。 */
   terminalReconciled: boolean;
   /** 这条连接做过服务对账没有。 */
@@ -338,7 +349,22 @@ export interface TerminalOpened {
   readonly scrollback?: string;
 }
 
+export interface WorkdirTerminalGateway {
+  inventory(): Promise<TerminalOutcome<{ epoch: string; terminals: readonly { terminalId: string; workspaceId: string; state: 'running' | 'closing' }[] }>>;
+  create(input: { terminalId: string; workspaceId: string; cwd: string; epoch: string }): Promise<TerminalOutcome<{ state: 'running' | 'closing' | 'ended' }>>;
+  attach(input: { terminalId: string; epoch: string; cols: number; rows: number }): Promise<TerminalOutcome<TerminalOpened>>;
+  resize(input: { terminalId: string; epoch: string; cols: number; rows: number }): Promise<TerminalOutcome<{ ok: true }>>;
+  close(input: { terminalId: string; epoch: string }): Promise<TerminalOutcome<{ exited: boolean }>>;
+  detach(input: { terminalId: string; epoch: string }): void;
+  input(input: { terminalId: string; epoch: string; data: string }): boolean;
+}
+
 export interface ServerGateway {
+  workdirTerminals(workerId: string): WorkdirTerminalGateway;
+  /** Last-known positive negotiation, retained while the registry entry survives disconnect. Not an authorization check. */
+  workdirTerminalSupported(workerId: string): boolean;
+  /** Current uniquely authenticated connection explicitly supports the complete mutation safety protocol. */
+  workspaceMutationSafe(workerId: string): boolean;
   readonly gateway: NodeGateway;
   supportsBranchAttempt(workerId: string, agentId: string): boolean;
   workers(): WorkerStatus[];
@@ -456,6 +482,7 @@ export interface WorkspaceGroupOps {
  * 而不是像单机时那样「发给第一台在线的」。
  */
 export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions = {}): ServerGateway {
+  const workspaceMutationSafetyRequired = options.workspaceMutationSafetyRequired === true;
   const registry = new Map<string, Registered>();
   const placement = new Map<string, string>();
   // Readiness is bound to the socket and generation, never inferred from hello/adopt.
@@ -690,7 +717,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   ): Promise<TerminalOutcome<TerminalOpened>> {
     const blocked = terminalBlocked(workerId);
     if (blocked) return blocked;
-    const outcome = await online(workerId)!.channel!.request(terminalOpen, {
+    const entry = online(workerId)!;
+    // Check the actual dispatch connection, not a bridge's earlier snapshot.
+    if (entry.workdirTerminal) return { ok: false, code: 'unsupported', message: '此 Worker 使用独立工作目录终端，不支持新建会话终端' };
+    const outcome = await entry.channel!.request(terminalOpen, {
       terminalId: input.terminalId,
       sessionId: input.sessionId,
       cols: input.cols,
@@ -727,6 +757,34 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     if (!entry?.socket || !canInvoke(entry.capabilities, 'sessions')) return false;
     entry.socket.send(JSON.stringify({ kind: 'terminal_input', terminalId, data } satisfies ServerToWorker));
     return true;
+  }
+
+  function workdirTerminals(workerId: string): WorkdirTerminalGateway {
+    async function call<T>(invoke: (channel: RpcChannel) => Promise<RpcOutcome<T>>): Promise<TerminalOutcome<T>> {
+      const entry = online(workerId);
+      if (!entry?.channel || !entry.socket) return terminalUnavailable(workerId);
+      if (!entry.observationIdentity || !entry.workdirTerminal) return { ok: false, code: 'unsupported', message: 'Worker does not support workdir terminals' };
+      if (!canInvoke(entry.capabilities, 'sessions')) return { ok: false, code: 'forbidden', message: capabilityDenied('sessions') };
+      const socket = entry.socket, channel = entry.channel;
+      const result = await invoke(channel);
+      if (registry.get(workerId) !== entry || entry.socket !== socket || entry.channel !== channel || !entry.observationIdentity || socket.readyState !== WebSocket.OPEN)
+        return { ok: false, code: 'stale', message: 'Worker connection changed' };
+      return result.ok ? { ok: true, value: result.value } : { ok: false, code: result.error.code, message: result.error.message };
+    }
+    function send(frame: ServerToWorker): boolean {
+      const entry = online(workerId);
+      if (!entry?.socket || !entry.observationIdentity || !entry.workdirTerminal || !canInvoke(entry.capabilities, 'sessions') || !serverToWorkerSchema.safeParse(frame).success) return false;
+      try { entry.socket.send(JSON.stringify(frame)); return true; } catch { return false; }
+    }
+    return {
+      inventory: () => call((channel) => channel.request(workdirTerminalInventory, {})),
+      create: (input) => call((channel) => channel.request(workdirTerminalCreate, input)),
+      attach: (input) => call((channel) => channel.request(workdirTerminalAttach, input)),
+      resize: (input) => call((channel) => channel.request(workdirTerminalResize, input)),
+      close: (input) => call((channel) => channel.request(workdirTerminalClose, input)),
+      detach: (input) => { send({ kind: 'workdir_terminal_detach_v1', ...input }); },
+      input: (input) => send({ kind: 'workdir_terminal_input_v1', ...input })
+    };
   }
 
   /**
@@ -1109,6 +1167,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           helloAgents: frame.agents,
           branchAttempts: new Map(),
           projectGitBundleImport: frame.capabilities?.includes(WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT) === true,
+          workdirTerminal: frame.capabilities?.includes(WORKER_CAPABILITY_WORKDIR_TERMINAL_V1) === true,
+          workspaceMutationSafety: frame.capabilities?.includes(WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1) === true,
           terminalReconciled: false,
           serviceReconciled: false,
           connection: { at: now(), address: clientAddress, version: build?.commit ?? null }
@@ -1177,12 +1237,13 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         if (storedAliases !== null && storedAliases !== undefined) sendAgentConfig(frame.workerId, storedAliases);
         if (policy.echoMs > 0) void echo(entry);
         hooks.onHello(describe(entry), frame.agents, frame.sessions);
+        if (registry.get(entry.workerId) === entry && entry.socket === socket && socket.readyState === WebSocket.OPEN && entry.observationIdentity && entry.workdirTerminal && canInvoke(entry.capabilities, 'sessions')) hooks.onWorkdirTerminalConnected?.(entry.workerId);
         void reconcileTerminals(entry.workerId);
         void reconcileServices(entry.workerId);
         return;
       }
 
-      if (!entry || entry.socket !== socket) return; // 没 hello 过的连接说什么都不算
+      if (!entry || entry.socket !== socket || registry.get(entry.workerId) !== entry || socket.readyState !== WebSocket.OPEN) return; // 当前连接以外的帧不算
       entry.lastSeenAt = now();
 
       if (frame.type === 'rpc') {
@@ -1241,6 +1302,14 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         return;
       }
       const from = entry.workerId;
+      if (frame.type === 'workdir_terminal_data_v1') {
+        if (entry.observationIdentity && entry.workdirTerminal && canInvoke(entry.capabilities, 'sessions')) hooks.onWorkdirTerminalData?.(from, frame.epoch, frame.terminalId, frame.data);
+        return;
+      }
+      if (frame.type === 'workdir_terminal_exit_v1') {
+        if (entry.observationIdentity && entry.workdirTerminal && canInvoke(entry.capabilities, 'sessions')) hooks.onWorkdirTerminalExit?.(from, frame.epoch, frame.terminalId, frame.code);
+        return;
+      }
       if (frame.type === 'terminal_data') {
         hooks.onTerminalData?.(from, frame.terminalId, frame.data);
         return;
@@ -1495,6 +1564,36 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     if (code === 'timeout') return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」没有及时回复${what}`) };
     return { ok: false, error: unavailable(message) };
   }
+  function mutationSafeEntry(entry: Registered): boolean {
+    return registry.get(entry.workerId) === entry && !!entry.observationIdentity && !!entry.channel &&
+      entry.socket?.readyState === WebSocket.OPEN && entry.workspaceMutationSafety;
+  }
+  /** Scoped to fenced mutations: never infer completion from generic handler/transport errors. */
+  async function settledMutation<T>(workerId: string, run: (channel: RpcChannel) => Promise<RpcOutcome<T>>, what: string): Promise<Result<T, DomainError>> {
+    const entry = online(workerId);
+    if (!entry?.channel || !entry.socket) {
+      const result = offline(workerId);
+      return { ok: false, error: { ...result.error, operationSettled: true } };
+    }
+    if (workspaceMutationSafetyRequired && !mutationSafeEntry(entry)) {
+      return { ok: false, error: { ...unavailable(`Worker「${labelOf(workerId)}」未通过工作空间安全能力验证，操作未发送`), operationSettled: true } };
+    }
+    const { socket, channel } = entry;
+    const outcome = await run(channel);
+    if (registry.get(workerId) !== entry || entry.socket !== socket || entry.channel !== channel || socket.readyState !== WebSocket.OPEN)
+      return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」连接已改变，${what}结果未知`) };
+    if (outcome.ok) return outcome;
+    const { code, message } = outcome.error;
+    const codes = ['invalid', 'conflict', 'not_found', 'forbidden', 'unavailable', 'not_implemented'] as const;
+    const explicit = codes.find((item) => code === `operation_settled_${item}`);
+    if (explicit) return { ok: false, error: { code: explicit, message, operationSettled: true } };
+    // These RPC codes are generated before a handler can execute.
+    if (code === 'unknown_method' || code === 'unsupported' || code === 'bad_params' || code === 'forbidden') {
+      const mapped = toDomain<T>(outcome, what, workerId);
+      return mapped.ok ? mapped : { ok: false, error: { ...mapped.error, operationSettled: true } };
+    }
+    return toDomain(outcome, what, workerId);
+  }
 
   function requestProbe(workerId: string): boolean {
     const entry = online(workerId);
@@ -1576,8 +1675,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       return {
         inspect: (path) => call((c) => c.request(wsInspect, { path }), '目录探测'),
         checkRepo: (repoUrl, branch, auth) => call((c) => c.request(wsCheckRepo, { repoUrl, branch, ...(auth ? { auth } : {}) }, { timeoutMs: 30_000 }), '检查仓库'),
-        clone: (input) => call((c) => c.request(wsClone, { ...input, branch: input.branch ?? null, ...(input.auth ? { auth: input.auth } : {}) }, slow), '下载仓库'),
-        addWorktree: (input) => call((c) => c.request(wsAddWorktree, { ...input, base: input.base ?? null, ...(input.auth ? { auth: input.auth } : {}) }, slow), '新开分支'),
+        clone: (input) => settledMutation(workerId, (c) => c.request(wsClone, { ...input, branch: input.branch ?? null, ...(input.auth ? { auth: input.auth } : {}) }, slow), '下载仓库'),
+        addWorktree: (input) => settledMutation(workerId, (c) => c.request(wsAddWorktree, { ...input, base: input.base ?? null, ...(input.auth ? { auth: input.auth } : {}) }, slow), '新开分支'),
         status: (path) => call((c) => c.request(wsStatus, { path }), '检查改动'),
         saveWip: (path, message, auth) => call((c) => c.request(wsSaveWip, { path, message, ...(auth ? { auth } : {}) }, slow), '提交并推送'),
         preview: (path, maxPatchBytes, options) =>
@@ -1594,10 +1693,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         push: (path, auth) => call((c) => c.request(wsPush, { path, ...(auth ? { auth } : {}) }, slow), '推送'),
         publishRef: (input) => call((c) => c.request(wsPublishRef, { ...input, ...(input.auth ? { auth: input.auth } : {}) }, slow), '发布批准提交'),
         prepareDelegationWorktree: (input) =>
-          call((c) => c.request(wsPrepareDelegationWorktree, { ...input, ...(input.auth ? { auth: input.auth } : {}) }, slow), '准备委派工作区'),
+          settledMutation(workerId, (c) => c.request(wsPrepareDelegationWorktree, { ...input, ...(input.auth ? { auth: input.auth } : {}) }, slow), '准备委派工作区'),
         importCommit: (input) => call((c) => c.request(wsImportCommit, input, slow), '本地导入提交'),
         gh: (path, request) => call((c) => c.request(wsGh, { path, request }, { timeoutMs: 120_000 }), 'gh 开 PR'),
-        remove: (path, kind, options) => call((c) => c.request(wsRemove, { path, kind, ...(options?.force ? { force: true } : {}), ...(options?.mergedHead ? { mergedHead: options.mergedHead } : {}) }, { timeoutMs: 120_000 }), '删除工作空间'),
+        remove: (path, kind, options) => settledMutation(workerId, (c) => c.request(wsRemove, { path, kind, ...(options?.force ? { force: true } : {}), ...(options?.mergedHead ? { mergedHead: options.mergedHead } : {}) }, { timeoutMs: 120_000 }), '删除工作空间'),
         // 准备命令最多跑 30 分钟（项目配置上限），RPC 再多给 30 秒，别让管道先超时
         runSetup: (input) => call((c) => c.request(wsRunSetup, { ...input, ...(input.env ? { env: { ...input.env } } : {}) }, { timeoutMs: Math.min(input.timeoutMs, 30 * 60_000) + 30_000 }), '跑准备命令')
       };
@@ -1657,6 +1756,12 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     listTerminals,
     sendTerminalInput,
     reconcileTerminals,
+    workdirTerminals,
+    workdirTerminalSupported(workerId) { return registry.get(workerId)?.workdirTerminal === true; },
+    workspaceMutationSafe(workerId) {
+      const entry = online(workerId);
+      return !!entry && mutationSafeEntry(entry);
+    },
     services,
     processes,
     reconcileServices,
@@ -1667,17 +1772,12 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       return remoteBrowsers.browser(workerId);
     },
     groups(workerId: string): WorkspaceGroupOps {
-      const call = async <T>(run: (channel: RpcChannel) => Promise<RpcOutcome<T>>, what: string): Promise<Result<T, DomainError>> => {
-        const channel = channelOf(workerId);
-        if (!channel) return offline(workerId);
-        return toDomain(await run(channel), what, workerId);
-      };
       // 本地文件操作，但可能撞上慢盘 / 大量小文件；统一 120 秒，和删除工作空间一个量级
       const limit = { timeoutMs: 120_000 };
       return {
-        init: (input) => call((c) => c.request(wsGroupInit, { slug: input.slug, name: input.name, id: input.id }, limit), '建组合工作空间目录'),
-        remove: (input) => call((c) => c.request(wsGroupRemove, { root: input.root, id: input.id }, limit), '删组合工作空间目录'),
-        newWorktree: (input) => call((c) => c.request(wsNewWorktree, { ...input, base: input.base ?? null, ...(input.auth ? { auth: input.auth } : {}) }, limit), '在组合工作空间里开分支')
+        init: (input) => settledMutation(workerId, (c) => c.request(wsGroupInit, { slug: input.slug, name: input.name, id: input.id }, limit), '建组合工作空间目录'),
+        remove: (input) => settledMutation(workerId, (c) => c.request(wsGroupRemove, { root: input.root, id: input.id }, limit), '删组合工作空间目录'),
+        newWorktree: (input) => settledMutation(workerId, (c) => c.request(wsNewWorktree, { ...input, base: input.base ?? null, ...(input.auth ? { auth: input.auth } : {}) }, limit), '在组合工作空间里开分支')
       };
     },
     async importProjectGitBundle(workerId, input) {

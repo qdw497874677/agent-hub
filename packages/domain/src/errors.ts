@@ -12,6 +12,8 @@ export interface DomainError {
   readonly message: string;
   /** Gateway proved synchronously that the command was never sent. */
   readonly deliveryDeferred?: true;
+  /** The specific mutation completed (including rollback), or was proven not dispatched. */
+  readonly operationSettled?: true;
 }
 
 export const invalid = (message: string): DomainError => ({ code: 'invalid', message });

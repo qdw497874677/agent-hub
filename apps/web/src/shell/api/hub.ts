@@ -51,9 +51,16 @@ import type {
 } from './sessions.ts';
 import type { CleanupPolicyDto, CleanupRecordsDto } from './workspaces.ts';
 
+export interface WorkdirTerminal { id: string; title: string; state: 'pending' | 'running' | 'closing' | 'ended'; createdAt: number }
+export interface WorkdirTerminals { available: boolean; reason?: string; terminals: WorkdirTerminal[] }
+export const workdirTerminalPath = (projectId: string, workspaceId: string) => `/api/projects/${encodeURIComponent(projectId)}/workdir-tabs/${encodeURIComponent(workspaceId)}/terminals`;
+
 export const api = {
   messageSource: (sessionId: string, messageId: string) =>
     call<import('../../atoms/message-provenance.ts').SourceDetails>(`/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/source`, { cache: 'no-store' }),
+  workdirTerminals: (projectId: string, workspaceId: string) => call<WorkdirTerminals>(workdirTerminalPath(projectId, workspaceId)),
+  createWorkdirTerminal: (projectId: string, workspaceId: string, requestId: string) => post<WorkdirTerminal>(workdirTerminalPath(projectId, workspaceId), { requestId }),
+  closeWorkdirTerminal: (projectId: string, workspaceId: string, id: string) => call<WorkdirTerminal>(`${workdirTerminalPath(projectId, workspaceId)}/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   sessionMessages: (sessionId: string) =>
     call<{ messages: AgentMessageDto[]; awaitingApproval: AgentMessageDto[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`),
   sendAgentMessage: (sessionId: string, body: { kind: 'send' | 'ask'; to: string; body: string; wake?: boolean }) =>

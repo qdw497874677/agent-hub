@@ -7,7 +7,7 @@
  * 手机上「返回」手势、刷新、把链接发给自己另一台设备，都能回到同一个画面。
  * 纯函数在这里，React 的那一层在 use-route.ts。
  */
-export type View = 'canvas' | 'list' | 'focus';
+export type View = 'canvas' | 'list' | 'focus' | 'workdir';
 
 export type AdminTab = 'overview' | 'users' | 'workers' | 'assets' | 'settings' | 'audit' | 'components';
 export const ADMIN_TABS: readonly AdminTab[] = ['overview', 'users', 'workers', 'assets', 'settings', 'audit', 'components'];

@@ -37,6 +37,9 @@ import { useAccount } from './account-context.ts';
 import { rememberPaletteRecent } from '../surfaces/workbench/palette-recent.ts';
 import { NewSessionWithModelContext } from './new-session-with-model.ts';
 import { NewModelSessionDialog } from './new-model-session-dialog.tsx';
+import { WorkdirTabs } from '../surfaces/workbench/workdir-tabs.tsx';
+import { eligibleWorkdir } from '../surfaces/workbench/workdir-model.ts';
+import { useWorkspaceViews } from '../surfaces/workbench/workspace-chooser.tsx';
 
 const LAST_PROJECT = 'agent-hub:last-project';
 
@@ -78,6 +81,11 @@ function Workspace() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [windowFocus, setWindowFocus] = useState<string | null>(null);
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
+  const [workdirSession, setWorkdirSession] = useState<string | null>(null);
+  const [workdirOpenSession, setWorkdirOpenSession] = useState<string | null>(null);
+  const [workdirDerive, setWorkdirDerive] = useState<{ id: string; workerId: string } | null>(null);
+  const [workdirTaskPicker, setWorkdirTaskPicker] = useState(false);
+  const selectWorkdirSession = useCallback((id: string | null) => { setWorkdirSession(id); if (id) setWorkdirOpenSession((current) => current === id ? null : current); }, []);
   const [newModelSession, setNewModelSession] = useState<{ projectId: string; source: SessionDto; model: string } | null>(null);
   const [taskDetail, setTaskDetail] = useState<string | null>(null);
   const [search, setSearch] = useState(false);
@@ -102,7 +110,10 @@ function Workspace() {
   // 三种视图是同一份数据的三层分辨率（S6.4）：画布看关系，列表看清单，专注对话看内容。
   // 视图和选中的会话都住在地址栏里（route.ts），刷新、返回手势都不丢。
   const view: View = projectRoute?.view ?? homeView;
-  const selected = projectRoute?.sessionId ?? null;
+  const selected = view === 'workdir' ? workdirSession : projectRoute?.sessionId ?? null;
+  const workdirViews = useWorkspaceViews(project?.id ?? '');
+  const workdirView = view === 'workdir' ? workdirViews.data?.find(({ workspace }) => workspace.id === projectRoute?.sessionId) : undefined;
+  const workdirWorkspace = workdirView && project && eligibleWorkdir(workdirView.workspace, workdirView.ownerProjectId, project.id) ? workdirView.workspace : null;
 
   useEffect(() => {
     if (!projects.data) return;
@@ -442,7 +453,7 @@ function Workspace() {
   }, [account?.id, project?.id, view, selected, selectedSession?.id]);
 
   // 专注对话要整段历史：投影只带最后几十条事件，长一点的思考就把正文挤出去了。
-  const focusedSession = view === 'focus' ? selectedSession : null;
+  const focusedSession = view === 'focus' || view === 'workdir' ? selectedSession : null;
   const loadHistoryRef = useRef(loadHistory);
   loadHistoryRef.current = loadHistory;
   useEffect(() => {
@@ -567,6 +578,7 @@ function Workspace() {
         onClose?.();
         openSession(sessionId);
       }}
+      onOpenWorkdir={(id) => { onClose?.(); setWorkdirOpenSession(selectedSession?.workspaceId === id && !selectedSession.groupId ? selectedSession.id : null); navigate({ page: 'project', projectId: project.id, view: 'workdir', sessionId: id }); }}
       onSearch={() => {
         onClose?.();
         setSearch(true);
@@ -617,7 +629,13 @@ function Workspace() {
           />
         </div>
 
-      {view === 'focus' ? canvas.data && selectedSession ? (
+      {view === 'workdir' ? canvas.data && account && workdirWorkspace ? (
+        <WorkdirTabs key={`${account.id}:${project.id}:${workdirWorkspace.id}`} accountId={account.id} projectId={project.id} workspace={workdirWorkspace} canvas={canvas.data} openSessionId={workdirOpenSession} onSession={selectWorkdirSession}
+          onBack={() => navigate({ page: 'project', projectId: project.id, view: 'list', sessionId: null })}
+          onNewSession={(workspace, workerId) => { setWorkdirDerive({ id: workspace.id, workerId }); setWorkdirTaskPicker(true); }}
+          renderSession={(id) => selectedSession?.id === id && selectedSession.workspaceId === workdirWorkspace.id && !selectedSession.groupId ? <FocusView key={id} independentWorkdir canvas={canvas.data!} session={selectedSession} live={resolveLive(selectedSession, canvas.data!.previews[id] ?? [], live[id])} historyState={history[id] ?? 'loading'} onRetryHistory={() => void loadHistory(selectedSession)} syncState={sync[id]} onRetrySync={() => retrySync(id)} draft={drafts[id] ?? ''} onDraftChange={(text) => setDrafts((current) => ({ ...current, [id]: text }))} onBack={() => navigate({ page: 'project', projectId: project.id, view: 'list', sessionId: null })} onProjectNavigation={() => setSidebarOpen(true)} onSearch={() => setSearch(true)} onChanged={refresh} onOpenSession={openSession} onSeedDraft={(sessionId, text) => setDrafts((current) => ({ ...current, [sessionId]: text }))} artifacts={canvas.data!.artifacts.filter((artifact) => artifact.sessionId === id)} onChangeOption={(optionId, value) => changeOption(id, optionId, value)} /> : <div className="p-6 text-tertiary">{sideSession.isError || selectedSession ? '会话不可用或不属于此目录' : '正在读取会话…'}</div>}
+        />
+      ) : <div data-testid="workdir-state" role="status" className="p-6 text-sub text-tertiary">{workdirViews.isPending || canvas.isPending ? '正在读取工作目录…' : workdirViews.isError ? '工作目录读取失败' : '工作目录不可用或无权访问'}</div> : view === 'focus' ? canvas.data && selectedSession ? (
         <FocusView
           canvas={canvas.data}
           session={selectedSession}
@@ -660,6 +678,7 @@ function Workspace() {
               archivedTasks={display.archived}
               live={live}
               onOpen={openSession}
+              onOpenWorkdir={(id) => { setWorkdirOpenSession(null); navigate({ page: 'project', projectId: project.id, view: 'workdir', sessionId: id }); }}
               onDerive={setDeriveFor}
               onTaskDetail={setTaskDetail}
               onNewTask={() => setNewTask(true)}
@@ -771,14 +790,16 @@ function Workspace() {
         <DeriveDialog
           canvas={canvas.data}
           taskId={deriveFor}
-          onDone={() => setDeriveFor(null)}
+          initialWorkspace={workdirDerive ?? undefined}
+          onDone={() => { setDeriveFor(null); setWorkdirDerive(null); }}
           onDerived={(session) => {
             // 刚开的会话直接进对话：开它就是为了说话。
             setDeriveFor(null);
-            openSession(session.id);
+            if (workdirDerive && view === 'workdir') { setWorkdirOpenSession(session.id); setWorkdirDerive(null); } else openSession(session.id);
           }}
         />
       ) : null}
+      {workdirTaskPicker && canvas.data ? <Sheet title="选择任务" testId="workdir-task-picker" onClose={() => { setWorkdirTaskPicker(false); setWorkdirDerive(null); }}><div className="p-4"><p className="mb-2 text-sub text-tertiary">选择要开始会话的任务</p>{canvas.data.tasks.filter((task) => task.archivedAt == null).map((task) => <button key={task.id} type="button" className="block min-h-11 w-full border-b border-hair px-2 text-left text-body" onClick={() => { setWorkdirTaskPicker(false); setDeriveFor(task.id); }}>{task.title}</button>)}{canvas.data.tasks.length === 0 ? <p className="text-sub text-tertiary">还没有任务，请先新建任务。</p> : null}</div></Sheet> : null}
       {newModelSession?.projectId === project.id && canvas.data ? (
         <NewModelSessionDialog
           key={`${newModelSession.source.id}:${newModelSession.model}`}

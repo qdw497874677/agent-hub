@@ -5,7 +5,7 @@ import { asAgentId } from '../ids.ts';
 import { invalid } from '../errors.ts';
 import { ok, err } from '../result.ts';
 import { deriveSession } from '../session.ts';
-import { newWorkspace } from '../workspace.ts';
+import { newWorkspace, type Workspace } from '../workspace.ts';
 import { groupMemberRoot, groupReady, type WorkspaceGroup } from '../workspace-group.ts';
 import type { WorkspaceGroupGit } from '../ports/workspace-group-git.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
@@ -13,6 +13,7 @@ import type { Deps } from './deps.ts';
 import { createProjectUseCase, updateProjectReposUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { addWorkspaceGroupMemberUseCase, buildWorkspaceGroupUseCase, memberWorktreePath, prepareRepoWorktreeUseCase, removeWorkspaceGroupUseCase, retryWorkspaceGroupUseCase } from './workspace-groups.ts';
+import type { WorkdirSafety } from '../workdir-safety.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 
 function fakeGroups(): WorkspaceGroupRepository & { rows: Map<string, WorkspaceGroup> } {
@@ -124,6 +125,22 @@ async function world() {
   return { deps, groups, groupGit, memory, project: designated.value, task: task.value, build };
 }
 
+test('recursive group worktree rollback is admitted before Worker RPC', async () => {
+  const w = await world();
+  await w.deps.projects.save({ ...w.project, submodules: 'recursive' });
+  let calls = 0;
+  const safety: WorkdirSafety = {
+    hasOutstanding: () => false,
+    runExclusive: async (fn) => fn(), assertNoRemoval() {}, assertUnoccupied() {}, assertProjectUnoccupied() {},
+    beginRemoval() { throw Error('occupied'); }, finishRemoval() {}
+  };
+  const groupGit = { ...w.groupGit.git, newWorktree: async (...args: Parameters<WorkspaceGroupGit['newWorktree']>) => { calls++; return w.groupGit.git.newWorktree(...args); } };
+  const deps = { ...w.deps, workdirSafety: safety, gateway: { ...w.deps.gateway, groups: () => groupGit } };
+  const result = await buildWorkspaceGroupUseCase(deps, { projectId: w.project.id, taskId: w.task.id, workerId: 'remote-1', home: '/home/me' });
+  assert.equal(result.ok, false);
+  assert.equal(calls, 0);
+});
+
 test('建组：每个仓库一个成员，路径 <root>/<name>，全部就绪', async () => {
   const w = await world();
   const built = await w.build();
@@ -226,13 +243,51 @@ test('删组：有 running 会话拒绝；没有就删容器、成员登记与�
   assert.equal(w.groupGit.removed.length, 0);
 
   await w.deps.sessions.save({ ...session.value, workspaceId: member.workspaceId, groupId: group.id, status: 'done' });
-  const removed = await removeWorkspaceGroupUseCase(w.deps, { groupId: group.id, actor: null });
+  let occupied = true;
+  let fenced = false;
+  const safety: WorkdirSafety = {
+    hasOutstanding: () => false,
+    runExclusive: async (fn) => fn(), assertNoRemoval() {}, assertUnoccupied() {}, assertProjectUnoccupied() {},
+    beginRemoval() { if (occupied) throw new Error('occupied'); fenced = true; return 'fence'; },
+    finishRemoval() { fenced = false; }
+  };
+  const deps = { ...w.deps, workdirSafety: safety };
+  assert.equal((await removeWorkspaceGroupUseCase(deps, { groupId: group.id, actor: null })).ok, false);
+  assert.equal(w.groupGit.removed.length, 0);
+  occupied = false;
+  const removed = await removeWorkspaceGroupUseCase(deps, { groupId: group.id, actor: null });
   assert.ok(removed.ok, removed.ok ? '' : removed.error.message);
+  assert.equal(fenced, false);
   assert.deepEqual(w.groupGit.removed, [{ root: group.root, id: group.id }]);
   for (const each of group.members) {
     assert.equal((await w.deps.workspaces.byId(each.workspaceId))?.state, 'removed');
   }
   assert.equal(w.groups.rows.size, 0);
+});
+
+test('group deletion releases settled failures, keeps unknown fences and saves before release', async () => {
+  for (const result of ['settled', 'unknown', 'not-removed', 'success', 'save-error'] as const) {
+    const w = await world();
+    const built = await w.build(); assert.ok(built.ok);
+    let fenced = false;
+    let sawSave = false;
+    const safety: WorkdirSafety = {
+      hasOutstanding: () => fenced, runExclusive: async (fn) => fn(), assertNoRemoval() {}, assertUnoccupied() {}, assertProjectUnoccupied() {},
+      beginRemoval() { fenced = true; return 'f'; }, finishRemoval() { fenced = false; }
+    };
+    const groupGit = { ...w.groupGit.git, remove: async () => result === 'settled' ? err({ ...invalid('refused'), operationSettled: true as const }) : result === 'unknown' ? err(invalid('unknown')) : ok({ removed: result !== 'not-removed' }) };
+    const workspaces = { ...w.deps.workspaces, save: async (workspace: Workspace) => {
+      if (workspace.state === 'removed') { sawSave = fenced; if (result === 'save-error') throw Error('DB failure'); }
+      return w.deps.workspaces.save(workspace);
+    } };
+    const deps = { ...w.deps, workspaces, workdirSafety: safety, gateway: { ...w.deps.gateway, groups: () => groupGit } };
+    const remove = () => removeWorkspaceGroupUseCase(deps, { groupId: built.value.id, actor: null });
+    if (result === 'save-error') await assert.rejects(remove, /DB failure/);
+    else assert.equal((await remove()).ok, result === 'success');
+    assert.equal(fenced, result === 'unknown' || result === 'save-error', result);
+    if (result === 'save-error' || result === 'success') assert.equal(sawSave, true);
+    if (result !== 'success') assert.ok(await w.groups.byId(built.value.id));
+  }
 });
 
 test('派生会话：给 groupId 就跟着整组走，workspaceId 取 primary 成员', async () => {

@@ -79,6 +79,39 @@ test('rpc：通道关了，在途请求以 closed 结束；发不出去也是 cl
   assert.equal(!unsent.ok && unsent.error.code, 'closed');
 });
 
+test('rpc：same-id late completion after close cannot reply for or cancel a replacement invocation', async () => {
+  const sent: RpcFrame[] = [];
+  const channel = createRpcChannel({ send: (frame) => (sent.push(frame), true) });
+  const resolve: Array<(value: { n: number }) => void> = [];
+  const signals: AbortSignal[] = [];
+  channel.handle(echo, (_params, { signal }) => new Promise((done) => { signals.push(signal); resolve.push(done); }));
+  const call = { rpc: 'call', id: 'same', method: 'echo', params: { n: 1 } };
+  channel.receive(call);
+  channel.close('reconnect');
+  assert.equal(signals[0]?.aborted, true);
+  channel.receive(call);
+  resolve[0]!({ n: 1 });
+  await Promise.resolve();
+  assert.deepEqual(sent, []);
+  assert.equal(signals[1]?.aborted, false);
+  resolve[1]!({ n: 2 });
+  await Promise.resolve();
+  assert.deepEqual(sent, [{ rpc: 'reply', id: 'same', result: { n: 2 } }]);
+});
+
+test('rpc：outgoing IDs are not reused after close; a stale reply cannot settle a new request', async () => {
+  const sent: RpcFrame[] = [];
+  const channel = createRpcChannel({ idPrefix: 'out', send: (frame) => (sent.push(frame), true) });
+  const a = channel.request(echo, { n: 1 });
+  channel.close('reconnect');
+  assert.equal((await a).ok, false);
+  const b = channel.request(echo, { n: 2 });
+  assert.deepEqual(sent.map((frame) => frame.id), ['out1', 'out2']);
+  channel.receive({ rpc: 'reply', id: 'out1', result: { n: 1 } });
+  channel.receive({ rpc: 'reply', id: 'out2', result: { n: 2 } });
+  assert.deepEqual(await b, { ok: true, value: { n: 2 } });
+});
+
 test('rpc：allow 闸门——发出前拦下不发帧；对端也按自己的闸门拒（ADR 0030 D3 双端强制）', async () => {
   const guarded = { name: 'guarded', capability: 'files.write', params: z.object({}), result: z.object({}) };
   const sent: RpcFrame[] = [];

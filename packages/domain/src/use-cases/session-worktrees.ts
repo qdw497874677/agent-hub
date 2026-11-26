@@ -4,9 +4,10 @@ import type { DomainError } from '../errors.ts';
 import type { Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { gitFor } from './machine-dirs.ts';
+import { fenceWorkspace, finishFence, finishSettledFailure } from './workdir-safety.ts';
 
 export type SessionWorktreeDeps = Pick<Deps, 'gateway' | 'git' | 'now' | 'sessions' | 'workspaces'> &
-  Partial<Pick<Deps, 'workspaceGroups'>>;
+  Partial<Pick<Deps, 'workspaceGroups' | 'workdirSafety'>>;
 
 const active = (session: Session): boolean => session.settledAt == null;
 
@@ -41,19 +42,28 @@ async function detachOne(
     return { ...base, action: 'removed', reason: '已经拆除' };
   }
   const git = await gitFor(deps, workspace.workerId);
+  let fence: string | null;
+  try { fence = await fenceWorkspace(deps, workspace); } catch { return { ...base, action: 'deferred', reason: '工作目录有终端或待确认的删除' }; }
   const outcome = await git.remove(workspace.path, 'worktree', { force });
   if (!outcome.ok) {
+    await finishSettledFailure(deps, fence, outcome.error);
     const message = 'message' in outcome.error ? String(outcome.error.message) : '拆除失败';
     return { ...base, action: 'deferred', reason: `拆除失败，留给 workspace_sweep：${message}` };
   }
   if (outcome.value.removed) {
     const gone = markRemoved(workspace, deps.now());
-    if (gone.ok) await deps.workspaces.save(gone.value);
+    if (!gone.ok) {
+      if (deps.workdirSafety) return { ...base, action: 'deferred', reason: '工作目录登记未能更新，删除待确认' };
+    } else if ((await deps.workspaces.save(gone.value)).status !== 'saved' && deps.workdirSafety) {
+      return { ...base, action: 'deferred', reason: '工作目录登记未能更新，删除待确认' };
+    }
+    await finishFence(deps, fence);
     return { ...base, action: 'removed', reason: '干净的临时 worktree 已拆除' };
   }
   // 收起且有未提交改动：目录留下，标成 kept，恢复会话时还在原路径。
   const reason = outcome.value.reason || '有未提交改动，留给 workspace_sweep';
   if (!force) await deps.workspaces.save(markKept(workspace, reason, deps.now()));
+  await finishFence(deps, fence);
   return { ...base, action: 'kept', reason };
 }
 

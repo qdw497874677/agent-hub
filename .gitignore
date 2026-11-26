@@ -16,3 +16,5 @@ playwright-report/
 .env
 .env.local
 .env.*.local
+
+.slim/deepwork/

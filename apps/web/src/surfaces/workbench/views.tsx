@@ -8,6 +8,7 @@ import { useCoordinators } from '../../shell/coordinators.ts';
 import type { LiveMap } from '../../atoms/live.ts';
 import { StatusPill } from '../../atoms/status.tsx';
 import { NoTasksHint } from './empty-tasks.tsx';
+import { WorkdirEntries } from './workdir-tabs.tsx';
 import { resolveWorker, useWorkers, WorkerChip } from '../../shell/workers.tsx';
 import { workspaceName } from '../../atoms/workspace-format.ts';
 import { Icon } from '../../atoms/icons.tsx';
@@ -57,6 +58,7 @@ export function ListView({
   archivedTasks = [],
   live,
   onOpen,
+  onOpenWorkdir,
   onDerive,
   onTaskDetail,
   onNewTask,
@@ -69,6 +71,7 @@ export function ListView({
   archivedTasks?: readonly TaskDto[];
   live: LiveMap;
   onOpen: (sessionId: string) => void;
+  onOpenWorkdir: (id: string) => void;
   onDerive: (taskId: string) => void;
   onTaskDetail: (taskId: string) => void;
   onNewTask: () => void;
@@ -563,6 +566,7 @@ export function ListView({
         </div>
         {refreshButton}
       </div>
+      <WorkdirEntries projectId={canvas.project.id} onOpen={onOpenWorkdir} />
       {canvas.sessions.length === 0 ? (
         <p className="py-6 text-meta text-tertiary">
           {narrow

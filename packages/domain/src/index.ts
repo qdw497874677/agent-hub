@@ -275,3 +275,4 @@ export * from './delegation-acceptance.ts';
 export * from './use-cases/workspace-delegation.ts';
 export * from './use-cases/workspace-delegation-publish.ts';
 export * from './workspace-coordinator.ts';
+export * from './workdir-safety.ts';

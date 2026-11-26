@@ -41,6 +41,7 @@ import type { SessionServiceRepository } from '../ports/session-service-reposito
 import type { AgentDefaultsStore } from '../ports/agent-defaults.ts';
 import type { BranchAttemptStore } from '../ports/branch-attempt.ts';
 import type { AgentHandoffStore } from '../ports/agent-handoff-store.ts';
+import type { WorkdirSafety } from '../workdir-safety.ts';
 
 /**
  * 已装配的 agent。UI 只从这里拿能力矩阵，不认 agent 名字。
@@ -64,6 +65,7 @@ export interface AgentCatalog {
  * 所以不进 Deps——等调度/下发真的落地时再接进来，不提前养空实现。
  */
 export interface Deps {
+  readonly workdirSafety?: WorkdirSafety;
   /** 交接简报的 token 上限（HUB_HANDOFF_TOKEN_CAP，默认 16k）。 */
   readonly handoffTokenCap?: number;
   readonly projects: ProjectRepository;

@@ -1,4 +1,5 @@
 import { WebSocket } from 'ws';
+import { canInvoke } from '@agent-hub/domain';
 import type { ServerToWorker, WorkerToServer } from '@agent-hub/contract';
 import {
   RpcFailure,
@@ -10,7 +11,8 @@ import {
   terminalClose,
   terminalList,
   terminalOpen,
-  terminalResize
+  terminalResize,
+  workdirTerminalInventory, workdirTerminalCreate, workdirTerminalAttach, workdirTerminalResize, workdirTerminalClose
 } from '@agent-hub/contract';
 import { TerminalNotReadyError } from '../terminal.ts';
 import { ServiceHostError, type ServiceStateEvent } from '../service-host.ts';
@@ -20,6 +22,7 @@ import type { Transport } from './transport.ts';
 export interface Channels {
   /** 键盘输入是单向帧：坏帧丢掉比让键盘卡住强。 */
   terminalInput(command: Extract<ServerToWorker, { kind: 'terminal_input' }>): void;
+  workdirTerminalFrame(command: Extract<ServerToWorker, { kind: 'workdir_terminal_input_v1' | 'workdir_terminal_detach_v1' }>): void;
   sendTerminalData(terminalId: string, data: Uint8Array): void;
   sendTerminalExit(terminalId: string, code: number, signal?: number): void;
   sendServiceState(event: ServiceStateEvent): void;
@@ -89,6 +92,14 @@ export function installChannels(ctx: LinkCtx, transport: Transport): Channels {
     }
   });
   channel.handle(terminalList, async () => ({ terminals: terminal ? terminal.list() : [] }));
+  const wdt = options.workdirTerminal;
+  if (wdt) {
+    channel.handle(workdirTerminalInventory, () => wdt.inventory());
+    channel.handle(workdirTerminalCreate, (input) => wdt.create(input));
+    channel.handle(workdirTerminalAttach, (input) => wdt.attach(input));
+    channel.handle(workdirTerminalResize, (input) => wdt.resize(input));
+    channel.handle(workdirTerminalClose, (input) => wdt.close(input));
+  }
 
   /**
    * 会话服务 RPC（docs/design/session-service.md §4）：root 边界、端口就绪、重拉退避都在
@@ -145,6 +156,11 @@ export function installChannels(ctx: LinkCtx, transport: Transport): Channels {
   });
 
   return {
+    workdirTerminalFrame(command) {
+      if (!wdt || !ctx.accepted || !canInvoke(ctx.granted, 'sessions')) return;
+      if (command.kind === 'workdir_terminal_detach_v1') wdt.detach(command);
+      else { const data = decodeTerminalInput(command.data); if (data) wdt.input({ ...command, data }); }
+    },
     terminalInput(command: Extract<ServerToWorker, { kind: 'terminal_input' }>): void {
       if (!options.terminal) return;
       const bytes = decodeTerminalInput(command.data);
@@ -190,6 +206,7 @@ export function installChannels(ctx: LinkCtx, transport: Transport): Channels {
       serviceLogTimers.set(serviceId, timer);
     },
     async close(): Promise<void> {
+      await options.workdirTerminal?.disposeAll();
       await options.terminal?.disposeAll().catch((error: unknown) => options.onLog?.(`回收终端失败：${message(error)}`));
       options.service?.dispose();
       for (const timer of serviceLogTimers.values()) clearTimeout(timer);

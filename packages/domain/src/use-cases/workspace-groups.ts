@@ -22,6 +22,7 @@ import { gitOn, resolveMachine, type Machine } from './machine-dirs.ts';
 import { branchSlug, originBranchRef, runWorkspaceSetup, sessionBranchSuffix, shortId } from './temporary-workspaces.ts';
 import { unsavedReason } from './workspace-cleanup.ts';
 import { actorId, claimConflictError, prepareTeamWorkspace } from './workspaces.ts';
+import { finishFence, finishSettledFailure, withOptionalRollbackFence, workdirTarget } from './workdir-safety.ts';
 
 /**
  * 组合工作空间（docs/design/multi-repo.md §4–§6）：
@@ -44,6 +45,7 @@ export type WorkspaceGroupDeps = Pick<
   readonly workspaceGroups?: WorkspaceGroupRepository;
   /** 删组前要先丢 checkpoint（同 removeWorkspaceUseCase）。 */
   readonly cleanup?: NonNullable<Deps['cleanup']>;
+  readonly workdirSafety?: Deps['workdirSafety'];
 };
 
 export interface BuildWorkspaceGroupCommand {
@@ -185,12 +187,23 @@ async function baseForRepo(
     actor: command.actor
   });
   if (!prepared.ok) return prepared;
-  const claimed = await deps.workspaces.claim({
+  const claim = () => deps.workspaces.claim({
     projectId: project.id,
     workspaceId: prepared.value.id,
     linkedBy: actorId(command.actor),
     linkedAt: deps.now()
   });
+  let claimed: Awaited<ReturnType<typeof claim>>;
+  if (deps.workdirSafety) {
+    const result = await deps.workdirSafety.runExclusive(async () => {
+      const current = await deps.workspaces.byId(prepared.value.id);
+      if (!current || current.state === 'removed') return null;
+      try { deps.workdirSafety!.assertNoRemoval(workdirTarget(current)); } catch { return null; }
+      return claim();
+    });
+    if (!result) return err(conflict('工作目录不存在或有待确认的删除'));
+    claimed = result;
+  } else claimed = await claim();
   if (claimed.status === 'conflict') return err(claimConflictError());
   if (claimed.status === 'ambiguous') return err(ambiguousPlaceError());
   return prepared;
@@ -322,14 +335,15 @@ export async function buildWorkspaceGroupUseCase(
     const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url, project.id)) ?? undefined;
     const branch = branches.value.get(repo.id) ?? groupBranch(repo, sessionId);
     const follow = (command.fromGroupId || command.branches?.length) && branch !== groupBranch(repo, sessionId);
-    const made = await groupGit.newWorktree({
+    const memberPath = memberWorktreePath(root, repo, primaryRepoId);
+    const made = await withOptionalRollbackFence(deps, recurseSubmodules(project), { workerId: machine.workerId, cwd: memberPath }, () => groupGit.newWorktree({
       repoPath: base.value.path,
-      path: memberWorktreePath(root, repo, primaryRepoId),
+      path: memberPath,
       branch,
       base: follow ? branch : (baseRef ?? originBranchRef(repo.defaultBranch) ?? undefined),
       ...(auth ? { auth } : {}),
       ...(recurseSubmodules(project) ? { recurseSubmodules: true } : {})
-    });
+    }));
     if (!made.ok) return abort(members, repos.slice(index), made.error);
     const created = newWorkspace({
       projectId: project.id,
@@ -412,14 +426,14 @@ export async function retryWorkspaceGroupUseCase(
     const preparing: Workspace = { ...workspace, state: 'preparing', keptReason: null, updatedAt: deps.now() };
     await deps.workspaces.save(preparing);
     const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url, project.id)) ?? undefined;
-    const made = await groupGit.newWorktree({
+    const made = await withOptionalRollbackFence(deps, recurseSubmodules(project), { workerId: machine.workerId, cwd: path }, () => groupGit.newWorktree({
       repoPath: base.value.path,
       path,
       branch,
       base: baseRef ?? originBranchRef(repo.defaultBranch) ?? undefined,
       ...(auth ? { auth } : {}),
       ...(recurseSubmodules(project) ? { recurseSubmodules: true } : {})
-    });
+    }));
     // 目录已经是同分支的 worktree 就算建成（§12.7），别因为「已经存在」整组失败
     if (!made.ok && !/已存在|exists/i.test(made.error.message)) {
       await deps.workspaces.save({ ...preparing, state: 'failed', keptReason: '工作空间没有建好', updatedAt: deps.now() });
@@ -492,8 +506,19 @@ export async function removeWorkspaceGroupUseCase(
 
   const groupGit = group.workerId ? deps.gateway.groups?.(group.workerId) : undefined;
   if (!groupGit) return err(invalid('这台机器不支持组合工作空间'));
+  let fence: string | null = null;
+  if (deps.workdirSafety) {
+    try {
+      fence = await deps.workdirSafety.runExclusive(async () => {
+        const current = await store.byId(group.id);
+        if (!current || current.root !== group.root || current.workerId !== group.workerId || JSON.stringify(current.members) !== JSON.stringify(group.members)) throw new Error('group changed');
+        return deps.workdirSafety!.beginRemoval({ workspaceId: group.id, workerId: group.workerId, cwd: group.root });
+      });
+    } catch { return err(conflict('Hub 上有终端或待确认的目录删除，暂不删除组合目录')); }
+  }
   const dropped = await groupGit.remove({ root: group.root, id: group.id });
-  if (!dropped.ok) return dropped;
+  if (!dropped.ok) { await finishSettledFailure(deps, fence, dropped.error); return dropped; }
+  if (deps.workdirSafety && !dropped.value.removed) { await finishFence(deps, fence); return err(conflict('没有删：组合目录仍然存在')); }
 
   const dropCheckpoints = deps.cleanup?.dropCheckpoints;
   for (const member of group.members) {
@@ -505,9 +530,13 @@ export async function removeWorkspaceGroupUseCase(
       for (const session of owned) await dropCheckpoints(session.id).catch(() => undefined);
     }
     const removed = markRemoved(workspace, deps.now());
-    if (removed.ok) await deps.workspaces.save(removed.value);
+    if (removed.ok) {
+      const saved = await deps.workspaces.save(removed.value);
+      if (deps.workdirSafety && saved.status !== 'saved') return err(conflict('目录已删除但登记未能更新，删除待确认'));
+    } else if (deps.workdirSafety) return err(conflict('目录已删除但登记未能更新，删除待确认'));
   }
   await store.remove(group.id);
+  await finishFence(deps, fence);
   return ok({ id: group.id, removed: true });
 }
 
@@ -547,14 +576,14 @@ export async function addWorkspaceGroupMemberUseCase(
   const base = await baseForRepo(deps, project, repo, machine, { home: command.home, actor });
   if (!base.ok) return base;
   const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url, project.id)) ?? undefined;
-  const made = await groupGit.newWorktree({
+  const made = await withOptionalRollbackFence(deps, recurseSubmodules(project), { workerId: machine.workerId, cwd: path }, () => groupGit.newWorktree({
     repoPath: base.value.path,
     path,
     branch: groupBranch(repo, sessionId),
     base: baseRef ?? originBranchRef(repo.defaultBranch) ?? undefined,
     ...(auth ? { auth } : {}),
     ...(recurseSubmodules(project) ? { recurseSubmodules: true } : {})
-  });
+  }));
   if (!made.ok) return made;
   const created = newWorkspace({
     projectId: project.id,
@@ -634,14 +663,15 @@ export async function prepareRepoWorktreeUseCase(
   const repoParent = base.value.path.split('/').slice(0, -1).join('/');
   const repoDir = base.value.path.split('/').filter(Boolean).at(-1) ?? repo.name;
   const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url, project.id)) ?? undefined;
-  const made = await gitOn(deps, machine.route).addWorktree({
+  const worktreePath = `${repoParent}/.worktrees/${repoDir}/${branchSlug(task.title)}-${sessionBranchSuffix(sessionId)}`;
+  const made = await withOptionalRollbackFence(deps, recurseSubmodules(project), { workerId: machine.workerId, cwd: worktreePath }, () => gitOn(deps, machine.route).addWorktree({
     repoPath: base.value.path,
-    path: `${repoParent}/.worktrees/${repoDir}/${branchSlug(task.title)}-${sessionBranchSuffix(sessionId)}`,
+    path: worktreePath,
     branch,
     base: originBranchRef(task.baseBranch) ?? originBranchRef(repo.defaultBranch) ?? base.value.branch ?? undefined,
     ...(auth ? { auth } : {}),
     ...(recurseSubmodules(project) ? { recurseSubmodules: true } : {})
-  });
+  }));
   if (!made.ok) return made;
   const setup = designatedPrimaryRepo(project)?.id === repo.id || project.repos.length === 1 ? (project.worktree?.setup ?? null) : null;
   const created = newWorkspace({

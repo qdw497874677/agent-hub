@@ -45,6 +45,14 @@ import { createWorkspaceBrowser } from './workspace-browser.ts';
 import type { WorkerFiles } from './worker-files.ts';
 import type { ProjectGitBundleImporter } from './project-git-bundle-import.ts';
 
+// Only an explicitly returned, settled mutation result gets this wire code.
+// An unexpected throw remains the channel's generic `failed` (unknown outcome).
+const unwrapSettled = <T>(result: Result<T, DomainError>): T => {
+  if (result.ok) return result.value;
+  if (result.error.operationSettled) throw new RpcFailure(`operation_settled_${result.error.code}`, result.error.message);
+  throw new RpcFailure('failed', result.error.message);
+};
+
 /**
  * Worker 侧文件操作适配器：RPC 端口上的 fs.* 方法 → WorkerFiles（WORKER_ROOTS 边界在它里面）。
  * 不认识传输；没有 files 就一律答「这台不支持」。
@@ -90,8 +98,8 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined, gitOpt
   };
   port.handle(wsInspect, async ({ path }) => unwrap(await need().inspect(path)));
   port.handle(wsCheckRepo, async ({ repoUrl, branch, auth }) => unwrap(await need().checkRepo(repoUrl, branch ?? null, auth)));
-  port.handle(wsClone, async (input) => unwrap(await need().clone(input)));
-  port.handle(wsAddWorktree, async (input) => unwrap(await need().addWorktree(input)));
+  port.handle(wsClone, async (input) => unwrapSettled(await need().clone(input)));
+  port.handle(wsAddWorktree, async (input) => unwrapSettled(await need().addWorktree(input)));
   port.handle(wsRunSetup, async (input) => unwrap(await need().runSetup(input)));
   port.handle(wsStatus, async ({ path }) => unwrap(await need().status(path)));
   port.handle(wsSaveWip, async ({ path, message, auth }) => unwrap(await need().saveWip(path, message, auth)));
@@ -122,7 +130,7 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined, gitOpt
     // 传输层数组要可变（GhOutcome 里是 readonly）：拷一层
     return 'prs' in outcome ? { ok: true as const, prs: [...outcome.prs] } : outcome;
   });
-  port.handle(wsRemove, async ({ path, kind, force, mergedHead }) => unwrap(await need().remove(path, kind, { force: force === true, ...(mergedHead ? { mergedHead } : {}) })));
+  port.handle(wsRemove, async ({ path, kind, force, mergedHead }) => unwrapSettled(await need().remove(path, kind, { force: force === true, ...(mergedHead ? { mergedHead } : {}) })));
 }
 
 /**
@@ -146,8 +154,11 @@ function serveWorkspaceGroups(port: RpcPort, files: WorkerFiles | undefined, git
     throw new RpcFailure(result.error.code === 'invalid' || result.error.code === 'conflict' ? result.error.code : 'failed', result.error.message);
   };
   port.handle(wsGroupInit, async ({ slug, name, id }) => unwrap(await needDir().init({ slug, name, id })));
-  port.handle(wsGroupRemove, async ({ root, id }) => unwrap(await needDir().remove({ root, id })));
-  port.handle(wsNewWorktree, async (input) => unwrap(await needTrees().newWorktree(input)));
+  port.handle(wsGroupRemove, async ({ root, id }) => {
+    const result = await needDir().remove({ root, id });
+    return unwrapSettled(result.ok ? result : { ok: false, error: { ...result.error, operationSettled: true } });
+  });
+  port.handle(wsNewWorktree, async (input) => unwrapSettled(await needTrees().newWorktree(input)));
 }
 
 /**

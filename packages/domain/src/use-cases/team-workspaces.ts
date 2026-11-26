@@ -9,6 +9,7 @@ import { authorizeProject, authorizeWorkspace, canManageTeamWorkspaces, projectO
 import type { Deps } from './deps.ts';
 import { removeWorkspaceUseCase, type RemoveWorkspaceCommand } from './workspace-cleanup.ts';
 import { actorId, claimConflictError, prepareTeamWorkspace, projectOfSession, type LongLivedPlan } from './workspaces.ts';
+import { workdirTarget } from './workdir-safety.ts';
 
 /**
  * 团队工作空间（ADR 0026）：长期工作空间属于团队，项目通过关联来用。
@@ -105,7 +106,7 @@ export interface CreateTeamWorkspaceCommand {
 }
 
 export async function createTeamWorkspaceUseCase(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'sessions' | 'access'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'sessions' | 'access'> & Partial<Pick<Deps, 'workdirSafety'>>,
   command: CreateTeamWorkspaceCommand
 ): Promise<Result<Workspace, DomainError>> {
   const team = await teamOf(deps, command.actor);
@@ -133,7 +134,12 @@ export interface LinkCommand {
   readonly workspaceId: string;
 }
 
-export async function linkWorkspaceUseCase(deps: Pick<Deps, 'projects' | 'workspaces' | 'access' | 'now'>, command: LinkCommand): Promise<Result<Workspace, DomainError>> {
+export async function linkWorkspaceUseCase(deps: Pick<Deps, 'projects' | 'workspaces' | 'access' | 'now'> & Partial<Pick<Deps, 'workdirSafety'>>, command: LinkCommand): Promise<Result<Workspace, DomainError>> {
+  if (deps.workdirSafety) return deps.workdirSafety.runExclusive(async () => {
+    const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
+    if (workspace) { try { deps.workdirSafety!.assertNoRemoval(workdirTarget(workspace)); } catch { return err(conflict('工作目录有待确认的删除')); } }
+    return linkWorkspaceUseCase({ ...deps, workdirSafety: undefined }, command);
+  });
   const project = await authorizeProject(deps.access, command.actor, await deps.projects.byId(asProjectId(command.projectId)), 'project.update');
   if (!project.ok) return project;
   const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
@@ -166,9 +172,14 @@ export async function linkWorkspaceUseCase(deps: Pick<Deps, 'projects' | 'worksp
  * - 源项目还有会话在这个目录里跑 → 先停掉再转移。
  */
 export async function transferWorkspaceUseCase(
-  deps: Pick<Deps, 'projects' | 'workspaces' | 'access' | 'now' | 'sessions' | 'tasks' | 'workspaceGroups' | 'bots'>,
+  deps: Pick<Deps, 'projects' | 'workspaces' | 'access' | 'now' | 'sessions' | 'tasks' | 'workspaceGroups' | 'bots'> & Partial<Pick<Deps, 'workdirSafety'>>,
   command: LinkCommand
 ): Promise<Result<Workspace, DomainError>> {
+  if (deps.workdirSafety) return deps.workdirSafety.runExclusive(async () => {
+    const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
+    if (workspace) { try { deps.workdirSafety!.assertUnoccupied(workdirTarget(workspace)); } catch { return err(conflict('工作目录有终端或待确认的删除')); } }
+    return transferWorkspaceUseCase({ ...deps, workdirSafety: undefined }, command);
+  });
   const project = await authorizeProject(deps.access, command.actor, await deps.projects.byId(asProjectId(command.projectId)), 'project.update');
   if (!project.ok) return project;
   const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
@@ -228,9 +239,14 @@ export async function transferWorkspaceUseCase(
 }
 
 export async function unlinkWorkspaceUseCase(
-  deps: Pick<Deps, 'projects' | 'workspaces' | 'sessions' | 'tasks' | 'access' | 'workspaceGroups' | 'bots'>,
+  deps: Pick<Deps, 'projects' | 'workspaces' | 'sessions' | 'tasks' | 'access' | 'workspaceGroups' | 'bots'> & Partial<Pick<Deps, 'workdirSafety'>>,
   command: LinkCommand
 ): Promise<Result<Workspace, DomainError>> {
+  if (deps.workdirSafety) return deps.workdirSafety.runExclusive(async () => {
+    const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
+    if (workspace) { try { deps.workdirSafety!.assertUnoccupied(workdirTarget(workspace)); } catch { return err(conflict('工作目录有终端或待确认的删除')); } }
+    return unlinkWorkspaceUseCase({ ...deps, workdirSafety: undefined }, command);
+  });
   const project = await authorizeProject(deps.access, command.actor, await deps.projects.byId(asProjectId(command.projectId)), 'project.update');
   if (!project.ok) return project;
   const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
@@ -249,17 +265,23 @@ export async function unlinkWorkspaceUseCase(
  * `linksOf(...).length > 1` 只可能是迁移留下 / 手改的历史数据：那种仍要求团队 workspace.manage。
  */
 export async function deleteWorkspaceUseCase(
-  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces' | 'projects' | 'access'>,
+  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces' | 'projects' | 'access'> & Partial<Pick<Deps, 'workdirSafety'>>,
   command: RemoveWorkspaceCommand & { readonly actor: Subject | null }
 ): Promise<Result<Workspace, DomainError>> {
   const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
+  const owners = workspace ? (await deps.workspaces.linksOf(workspace.id)).map((link) => link.projectId).sort() : [];
   const allowed = await authorizeWorkspace(deps, command.actor, workspace, 'project.update');
   if (!allowed.ok) return allowed;
-  if (allowed.value.kind === 'long_lived' && (await deps.workspaces.linksOf(allowed.value.id)).length > 1) {
+  if (allowed.value.kind === 'long_lived' && owners.length > 1) {
     // 独占归属之后最多一个认领者；>1 只出现在历史数据里，保留这道更严的检查。
     if (!(await canManageTeamWorkspaces(deps.access, command.actor, allowed.value.teamId))) {
       return err(forbidden('这个工作空间还关联着别的项目；先在本项目「取消关联」，或请团队 owner / admin 在「工作空间」页删除'));
     }
   }
-  return removeWorkspaceUseCase(deps, command);
+  return removeWorkspaceUseCase(deps, command, async (current) => {
+    const currentOwners = (await deps.workspaces.linksOf(current.id)).map((link) => link.projectId).sort();
+    if (owners.length !== currentOwners.length || owners.some((id, index) => id !== currentOwners[index])) return false;
+    if (!(await authorizeWorkspace(deps, command.actor, current, 'project.update')).ok) return false;
+    return current.kind !== 'long_lived' || currentOwners.length <= 1 || await canManageTeamWorkspaces(deps.access, command.actor, current.teamId);
+  });
 }

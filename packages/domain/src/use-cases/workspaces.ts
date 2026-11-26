@@ -20,6 +20,7 @@ import type { ProjectRepository } from '../ports/project-repository.ts';
 import type { TaskRepository } from '../ports/task-repository.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
+import { withRollbackFence, workdirTarget } from './workdir-safety.ts';
 
 /**
  * 会话属于哪个项目：
@@ -247,7 +248,7 @@ export function claimConflictError(): DomainError {
 }
 
 export async function prepareLongLivedWorkspaceUseCase(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access' | 'repoAuth'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access' | 'repoAuth'> & Partial<Pick<Deps, 'workdirSafety'>>,
   command: PrepareLongLivedCommand
 ): Promise<Result<Workspace, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
@@ -265,12 +266,18 @@ export async function prepareLongLivedWorkspaceUseCase(
     actor: command.actor ?? null
   });
   if (!prepared.ok) return prepared;
-  const claimed = await deps.workspaces.claim({
-    projectId: project.id,
-    workspaceId: prepared.value.id,
-    linkedBy: actorId(command.actor ?? null),
-    linkedAt: deps.now()
-  });
+  const claim = () => deps.workspaces.claim({ projectId: project.id, workspaceId: prepared.value.id, linkedBy: actorId(command.actor ?? null), linkedAt: deps.now() });
+  let claimed: Awaited<ReturnType<typeof claim>>;
+  if (deps.workdirSafety) {
+    const result = await deps.workdirSafety.runExclusive(async () => {
+      const current = await deps.workspaces.byId(prepared.value.id);
+      if (!current || current.state === 'removed') return null;
+      try { deps.workdirSafety!.assertNoRemoval(workdirTarget(current)); } catch { return null; }
+      return claim();
+    });
+    if (!result) return err(conflict('工作目录不存在或有待确认的删除'));
+    claimed = result;
+  } else claimed = await claim();
   if (claimed.status === 'conflict') return err(claimConflictError());
   if (claimed.status === 'ambiguous') return err(ambiguousPlaceError());
   return prepared;
@@ -297,7 +304,7 @@ export interface PrepareTeamWorkspaceCommand {
  * 同团队同机器完全相同的目录已经登记过就返回那一条（幂等），嵌套的拒绝。
  */
 export async function prepareTeamWorkspace(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access' | 'repoAuth'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access' | 'repoAuth'> & Partial<Pick<Deps, 'workdirSafety'>>,
   command: PrepareTeamWorkspaceCommand
 ): Promise<Result<Workspace, DomainError>> {
   const resolved = await resolveMachine(deps, command.workerId);
@@ -338,14 +345,15 @@ export async function prepareTeamWorkspace(
       // 有仓库：把它下载到选的目录 / 托管目录（默认用那台机器自己的 git 凭据；空目录也能直接 clone 进去）
       const origin = command.originProjectId ? await deps.projects.byId(command.originProjectId) : null;
       const auth = (await deps.repoAuth?.forUrl(machine.workerId, command.repo.url, command.originProjectId)) ?? undefined;
-      const cloned = await git.clone({
-        repoUrl: command.repo.url,
+      const repo = command.repo;
+      const cloned = await withRollbackFence(deps, { workerId: machine.workerId, cwd: `${place.value.parent === '/' ? '' : place.value.parent}/${place.value.name}` }, () => git.clone({
+        repoUrl: repo.url,
         parent: place.value.parent,
         name: place.value.name,
-        branch: command.repo.branch,
+        branch: repo.branch,
         ...(auth ? { auth } : {}),
         ...(origin && recurseSubmodules(origin) ? { recurseSubmodules: true } : {})
-      });
+      }));
       if (!cloned.ok) return cloned;
       path = cloned.value.path;
       branch = cloned.value.branch;
@@ -469,10 +477,20 @@ export function freeName(slug: string, taken: ReadonlySet<string>): string {
  * （幂等：没有 null 的就什么都不做）。remote Worker 上线不碰。返回改了几条。
  */
 export async function adoptLocalWorkspacesUseCase(
-  deps: Pick<Deps, 'now' | 'workspaces'>,
+  deps: Pick<Deps, 'now' | 'workspaces'> & Partial<Pick<Deps, 'workdirSafety'>>,
   worker: { readonly workerId: string; readonly origin: 'local' | 'remote' }
 ): Promise<number> {
   if (worker.origin !== 'local') return 0;
+  if (deps.workdirSafety) return deps.workdirSafety.runExclusive(async () => {
+    const legacy = await deps.workspaces.onMachine(null);
+    let changed = 0;
+    for (const workspace of legacy) {
+      try { deps.workdirSafety!.assertUnoccupied(workdirTarget(workspace)); } catch { continue; }
+      const saved = await deps.workspaces.save({ ...workspace, workerId: worker.workerId, updatedAt: deps.now() });
+      if (saved.status === 'saved') changed++;
+    }
+    return changed;
+  });
   const legacy = await deps.workspaces.onMachine(null);
   let changed = 0;
   for (const workspace of legacy) {

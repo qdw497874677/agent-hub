@@ -72,7 +72,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
     error: unavailable(`${what}失败：${gitMessage(error)}`)
   });
 
-  return {
+  const implementation: WorkspaceGit = {
     async inspect(path) {
       const blocked = await guard(path);
       if (blocked) return { ok: false, error: blocked };
@@ -765,6 +765,15 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       return { ok: true, value: await runSetupScript({ path, command, timeoutMs, ...(env ? { env } : {}) }) };
     }
   };
+  // Only returned results prove the operation and any awaited rollback stopped.
+  // Unexpected throws intentionally remain unmarked.
+  const settled = <T>(result: Result<T, DomainError>): Result<T, DomainError> => result.ok ? result : { ok: false, error: { ...result.error, operationSettled: true } };
+  return {
+    ...implementation,
+    clone: async (input) => settled(await implementation.clone(input)),
+    addWorktree: async (input) => settled(await implementation.addWorktree(input)),
+    remove: async (...args) => settled(await implementation.remove(...args))
+  };
 }
 
 /* ── 组合工作空间（docs/design/multi-repo.md §12.1）：在容器里给成员开新分支的 worktree ── */
@@ -789,7 +798,7 @@ export interface GroupWorktrees {
  */
 export function createGroupWorktrees(check: (path: string) => Promise<string | null>, options: { readonly groupsDir: string }): GroupWorktrees {
   const groupsDir = resolve(options.groupsDir);
-  return {
+  const implementation: GroupWorktrees = {
     async newWorktree({ repoPath, path: requested, branch, base, auth, recurseSubmodules }) {
       if (!requested.startsWith('/')) return { ok: false, error: invalid('成员目录必须是绝对路径') };
       const path = resolve(requested);
@@ -804,6 +813,10 @@ export function createGroupWorktrees(check: (path: string) => Promise<string | n
       return addWorktreeOnNewBranch({ repoPath: repo, path, branch, base, auth, recurseSubmodules });
     }
   };
+  return { newWorktree: async (input) => {
+    const result = await implementation.newWorktree(input);
+    return result.ok ? result : { ok: false, error: { ...result.error, operationSettled: true } };
+  } };
 }
 
 /**

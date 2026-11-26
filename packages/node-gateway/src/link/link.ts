@@ -1,4 +1,6 @@
 import type { RuntimeOption } from '@agent-hub/domain';
+import { WebSocket } from 'ws';
+import type { WorkerToServer } from '@agent-hub/contract';
 import type { ServiceStateEvent } from '../service-host.ts';
 import { createLinkCtx, type WorkerLinkOptions } from './ctx.ts';
 import { installTransport } from './transport.ts';
@@ -17,6 +19,8 @@ export interface WorkerLink {
   sendTerminalData(terminalId: string, data: Uint8Array): void;
   /** 终端里的进程退出了。 */
   sendTerminalExit(terminalId: string, code: number, signal?: number): void;
+  sendWorkdirTerminalData(epoch: string, terminalId: string, data: Uint8Array): void;
+  sendWorkdirTerminalExit(epoch: string, terminalId: string, code: number): void;
   /** 服务状态变化（starting / running / failed / stopped）。 */
   sendServiceState(event: ServiceStateEvent): void;
   /** 服务输出（500ms 合批，只留尾部 16 KiB）。 */
@@ -47,7 +51,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     refuse: (command) => frames.refuse(command),
     update: (commit) => frames.update(commit),
     runtimeJob: (command) => frames.runtimeJob(command),
-    terminalInput: (command) => channels.terminalInput(command)
+    terminalInput: (command) => channels.terminalInput(command),
+    workdirTerminalFrame: (command) => channels.workdirTerminalFrame(command)
   });
   transport.connect();
 
@@ -66,6 +71,12 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     },
     sendTerminalExit(terminalId: string, code: number, signal?: number): void {
       channels.sendTerminalExit(terminalId, code, signal);
+    },
+    sendWorkdirTerminalData(epoch, terminalId, data) {
+      if (ctx.accepted && ctx.socket?.readyState === WebSocket.OPEN) ctx.socket.send(JSON.stringify({ type: 'workdir_terminal_data_v1', epoch, terminalId, data: Buffer.from(data).toString('base64') } satisfies WorkerToServer));
+    },
+    sendWorkdirTerminalExit(epoch, terminalId, code) {
+      if (ctx.accepted && ctx.socket?.readyState === WebSocket.OPEN) ctx.socket.send(JSON.stringify({ type: 'workdir_terminal_exit_v1', epoch, terminalId, code } satisfies WorkerToServer));
     },
     sendServiceState(event: ServiceStateEvent): void {
       channels.sendServiceState(event);

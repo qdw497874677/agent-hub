@@ -46,7 +46,7 @@ export function longLivedRequest(
 }
 
 export function useWorkspaceViews(projectId: string) {
-  return useQuery({ queryKey: ['workspaces', projectId], queryFn: () => api.workspaces(projectId), refetchInterval: 5000 });
+  return useQuery({ queryKey: ['workspaces', projectId], queryFn: () => api.workspaces(projectId), enabled: projectId !== '', refetchInterval: 5000 });
 }
 
 export const KIND_LABEL = { long_lived: '持久', temporary: '临时' } as const;

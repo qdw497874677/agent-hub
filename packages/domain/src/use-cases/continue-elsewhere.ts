@@ -51,7 +51,7 @@ export type GuardedSaveWip = (
 type ContinueElsewhereDeps = Pick<
   Deps,
   'agents' | 'artifacts' | 'bots' | 'fs' | 'gateway' | 'git' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaceGroups' | 'workspaces' | 'workLog' | 'access' | 'repoAuth'
-> & { readonly guardedSaveWip?: GuardedSaveWip };
+> & { readonly guardedSaveWip?: GuardedSaveWip; readonly workdirSafety?: Deps['workdirSafety'] };
 
 export async function continueElsewhereUseCase(
   deps: ContinueElsewhereDeps,

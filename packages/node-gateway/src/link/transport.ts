@@ -10,6 +10,8 @@ import {
   WORKER_CAPABILITY_SESSION_START_READY,
   WORKER_CAPABILITY_SESSION_START_NATIVE_REF,
   WORKER_CAPABILITY_OPTION_RECEIPT,
+  WORKER_CAPABILITY_WORKDIR_TERMINAL_V1,
+  WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1,
   createRpcChannel,
   linkEcho,
   serverToWorkerSchema
@@ -275,6 +277,8 @@ export function installTransport(ctx: LinkCtx): Transport {
             WORKER_CAPABILITY_SESSION_START_READY,
             WORKER_CAPABILITY_SESSION_START_NATIVE_REF,
             WORKER_CAPABILITY_OPTION_RECEIPT,
+            WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1,
+            ...(options.workdirTerminal ? [WORKER_CAPABILITY_WORKDIR_TERMINAL_V1] : []),
             ...(branchAttemptAgents.length > 0 ? [WORKER_CAPABILITY_BRANCH_ATTEMPT] : [])
           ],
           ...(branchAttemptAgents.length > 0 ? { branchAttemptAgents } : {}),
@@ -297,6 +301,9 @@ export function installTransport(ctx: LinkCtx): Transport {
       if (ctx.watchdog) clearTimeout(ctx.watchdog);
       if (ctx.stableTimer) clearTimeout(ctx.stableTimer);
       if (ctx.socket === current) {
+        // Attach is synchronous on the message dispatch path. Detach before a
+        // replacement socket can accept another attach; stale closes do nothing.
+        options.workdirTerminal?.detachAll();
         ctx.socket = null;
         ctx.accepted = false;
         stopMetrics();
@@ -371,6 +378,7 @@ export function installTransport(ctx: LinkCtx): Transport {
       const wired = handlers;
       if (!wired) return;
       if (command.kind === 'rpc') channel.receive(command.frame);
+      else if (command.kind === 'workdir_terminal_input_v1' || command.kind === 'workdir_terminal_detach_v1') wired.workdirTerminalFrame(command);
       else if (command.kind !== 'welcome' && command.kind !== 'enrolled' && denial(ctx, commandCapability(command.kind))) wired.refuse(command);
       else if (command.kind === 'update') void wired.update(command.commit);
       else if (command.kind === 'update_commit') options.onUpdateCommit?.(command.id);

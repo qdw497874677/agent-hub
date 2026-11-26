@@ -7,8 +7,33 @@ import { deriveSession } from '../session.ts';
 import { asAgentId } from '../ids.ts';
 import type { AuditEntry, Principal } from '../account.ts';
 import { deleteProjectUseCase, listTrashUseCase, purgeProjectUseCase, restoreProjectUseCase } from './delete-project.ts';
+import type { WorkdirSafety } from '../workdir-safety.ts';
 
 const actor = { user: { id: 'u1', email: 'm@b.co', role: 'member', disabledAt: null, deletedAt: null, teamId: 't1', clusterAdmin: false }, loginId: 'l1' } as unknown as Principal;
+
+test('project soft delete and purge check terminal project occupancy independently of sessions', async () => {
+  const w = await world();
+  let blocked = true;
+  const checked: string[] = [];
+  const safety: WorkdirSafety = {
+    hasOutstanding: () => false,
+    runExclusive: async (fn) => fn(), assertNoRemoval() {}, assertUnoccupied() {},
+    assertProjectUnoccupied(id) { checked.push(id); if (blocked) throw new Error('occupied'); },
+    beginRemoval: () => 'fence', finishRemoval() {}
+  };
+  const deps = { ...w.deps, workdirSafety: safety };
+  const command = { projectId: w.project.id, confirmName: 'demo' };
+  assert.equal((await deleteProjectUseCase(deps, actor, command)).ok, false);
+  assert.equal((await w.deps.projects.byId(w.project.id))?.deletedAt, null);
+  blocked = false;
+  assert.equal((await deleteProjectUseCase(deps, actor, command)).ok, true);
+  blocked = true;
+  assert.equal((await purgeProjectUseCase(deps, actor, command)).ok, false);
+  assert.ok(await w.deps.projects.byId(w.project.id));
+  blocked = false;
+  assert.equal((await purgeProjectUseCase(deps, actor, command)).ok, true);
+  assert.deepEqual(checked, Array(4).fill(w.project.id));
+});
 
 async function world(status: 'running' | 'stopped' = 'stopped', lastSeq = 0) {
   const { deps } = inMemoryDeps();

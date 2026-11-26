@@ -11,7 +11,7 @@ export const WORKBENCH_NAV: readonly SurfaceNavItem[] = [
   { id: 'home', label: '首页', href: '#/home', page: 'home', group: 'workbench' }
 ];
 
-const VIEWS: readonly View[] = ['canvas', 'list', 'focus'];
+const VIEWS: readonly View[] = ['canvas', 'list', 'focus', 'workdir'];
 
 export function parseWorkbenchRoute(parts: readonly string[]): Route | null {
   if (parts[0] === 'home') return { page: 'home' };
@@ -19,7 +19,7 @@ export function parseWorkbenchRoute(parts: readonly string[]): Route | null {
   const view = VIEWS.find((candidate) => candidate === parts[2]) ?? 'list';
   const sessionId = parts[3] ?? null;
   // 专注对话一定要知道是谁；没有会话 id 的 focus 退回列表。
-  return { page: 'project', projectId: parts[1], view: view === 'focus' && !sessionId ? 'list' : view, sessionId };
+  return { page: 'project', projectId: parts[1], view: (view === 'focus' || view === 'workdir') && !sessionId ? 'list' : view, sessionId };
 }
 
 export function formatWorkbenchRoute(route: Route): string | null {

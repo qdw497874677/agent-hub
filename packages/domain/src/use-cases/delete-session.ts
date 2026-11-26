@@ -14,7 +14,7 @@ import { cleanupPolicyFor } from './workspace-cleanup.ts';
 export interface DeleteSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'>,
   // 容器会话没有任务：按组合工作空间 / bot 找回项目（#221 步骤 7）。
   Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'>,
-  Partial<Pick<SessionWorktreeDeps, 'gateway' | 'git' | 'now'>>,
+  Partial<Pick<SessionWorktreeDeps, 'gateway' | 'git' | 'now' | 'workdirSafety'>>,
   Partial<Pick<Deps, 'cleanup'>> {}
 
 export interface DeleteSessionOptions {

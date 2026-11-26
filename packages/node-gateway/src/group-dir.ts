@@ -117,8 +117,7 @@ export function createGroupDir(options: GroupDirOptions): GroupDir {
         await writeFile(temp, `${JSON.stringify({ id: markerId })}\n`, 'utf8');
         await rename(temp, join(path, GROUP_MARKER_FILE));
       } catch (error) {
-        // 建了一半：路径本来不存在，整棵删掉，重试还能再 init
-        await rm(path, { recursive: true, force: true }).catch(() => undefined);
+        // 可能有另一个进程在检查后创建或使用这个目录；保留半成品，绝不递归删除未知内容。
         return failed('建组合工作空间目录', error);
       }
       return { ok: true, value: { root: path } };

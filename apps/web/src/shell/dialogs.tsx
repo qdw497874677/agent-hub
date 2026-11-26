@@ -125,11 +125,13 @@ export function withHubModels(
 export function DeriveDialog({
   canvas,
   taskId,
+  initialWorkspace,
   onDone,
   onDerived
 }: {
   canvas: CanvasDto;
   taskId: string;
+  initialWorkspace?: { id: string; workerId: string };
   onDone: () => void;
   /** 派生成功后调用；不传就和取消一样只关掉。 */
   onDerived?: (session: SessionDto) => void;
@@ -163,7 +165,7 @@ export function DeriveDialog({
   // 底部复核行要念出「已有的哪个目录」：和 chooser 共用同一份查询（同一个 key，不多打一次请求）。
   const workspaceViews = useWorkspaceViews(canvas.project.id);
   // 运行面板（workspaces.md §9.3）：先选机器，再选工作目录；不预选，没选之前「开始」是灰的
-  const [machine, setMachine] = useState<string | null>(null);
+  const [machine, setMachine] = useState<string | null>(initialWorkspace?.workerId ?? null);
   // 资产（asset-hub.md）：选中机器后看这一趟会带哪些技能 / 指令 / MCP；默认全选，取消即排除。
   // 换机器 / 换项目就重新全选——不同机器下发的是不同的资产集。
   const [assetSelection, setAssetSelection] = useState<AssetSelection | null>(null);
@@ -208,7 +210,7 @@ export function DeriveDialog({
     agentId,
     hubList
   );
-  const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
+  const [choice, setChoice] = useState<WorkspaceChoice | null>(initialWorkspace ? { type: 'existing', workspaceId: initialWorkspace.id } : null);
   // 下载是独立的明确选择，默认不下载；工作目录的选择不会隐式开启它。
   const [downloadRepo, setDownloadRepo] = useState(false);
   const [preparedWorkspace, setPreparedWorkspace] = useState<{ id: string; machine: string } | null>(null);

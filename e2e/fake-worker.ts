@@ -26,8 +26,8 @@ interface Running {
 
 let running: Running | null = null;
 
-const isOnline = async (page: Page, workerId: string): Promise<boolean> => {
-  const response = await page.request.get('/api/workers');
+const isOnline = async (page: Page, baseURL: string, workerId: string): Promise<boolean> => {
+  const response = await page.request.get(`${baseURL}/api/workers`);
   if (!response.ok()) return false;
   const workers = (await response.json()) as Array<{ workerId?: string; id?: string; state: string }>;
   return workers.some((worker) => (worker.workerId ?? worker.id) === workerId && worker.state === 'online');
@@ -45,13 +45,13 @@ export async function ensureFakeWorker(
   options: { agentArgs?: string[]; env?: Record<string, string> } = {}
 ): Promise<string> {
   if (running !== null) {
-    if (running.process.exitCode === null && (await isOnline(page, running.workerId))) return running.workerId;
+    if (running.process.exitCode === null && (await isOnline(page, baseURL, running.workerId))) return running.workerId;
     stopFakeWorker();
   }
 
-  const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
+  const csrf = (await page.context().cookies(baseURL)).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  const pairing = await page.request.post('/api/workers/pairing', { data: {}, headers });
+  const pairing = await page.request.post(`${baseURL}/api/workers/pairing`, { data: {}, headers });
   if (!pairing.ok()) throw new Error(`申请配对码失败：HTTP ${pairing.status()} ${await pairing.text()}`);
   const code = ((await pairing.json()) as { code: string }).code;
 
@@ -96,7 +96,7 @@ export async function ensureFakeWorker(
   running = { workerId, dir: state, process: child };
 
   for (let i = 0; i < 120; i++) {
-    if (await isOnline(page, workerId)) return workerId;
+    if (await isOnline(page, baseURL, workerId)) return workerId;
     if (child.exitCode !== null) break;
     await page.waitForTimeout(250);
   }

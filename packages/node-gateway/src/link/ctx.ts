@@ -17,6 +17,7 @@ import type { ProjectGitBundleImporter } from '../project-git-bundle-import.ts';
 import type { WorkerAssets } from '../worker-assets.ts';
 import type { ProcessInfo } from '../process-scan.ts';
 import type { TerminalHost } from '../terminal.ts';
+import type { WorkdirTerminalHost } from '../workdir-terminal.ts';
 import type { ServiceHost } from '../service-host.ts';
 import type { UpdateReport } from '../updater.ts';
 import type { RuntimeManager } from '../runtime-jobs.ts';
@@ -93,6 +94,7 @@ export interface WorkerLinkOptions {
    * `terminal.*` 一律回 unsupported，界面不显示终端页签。
    */
   readonly terminal?: TerminalHost;
+  readonly workdirTerminal?: WorkdirTerminalHost;
   /**
    * 会话服务（docs/design/session-service.md）：本地长驻进程的启停与日志。
    * 不给 = `ws.service_*` 一律回 unsupported，hub 侧显示「这台机器的 Worker 太旧」。
@@ -169,7 +171,7 @@ export interface WorkerLinkOptions {
 /** 默认会话指令：长连接上所有「对某条会话做事」的帧。其余（welcome / rpc / 更新 / 安装 …）各有专门通路。 */
 export type SessionCommand = Exclude<
   ServerToWorker,
-  { kind: 'update' | 'update_commit' | 'update_abort' | 'rpc' | 'enrolled' | 'welcome' | 'probe' | 'runtime_job' | 'credential_rotate' | 'terminal_input' | 'agent_config' }
+  { kind: 'update' | 'update_commit' | 'update_abort' | 'rpc' | 'enrolled' | 'welcome' | 'probe' | 'runtime_job' | 'credential_rotate' | 'terminal_input' | 'workdir_terminal_input_v1' | 'workdir_terminal_detach_v1' | 'agent_config' }
 >;
 
 /** transport 把解码后的非会话帧交给门面装配好的处理器，避免模块间运行时循环依赖。 */
@@ -179,6 +181,7 @@ export interface TransportHandlers {
   update(commit: string): Promise<void>;
   runtimeJob(command: Extract<ServerToWorker, { kind: 'runtime_job' }>): Promise<void>;
   terminalInput(command: Extract<ServerToWorker, { kind: 'terminal_input' }>): void;
+  workdirTerminalFrame(command: Extract<ServerToWorker, { kind: 'workdir_terminal_input_v1' | 'workdir_terminal_detach_v1' }>): void;
 }
 
 /**

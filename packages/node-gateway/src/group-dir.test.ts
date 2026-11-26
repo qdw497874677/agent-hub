@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,6 +38,18 @@ test('insideGroups 按路径段比较：前缀同名的兄弟目录、groups 自
 test('defaultGroupsDir 是「第一个 root 下的 agent-hub-groups」', () => {
   assert.equal(defaultGroupsDir(['/home/u/code', '/data']), '/home/u/code/agent-hub-groups');
   assert.equal(defaultGroupsDir([]), '/agent-hub-groups');
+});
+
+test('group_init failure leaves concurrently created contents intact', async () => {
+  const { groups } = await sandbox();
+  const path = join(groups, 'team', 'demo');
+  const original = Math.random;
+  Math.random = () => { writeFileSync(join(path, 'other-process.txt'), 'keep'); throw new Error('injected init failure'); };
+  try {
+    const result = await createGroupDir({ groupsDir: groups, check: allow }).init({ slug: 'team', name: 'demo', id: 'id' });
+    assert.equal(result.ok, false);
+    assert.equal(await readFile(join(path, 'other-process.txt'), 'utf8'), 'keep');
+  } finally { Math.random = original; }
 });
 
 test('group_init：根由 worker 算成 groupsDir/<slug>/<name>，建 .agent-hub/group.json；重复 init 回 conflict', async () => {

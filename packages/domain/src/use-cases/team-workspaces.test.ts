@@ -21,6 +21,56 @@ import {
 import { newWorkspace, type ProjectWorkspaceLink, type Workspace } from '../workspace.ts';
 
 import type { AgentDescriptor } from '../agent.ts';
+import type { WorkdirSafety } from '../workdir-safety.ts';
+import { ok } from '../result.ts';
+
+function serialSafety() {
+  let queue = Promise.resolve();
+  let fenced = false;
+  const safety: WorkdirSafety = {
+    hasOutstanding: () => false,
+    runExclusive<T>(fn: () => T | Promise<T>) { const next = queue.then(fn); queue = next.then(() => undefined, () => undefined); return next; },
+    assertNoRemoval() { if (fenced) throw Error('fenced'); },
+    assertUnoccupied() { if (fenced) throw Error('fenced'); }, assertProjectUnoccupied() {},
+    beginRemoval() { if (fenced) throw Error('fenced'); fenced = true; return 'f'; }, finishRemoval() { fenced = false; }
+  };
+  return safety;
+}
+
+test('stale delete cannot remove a workdir transferred during status RPC', async () => {
+  const w = await world();
+  const made = newWorkspace({ projectId: w.a.id, teamId: 't1', workerId: 'remote-1', path: '/srv/work/race', kind: 'long_lived', source: 'cloned', isGit: true, now: 1 });
+  assert.ok(made.ok);
+  await w.deps.workspaces.save(made.value);
+  await w.deps.workspaces.claim({ projectId: w.a.id, workspaceId: made.value.id, linkedBy: null, linkedAt: 1 });
+  let entered!: () => void; const started = new Promise<void>((resolve) => { entered = resolve; });
+  let release!: () => void; const wait = new Promise<void>((resolve) => { release = resolve; });
+  let removed = false;
+  const git = { ...w.deps.git, status: async () => { entered(); await wait; return ok({ dirty: false, untracked: 0, unpushed: 0, branch: null, upstream: null }); }, remove: async () => { removed = true; return ok({ removed: true as const }); } };
+  const deps = { ...w.deps, git, gateway: { ...w.deps.gateway, git: () => git }, workdirSafety: serialSafety() };
+  const deletion = deleteWorkspaceUseCase(deps, { actor: alice, workspaceId: made.value.id, deleteDirectory: true });
+  await started;
+  assert.equal((await transferWorkspaceUseCase(deps, { actor: owner, projectId: w.b.id, workspaceId: made.value.id })).ok, true);
+  release();
+  assert.equal((await deletion).ok, false);
+  assert.equal(removed, false);
+  assert.equal((await deps.workspaces.linksOf(made.value.id))[0]?.projectId, w.b.id);
+});
+
+test('link cannot claim while physical removal fence is in flight', async () => {
+  const w = await world();
+  const made = newWorkspace({ projectId: null, teamId: 't1', workerId: 'remote-1', path: '/srv/work/unclaimed', kind: 'long_lived', source: 'cloned', isGit: true, now: 1 });
+  assert.ok(made.ok); await w.deps.workspaces.save(made.value);
+  let entered!: () => void; const started = new Promise<void>((resolve) => { entered = resolve; });
+  let release!: () => void; const wait = new Promise<void>((resolve) => { release = resolve; });
+  const git = { ...w.deps.git, remove: async () => { entered(); await wait; return ok({ removed: true as const }); } };
+  const deps = { ...w.deps, git, gateway: { ...w.deps.gateway, git: () => git }, workdirSafety: serialSafety() };
+  const deletion = deleteWorkspaceUseCase(deps, { actor: owner, workspaceId: made.value.id, deleteDirectory: true, force: true });
+  await started;
+  assert.equal((await linkWorkspaceUseCase(deps, { actor: alice, projectId: w.a.id, workspaceId: made.value.id })).ok, false);
+  assert.equal((await deps.workspaces.linksOf(made.value.id)).length, 0);
+  release(); assert.equal((await deletion).ok, true);
+});
 const fake: AgentDescriptor = {
   id: asAgentId('fake'),
   label: 'Fake',
@@ -64,6 +114,24 @@ async function world() {
   const b = await mk('beta', 'bob');
   return { ...w, deps, a, b };
 }
+
+test('occupied workdir blocks transfer and unlink before ownership changes', async () => {
+  const w = await world();
+  const made = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.a.id, workerId: 'remote-1', plan: { mode: 'link', path: '/srv/work/a' }, home: '/h', actor: alice });
+  assert.ok(made.ok);
+  const seen: string[] = [];
+  const safety: WorkdirSafety = {
+    hasOutstanding: () => false,
+    runExclusive: async (fn) => fn(), assertNoRemoval() {},
+    assertUnoccupied(target) { seen.push(target.workspaceId); throw new Error('occupied'); },
+    assertProjectUnoccupied() {}, beginRemoval: () => 'fence', finishRemoval() {}
+  };
+  const deps = { ...w.deps, workdirSafety: safety };
+  assert.equal((await transferWorkspaceUseCase(deps, { actor: owner, projectId: w.b.id, workspaceId: made.value.id })).ok, false);
+  assert.equal((await unlinkWorkspaceUseCase(deps, { actor: owner, projectId: w.a.id, workspaceId: made.value.id })).ok, false);
+  assert.deepEqual(seen, [made.value.id, made.value.id]);
+  assert.equal((await w.deps.workspaces.linksOf(made.value.id))[0]?.projectId, w.a.id);
+});
 
 test('团队页：owner 新建（不关联），成员看不见没关联的；为项目新建会关联、成员只看见自己项目关联的', async () => {
   const w = await world();

@@ -148,6 +148,7 @@ import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters, ingestOptionReceipt } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createTerminalBridge, type TerminalBridge } from './terminal-bridge.ts';
+import { createWorkdirTerminalService } from './workdir-terminal-service.ts';
 import { seedTestAccount } from './account-setup.ts';
 
 
@@ -193,6 +194,7 @@ const catalog = createLiveCatalog();
 let serverGateway: ServerGateway | null = null;
 /** 会话终端桥接：浏览器 WS ↔ worker PTY。装配在 serverGateway 之后。 */
 let terminalBridge: TerminalBridge | null = null;
+let workdirTerminals: ReturnType<typeof createWorkdirTerminalService> | null = null;
 let sessionEnvironment: EnvironmentPlanner | null = null;
 const optionWaiters = createOptionWaiters();
 const preparingStarts = new Map<SessionId, symbol>();
@@ -226,6 +228,14 @@ const missingServices: ServiceGateway = {
 const secretKey = await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') });
 // 密钥箱：资产令牌、项目仓库令牌都存这里（私有 HTTPS 仓库的 PAT）。
 const secretsVault = createSecretVault(store.db, secretKey);
+// Frozen until restart: outstanding durable reservations or fences keep all
+// safety guards active even if rollout was subsequently disabled. Storage errors
+// intentionally abort startup rather than permit unsafe mutations.
+const workdirTerminalsEnabled = readEnv('HUB_WORKDIR_TERMINALS') === '1';
+const workdirSafetyRequired = workdirTerminalsEnabled || store.workdirSafety.hasOutstanding();
+// A restart loses in-memory capability history. Preserve the legacy-open gate
+// for machines with durable shells at boot even after those shells are drained.
+const workdirHeldWorkersAtBoot = new Set(store.workdirTerminals.listNonEnded().map((row) => row.workerId));
 
 const deps: Deps = {
   handoffTokenCap: handoffCapFromEnv(readEnv('HUB_HANDOFF_TOKEN_CAP') ?? undefined),
@@ -235,6 +245,7 @@ const deps: Deps = {
   workLog: store.workLog,
   sessions: store.sessions,
   workspaces: store.workspaces,
+  ...(workdirSafetyRequired ? { workdirSafety: store.workdirSafety } : {}),
   // 组合工作空间的组行（docs/design/multi-repo.md §11.2）。
   workspaceGroups: store.workspaceGroups,
   artifacts: store.artifacts,
@@ -1114,6 +1125,7 @@ serverGateway = createServerGateway({
     void workerTurn(workerId, () => workerGone(deps, workerId)).catch((error: unknown) => log(`worker 离线收尾失败：${String(error)}`));
     // 机器没了，它上面的 PTY 也没了：只关对应的浏览器 WS，不发 terminal.close。
     terminalBridge?.closeWorker(workerId);
+    workdirTerminals?.onWorkerGone(workerId);
     log(`worker 离线：${workerId}（${reason}）`);
   },
   // 每条认证过的长连接：挂上 MCP 中转（RPC 端口 → MCP 服务端 → ToolGateway），绑定这台 Worker。
@@ -1150,6 +1162,13 @@ serverGateway = createServerGateway({
   onTerminalExit(workerId, terminalId, code) {
     terminalBridge?.onWorkerExit(workerId, terminalId, code);
   },
+  onWorkdirTerminalData(workerId, epoch, terminalId, data) {
+    workdirTerminals?.onData(workerId, epoch, terminalId, data);
+  },
+  onWorkdirTerminalExit(workerId, epoch, terminalId, code) {
+    workdirTerminals?.onExit(workerId, epoch, terminalId, code);
+  },
+  onWorkdirTerminalConnected() { void workdirTerminals?.reconcile(); },
   // 会话服务（docs/design/session-service.md）：worker 推的状态 / 输出直接落库；hub 不做乐观状态。
   knownServices: async (workerId) =>
     new Set(
@@ -1190,18 +1209,41 @@ serverGateway = createServerGateway({
     }).catch((error: unknown) => log(`标记服务失联失败（${workerId}/${serviceId}）：${String(error)}`));
   },
   onLog: log
-});
+}, { workspaceMutationSafetyRequired: workdirSafetyRequired });
 
 // 会话终端（docs/design/terminal.md）：浏览器 WS 的鉴权沿用 cookie + session.prompt
 // （能往 PTY 里打字等于能以会话身份执行命令，viewer 不该有，issue #213）；
 // 目标机器 / 目录由 domain 的 terminalTarget 决定，桥接只管帧和生命周期。
 terminalBridge = createTerminalBridge({
   gateway: serverGateway,
+  blocksLegacyOpen: (workerId) => workdirHeldWorkersAtBoot.has(workerId) || serverGateway!.workdirTerminalSupported(workerId),
   authenticate: async (value) => withAccess(store.access, await authenticate(accounts, value), accounts.now()),
   target: (subject, sessionId) => terminalTarget(deps, subject, sessionId),
   access: (subject, sessionId) => terminalAccess(deps, subject, sessionId),
   hostAllowed: (hostname) => guard.hostAllowed(hostname),
   log
+});
+
+workdirTerminals = createWorkdirTerminalService({
+  enabled: workdirTerminalsEnabled,
+  access: {
+    deps,
+    localWorkerId: () => {
+      const locals = (serverGateway?.workers() ?? []).filter((worker) => worker.state === 'online' && worker.origin === 'local');
+      return locals.length === 1 ? locals[0]!.workerId : null;
+    },
+    grants: () => readEnv('HUB_WORKDIR_SHELL_GRANTS') ?? undefined
+  },
+  terminals: store.workdirTerminals,
+  safety: store.workdirSafety,
+  gateway: (workerId) => serverGateway!.workdirTerminals(workerId),
+  authenticate: async (value) => withAccess(store.access, await authenticate(accounts, value), accounts.now()),
+  owner: async (userId) => {
+    const user = await store.users.byId(userId as import('@agent-hub/domain').UserId);
+    if (!user || user.disabledAt !== null || user.deletedAt !== null) return null;
+    return withAccess(store.access, { user, loginId: '' as import('@agent-hub/domain').LoginId }, accounts.now());
+  },
+  hostAllowed: (hostname) => guard.hostAllowed(hostname)
 });
 
 const previews = wirePreviews({
@@ -1342,6 +1384,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
     ] : []
   },
   auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles, agentDefaults: store.agentDefaults }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
+  workdirTerminals,
   admin: {
     deps: {
       users: store.users,
@@ -1552,6 +1595,11 @@ server.on('upgrade', (request, socket, head) => {
     else socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
     return;
   }
+  if (/^\/api\/projects\/[^/]+\/workdir-tabs\/[^/]+\/terminals\/[^/]+\/socket$/.test(path)) {
+    if (workdirTerminals) workdirTerminals.attach(request, socket, head);
+    else socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
   // 其余只有 worker 通道走 WebSocket；浏览器发起的（带 Origin 的跨站请求）和重绑定来的一律不升级。
   if (path !== '/worker' || !guard.originAllowed(request.headers.origin, hostHeader)) {
     socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
@@ -1602,6 +1650,7 @@ if (spawnWorker === '1') {
     schedules.clear();
     child.kill('SIGTERM');
     terminalBridge?.close();
+    workdirTerminals?.close();
     void previews.proxy?.close();
     previews.channel?.close();
     serverGateway?.close();

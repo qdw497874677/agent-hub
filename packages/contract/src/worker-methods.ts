@@ -537,6 +537,17 @@ export const terminalClose = method('terminal.close', 'sessions', z.object({ ter
 /** 对账：hub 重启后用它找出自己不认识、还活着的 PTY。 */
 export const terminalList = method('terminal.list', 'sessions', z.object({}), z.object({ terminals: z.array(z.object({ terminalId, sessionId: terminalId })).max(200) }));
 
+/** Isolated, versioned workdir PTYs; these IDs are never session terminal IDs. */
+export const workdirTerminalId = z.string().regex(/^wdt_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+export const workdirTerminalEpoch = z.string().uuid();
+const wdtSize = { cols: z.number().int().min(1).max(1000), rows: z.number().int().min(1).max(1000) };
+const wdtKey = { terminalId: workdirTerminalId, epoch: workdirTerminalEpoch };
+export const workdirTerminalInventory = method('workdir_terminal.v1.inventory', 'sessions', z.object({}).strict(), z.object({ epoch: workdirTerminalEpoch, terminals: z.array(z.object({ terminalId: workdirTerminalId, workspaceId: z.string().min(1).max(120), state: z.enum(['running', 'closing']) })).max(200) }));
+export const workdirTerminalCreate = method('workdir_terminal.v1.create', 'sessions', z.object({ ...wdtKey, workspaceId: z.string().min(1).max(120), cwd: z.string().min(1).max(4096) }).strict(), z.object({ state: z.enum(['running', 'closing', 'ended']) }));
+export const workdirTerminalAttach = method('workdir_terminal.v1.attach', 'sessions', z.object({ ...wdtKey, ...wdtSize }).strict(), z.object({ ...wdtSize, reused: z.boolean(), scrollback: z.string().max(400_000).optional() }));
+export const workdirTerminalResize = method('workdir_terminal.v1.resize', 'sessions', z.object({ ...wdtKey, ...wdtSize }).strict(), z.object({ ok: z.literal(true) }));
+export const workdirTerminalClose = method('workdir_terminal.v1.close', 'sessions', z.object(wdtKey).strict(), z.object({ exited: z.boolean() }));
+
 /** 应用层回声（ADR 0030 D1）：hub 定时问一句，量的是「对端事件循环真的在处理帧」，不只是 TCP 活着。 */
 export const linkEcho = method('link.echo', 'control', z.object({ at: z.number() }), z.object({ at: z.number() }));
 

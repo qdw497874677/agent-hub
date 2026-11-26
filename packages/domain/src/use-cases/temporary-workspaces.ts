@@ -4,6 +4,7 @@ import type { Task } from '../task.ts';
 import { isUsable, newWorkspace, type Workspace } from '../workspace.ts';
 import { asProjectId, asTaskId, asWorkspaceId, newId, newSessionId, type TaskId } from '../ids.ts';
 import { recurseSubmodules } from '../project.ts';
+import { withOptionalRollbackFence } from './workdir-safety.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -88,7 +89,7 @@ export interface PrepareTemporaryCommand {
  * 数量不限（§10 第 5 条），提示由界面给。
  */
 export async function prepareTemporaryWorkspaceUseCase(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'tasks' | 'workspaces' | 'access' | 'repoAuth'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'tasks' | 'workspaces' | 'access' | 'repoAuth'> & Partial<Pick<Deps, 'workdirSafety'>>,
   command: PrepareTemporaryCommand
 ): Promise<Result<Workspace, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
@@ -134,18 +135,20 @@ export async function prepareTemporaryWorkspaceUseCase(
   let path: string;
   let branch: string | null = null;
   if (base.value) {
+    const baseWorkspace = base.value;
     const repoParent = parentOf(base.value.path) ?? '/';
     const repoName = base.value.path.split('/').filter(Boolean).at(-1) ?? 'repo';
     const auth = (await deps.repoAuth?.forPath(machine.workerId, base.value.path)) ?? undefined;
-    const made = await gitOn(deps, machine.route).addWorktree({
-      repoPath: base.value.path,
-      path: `${repoParent === '/' ? '' : repoParent}/.worktrees/${repoName}/${name}`,
+    const worktreePath = `${repoParent === '/' ? '' : repoParent}/.worktrees/${repoName}/${name}`;
+    const made = await withOptionalRollbackFence(deps, recurseSubmodules(project), { workerId: machine.workerId, cwd: worktreePath }, () => gitOn(deps, machine.route).addWorktree({
+      repoPath: baseWorkspace.path,
+      path: worktreePath,
       branch: command.branch ?? taskBranch(task.title, sessionId),
-      base: command.base ?? originBranchRef(task.baseBranch) ?? defaultBranchFor(project, base.value) ?? base.value.branch,
+      base: command.base ?? originBranchRef(task.baseBranch) ?? defaultBranchFor(project, baseWorkspace) ?? baseWorkspace.branch,
       ...(command.branch ? { existing: true } : {}),
       ...(auth ? { auth } : {}),
       ...(recurseSubmodules(project) ? { recurseSubmodules: true } : {})
-    });
+    }));
     if (!made.ok) return made;
     path = made.value.path;
     branch = made.value.branch;
@@ -201,7 +204,7 @@ async function writeBackBranch(deps: Pick<Deps, 'tasks'>, task: Task, branch: st
 
 /** shared 档：项目在这台机器上的长期空间；没有但项目有仓库 → 先 clone 一个（复用 gitBase）。都没有 = null。 */
 async function sharedWorkspace(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'repoAuth'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'repoAuth'> & Partial<Pick<Deps, 'workdirSafety'>>,
   project: Project,
   machine: Machine,
   command: PrepareTemporaryCommand
@@ -322,7 +325,7 @@ export async function retryWorkspaceSetupUseCase(
 
 /** 这个任务在这台机器上被清理掉的 worktree（最近的那个）：按原分支检出回原路径。失败（分支被删了…）= null，调用方照常新开。 */
 async function reviveRemovedWorktree(
-  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'workspaces' | 'repoAuth' | 'projects'>,
+  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'workspaces' | 'repoAuth' | 'projects'> & Partial<Pick<Deps, 'workdirSafety'>>,
   taskId: TaskId,
   machine: Machine
 ): Promise<Workspace | null> {
@@ -334,7 +337,7 @@ async function reviveRemovedWorktree(
   if (!base || !isUsable(base)) return null;
   const project = gone.projectId ? await deps.projects.byId(gone.projectId) : null;
   const auth = (await deps.repoAuth?.forPath(machine.workerId, base.path)) ?? undefined;
-  const made = await gitOn(deps, machine.route).addWorktree({ repoPath: base.path, path: gone.path, branch: gone.branch, existing: true, ...(auth ? { auth } : {}), ...(project && recurseSubmodules(project) ? { recurseSubmodules: true } : {}) });
+  const made = await withOptionalRollbackFence(deps, !!project && recurseSubmodules(project), { workerId: machine.workerId, cwd: gone.path }, () => gitOn(deps, machine.route).addWorktree({ repoPath: base.path, path: gone.path, branch: gone.branch!, existing: true, ...(auth ? { auth } : {}), ...(project && recurseSubmodules(project) ? { recurseSubmodules: true } : {}) }));
   if (!made.ok) return null;
   const revived: Workspace = { ...gone, path: made.value.path, branch: made.value.branch, state: 'ready', keptReason: null, updatedAt: deps.now() };
   await deps.workspaces.save(revived);
@@ -343,7 +346,7 @@ async function reviveRemovedWorktree(
 
 /** worktree 从哪个长期工作空间长：这台机器上最近建的 git 长期工作空间；没有但项目有仓库就先 clone 一个。 */
 async function gitBase(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'repoAuth'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'repoAuth'> & Partial<Pick<Deps, 'workdirSafety'>>,
   project: Project,
   machine: Machine,
   command: PrepareTemporaryCommand

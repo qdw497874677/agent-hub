@@ -86,6 +86,7 @@ async function harness(overrides: Partial<TerminalBridgeOptions> = {}): Promise<
       sessionId === 's1' ? { ok: true, value: { workerId: 'w1', root: '/tmp/demo' } } : { ok: false, error: notFound('会话不存在') },
     // 默认放行；授权本身由 terminalAccess 在 main.ts 接上，这里只验证桥接层有没有真的过这一关。
     access: async () => ({ ok: true, value: undefined }),
+    blocksLegacyOpen: () => false,
     authenticate: async (token) => (token === 'good' ? SUBJECT : null),
     hostAllowed: (value) => value === host,
     log: (message) => logs.push(message),
@@ -264,6 +265,25 @@ test('viewer 只有 session.read：被 access 拒掉，且与「会话不存在�
   } finally {
     await world.close();
   }
+});
+
+test('standalone-capable worker rejects new legacy attach; old worker and existing socket continue', async () => {
+  let capable = false;
+  const world = await harness({ blocksLegacyOpen: (workerId) => workerId === 'w1' && capable });
+  try {
+    const first = await open(world.port, 'hub_login=good');
+    assert.equal((await first.reader.next()).t, 'ready');
+    assert.equal(world.calls.open.length, 1);
+    capable = true;
+    const rejected = await open(world.port, 'hub_login=good');
+    assert.equal((await rejected.reader.next()).t, 'error');
+    assert.equal(await rejected.closed, 1008);
+    assert.equal(world.calls.open.length, 1, 'new attach must never dispatch legacy open');
+    first.socket.send(JSON.stringify({ t: 'input', d: 'aGVsbG8=' }));
+    await waitFor(() => world.calls.input.length === 1);
+    first.socket.close();
+    await first.closed;
+  } finally { await world.close(); }
 });
 
 test('第二个窗口被拒，旧的终端保持可用', async () => {

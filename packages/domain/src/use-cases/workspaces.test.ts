@@ -246,6 +246,19 @@ test('clone 失败：不登记工作空间，把原因带回去', async () => {
   assert.equal((await w.deps.workspaces.byProject(project.value.id)).length, 0);
 });
 
+test('creating project with an existing path cannot claim during physical deletion', async () => {
+  const w = await folderless();
+  const existing = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'remote-1', plan: { mode: 'link', path: '/srv/work/fenced' }, home: '/home/me' });
+  assert.ok(existing.ok);
+  const safety: import('../workdir-safety.ts').WorkdirSafety = {
+    hasOutstanding: () => false,
+    runExclusive: async (fn) => fn(), assertNoRemoval() { throw Error('fenced'); }, assertUnoccupied() {}, assertProjectUnoccupied() {}, beginRemoval: () => 'f', finishRemoval() {}
+  };
+  const result = await createProjectUseCase({ ...w.deps, workdirSafety: safety }, { name: 'new', rootPath: existing.value.path, workerId: 'remote-1' });
+  assert.equal(result.ok, false);
+  assert.equal((await w.deps.workspaces.linksOf(existing.value.id)).length, 1);
+});
+
 test('仓库地址校验；改仓库可以清空', async () => {
   assert.equal(parseRepo('not a url').ok, false);
   assert.equal(parseRepo('https://x/y.git', 'bad branch').ok, false);

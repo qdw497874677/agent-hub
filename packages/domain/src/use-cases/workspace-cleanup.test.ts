@@ -6,7 +6,7 @@ import { createTaskUseCase, setTaskStatusUseCase } from './tasks.ts';
 import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
 import { prepareTemporaryWorkspaceUseCase } from './temporary-workspaces.ts';
 import { removeWorkspaceUseCase, sweepTemporaryWorkspacesUseCase, unsavedReason } from './workspace-cleanup.ts';
-import { restoreSessionWorktrees } from './session-worktrees.ts';
+import { releaseSessionWorktrees, restoreSessionWorktrees } from './session-worktrees.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 import { systemSubject } from '../access.ts';
 import { asAgentId } from '../ids.ts';
@@ -17,6 +17,67 @@ import type { WorkspaceGroup } from '../workspace-group.ts';
 import type { WorkspaceGroupGit } from '../ports/workspace-group-git.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { Deps } from './deps.ts';
+import type { WorkdirSafety } from '../workdir-safety.ts';
+import { err } from '../result.ts';
+import { unavailable } from '../errors.ts';
+import { withOptionalRollbackFence, withRollbackFence } from './workdir-safety.ts';
+
+function testSafety() {
+  let occupied = false;
+  let fenced = false;
+  let queue = Promise.resolve();
+  const safety: WorkdirSafety = {
+    hasOutstanding: () => false,
+    runExclusive<T>(fn: () => T | Promise<T>): Promise<T> {
+      const result = queue.then(fn);
+      queue = result.then(() => undefined, () => undefined);
+      return result;
+    },
+    assertNoRemoval() { if (fenced) throw new Error('fenced'); },
+    assertUnoccupied() { if (occupied || fenced) throw new Error('occupied'); },
+    assertProjectUnoccupied() { if (occupied) throw new Error('occupied'); },
+    beginRemoval() { if (occupied || fenced) throw new Error('occupied'); fenced = true; return 'fence'; },
+    finishRemoval() { fenced = false; }
+  };
+  return { safety, setOccupied(value: boolean) { occupied = value; }, get fenced() { return fenced; } };
+}
+
+test('rollback fence blocks occupied clone/worktree aliases and persists on ambiguous replies', async () => {
+  const guard = testSafety();
+  const deps = { workdirSafety: guard.safety };
+  const target = { workerId: 'remote-1', cwd: '/alias/checkout' };
+  let calls = 0;
+  guard.setOccupied(true);
+  assert.equal((await withRollbackFence(deps, target, async () => { calls++; return ok('clone'); })).ok, false);
+  assert.equal((await withOptionalRollbackFence(deps, true, target, async () => { calls++; return ok('worktree'); })).ok, false);
+  assert.equal(calls, 0);
+  guard.setOccupied(false);
+  assert.equal((await withRollbackFence(deps, target, async () => ok('done'))).ok, true);
+  assert.equal(guard.fenced, false);
+  assert.equal((await withRollbackFence(deps, target, async () => err({ ...unavailable('worker failed'), operationSettled: true as const }))).ok, false);
+  assert.equal(guard.fenced, false);
+  assert.equal((await withOptionalRollbackFence(deps, true, target, async () => err(unavailable('timeout')))).ok, false);
+  assert.equal(guard.fenced, true);
+});
+
+test('clone fences before RPC and retains ambiguous failure', async () => {
+  const w = inMemoryDeps();
+  w.workers.push({ workerId: 'remote-1', label: '远程', origin: 'remote', state: 'online', roots: ['/srv/work'] });
+  const project = await createProjectUseCase(w.deps, { name: 'clone', repoUrl: 'https://example.com/repo.git' });
+  assert.ok(project.ok);
+  const guard = testSafety();
+  let calls = 0;
+  const git = { ...w.deps.git, clone: async () => { calls++; assert.equal(guard.fenced, true); return err(unavailable('offline')); } };
+  const deps = { ...w.deps, git, gateway: { ...w.deps.gateway, git: () => git }, workdirSafety: guard.safety };
+  const command = { projectId: project.value.id, workerId: 'remote-1', plan: { mode: 'create' as const }, home: '/home/me' };
+  guard.setOccupied(true);
+  assert.equal((await prepareLongLivedWorkspaceUseCase(deps, command)).ok, false);
+  assert.equal(calls, 0);
+  guard.setOccupied(false);
+  assert.equal((await prepareLongLivedWorkspaceUseCase(deps, command)).ok, false);
+  assert.equal(calls, 1);
+  assert.equal(guard.fenced, true);
+});
 
 async function world(repoUrl?: string) {
   const w = inMemoryDeps();
@@ -36,6 +97,78 @@ test('改动说成人话', () => {
   assert.equal(unsavedReason({ dirty: null, untracked: 0, unpushed: 0, branch: null, upstream: null }), null); // 老 Worker：交给 Worker 判断
   assert.match(unsavedReason({ dirty: null, untracked: 0, unpushed: 0, branch: null, upstream: null, files: 1 }) ?? '', /还有 1 个文件/);
   assert.equal(unsavedReason({ dirty: true, untracked: 2, unpushed: 1, branch: 'x', upstream: null }), '有未提交的改动，有 2 个未跟踪的文件，有 1 个提交还没推送或合并');
+});
+
+test('independent workdir blocks force removal and sweep without claiming removal', async () => {
+  const w = await world('https://example.com/demo.git');
+  const guard = testSafety(); guard.setOccupied(true);
+  const deps = { ...w.deps, workdirSafety: guard.safety };
+  const forced = await removeWorkspaceUseCase(deps, { workspaceId: w.temp.id, deleteDirectory: true, force: true });
+  assert.equal(forced.ok, false);
+  assert.equal((await deps.workspaces.byId(w.temp.id))?.state, 'ready');
+  assert.equal(w.git.calls.some((call) => call.includes(':remove:')), false);
+  await w.finish();
+  const sweep = await sweepTemporaryWorkspacesUseCase(deps);
+  assert.deepEqual(sweep.removed, []);
+  assert.deepEqual(sweep.skipped, [w.temp.id]);
+  guard.setOccupied(false);
+  assert.equal((await removeWorkspaceUseCase(deps, { workspaceId: w.temp.id, deleteDirectory: true, force: true })).ok, true);
+  assert.equal(guard.fenced, false);
+});
+
+test('ambiguous worker failure retains fence but definitive no-remove releases it', async () => {
+  for (const ambiguous of [true, false]) {
+    const w = await world('https://example.com/demo.git');
+    const guard = testSafety();
+    const git = { ...w.deps.git, remove: async () => ambiguous ? err(unavailable('offline')) : ok({ removed: false as const, reason: 'kept' }) };
+    const gateway = { ...w.deps.gateway, git: () => git };
+    const result = await removeWorkspaceUseCase({ ...w.deps, git, gateway, workdirSafety: guard.safety }, { workspaceId: w.temp.id, deleteDirectory: true, force: true });
+    assert.equal(result.ok, false);
+    assert.equal(guard.fenced, ambiguous);
+    assert.equal((await w.deps.workspaces.byId(w.temp.id))?.state === 'removed', false);
+  }
+});
+
+test('manual, sweep and session release clear only explicitly settled failures', async () => {
+  for (const operationSettled of [true, false]) for (const route of ['manual', 'sweep', 'session'] as const) {
+    const w = await world('https://example.com/demo.git');
+    const guard = testSafety();
+    const git = { ...w.deps.git, remove: async () => err({ ...unavailable('failure'), ...(operationSettled ? { operationSettled: true as const } : {}) }) };
+    const deps = { ...w.deps, git, gateway: { ...w.deps.gateway, git: () => git }, workdirSafety: guard.safety };
+    if (route === 'manual') {
+      assert.equal((await removeWorkspaceUseCase(deps, { workspaceId: w.temp.id, deleteDirectory: true, force: true })).ok, false);
+    } else if (route === 'sweep') {
+      await w.finish();
+      const report = await sweepTemporaryWorkspacesUseCase(deps);
+      assert.deepEqual(report.removed, []);
+      assert.ok(report.failed?.includes(w.temp.id));
+    } else {
+      w.agents.push(fakeAgent);
+      const session = await deriveSessionUseCase(deps, { taskId: w.task.id, agentId: 'fake', model: 'm1', actor: systemSubject('test'), workspaceId: w.temp.id });
+      assert.ok(session.ok);
+      const items = await releaseSessionWorktrees(deps, session.value, { force: true });
+      assert.equal(items[0]?.action, 'deferred');
+    }
+    assert.equal(guard.fenced, !operationSettled, `${route}: ${operationSettled}`);
+    assert.notEqual((await deps.workspaces.byId(w.temp.id))?.state, 'removed');
+  }
+});
+
+test('successful manual physical removal retains fence until workspace save succeeds', async () => {
+  for (const failSave of [false, true]) {
+    const w = await world('https://example.com/demo.git');
+    const guard = testSafety();
+    let sawFenceDuringSave = false;
+    const workspaces = { ...w.deps.workspaces, save: async (workspace: typeof w.temp) => {
+      if (workspace.state === 'removed') { sawFenceDuringSave = guard.fenced; if (failSave) throw new Error('DB failure'); }
+      return w.deps.workspaces.save(workspace);
+    } };
+    const deps = { ...w.deps, workspaces, workdirSafety: guard.safety };
+    const remove = () => removeWorkspaceUseCase(deps, { workspaceId: w.temp.id, deleteDirectory: true, force: true });
+    if (failSave) await assert.rejects(remove, /DB failure/); else assert.equal((await remove()).ok, true);
+    assert.equal(sawFenceDuringSave, true);
+    assert.equal(guard.fenced, failSave);
+  }
 });
 
 test('任务没结束不清理；结束且干净就删', async () => {
@@ -389,6 +522,35 @@ async function comboWorld() {
   };
   return { memory, deps: withClean, groups, removedGroups, project: designated.value, task: task.value, group: built.value, session: session.value, sweeps };
 }
+
+test('group sweep member failure distinguishes settled and unknown removal', async () => {
+  for (const settled of [true, false]) {
+    const w = await comboWorld();
+    await w.deps.sessions.save({ ...w.session, status: 'stopped', settledAt: 10 });
+    const guard = testSafety();
+    const git = { ...w.deps.git, remove: async () => err({ ...unavailable('remove failed'), ...(settled ? { operationSettled: true as const } : {}) }) };
+    const deps = { ...w.deps, git, gateway: { ...w.deps.gateway, git: () => git }, workdirSafety: guard.safety };
+    const report = await sweepTemporaryWorkspacesUseCase(deps, { projectId: w.project.id });
+    assert.deepEqual(report.removed, []);
+    assert.ok(report.failed?.length);
+    assert.equal(guard.fenced, !settled);
+  }
+});
+
+test('group sweep container errors retain unknown fence and release settled fence', async () => {
+  for (const result of ['settled', 'unknown', 'not-removed'] as const) {
+    const w = await comboWorld();
+    // Eliminate the settled session so sweep proceeds to container removal.
+    await w.deps.sessions.remove(w.session.id);
+    const guard = testSafety();
+    const groupGit = w.deps.gateway.groups!('remote-1')!;
+    const groups = { ...groupGit, remove: async () => result === 'settled' ? err({ ...unavailable('refused'), operationSettled: true as const }) : result === 'unknown' ? err(unavailable('timeout')) : ok({ removed: false }) };
+    const deps = { ...w.deps, workdirSafety: guard.safety, gateway: { ...w.deps.gateway, groups: () => groups } };
+    await sweepTemporaryWorkspacesUseCase(deps, { projectId: w.project.id });
+    assert.equal(guard.fenced, result === 'unknown');
+    assert.ok(await w.groups.byId(w.group.id));
+  }
+});
 
 test('组合组：每个成员的 PR 都合并才整组收起并拆掉；只合并一部分则整组留下', async () => {
   const all = await comboWorld();

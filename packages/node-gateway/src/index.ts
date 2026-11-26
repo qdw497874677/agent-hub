@@ -1,5 +1,5 @@
 export { createServerGateway } from './server-gateway.ts';
-export type { GatewayHooks, ServerGateway, WorkerConnectionObservation, WorkerRuntimeInstallObservation, WorkspaceGroupOps } from './server-gateway.ts';
+export type { GatewayHooks, ServerGateway, WorkerConnectionObservation, WorkerRuntimeInstallObservation, WorkspaceGroupOps, WorkdirTerminalGateway, TerminalOutcome, TerminalOpened } from './server-gateway.ts';
 export { connectWorkerLink } from './worker-link.ts';
 export { createResourceProbe, type ResourceProbeOptions } from './resource-probe.ts';
 export { createHarnessRegistry, sameReadiness, withMissingHint } from './harness-registry.ts';
@@ -47,6 +47,7 @@ export type { InventorySources } from './inventory.ts';
 export { installComponent, installBundle, uninstallComponent, hubComponentDirs, currentVersionDir } from './components.ts';
 export { createWorkspaceBrowser, type BrowserOptions } from './workspace-browser.ts';
 export { createTerminalHost, TerminalNotReadyError } from './terminal.ts';
+export { createWorkdirTerminalHost, type WorkdirTerminalHost } from './workdir-terminal.ts';
 export { createServiceHost, ServiceHostError, SERVICE_PORT_TIMEOUT_MS, SERVICE_LOG_MAX } from './service-host.ts';
 export { scanProcesses, PROCESS_CMD_MAX, type ProcessInfo, type ScanProcessesOptions } from './process-scan.ts';
 export type { ServiceHost, ServiceHostOptions, ServiceSpec, ServiceStateEvent, ServiceRuntimeInfo } from './service-host.ts';

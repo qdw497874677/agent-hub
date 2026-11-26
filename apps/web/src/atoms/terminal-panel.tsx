@@ -38,6 +38,8 @@ interface Props {
   readonly active: boolean;
   /** agent 没在跑时的一句话：终端只是 shell，不会把 agent 拉起来（会话本身还能接着聊）。 */
   readonly notice?: string | null;
+  /** Independent terminals attach to an existing shell, never the legacy create-on-connect endpoint. */
+  readonly socketPath?: string;
 }
 
 const COARSE_QUERY = '(pointer: coarse)';
@@ -66,7 +68,7 @@ function subscribeCoarsePointer(onChange: () => void): () => void {
  * xterm 只负责画和收键；WS 的建/断/退避/尺寸都在一个 effect 里，一处说了算。
  * 页签切走不 dispose：PTY 在机器上还活着，回来要接回原现场（连滚回去的历史一起）。
  */
-export function TerminalPanel({ sessionId, workerId, active, notice = null }: Props) {
+export function TerminalPanel({ sessionId, workerId, active, notice = null, socketPath }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const [state, dispatch] = useReducer(terminalReducer, TERMINAL_INITIAL);
@@ -179,7 +181,7 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
     const fail = (message: string) => {
       stopped = true;
       dispatch({ type: 'error', message });
-      if (isUnsupportedTerminal(message)) {
+      if (!socketPath && isUnsupportedTerminal(message)) {
         markTerminalUnsupported(terminalSupportKeys(workerIdRef.current));
       }
       try {
@@ -193,7 +195,7 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
       if (disposed || stopped) return;
       let ws: WebSocket;
       try {
-        ws = new WebSocket(terminalSocketUrl(window.location, sessionId));
+        ws = new WebSocket(socketPath ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${socketPath}` : terminalSocketUrl(window.location, sessionId));
       } catch {
         fail('终端连接失败');
         return;
@@ -298,7 +300,7 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
         return;
       }
       // 还没连上（首次连接、断线重连中）：先攒着，onopen 时补发。
-      if (pendingChars + payload.length > PENDING_LIMIT) return;
+      if (socketPath || pendingChars + payload.length > PENDING_LIMIT) return;
       pending.push(payload);
       pendingChars += payload.length;
     });
@@ -329,7 +331,7 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
       }
       term.dispose();
     };
-  }, [sessionId]);
+  }, [sessionId, socketPath]);
 
   // 尺寸：ResizeObserver 节流 120ms；容器为 0 时 fitAndResize 自己跳过。
   useEffect(() => {
@@ -401,7 +403,7 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
   const status = terminalStatus(state);
   const retryLabel = state.phase === 'exited' ? '新开一个' : state.phase === 'reconnecting' ? '立即重连' : '重连';
   const showRetry =
-    state.phase === 'reconnecting' || state.phase === 'closed' || state.phase === 'failed' || state.phase === 'exited';
+    state.phase === 'reconnecting' || state.phase === 'closed' || state.phase === 'failed' || (state.phase === 'exited' && !socketPath);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-canvas" data-testid="terminal-pane">
@@ -420,7 +422,7 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
                 type="button"
                 data-testid={`terminal-key-${key.id}`}
                 aria-pressed={key.id === 'ctrl' ? ctrlArmed : undefined}
-                className={`flex h-9 min-w-9 shrink-0 select-none items-center justify-center rounded-sm border px-3 font-mono text-body leading-none ${
+                className={`flex h-[44px] min-w-[44px] shrink-0 select-none items-center justify-center rounded-sm border px-3 font-mono text-body leading-none ${
                   armed
                     ? 'border-action bg-action text-action-fg'
                     : 'border-strong bg-card text-secondary active:border-strong active:text-primary'

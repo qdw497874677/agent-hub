@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { workdirTerminalEpoch, workdirTerminalId } from '../worker-methods.ts';
 import { rpcFrameSchema } from '../rpc/frames.ts';
 import { id } from './common.ts';
 import { workerMetricsSchema } from './resources.ts';
@@ -28,6 +29,9 @@ export const WORKER_CAPABILITY_SESSION_START_READY = 'session_start_ready';
 /** Ready reports can carry a native ref from the exact runtime object (not every runtime supplies one). */
 export const WORKER_CAPABILITY_SESSION_START_NATIVE_REF = 'session_start_native_ref';
 export const WORKER_CAPABILITY_OPTION_RECEIPT = 'option_receipt';
+export const WORKER_CAPABILITY_WORKDIR_TERMINAL_V1 = 'workdir_terminal_v1';
+/** Safe group initialization and explicit settled proofs for workspace mutations. */
+export const WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1 = 'workspace_mutation_safety_v1';
 
 /** 一份代码的身份：package 版本 + git 提交（不在 git 仓库里就是 null）+ 协议版本。 */
 export const buildInfoSchema = z.object({
@@ -377,6 +381,8 @@ export const workerServiceLogSchema = z.object({
 });
 
 export const workerToServerSchema = z.union([
+  z.object({ type: z.literal('workdir_terminal_data_v1'), epoch: workdirTerminalEpoch, terminalId: workdirTerminalId, data: z.string().max(131_072) }).strict(),
+  z.object({ type: z.literal('workdir_terminal_exit_v1'), epoch: workdirTerminalEpoch, terminalId: workdirTerminalId, code: z.number().int() }).strict(),
   workerInventoryFrameSchema,
   workerTerminalDataSchema,
   workerTerminalExitSchema,
@@ -490,6 +496,8 @@ export const agentAliasSchema = z.object({
 });
 
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('workdir_terminal_input_v1'), epoch: workdirTerminalEpoch, terminalId: workdirTerminalId, data: z.string().max(131_072) }).strict(),
+  z.object({ kind: z.literal('workdir_terminal_detach_v1'), epoch: workdirTerminalEpoch, terminalId: workdirTerminalId }).strict(),
   z.object({ kind: z.literal('rpc'), frame: rpcFrameSchema }),
   /** 配对码换到的专属凭据：只出现在 enroll 握手的那条连接上，发完就关。 */
   z.object({ kind: z.literal('enrolled'), workerId: id, credential: z.string().min(1) }),

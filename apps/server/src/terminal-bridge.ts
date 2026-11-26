@@ -63,6 +63,8 @@ export interface TerminalBridgeOptions {
    * 对所有能看这个会话的人开放，没有「退回 session.read」这种默认。
    */
   readonly access: (subject: Subject | null, sessionId: string) => Promise<Result<void, DomainError>>;
+  /** Authoritative positive capability evidence, retained across transient disconnects. */
+  readonly blocksLegacyOpen: (workerId: string) => boolean;
   /** cookie 里的登录令牌 → 主体；没登录 / 过期返回 null。 */
   readonly authenticate: (token: string) => Promise<Subject | null>;
   /** 和 HTTP 路由同一套 Host 校验（缺 Host 的老客户端由 guard 放行）。 */
@@ -239,6 +241,11 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
     cols: number,
     rows: number
   ): Promise<void> {
+    if (options.blocksLegacyOpen(workerId)) {
+      send(socket, { t: 'error', message: '该机器不支持新开旧版会话终端，请使用工作目录终端' });
+      socket.close(1008, 'legacy terminal unavailable');
+      return;
+    }
     const duplicate = entries.get(sessionId);
     if (duplicate) {
       // 设计稿 §2.2：同一个终端已经有窗口，拒绝新来的，**不踢旧的**。
@@ -300,10 +307,20 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
     const deadline = now() + openRetryMs;
     // 目录由 hub 算好（domain 的 terminalTarget）：会话跑完、worker 内存里已经查不到它时，旧会话的终端也能开。
     const openInput = { terminalId, sessionId, cols, rows, cwd: root };
+    if (options.blocksLegacyOpen(workerId)) {
+      send(socket, { t: 'error', message: '该机器不支持新开旧版会话终端，请使用工作目录终端' });
+      closeEntry(sessionId, entry, 1008, 'legacy terminal unavailable');
+      return;
+    }
     let opened = await gateway.openTerminal(workerId, openInput);
     while (!opened.ok && opened.code === 'not_ready' && now() < deadline && entries.get(sessionId) === entry) {
       await new Promise((resolve) => setTimeout(resolve, 300));
       if (entries.get(sessionId) !== entry) return;
+      if (options.blocksLegacyOpen(workerId)) {
+        send(socket, { t: 'error', message: '该机器不支持新开旧版会话终端，请使用工作目录终端' });
+        closeEntry(sessionId, entry, 1008, 'legacy terminal unavailable');
+        return;
+      }
       opened = await gateway.openTerminal(workerId, openInput);
     }
     if (!opened.ok) {

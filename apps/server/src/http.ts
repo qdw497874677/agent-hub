@@ -208,8 +208,10 @@ import { installApiTokens } from './api-tokens.ts';
 import { installOpenApi } from './openapi/app.ts';
 import type { OpenApiOptions } from './openapi/app.ts';
 import type { ApiTokenDeps } from '@agent-hub/domain';
+import type { createWorkdirTerminalService } from './workdir-terminal-service.ts';
 
 export interface AppOptions {
+  readonly workdirTerminals?: ReturnType<typeof createWorkdirTerminalService>;
   readonly agentHandoff?: AgentHandoffService;
   readonly taskArchiveBlockers?: TaskArchiveBlockers;
   readonly projectGitProbe?: ProjectGitProbeRouteOptions;
@@ -379,6 +381,9 @@ export function createApp(options: AppOptions): Hono {
   let subjectOf: SubjectOf = () => NO_AUTH_SUBJECT;
   if (options.auth) {
     ({ principalOf, subjectOf } = installAuth(app, options.auth));
+    // Independent terminals enforce their own cookie-only, project-read and
+    // worker shell policy; generic project.update is not their permission.
+    options.workdirTerminals?.install(app);
     // 授权中间件要先于下面所有路由注册（Hono 按注册顺序走）。
     installAccess(app, deps, subjectOf);
     installHandoffMutationGate(app, deps, '/api', subjectOf);

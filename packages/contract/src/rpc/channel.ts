@@ -45,13 +45,17 @@ export function createRpcChannel(options: RpcChannelOptions): RpcChannel {
   };
 
   async function serve(id: string, method: string, params: unknown): Promise<void> {
+    const controller = new AbortController();
     const reply = (body: { result?: unknown; error?: RpcError }): void => {
-      if (!running.has(id)) return; // 已被取消：对端不再等
+      // The same id may be reused after reconnect (or by a duplicate call).
+      // Only the exact invocation that still owns the slot may reply/delete it.
+      if (running.get(id) !== controller) return;
       running.delete(id);
       options.send({ rpc: 'reply', id, ...body });
     };
-    const controller = new AbortController();
+    const previous = running.get(id);
     running.set(id, controller);
+    previous?.abort();
     const entry = handlers.get(method);
     if (!entry) return reply({ error: { code: 'unknown_method', message: `对端不认识方法 ${method}` } });
     const denied = options.allow?.(entry.method);
@@ -117,15 +121,17 @@ export function createRpcChannel(options: RpcChannelOptions): RpcChannel {
       const frame = parsed.data;
       if (frame.rpc === 'call') void serve(frame.id, frame.method, frame.params);
       else if (frame.rpc === 'cancel') {
-        running.get(frame.id)?.abort();
+        const controller = running.get(frame.id);
         running.delete(frame.id);
+        controller?.abort();
       } else finish(frame.id, frame.error ? { ok: false, error: frame.error } : { ok: true, value: frame.result });
     },
 
     close(reason: string): void {
       for (const id of [...waiting.keys()]) finish(id, fail('closed', reason));
-      for (const controller of running.values()) controller.abort();
+      const controllers = [...running.values()];
       running.clear();
+      for (const controller of controllers) controller.abort();
     }
   };
 }

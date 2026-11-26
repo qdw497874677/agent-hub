@@ -101,6 +101,7 @@ interface Props {
   readonly onSeedDraft?: (sessionId: string, text: string) => void;
   readonly artifacts: readonly ArtifactDto[];
   readonly onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
+  readonly independentWorkdir?: boolean;
 }
 
 /**
@@ -143,7 +144,8 @@ export function FocusView({
   onSeedDraft,
   artifacts,
   onChangeOption,
-  windowChrome
+  windowChrome,
+  independentWorkdir = false
 }: Props) {
   const [busy, setBusy] = useState(false);
   // 组合工作目录（多仓库项目）：只有这种会话才有 groupId
@@ -369,7 +371,7 @@ export function FocusView({
   const workerOnline = workers.list.length === 0 || worker?.state === 'online';
   const terminalUnavailable = useSyncExternalStore(subscribeTerminalSupport, () => terminalBlocked(supportKeys));
   // 跑完的会话也能开：shell 直接开在会话工作目录里（hub 侧算好 cwd），不重启 agent。
-  const terminalAvailable = workerOnline && !terminalUnavailable;
+  const terminalAvailable = !independentWorkdir && workerOnline && !terminalUnavailable;
   // 终端要看机器在线与探测结果；预览只要有会话就能看（机器离线时列表里那几行自己说清楚）。
   const tabs = useMemo(
     () => SESSION_TABS.filter((candidate) => candidate !== 'terminal' || terminalAvailable),

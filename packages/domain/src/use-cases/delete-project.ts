@@ -14,6 +14,7 @@ import { authorizeProject, projectAsResource } from './authorization.ts';
 import { can } from '../access.ts';
 
 export interface DeleteProjectDeps extends Pick<Deps, 'projects' | 'sessions' | 'now' | 'access'> {
+  readonly workdirSafety?: Deps['workdirSafety'];
   readonly toolGrants: Pick<ToolGrantRepository, 'revokeSession'>;
   readonly audit: AuditLog;
 }
@@ -49,6 +50,10 @@ export async function deleteProjectUseCase(
   actor: Principal | null,
   command: DeleteProjectCommand
 ): Promise<Result<Project, DomainError>> {
+  if (deps.workdirSafety) return deps.workdirSafety.runExclusive(async () => {
+    try { deps.workdirSafety!.assertProjectUnoccupied(command.projectId); } catch { return err(conflict('项目还有终端正在使用')); }
+    return deleteProjectUseCase({ ...deps, workdirSafety: undefined }, actor, command);
+  });
   const who = signedIn(actor);
   if (!who.ok) return who;
   const allowed = await authorizeProject(deps.access, who.value, await deps.projects.byId(command.projectId), 'project.delete');
@@ -88,6 +93,10 @@ export async function purgeProjectUseCase(
   actor: Principal | null,
   command: DeleteProjectCommand
 ): Promise<Result<Project, DomainError>> {
+  if (deps.workdirSafety) return deps.workdirSafety.runExclusive(async () => {
+    try { deps.workdirSafety!.assertProjectUnoccupied(command.projectId); } catch { return err(conflict('项目还有终端正在使用')); }
+    return purgeProjectUseCase({ ...deps, workdirSafety: undefined }, actor, command);
+  });
   const who = signedIn(actor);
   if (!who.ok) return who;
   const allowed = await authorizeProject(deps.access, who.value, await deps.projects.byId(command.projectId), 'project.purge');

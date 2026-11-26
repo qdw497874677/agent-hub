@@ -12,8 +12,9 @@ import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { gitFor } from './machine-dirs.ts';
 import { groupMemberRoot } from '../workspace-group.ts';
+import { fenceWorkspace, finishFence, finishSettledFailure, workdirTarget } from './workdir-safety.ts';
 
-type CleanupDeps = Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces'> & Partial<Pick<Deps, 'projects' | 'cleanup' | 'workspaceGroups'>>;
+type CleanupDeps = Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces'> & Partial<Pick<Deps, 'projects' | 'cleanup' | 'workspaceGroups' | 'workdirSafety'>>;
 
 /** 删了会丢什么，说人话；都没有返回 null（§5 第 3 条）。 */
 export function unsavedReason(status: GitStatus): string | null {
@@ -265,18 +266,22 @@ async function sweepSolo(deps: CleanupDeps, workspace: Workspace, sink: SweepSin
     return;
   }
   const squashed = mergedHead !== null && status.value.head === mergedHead && status.value.unpushed > 0;
+  let fence: string | null;
+  try { fence = await fenceWorkspace(deps, workspace); } catch { sink.skipped.push(workspace.id); return; }
   if (deps.cleanup?.dropCheckpoints) {
     for (const session of await deps.sessions.listByWorkspace(workspace.id)) await deps.cleanup.dropCheckpoints(session.id).catch(() => undefined);
   }
   const outcome = await git.remove(workspace.path, removeKind(workspace), squashed && mergedHead ? { mergedHead } : {});
   if (!outcome.ok) {
+    await finishSettledFailure(deps, fence, outcome.error);
     sink.failed.push(workspace.id);
     sink.record(workspace, 'failed', outcome.error.message, status.value.sizeBytes);
     return;
   }
   if (outcome.value.removed) {
     const gone = markRemoved(workspace, deps.now());
-    if (gone.ok) await deps.workspaces.save(gone.value);
+    if (!gone.ok) { if (deps.workdirSafety) return; }
+    else if ((await deps.workspaces.save(gone.value)).status !== 'saved' && deps.workdirSafety) return;
     sink.removed.push(workspace.id);
     sink.record(workspace, 'removed', triggers.join('；'), status.value.sizeBytes);
   } else {
@@ -284,6 +289,7 @@ async function sweepSolo(deps: CleanupDeps, workspace: Workspace, sink: SweepSin
     sink.kept.push(workspace.id);
     sink.record(workspace, 'kept', outcome.value.reason, status.value.sizeBytes);
   }
+  await finishFence(deps, fence);
 }
 
 /**
@@ -356,14 +362,17 @@ async function sweepGroup(deps: CleanupDeps, groupId: string, sink: SweepSink): 
   for (const row of rows) {
     const mergedHead = row.merged?.headSha ?? null;
     const squashed = mergedHead !== null && row.status.head === mergedHead && row.status.unpushed > 0;
+    const git = await gitFor(deps, row.workspace.workerId);
+    let fence: string | null;
+    try { fence = await fenceWorkspace(deps, row.workspace); } catch { sink.skipped.push(row.workspace.id); return; }
     if (deps.cleanup?.dropCheckpoints) {
       for (const session of await deps.sessions.listByWorkspace(row.workspace.id)) {
         await deps.cleanup.dropCheckpoints(session.id).catch(() => undefined);
       }
     }
-    const git = await gitFor(deps, row.workspace.workerId);
     const outcome = await git.remove(row.workspace.path, 'worktree', squashed && mergedHead ? { mergedHead } : {});
     if (!outcome.ok) {
+      await finishSettledFailure(deps, fence, outcome.error);
       sink.failed.push(row.workspace.id);
       sink.record(row.workspace, 'failed', outcome.error.message, row.status.sizeBytes);
       return;
@@ -382,10 +391,13 @@ async function sweepGroup(deps: CleanupDeps, groupId: string, sink: SweepSink): 
       }
       sink.kept.push(row.workspace.id);
       sink.record(row.workspace, 'kept', reason, row.status.sizeBytes);
+      await finishFence(deps, fence);
       return;
     }
     const gone = markRemoved(row.workspace, deps.now());
-    if (gone.ok) await deps.workspaces.save(gone.value);
+    if (!gone.ok) { if (deps.workdirSafety) return; }
+    else if ((await deps.workspaces.save(gone.value)).status !== 'saved' && deps.workdirSafety) return;
+    await finishFence(deps, fence);
     sink.removed.push(row.workspace.id);
     sink.record(row.workspace, 'removed', triggers.join('；'), row.status.sizeBytes);
   }
@@ -394,8 +406,24 @@ async function sweepGroup(deps: CleanupDeps, groupId: string, sink: SweepSink): 
   const leftover = await groupSessions(deps, group);
   const groupGit = group.workerId ? deps.gateway.groups?.(group.workerId) : undefined;
   if (groupGit && deps.workspaceGroups && leftover.length === 0) {
-    await groupGit.remove({ root: group.root, id: group.id }).catch(() => undefined);
+    let fence: string | null = null;
+    if (deps.workdirSafety) {
+      try {
+        fence = await deps.workdirSafety.runExclusive(async () => {
+          const current = await deps.workspaceGroups!.byId(group.id);
+          if (!current || current.root !== group.root || current.workerId !== group.workerId || JSON.stringify(current.members) !== JSON.stringify(group.members)) throw new Error('group changed');
+          return deps.workdirSafety!.beginRemoval({ workspaceId: group.id, workerId: group.workerId, cwd: group.root });
+        });
+      } catch { return; }
+    }
+    const result = await groupGit.remove({ root: group.root, id: group.id }).catch(() => null);
+    if (deps.workdirSafety && (!result || !result.ok)) {
+      if (result && !result.ok) await finishSettledFailure(deps, fence, result.error);
+      return;
+    }
+    if (deps.workdirSafety && result?.ok && !result.value.removed) { await finishFence(deps, fence); return; }
     await deps.workspaceGroups.remove(group.id);
+    await finishFence(deps, fence);
   }
 }
 
@@ -442,8 +470,25 @@ export interface RemoveWorkspaceCommand {
  */
 export async function removeWorkspaceUseCase(
   deps: CleanupDeps,
-  command: RemoveWorkspaceCommand
+  command: RemoveWorkspaceCommand,
+  validateOwner?: (workspace: Workspace) => Promise<boolean>
 ): Promise<Result<Workspace, DomainError>> {
+  if (deps.workdirSafety && !command.deleteDirectory) {
+    const initial = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
+    if (!initial || initial.state === 'removed') return err(notFound('工作空间不存在'));
+    if (await busy(deps, initial)) return err(conflict('有会话正在这个工作空间里运行，先停掉它'));
+    const result = await deps.workdirSafety.runExclusive(async () => {
+      const current = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
+      if (current) {
+        try { deps.workdirSafety!.assertUnoccupied(workdirTarget(current)); }
+        catch { return err(conflict('工作目录有终端或待确认的删除')); }
+        if (validateOwner && !(await validateOwner(current))) return err(conflict('工作空间归属或权限已变，请刷新后重试'));
+      }
+      return removeWorkspaceUseCase({ ...deps, workdirSafety: undefined, cleanup: deps.cleanup ? { ...deps.cleanup, dropCheckpoints: undefined } : undefined }, command);
+    });
+    if (result.ok) await dropCheckpoints(deps, initial);
+    return result;
+  }
   const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
   if (!workspace || workspace.state === 'removed') return err(notFound('工作空间不存在'));
   if (await busy(deps, workspace)) return err(conflict('有会话正在这个工作空间里运行，先停掉它'));
@@ -463,14 +508,23 @@ export async function removeWorkspaceUseCase(
         return err(conflict(`没有删：${reason}`));
       }
     }
+    let fence: string | null;
+    try { fence = await fenceWorkspace(deps, workspace, validateOwner); } catch { return err(conflict('工作目录有终端、待确认的删除或归属已变')); }
     await dropCheckpoints(deps, workspace);
     const outcome = await git.remove(workspace.path, removeKind(workspace), { force: command.force === true });
-    if (!outcome.ok) return outcome;
+    if (!outcome.ok) { await finishSettledFailure(deps, fence, outcome.error); return outcome; }
     if (!outcome.value.removed) {
       const keptOne = workspace.kind === 'temporary' ? markKept(workspace, outcome.value.reason, deps.now()) : workspace;
       if (keptOne !== workspace) await deps.workspaces.save(keptOne);
+      await finishFence(deps, fence);
       return err(conflict(`没有删：${outcome.value.reason}`));
     }
+    const gone = markRemoved(workspace, deps.now());
+    if (!gone.ok) return gone;
+    const saved = await deps.workspaces.save(gone.value);
+    if (saved.status !== 'saved' && deps.workdirSafety) return err(conflict('目录已删除但登记未能更新，删除待确认'));
+    await finishFence(deps, fence);
+    return ok(gone.value);
   } else {
     await dropCheckpoints(deps, workspace);
   }
