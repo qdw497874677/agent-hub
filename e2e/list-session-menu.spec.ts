@@ -242,13 +242,12 @@ test('列表行「⋯」：不导航就能删，取消保留，确认只删这�
   await page.screenshot({ path: testInfo.outputPath('list-session-menu-390.png') });
 
   // 5) 桌面上也一直看得见（不靠 hover），点开仍然是同一个菜单。
-  // 设计系统的 rem 是 13px，md:size-8 = 26px，和项目列表行尾的「⋯」同档。
+  // 跨断点重排时行可能重新挂载；直接等待最终尺寸，不在两次读取之间假定 DOM 没换过。
   await page.setViewportSize({ width: 1280, height: 800 });
-  await expect(more(running)).toBeVisible();
-  const desktopBox = await more(running).boundingBox();
-  expect(desktopBox).not.toBeNull();
-  expect(desktopBox!.width).toBeGreaterThanOrEqual(24);
-  expect(desktopBox!.height).toBeGreaterThanOrEqual(24);
+  await expect.poll(async () => {
+    const box = await more(running).boundingBox({ timeout: 500 }).catch(() => null);
+    return box ? Math.min(box.width, box.height) : 0;
+  }).toBeGreaterThanOrEqual(24);
   await more(running).click();
   await expect(menu).toBeVisible();
   await page.keyboard.press('Escape');

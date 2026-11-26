@@ -69,7 +69,7 @@ async function registered(page: Page, projectId: string): Promise<Array<{ sessio
 
 test.use({ viewport: { width: 390, height: 844 } });
 
-test('列表视图：主会话单独成组，行上写明「没有任务」，手机上照样点得到', async ({ page, baseURL }, testInfo) => {
+test('列表视图：工作空间内区分主会话，行上写明「没有任务」，手机可打开', async ({ page, baseURL }, testInfo) => {
   await loginByApi(page);
   const seed = await seedCoordinator(page, await headers(page, baseURL));
 
@@ -79,6 +79,7 @@ test('列表视图：主会话单独成组，行上写明「没有任务」，�
   // 组头只说组名，不冒充「任务：…」；登记身份落在 data-kind 上，别靠颜色区分。
   const group = page.getByRole('region', { name: '主会话' });
   await expect(group).toBeVisible();
+  await expect(group.locator('xpath=ancestor::*[@data-testid="list-workspace-group"][1]')).toBeVisible();
   await expect(group).toHaveAttribute('data-kind', 'coordinator');
   await expect(group.getByTestId('list-session-label')).not.toHaveText('—');
   await expect(group.getByTestId('list-session-meta')).toContainText('没有任务');
@@ -89,7 +90,7 @@ test('列表视图：主会话单独成组，行上写明「没有任务」，�
   await page.screenshot({ path: testInfo.outputPath('coordinator-list-390.png') });
 });
 
-test('侧栏：主会话在任务下面单独一组，动作还是原来那套', async ({ page, baseURL }) => {
+test('侧栏：主会话位于自己的工作空间，打开行为不变', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await loginByApi(page);
   const seed = await seedCoordinator(page, await headers(page, baseURL));
@@ -97,6 +98,7 @@ test('侧栏：主会话在任务下面单独一组，动作还是原来那套',
   await page.goto(`/#/p/${seed!.projectId}`);
   const group = page.getByTestId('sidebar-coordinators');
   await expect(group).toBeVisible();
+  await expect(group.locator('xpath=ancestor::*[@data-testid="sidebar-workspace-group"][1]')).toBeVisible();
   await expect(group).toHaveAttribute('aria-label', '主会话');
   // 同一个桶里的普通无任务会话不会被一起喊成主会话：这里只有登记过的那一条。
   await expect(group.getByTestId('sidebar-session-row')).toHaveCount(1);

@@ -97,16 +97,22 @@ test('任务侧栏和画布打开同一开始会话流程，手机可直接创�
     }).toBe(true);
     await expect(page).toHaveURL(/\/focus/);
 
-    // 有会话时，创建按钮不改变任务的展开状态；标题按钮仍可折叠。
+    // 有会话时，创建按钮不改变工作空间的展开状态；只折叠工作空间，不另折叠任务。
     await page.setViewportSize({ width: 1280, height: 900 });
-    const titleButton = sidebar.locator('button[data-nav-row][aria-expanded]').filter({ hasText: TITLE });
-    await expect(titleButton).toHaveAttribute('aria-expanded', 'true');
-    await titleButton.click();
-    await expect(titleButton).toHaveAttribute('aria-expanded', 'false');
+    const workspace = sidebar.getByTestId('sidebar-workspace-group');
+    await expect(workspace).toHaveCount(1);
+    const toggle = workspace.getByTestId('sidebar-workspace-toggle');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(workspace.getByTestId('sidebar-session-row')).toHaveCount(1);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(create).toHaveCount(0);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     await create.click();
     await expect(dialog).toBeVisible();
     await dialog.getByRole('button', { name: '取消' }).click();
-    await expect(titleButton).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     await expect(create).toBeFocused();
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -42,7 +42,7 @@ test('列表视图：按任务分组，手机上每行都有能区分的信息',
     await expect(rows.nth(0).getByTestId('list-session-meta')).toBeVisible();
     await expect(rows.nth(0).getByTestId('list-session-meta')).toContainText('派生');
     await expect(rows.nth(1).getByTestId('list-session-meta')).toContainText(/分叉自 #\d+/);
-    await expect(group.getByTestId('list-workspace-toggle').first()).toBeVisible();
+    await expect(group.locator('xpath=ancestor::*[@data-testid="list-workspace-group"][1]').getByTestId('list-workspace-toggle')).toBeVisible();
     const box = await rows.nth(1).boundingBox();
     expect(box && box.height >= 44 && box.x + box.width <= 390).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('list-390.png') });

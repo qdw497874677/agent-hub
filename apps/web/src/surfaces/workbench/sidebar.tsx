@@ -7,7 +7,7 @@ import { Icon } from '../../atoms/icons.tsx';
 import { MessagesEntry } from '../../atoms/messages-entry.tsx';
 import { NotificationBell } from '../../shell/market/notifications.tsx';
 import { WorkspacesDialog } from './workspaces-dialog.tsx';
-import { MachinesBadge } from '../../shell/workers.tsx';
+import { MachinesBadge, resolveWorker, useWorkers } from '../../shell/workers.tsx';
 import { coarsePointer, modKeyLabel } from '../../shell/device.ts';
 import { PHASE_DOT, activeSessions, elapsedLabel, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
 import { waitingForReply, type LiveMap } from '../../atoms/live.ts';
@@ -15,8 +15,9 @@ import { sessionActionItems, type SessionActionId, type SessionActionItem } from
 import { useSessionActions } from '../../atoms/use-session-actions.ts';
 import { DeleteSessionDialog } from '../../atoms/delete-session-dialog.tsx';
 import { SessionRowMenu } from './session-row-menu.tsx';
-import { COORDINATOR_TITLE, UNASSIGNED_KEY, UNASSIGNED_TITLE } from '../../atoms/session-groups.ts';
+import { COORDINATOR_TITLE } from '../../atoms/session-groups.ts';
 import { useCoordinators } from '../../shell/coordinators.ts';
+import { workspaceSessionGroups, workspaceWorkerLabel } from './list-workspaces.ts';
 
 /** 平台修饰键（⌘ / Ctrl）：提示写对，快捷键本身两个都收。 */
 const MOD = modKeyLabel();
@@ -26,7 +27,7 @@ export const TOGGLE_SIDEBAR_EVENT = 'agent-hub:toggle-sidebar';
 
 /** 桌面侧栏收起成图标栏：记在本机，刷新后保持。 */
 const COLLAPSED_KEY = 'agent-hub.sidebar.collapsed';
-const COLLAPSED_TASKS_KEY = 'agent-hub.sidebar.collapsed-tasks';
+const COLLAPSED_WORKSPACES_KEY = 'agent-hub.sidebar.collapsed-workspaces';
 
 function readFlag(key: string): boolean {
   try {
@@ -108,30 +109,22 @@ export function ProjectSidebar({
   const [settings, setSettings] = useState(false);
   const [showSettled, setShowSettled] = useState(false);
   const [collapsed, setCollapsed] = useState(() => !drawer && readFlag(COLLAPSED_KEY));
-  const [foldedTasks, setFoldedTasks] = useState<Set<string>>(() => readSet(COLLAPSED_TASKS_KEY));
+  const workspaceScope = `${COLLAPSED_WORKSPACES_KEY}:${project.id}`;
+  const [workspaceState, setWorkspaceState] = useState(() => ({ scope: workspaceScope, keys: readSet(workspaceScope) }));
+  const foldedWorkspaces = workspaceState.scope === workspaceScope ? workspaceState.keys : readSet(workspaceScope);
   const tasks = useMemo(() => (canvas?.tasks ?? []).filter((task) => task.archivedAt == null), [canvas?.tasks]);
   // 活跃列表默认不含收起过的：侧栏是「现在要管什么」，不是全量档案。
   const active = useMemo(() => activeSessions(canvas?.sessions ?? []), [canvas?.sessions]);
   const settled = useMemo(() => settledSessions(canvas?.sessions ?? []), [canvas?.sessions]);
-  const sessions = useMemo(() => {
-    const grouped = new Map<string, SessionDto[]>();
-    for (const session of active) {
-      const key = session.taskId ?? UNASSIGNED_KEY;
-      const list = grouped.get(key) ?? [];
-      list.push(session);
-      grouped.set(key, list);
-    }
-    return grouped;
-  }, [active]);
   const taskTitle = useMemo(() => new Map(tasks.map((task) => [task.id, task.title])), [tasks]);
   /**
    * 没有任务的会话（人开的主会话、bot、群角色）：以前这个桶不渲染，主会话就永远不在侧栏出现。
    * 登记表里有的才是「主会话」，其余照中性的说法——不能把 bot 会话也叫成主会话。
    */
   const { ids: coordinatorIds } = useCoordinators(project.id);
-  const taskless = sessions.get(UNASSIGNED_KEY) ?? [];
-  const coordinators = taskless.filter((session) => coordinatorIds.has(session.id));
-  const unassigned = taskless.filter((session) => !coordinatorIds.has(session.id));
+  const workers = useWorkers();
+  const workspaceGroups = useMemo(() => canvas ? workspaceSessionGroups({ ...canvas, sessions: active.filter((session) => session.taskId === null || tasks.some((task) => task.id === session.taskId)) }, coordinatorIds) : [], [canvas, active, coordinatorIds, tasks]);
+  const emptyTasks = tasks.filter((task) => !(canvas?.sessions ?? []).some((session) => session.taskId === task.id) && task.status !== 'done' && task.status !== 'abandoned');
   const now = Date.now();
 
   const titleOf = (session: SessionDto): string => {
@@ -244,11 +237,10 @@ export function ProjectSidebar({
     onRenamed: (value: string | null) => finishRename(session, value)
   });
   /** 没有任务的两组共用一套行：组名不同，行的动作和别的行完全一样。 */
-  const tasklessSection = (testId: string, title: string, rows: SessionDto[]) =>
+  const tasklessSection = (key: string, testId: string, title: string, rows: readonly SessionDto[]) =>
     rows.length === 0 ? null : (
-      <section className="mb-1" data-testid={testId} aria-label={title}>
+      <section key={key} className="mb-1" data-testid={testId} aria-label={title}>
         <p className="flex min-h-10 items-center gap-1.5 rounded-md px-1.5 text-left text-sub text-tertiary lg:min-h-7">
-          <Icon name="chevron-down" size={13} />
           <span className="min-w-0 flex-1 truncate">{title}</span>
           <span className="shrink-0 text-meta">{rows.length}</span>
         </p>
@@ -286,14 +278,12 @@ export function ProjectSidebar({
     };
   }, [drawer, toggleCollapsed]);
 
-  const toggleTask = (taskId: string) =>
-    setFoldedTasks((current) => {
-      const next = new Set(current);
-      if (next.has(taskId)) next.delete(taskId);
-      else next.add(taskId);
-      save(COLLAPSED_TASKS_KEY, JSON.stringify([...next]));
-      return next;
-    });
+  const toggleWorkspace = (key: string) => setWorkspaceState((current) => {
+    const next = new Set(current.scope === workspaceScope ? current.keys : readSet(workspaceScope));
+    if (next.has(key)) next.delete(key); else next.add(key);
+    save(workspaceScope, JSON.stringify([...next]));
+    return { scope: workspaceScope, keys: next };
+  });
 
   // 列表里 ↑ / ↓ 在会话行之间移动焦点（Home / End 到头尾）。
   const listRef = useRef<HTMLElement>(null);
@@ -304,20 +294,23 @@ export function ProjectSidebar({
     if (!session) return;
     location.current = 'expanded';
     if (session.settledAt != null) setShowSettled(true);
-    if (session.taskId) setFoldedTasks((current) => {
-      if (!current.has(session.taskId!)) return current;
-      const next = new Set(current);
-      next.delete(session.taskId!);
-      return next;
+    const workspace = workspaceGroups.find((group) => group.sessions.some((item) => item.id === session.id));
+    if (workspace) setWorkspaceState((current) => {
+      const keys = current.scope === workspaceScope ? current.keys : readSet(workspaceScope);
+      if (!keys.has(workspace.key)) return current;
+      const next = new Set(keys);
+      next.delete(workspace.key);
+      save(workspaceScope, JSON.stringify([...next]));
+      return { scope: workspaceScope, keys: next };
     });
-  }, [drawer, canvas, selectedId]);
+  }, [drawer, canvas, selectedId, workspaceGroups, workspaceScope]);
   useEffect(() => {
     if (!drawer || location.current !== 'expanded' || !selectedId) return;
     const row = listRef.current?.querySelector<HTMLElement>(`[data-testid="sidebar-session-row"][data-session-id="${CSS.escape(selectedId)}"]`);
     if (!row) return;
     row.scrollIntoView({ block: 'nearest' });
     location.current = 'done';
-  }, [drawer, canvas, selectedId, foldedTasks, showSettled]);
+  }, [drawer, canvas, selectedId, foldedWorkspaces, showSettled]);
   const onListKey = (event: ReactKeyboardEvent<HTMLElement>) => {
     if ((event.target as HTMLElement).closest('[data-sidebar-derive]')) return;
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
@@ -429,60 +422,63 @@ export function ProjectSidebar({
       <div className={drawer ? 'flex min-h-0 flex-1 flex-col overflow-y-auto' : 'contents'}>
       {!drawer ? projectActions : null}
 
-      <nav ref={listRef} onKeyDown={onListKey} className={drawer ? 'shrink-0 border-t border-hair px-2 py-2' : 'min-h-0 flex-1 overflow-y-auto border-t border-hair px-2 py-2'} aria-label="任务与会话">
-        <p className="px-2 pb-1 text-meta text-tertiary">任务</p>
-        {tasks.length === 0 ? (
-          <p className="px-2 py-1 text-meta text-tertiary">还没有任务</p>
-        ) : (
-          tasks.map((task) => {
-            const rows = sessions.get(task.id) ?? [];
-            const folded = foldedTasks.has(task.id);
-            const busy = rows.some((session) => sessionPhase(session) === 'working');
-            return (
-              <section key={task.id} className="mb-1">
-                <div className="flex min-w-0 items-center">
-                  <button
-                    data-nav-row
-                    className="group flex min-h-10 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left text-sub text-tertiary hover:bg-hover hover:text-secondary lg:min-h-7"
-                    aria-expanded={rows.length > 0 ? !folded : undefined}
-                    title={task.title}
-                    onClick={() => rows.length > 0 && toggleTask(task.id)}
-                  >
-                    <Icon name={folded ? 'chevron-right' : 'chevron-down'} size={13} className={rows.length > 0 ? '' : 'opacity-0'} />
-                    <span className="min-w-0 flex-1 truncate">{task.title}</span>
-                    {folded && rows.length > 0 ? (
-                      <span className="flex shrink-0 items-center gap-1 text-meta">
-                        {busy ? <span aria-hidden className={`size-1.5 rounded-full ${PHASE_DOT.busy}`} /> : null}
-                        {rows.length}
-                      </span>
-                    ) : null}
-                  </button>
-                  <button
-                    type="button"
-                    className={`${GHOST_ICON} focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px]`}
-                    data-sidebar-derive
-                    data-testid="sidebar-task-derive"
-                    aria-label={`为${task.title}开始会话`}
-                    title="开始会话"
-                    onClick={() => onDerive(task.id)}
-                  >
-                    <Icon name="plus" size={14} />
-                  </button>
+      <nav ref={listRef} onKeyDown={onListKey} className={drawer ? 'shrink-0 border-t border-hair px-2 py-0.5' : 'min-h-0 flex-1 overflow-y-auto border-t border-hair px-2 py-2'} aria-label="任务与会话">
+        <p className="sr-only px-2 pb-1 text-meta text-tertiary lg:not-sr-only">工作空间</p>
+        {workspaceGroups.map((workspace) => {
+          const expanded = !foldedWorkspaces.has(workspace.key);
+          const worker = resolveWorker(workers.list, workspace.workerId);
+          return (
+            <section key={workspace.key} data-testid="sidebar-workspace-group" data-workspace-key={workspace.key} className="mb-1 lg:mb-2">
+              <button type="button" data-nav-row data-testid="sidebar-workspace-toggle" aria-expanded={expanded} onClick={() => toggleWorkspace(workspace.key)} className="flex min-h-[44px] w-full items-start gap-1.5 rounded-md px-1.5 py-1.5 text-left hover:bg-hover lg:min-h-7">
+                <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={13} className="mt-1 shrink-0 text-tertiary" />
+                <span className="min-w-0 flex-1">
+                  <span className="block break-words text-sub text-primary">{workspace.title}</span>
+                  <span className="flex min-w-0 gap-1 text-meta text-tertiary" title={[workspaceWorkerLabel(workspace.workerId, worker?.label), workspace.detail].filter(Boolean).join(' · ')}>
+                    <span className={workspace.detail ? 'shrink-0 lg:max-w-[40%] lg:truncate' : 'shrink-0'}>{workspaceWorkerLabel(workspace.workerId, worker?.label)}{worker && worker.state !== 'online' ? ' · 离线' : ''}</span>
+                    {workspace.detail ? <span dir="rtl" className="min-w-0 truncate text-left">{workspace.detail}</span> : null}
+                  </span>
+                </span>
+                <span className="shrink-0 text-meta text-tertiary">{workspace.sessions.length}</span>
+              </button>
+              {expanded ? <div className="ml-2 border-l border-hair pl-1">
+                {workspace.groups.map((group) => {
+                  const rows = group.sessions.map(({ session }) => session);
+                  if (group.taskless) return tasklessSection(group.taskId, group.kind === 'coordinator' ? 'sidebar-coordinators' : 'sidebar-unassigned', group.title, rows);
+                  const task = tasks.find((candidate) => candidate.id === group.taskId);
+                  if (!task) return null;
+                  return (
+                    <section key={task.id} className="mb-1">
+                      <div className="flex min-w-0 items-center">
+                        <h3 className="min-w-0 flex-1 truncate px-1.5 text-sub text-tertiary" title={task.title}>{task.title}</h3>
+                        <button
+                          type="button"
+                          className={`${GHOST_ICON} focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px]`}
+                          data-sidebar-derive
+                          data-testid="sidebar-task-derive"
+                          aria-label={`为${task.title}开始会话`}
+                          title="开始会话"
+                          onClick={() => onDerive(task.id)}
+                        >
+                          <Icon name="plus" size={14} />
+                        </button>
+                      </div>
+                      {rows.map((session) => <SessionRow key={session.id} {...rowProps(session)} />)}
+                    </section>
+                  );
+                })}
                 </div>
-                {folded
-                  ? null
-                  : rows.map((session) => (
-                      <SessionRow key={session.id} {...rowProps(session)} />
-                    ))}
-              </section>
-            );
-          })
-        )}
-        {/* 没有任务的会话：主会话要能一直被看见，不能等它派了工才出现在某条任务下面。
-            两组分开：登记过的主会话一个名字，bot / 群 / 连接器开的照中性的说法。 */}
-        {tasklessSection('sidebar-coordinators', COORDINATOR_TITLE, coordinators)}
-        {tasklessSection('sidebar-unassigned', UNASSIGNED_TITLE, unassigned)}
-        <div className="mt-2" data-testid="sidebar-settled">
+              : null}
+            </section>
+          );
+        })}
+        {emptyTasks.length > 0 ? <section className="mt-1 lg:mt-2" aria-label="未开始的任务" data-testid="sidebar-empty-tasks">
+          <p className="px-2 py-1 text-meta text-tertiary">未开始</p>
+          {emptyTasks.map((task) => <div key={task.id} className="flex min-w-0 items-center">
+            <span className="min-w-0 flex-1 truncate px-2 text-sub text-tertiary" title={task.title}>{task.title}</span>
+            <button type="button" className={GHOST_ICON} data-sidebar-derive data-testid="sidebar-task-derive" aria-label={`为${task.title}开始会话`} title="开始会话" onClick={() => onDerive(task.id)}><Icon name="plus" size={14} /></button>
+          </div>)}
+        </section> : null}
+        <div className="mt-1 lg:mt-2" data-testid="sidebar-settled">
           <button
             data-testid="sidebar-settled-toggle"
             data-nav-row

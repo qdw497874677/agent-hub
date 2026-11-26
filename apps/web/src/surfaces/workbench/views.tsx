@@ -4,7 +4,6 @@ import { localTime } from '../../shell/local-time.ts';
 import { useQuery } from '@tanstack/react-query';
 import type { CanvasDto, SearchHitDto, SessionDto, TaskDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
-import { groupSessions } from '../../atoms/session-groups.ts';
 import { useCoordinators } from '../../shell/coordinators.ts';
 import type { LiveMap } from '../../atoms/live.ts';
 import { StatusPill } from '../../atoms/status.tsx';
@@ -24,7 +23,7 @@ import { TaskBadge } from './task-detail.tsx';
 import { attentionTitle, PHASE_LABEL } from '../../atoms/attention.tsx';
 import { paletteSnapshot } from './palette-recent.ts';
 import { useAccount } from '../../shell/account-context.ts';
-import { listWorkspaceGroups } from './list-workspaces.ts';
+import { workspaceSessionGroups, workspaceWorkerLabel } from './list-workspaces.ts';
 export type { PaletteAction } from './palette.ts';
 
 
@@ -37,10 +36,10 @@ const DISPATCH_PROMPT_PREFIX = '你是被调度器派来推进这个任务的任
 
 /** 这一组里有会话正在跑（或等你说话）：移动端把它排到前面。 */
 function groupIsActive(
-  group: { readonly sessions: readonly { readonly session: SessionDto }[] },
+  group: { readonly sessions: readonly SessionDto[] },
   live: LiveMap
 ): boolean {
-  return group.sessions.some(({ session }) => {
+  return group.sessions.some((session) => {
     const status = statusOf(session, live);
     return status === 'running' || waitingForReply(live[session.id], status);
   });
@@ -107,7 +106,7 @@ export function ListView({
   };
   // 主会话的姓名来自登记表：没有它，无任务会话只能说「没有任务的会话」。
   const { ids: coordinatorIds } = useCoordinators(canvas.project.id);
-  const groups = useMemo(() => groupSessions(canvas, coordinatorIds), [canvas, coordinatorIds]);
+  const groups = useMemo(() => workspaceSessionGroups(canvas, coordinatorIds), [canvas, coordinatorIds]);
   const unstartedTasks = useMemo(() => {
     const started = new Set(canvas.sessions.map((session) => session.taskId).filter((taskId) => taskId !== null));
     return canvas.tasks.filter(
@@ -120,7 +119,7 @@ export function ListView({
   const orderedGroups = useMemo(() => {
     if (!narrow) return groups;
     const latest = (group: (typeof groups)[number]) =>
-      group.sessions.reduce((max, { session }) => Math.max(max, session.createdAt), 0);
+      group.sessions.reduce((max, session) => Math.max(max, session.createdAt), 0);
     return [...groups].sort((a, b) => {
       const activeA = groupIsActive(a, live) ? 0 : 1;
       const activeB = groupIsActive(b, live) ? 0 : 1;
@@ -332,11 +331,11 @@ export function ListView({
     unstartedTasks.length > 0 ? (
       <section
         className="mb-4"
-        aria-label={narrow ? '暂无会话的任务' : '未开始的任务'}
+        aria-label="未开始的任务"
         data-testid="list-unstarted"
       >
         <h3 className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-hair bg-canvas/95 py-2 text-sub text-primary backdrop-blur">
-          <span className="min-w-0 truncate">{narrow ? '暂无会话的任务' : '未开始'}</span>
+          <span className="min-w-0 truncate">未开始</span>
           <span className="shrink-0 text-meta text-tertiary">{unstartedTasks.length} 个任务</span>
         </h3>
         <ul>
@@ -415,134 +414,128 @@ export function ListView({
       </section>
     ) : null;
 
-  const sessionSections = orderedGroups.map((group) => (
-    <section
-      key={group.taskId}
-      className="mb-4"
-      // 无任务组没有任务标题：读屏也只念组名，不假装它是一条任务
-      aria-label={group.taskless ? group.title : `任务：${group.title}`}
-      data-testid="list-task-group"
-      data-kind={group.kind}
-    >
-      <h3 className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-hair bg-canvas/95 py-2 text-sub text-primary backdrop-blur">
-        {!group.taskless ? (
-          // 组头就是这条任务的入口（日志 / 归档 / 再开一条）：窄屏 44px，桌面保持紧凑但可聚焦。
-          <button
-            type="button"
-            data-testid="list-group-open"
-            aria-label={`打开任务：${group.title}`}
-            className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-sm text-left hover:bg-card focus-visible:bg-card focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring md:min-h-7"
-            onClick={() => onTaskDetail(group.taskId)}
-          >
-            <span className="shrink-0 text-meta text-tertiary max-md:hidden">任务</span>
-            <span className="min-w-0 flex-1 truncate">{group.title}</span>
-            <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
-            <Icon name="chevron-right" size={13} className="shrink-0 text-tertiary" />
-          </button>
-        ) : (
-          <>
-            <span className="min-w-0 truncate">{group.title}</span>
-            <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
-          </>
-        )}
-      </h3>
-      {listWorkspaceGroups(group, canvas).map((workspaceGroup) => {
-        const expanded = !collapsed.has(workspaceGroup.key);
-        const groupWorker = resolveWorker(workers.list, workspaceGroup.workerId);
-        return (
-        <div key={workspaceGroup.key} data-testid="list-workspace-group" data-workspace-key={workspaceGroup.key} className="mt-1 min-w-0">
-          <button
-            type="button"
-            data-testid="list-workspace-toggle"
-            aria-expanded={expanded}
-            aria-label={`${workspaceGroup.title}，${groupWorker?.label ?? (workspaceGroup.workerId || '本机')}${groupWorker ? groupWorker.state === 'online' ? '，在线' : '，离线' : ''}，${workspaceGroup.sessions.length} 条会话`}
-            onClick={() => toggleWorkspace(workspaceGroup.key)}
-            className="flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-sm px-2 text-left hover:bg-card focus-visible:bg-card focus-visible:outline-2 focus-visible:outline-ring"
-          >
-            <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={14} className="shrink-0 text-tertiary" />
-            <span className="min-w-0 flex-1 truncate text-sub text-secondary" title={workspaceGroup.detail ?? workspaceGroup.title}>{workspaceGroup.title}</span>
-            <span className="max-w-[28%] min-w-0 truncate text-meta text-tertiary" title={groupWorker ? `${groupWorker.label} · ${groupWorker.state === 'online' ? '在线' : '离线'}` : workspaceGroup.workerId || '本机'}>
-              {groupWorker?.label ?? (workspaceGroup.workerId ? workspaceGroup.workerId.slice(0, 8) : '本机')}
-            </span>
-            {groupWorker && groupWorker.state !== 'online' ? <span className="shrink-0 text-meta text-tertiary">离线</span> : null}
-            <span className="shrink-0 whitespace-nowrap text-meta text-tertiary">{workspaceGroup.sessions.length} 条</span>
-          </button>
-          {expanded ? <ul className="ml-3 border-l border-hair pl-2">
-        {workspaceGroup.sessions.map(({ session, label }) => {
-          const status = statusOf(session, live);
-          const seq = live[session.id]?.lastSeq ?? session.lastSeq;
-          const origin = session.origin.kind === 'fork'
-            ? `分叉自 #${session.origin.atSeq}`
-            : session.taskId === null ? '没有任务' : '派生';
-          const worker = resolveWorker(workers.list, session.workerId);
-          const workspace = session.workspaceId ? workspaces.get(session.workspaceId) : undefined;
-          // 调度器起跑的会话没有名字，第一句是固定模板：窄屏别把模板当会话名（宽屏保持原样）。
-          const rowLabel =
-            narrow && !session.title && label.startsWith(DISPATCH_PROMPT_PREFIX) ? '调度器派发' : label;
-          return (
-            <li
-              key={session.id}
-              data-session-id={session.id}
-              className="flex items-stretch border-b border-hair/60"
+  const sessionSections = orderedGroups.map((workspaceGroup) => {
+    const expanded = !collapsed.has(workspaceGroup.key);
+    const groupWorker = resolveWorker(workers.list, workspaceGroup.workerId);
+    return (
+      <div key={workspaceGroup.key} data-testid="list-workspace-group" data-workspace-key={workspaceGroup.key} className="mb-4 min-w-0">
+        <button type="button" data-testid="list-workspace-toggle" aria-expanded={expanded}
+          onClick={() => toggleWorkspace(workspaceGroup.key)}
+          className="flex min-h-[44px] w-full min-w-0 items-start gap-2 rounded-sm py-2 text-left hover:bg-card focus-visible:bg-card focus-visible:outline-2 focus-visible:outline-ring">
+          <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={14} className="mt-1 shrink-0 text-tertiary" />
+          <span className="min-w-0 flex-1">
+            <span className="block break-words text-sub text-primary">{workspaceGroup.title}</span>
+            <span className="block break-all text-meta text-tertiary">{workspaceWorkerLabel(workspaceGroup.workerId, groupWorker?.label)}{groupWorker && groupWorker.state !== 'online' ? ' · 离线' : ''}{workspaceGroup.detail ? ` · ${workspaceGroup.detail}` : ''}</span>
+          </span>
+          <span className="shrink-0 whitespace-nowrap text-meta text-tertiary">{workspaceGroup.sessions.length} 条</span>
+        </button>
+        {expanded ? <div className="ml-3 border-l border-hair pl-2">{workspaceGroup.groups.map((group) => (
+            <section
+              key={group.taskId}
+              className="mb-4"
+              // 无任务组没有任务标题：读屏也只念组名，不假装它是一条任务
+              aria-label={group.taskless ? group.title : `任务：${group.title}`}
+              data-testid="list-task-group"
+              data-kind={group.kind}
             >
-              <button
-                type="button"
-                data-testid="list-session-row"
-                className="flex min-h-[44px] min-w-0 flex-1 items-center gap-3 py-2 pl-3 pr-1 text-left hover:bg-card focus-visible:bg-card"
-                onClick={() => {
-                  rememberScroll();
-                  onOpen(session.id);
-                }}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-body text-primary" data-testid="list-session-label">{rowLabel}</span>
-                  <span className="block truncate text-meta text-tertiary" data-testid="list-session-meta">
-                    {localTime(session.createdAt)} · {origin} · {agentLabel(session.agentId)}
-                  </span>
-                  <span className="mt-1 hidden min-w-0 items-center gap-1.5 md:flex" data-testid="list-session-place">
-                    <WorkerChip
-                      worker={worker}
-                      fallback={session.workerId ? session.workerId.slice(0, 8) : '本机'}
-                    />
-                    {workspace ? (
-                      <span className="min-w-0 truncate text-meta text-tertiary" title={workspace.path}>
-                        {workspaceName(workspace)}
-                      </span>
-                    ) : null}
-                    <span className="hidden shrink-0 text-meta text-tertiary md:inline">
-                      {modelLabel(session.model)} · #{seq}
-                    </span>
-                  </span>
-                </span>
-                <span className="shrink-0">
-                  <StatusPill status={status} reason={live[session.id]?.reason} lastSeq={seq} />
-                </span>
-              </button>
-              <button
-                type="button"
-                data-testid="list-session-more"
-                aria-label={`会话「${rowLabel}」的操作`}
-                aria-haspopup="menu"
-                aria-expanded={menu?.sessionId === session.id}
-                title="会话操作"
-                className="flex size-[44px] shrink-0 items-center justify-center self-center rounded-sm text-body text-tertiary hover:bg-card hover:text-primary focus-visible:bg-card"
-                onClick={(event) => {
-                  trigger.current = event.currentTarget;
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  setMenu({ sessionId: session.id, label: rowLabel, x: rect.right - 168, y: rect.bottom + 2 });
-                }}
-              >
-                <Icon name="more" size={14} />
-              </button>
-            </li>
-          );
-        })}
-          </ul> : null}
-        </div>
-        );
-      })}
-    </section>
-  ));
+              <h3 className="flex items-baseline gap-2 border-b border-hair py-2 text-sub text-primary">
+                {!group.taskless ? (
+                  // 组头就是这条任务的入口（日志 / 归档 / 再开一条）：窄屏 44px，桌面保持紧凑但可聚焦。
+                  <button
+                    type="button"
+                    data-testid="list-group-open"
+                    aria-label={`打开任务：${group.title}`}
+                    className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-sm text-left hover:bg-card focus-visible:bg-card focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring md:min-h-7"
+                    onClick={() => onTaskDetail(group.taskId)}
+                  >
+                    <span className="shrink-0 text-meta text-tertiary max-md:hidden">任务</span>
+                    <span className="min-w-0 flex-1 truncate">{group.title}</span>
+                    <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
+                    <Icon name="chevron-right" size={13} className="shrink-0 text-tertiary" />
+                  </button>
+                ) : (
+                  <>
+                    <span className="min-w-0 truncate">{group.title}</span>
+                    <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
+                  </>
+                )}
+              </h3>
+              <ul>
+                {group.sessions.map(({ session, label }) => {
+                  const status = statusOf(session, live);
+                  const seq = live[session.id]?.lastSeq ?? session.lastSeq;
+                  const origin = session.origin.kind === 'fork'
+                    ? `分叉自 #${session.origin.atSeq}`
+                    : session.taskId === null ? '没有任务' : '派生';
+                  const worker = resolveWorker(workers.list, session.workerId);
+                  const workspace = session.workspaceId ? workspaces.get(session.workspaceId) : undefined;
+                  // 调度器起跑的会话没有名字，第一句是固定模板：窄屏别把模板当会话名（宽屏保持原样）。
+                  const rowLabel =
+                    narrow && !session.title && label.startsWith(DISPATCH_PROMPT_PREFIX) ? '调度器派发' : label;
+                  return (
+                    <li
+                      key={session.id}
+                      data-session-id={session.id}
+                      className="flex items-stretch border-b border-hair/60"
+                    >
+                      <button
+                        type="button"
+                        data-testid="list-session-row"
+                        className="flex min-h-[44px] min-w-0 flex-1 items-center gap-3 py-2 pl-3 pr-1 text-left hover:bg-card focus-visible:bg-card"
+                        onClick={() => {
+                          rememberScroll();
+                          onOpen(session.id);
+                        }}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-body text-primary" data-testid="list-session-label">{rowLabel}</span>
+                          <span className="block truncate text-meta text-tertiary" data-testid="list-session-meta">
+                            {localTime(session.createdAt)} · {origin} · {agentLabel(session.agentId)}
+                          </span>
+                          <span className="mt-1 hidden min-w-0 items-center gap-1.5 md:flex" data-testid="list-session-place">
+                            <WorkerChip
+                              worker={worker}
+                              fallback={session.workerId ? session.workerId.slice(0, 8) : '本机'}
+                            />
+                            {workspace ? (
+                              <span className="min-w-0 truncate text-meta text-tertiary" title={workspace.path}>
+                                {workspaceName(workspace)}
+                              </span>
+                            ) : null}
+                            <span className="hidden shrink-0 text-meta text-tertiary md:inline">
+                              {modelLabel(session.model)} · #{seq}
+                            </span>
+                          </span>
+                        </span>
+                        <span className="shrink-0">
+                          <StatusPill status={status} reason={live[session.id]?.reason} lastSeq={seq} />
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="list-session-more"
+                        aria-label={`会话「${rowLabel}」的操作`}
+                        aria-haspopup="menu"
+                        aria-expanded={menu?.sessionId === session.id}
+                        title="会话操作"
+                        className="flex size-[44px] shrink-0 items-center justify-center self-center rounded-sm text-body text-tertiary hover:bg-card hover:text-primary focus-visible:bg-card"
+                        onClick={(event) => {
+                          trigger.current = event.currentTarget;
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          setMenu({ sessionId: session.id, label: rowLabel, x: rect.right - 168, y: rect.bottom + 2 });
+                        }}
+                      >
+                        <Icon name="more" size={14} />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+        ))}</div> : null}
+      </div>
+    );
+  });
 
   return (
     <div

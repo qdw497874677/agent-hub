@@ -69,10 +69,11 @@ test.describe('手机上的项目列表', () => {
     await expect(page.getByTestId('list-context')).toContainText('2 个任务 · 1 条会话');
     await expect(page.getByTestId('list-refresh')).toBeVisible();
 
-    // 会话区在「暂无会话的任务」之前：手机上先给「上次聊到哪」。
+    // 工作空间和会话在「未开始」之前：手机上先给「上次聊到哪」。
     const group = page.getByTestId('list-task-group').first();
     await expect(group).toContainText('1 条会话');
-    await expect(page.getByTestId('list-unstarted')).toContainText('暂无会话的任务');
+    await expect(page.getByTestId('list-unstarted')).toContainText('未开始');
+    await expect(page.getByTestId('list-unstarted')).toContainText(LONG_TITLE);
     const groupBox = (await group.boundingBox())!;
     const tasksBox = (await page.getByTestId('list-unstarted').boundingBox())!;
     expect(groupBox.y).toBeLessThan(tasksBox.y);

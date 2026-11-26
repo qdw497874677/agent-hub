@@ -66,7 +66,6 @@ test('手机窗口选择、滑动和项目全部会话不影响草稿或运行',
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(chooser).toHaveCount(0);
     await page.setViewportSize({ width: 320, height: 700 });
-    await page.evaluate((taskId) => localStorage.setItem('agent-hub.sidebar.collapsed-tasks', JSON.stringify([taskId])), task.id);
     await page.getByRole('button', { name: '窗口 2/2' }).click();
     await page.getByRole('button', { name: /查看项目全部会话/ }).click();
     await expect(page.getByTestId('window-chooser')).toHaveCount(0);
@@ -84,10 +83,12 @@ test('手机窗口选择、滑动和项目全部会话不影响草稿或运行',
     await expect(page.getByRole('button', { name: '窗口 2/2' })).toBeFocused();
     await page.getByRole('button', { name: '窗口 2/2' }).click();
     await page.getByRole('button', { name: /查看项目全部会话/ }).click();
-    const taskToggle = drawer.locator('button[title="窗口导航任务"]');
-    await taskToggle.click();
+    const workspaces = drawer.getByTestId('sidebar-workspace-group');
+    await expect(workspaces).toHaveCount(1);
+    const workspaceToggle = workspaces.getByTestId('sidebar-workspace-toggle');
+    await workspaceToggle.click();
     await expect(drawer.locator(`[data-testid="sidebar-session-row"][data-session-id="${b}"]`)).toHaveCount(0);
-    await taskToggle.click();
+    await workspaceToggle.click();
     await drawer.locator(`[data-testid="sidebar-session-row"][data-session-id="${c}"] [data-testid="sidebar-session"]`).click();
     await expect(page).toHaveURL(new RegExp(c));
     expect(existsSync(join(root, 'hold-navigation.go'))).toBe(false);
