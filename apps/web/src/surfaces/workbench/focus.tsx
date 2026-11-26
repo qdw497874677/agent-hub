@@ -10,7 +10,7 @@ import { AttentionAutoAck } from '../../atoms/attention.tsx';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
 import { api, sessionGroupId, sessionStartupApi } from '../../shell/api.ts';
-import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
+import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, questionOf, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
 import { groupTimeline } from '../../atoms/timeline-groups.ts';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
 import { Composer } from '../../atoms/composer.tsx';
@@ -229,8 +229,6 @@ export function FocusView({
    * nonce 让 Composer 知道「这是新引用，去同步一次」。切回对话页，人接着写问题。
    */
   const [quote, setQuote] = useState<{ text: string; nonce: number } | null>(null);
-  // 「回复此问题」只递增这个信号：输入框收到后聚焦，草稿和发送都还是人的事。
-  const [replyFocus, setReplyFocus] = useState(0);
   const quoteSeq = useRef(0);
   const quoteToChat = (ref: string) => {
     const text = appendRef(draft, ref);
@@ -574,10 +572,15 @@ export function FocusView({
   // 跳三次，观感很碎，所以现在只打标不改变顺序。
   const held = heldPromptSeqs(deliveriesBySeq);
   const timelineBlocks = markQueued(blocks, held);
-  // 时间线 v2：每轮连续的工具调用 + 思考并成一组（摘要可收起）；工具设成「隐藏」时不分组
+  // 显式要求显示的内容、需要回答的问题与失败工具都留在摘要外。
   const timelineItems = useMemo(
-    () => (settings.tools === 'hidden' ? timelineBlocks.map((block, index) => ({ type: 'block' as const, block, index, recovered: false })) : groupTimeline(timelineBlocks, { running: turnRunning })),
-    [timelineBlocks, settings.tools, turnRunning]
+    () => groupTimeline(timelineBlocks, {
+      running: turnRunning,
+      groupable: (block) => block.kind === 'tool'
+        ? settings.tools === 'collapsed' && questionOf(block) === null && block.result?.ok !== false
+        : block.kind === 'thinking' && settings.thinking === 'collapsed'
+    }),
+    [timelineBlocks, settings.tools, settings.thinking, turnRunning]
   );
   const promptSeqs = timelineBlocks.filter((b) => b.kind === 'prompt').map((b) => b.seq);
   /** 问话 seq 之前那一轮（上一句问话开头的那轮）。 */
@@ -1277,86 +1280,89 @@ export function FocusView({
               <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
             ) : null : (
               <FileLinksContext.Provider value={fileLinks}>
-              <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: visibleHint && delivery.pending.length === 0 ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed', uncertainDeliveryIds: live?.uncertainDeliveryIds }}>
-              {timelineItems.map((item) => {
-                const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }) => (
-                  <ChatBlock
-                    key={index}
-                    block={block}
-                    agentLabel={agentLabel}
-                    sessionId={session.id}
-                    settings={settings}
-                    last={index === timelineBlocks.length - 1}
-                    running={turnRunning}
-                    stale={Boolean(syncState)}
-                    showAuthor={showAuthor}
-                    queued={block.queued === true}
-                    recovered={recovered}
+                <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: visibleHint && delivery.pending.length === 0 ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed', uncertainDeliveryIds: live?.uncertainDeliveryIds }}>
+                  {timelineItems.map((item) => {
+                    const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }, inWork = false) => (
+                      <ChatBlock
+                        key={index}
+                        block={block}
+                        agentLabel={agentLabel}
+                        sessionId={session.id}
+                        settings={inWork && block.kind === 'thinking' ? { ...settings, thinking: 'shown' } : settings}
+                        last={index === timelineBlocks.length - 1}
+                        running={turnRunning}
+                        stale={Boolean(syncState)}
+                        showAuthor={showAuthor}
+                        queued={block.queued === true}
+                        recovered={recovered}
+                        searchOpen={findOpen}
+                      />
+                    );
+                    if (item.type === 'work') {
+                      return (
+                        <WorkGroup key={`${session.id}:${item.key}`} summary={item.summary} defaultOpen={item.open} live={item.live} stale={Boolean(syncState)} forceOpen={findOpen}>
+                          {(open, mounted) => item.items.map((entry) => entry.block.kind === 'text' ? renderBlock(entry) : (
+                            <div key={entry.index} data-testid="work-group-entry" hidden={!open}>{mounted ? renderBlock(entry, true) : null}</div>
+                          ))}
+                        </WorkGroup>
+                      );
+                    }
+                    const { block, index } = item;
+                    return (
+                      <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
+                        onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
+                        {renderBlock(item)}
+                      </TurnFrag>
+                    );
+                  })}
+                  {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
+                  {/* 还没写进对话的消息：就是列表末尾的普通气泡，和 journal 用的是同一套外壳 */}
+                  <PendingPrompts
+                    pending={delivery.pending}
+                    onRetry={(pending) => void retryPending(pending)}
+                    onDiscard={delivery.discard}
+                    quiet={visibleHint !== null}
+                    hasDelivery={(pending) => pending.seq !== undefined && deliveriesBySeq.has(pending.seq)}
+                    className={settings.compact ? 'gap-2' : 'gap-4'}
+                    renderPrompt={(pending, _index, seq) => (
+                      <ChatBlock
+                        block={{ kind: 'prompt', text: pending.text, attachments: [], seq: pending.seq ?? seq }}
+                        agentLabel={agentLabel}
+                        sessionId={session.id}
+                        settings={settings}
+                        last={false}
+                        running={false}
+                        showAuthor={showAuthor}
+                        queued={pending.state === 'queued'}
+                      />
+                    )}
                   />
-                );
-                if (item.type === 'work') {
-                  return (
-                    <WorkGroup key={item.key} summary={item.summary} defaultOpen={item.open} live={item.live} stale={Boolean(syncState)} forceOpen={settings.tools === 'expanded'}>
-                      {item.items.map(renderBlock)}
-                    </WorkGroup>
-                  );
-                }
-                const { block, index } = item;
-                return (
-                  <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
-                    onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
-                    {renderBlock(item)}
-                  </TurnFrag>
-                );
-              })}
-              {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
-              {/* 还没写进对话的消息：就是列表末尾的普通气泡，和 journal 用的是同一套外壳 */}
-              <PendingPrompts
-                pending={delivery.pending}
-                onRetry={(pending) => void retryPending(pending)}
-                onDiscard={delivery.discard}
-                quiet={visibleHint !== null}
-                hasDelivery={(pending) => pending.seq !== undefined && deliveriesBySeq.has(pending.seq)}
-                className={settings.compact ? 'gap-2' : 'gap-4'}
-                renderPrompt={(pending, _index, seq) => (
-                  <ChatBlock
-                    block={{ kind: 'prompt', text: pending.text, attachments: [], seq: pending.seq ?? seq }}
-                    agentLabel={agentLabel}
-                    sessionId={session.id}
-                    settings={settings}
-                    last={false}
-                    running={false}
-                    showAuthor={showAuthor}
-                    queued={pending.state === 'queued'}
-                  />
-                )}
-              />
-              {reason && !['error', 'stopped'].includes(timelineBlocks[timelineBlocks.length - 1]?.kind ?? '') ? (
-                <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
-              ) : null}
-              {/* 两端唯一的当前进度：贴在对话末尾，不再在输入框上方重复。 */}
-              {visibleHint ? (
-                <p
-                  className="flex min-h-8 min-w-0 items-center gap-2 self-start text-meta text-tertiary"
-                  data-testid="turn-hint"
-                  data-stage={visibleHint.stage}
-                  data-phase={visibleHint.phase}
-                  title={visibleHint.detail}
-                  aria-label={visibleHint.detail}
-                  role="status"
-                >
-                  {visibleHint.text === '暂未确认这一轮的结果' || hasPendingApproval || syncState ? null : (
-                    <span data-testid="turn-active-spinner" aria-hidden="true" className="relative size-[15px] shrink-0">
-                      <span className="absolute inset-0 animate-spin rounded-full border-[1.5px] border-current/25 border-t-current motion-reduce:hidden" />
-                      <svg viewBox="0 0 16 16" fill="none" className="hidden size-full motion-reduce:block" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M4 2h8M4 14h8M5 2c0 3 1 4 3 6-2 2-3 3-3 6m6-12c0 3-1 4-3 6 2 2 3 3 3 6" />
-                      </svg>
-                    </span>
-                  )}
-                  <span className="min-w-0 break-words">{visibleHint.text}</span>
-                </p>
-              ) : null}
-              </DeliveryContext.Provider>
+                  {reason && !['error', 'stopped'].includes(timelineBlocks[timelineBlocks.length - 1]?.kind ?? '') ? (
+                    <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
+                  ) : null}
+                  {/* 两端唯一的当前进度：贴在对话末尾，不再在输入框上方重复。 */}
+                  {visibleHint ? (
+                    <p
+                      className="flex min-h-8 min-w-0 items-center gap-2 self-start text-meta text-tertiary"
+                      data-testid="turn-hint"
+                      data-stage={visibleHint.stage}
+                      data-phase={visibleHint.phase}
+                      title={visibleHint.detail}
+                      aria-label={visibleHint.detail}
+                      role="status"
+                    >
+                      {visibleHint.text === '暂未确认这一轮的结果' || hasPendingApproval || syncState ? null : (
+                        <span data-testid="turn-active-spinner" aria-hidden="true" className="relative size-[15px] shrink-0">
+                          <span className="absolute inset-0 animate-spin rounded-full border-[1.5px] border-current/25 border-t-current motion-reduce:hidden" />
+                          <svg viewBox="0 0 16 16" fill="none" className="hidden size-full motion-reduce:block" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M4 2h8M4 14h8M5 2c0 3 1 4 3 6-2 2-3 3-3 6m6-12c0 3-1 4-3 6 2 2 3 3 3 6" />
+                          </svg>
+                        </span>
+                      )}
+                      <span className="min-w-0 break-words">{visibleHint.text}</span>
+                    </p>
+                  ) : null}
+                </DeliveryContext.Provider>
               </FileLinksContext.Provider>
             )}
           </div>
@@ -1462,29 +1468,6 @@ export function FocusView({
               <span className="min-w-0">{envNotice.text}</span>
             </p>
           ) : null}
-          {/* 当前这条会话还挂着「等回答」时才出现：上一轮确实把话留给了人，不是只把运行状态改成阻塞。
-              历史提问卡仍只说明「当时问了什么」，操作入口放在这里，人不用去旧卡上猜。 */}
-          {answerItem ? (
-            <div
-              data-testid="answer-prompt"
-              data-possible={answerItem.possible ? 'true' : 'false'}
-              title={answerItem.possible ? '上一轮已结束；最后一句是问句，可能还需要你回复。' : '上一轮已结束；问题留给了你，回复会接着这条会话。'}
-              className="mb-1.5 flex items-center gap-2 border-l-2 border-link bg-link/5 py-1.5 pl-3 pr-1.5 text-meta"
-            >
-              <p className="min-w-0 flex-1 text-secondary">
-                <span className="block">{answerItem.possible ? 'Agent 可能在等你回答' : 'Agent 在等你回答'}</span>
-                <span className="block text-[11px] leading-4 text-tertiary">上一轮已结束</span>
-              </p>
-              <button
-                type="button"
-                data-testid="answer-reply"
-                className="flex min-h-[44px] shrink-0 items-center rounded-sm px-2 text-link hover:bg-card focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring md:min-h-0 md:py-1"
-                onClick={() => setReplyFocus((nonce) => nonce + 1)}
-              >
-                回复此问题
-              </button>
-            </div>
-          ) : null}
           <HandoffGate key={session.id} session={session} projectId={canvas.project.id} draft={draft} onDraftChange={onDraftChange}><Composer
             large
             allowOfflineSend
@@ -1505,7 +1488,6 @@ export function FocusView({
             commands={sessionCommands(session, runtimeCommands, forkHint)}
             projectId={canvas.project.id}
             quote={quote}
-            focusRequest={replyFocus}
           /></HandoffGate>
         </div>
       </div>

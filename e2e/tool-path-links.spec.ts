@@ -30,7 +30,7 @@ async function setup(page: Page, baseURL: string) {
   const { id } = (await derived.json()) as { id: string };
   await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: '你好 src/app.ts', attachments: [] }, headers });
   await expect
-    .poll(async () => ((await (await page.request.get(`/api/sessions/${id}/events`)).json()) as unknown[]).length > 0, { timeout: 30_000 })
+    .poll(async () => ((await (await page.request.get(`/api/sessions/${id}/events`)).json()) as Array<{ event: { kind: string } }>).some(({ event }) => event.kind === 'ended'), { timeout: 30_000 })
     .toBe(true);
   const calls = [
     { name: 'read', input: JSON.stringify({ path: 'src/app.ts', offset: 80, limit: 10 }) },
@@ -57,6 +57,7 @@ for (const viewport of [{ width: 390, height: 844, tag: 'mobile-390' }, { width:
     const { project, id } = await setup(page, baseURL!);
     await page.goto(`/#/p/${project.id}/focus/${id}`);
     const log = page.getByRole('log', { name: '会话记录' });
+    await log.getByTestId('work-group-toggle').click();
     await expect(log.getByTestId('tool-card')).toHaveCount(4);
     await log.getByTestId('tool-card').evaluateAll((cards) => cards.forEach((card) => ((card as HTMLDetailsElement).open = true)));
     const links = log.getByTestId('tool-path-link');
@@ -86,6 +87,11 @@ for (const viewport of [{ width: 390, height: 844, tag: 'mobile-390' }, { width:
 
     // 回到对话点第二个（绝对路径、在工作目录内，没有行号）
     await backToChat(page);
+    const toggle = log.getByTestId('work-group-toggle');
+    if (await toggle.getAttribute('aria-expanded') === 'false') {
+      await toggle.click();
+      await log.getByTestId('tool-card').evaluateAll((cards) => cards.forEach((card) => ((card as HTMLDetailsElement).open = true)));
+    }
     await links.nth(1).click();
     if (viewport.width < 768) await expect(page.getByTestId('session-back-to-chat')).toBeVisible();
     else await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');

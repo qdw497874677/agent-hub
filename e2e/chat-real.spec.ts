@@ -44,6 +44,12 @@ for (const agent of AGENTS) {
     await expect(log.getByTestId('msg-user')).toBeVisible();
     await expect.poll(() => readFileSync(join(dir, 'notes.md'), 'utf8'), { timeout: 300_000, intervals: [2000] }).toContain('蓝色');
     await expect(page.getByText(/正在回复/)).toHaveCount(0, { timeout: 120_000 });
+    await expect(log.getByTestId('tool-card').first()).toBeAttached();
+    const toggles = log.getByTestId('work-group-toggle');
+    for (let i = 0; i < await toggles.count(); i++) {
+      const toggle = toggles.nth(i);
+      if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+    }
     await expect(log.getByTestId('tool-card').first()).toBeVisible();
     await expect(log.getByTestId('msg-assistant').last()).toBeVisible();
 

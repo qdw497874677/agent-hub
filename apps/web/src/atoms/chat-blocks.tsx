@@ -9,7 +9,7 @@ import { AGENT_MESSAGE_KIND, REPLY_STATUS_TEXT, parseAgentMessage, type ParsedAg
  */
 const QUESTION_TOOL = /(?:^|[^a-z])(ask_?user(?:_?question)?|ask_?human|ask_?followup_?question|request_?user_?input|input_?required)(?:$|[^a-z])/i;
 
-function questionOf(block: Extract<Block, { kind: 'tool' }>): { text: string; options: readonly string[] } | null {
+export function questionOf(block: Extract<Block, { kind: 'tool' }>): { text: string; options: readonly string[] } | null {
   if (!QUESTION_TOOL.test(block.name.trim())) return null;
   try {
     const value: unknown = JSON.parse(block.input);
@@ -648,7 +648,7 @@ function RunChip({ kind, count }: { kind: ToolRowKind; count: number }) {
  * 没用 `content-visibility: auto`：折叠的 `<details>` 本来就不渲染内容，真正的开销已经被挡住了；
  * 而自动跳过屏幕外的行会让里面的元素量出零尺寸，e2e 里「参数可见」的断言会随机挂。
  */
-function ToolRow({ block, settings, recovered = false, stale = false }: { block: Extract<Block, { kind: 'tool' }>; settings: DisplaySettings; recovered?: boolean; stale?: boolean }) {
+function ToolRow({ block, settings, recovered = false, stale = false, searchOpen = false }: { block: Extract<Block, { kind: 'tool' }>; settings: DisplaySettings; recovered?: boolean; stale?: boolean; searchOpen?: boolean }) {
   const view = toolView(block.name, block.input);
   const family = toolFamily(block.name, view);
   const kind = toolRowKind(block.name, view);
@@ -685,11 +685,12 @@ function ToolRow({ block, settings, recovered = false, stale = false }: { block:
   // 「显示设置」给默认值，用户点过就以用户为准（流式刷新不该把他刚展开的那一行又关回去）。
   const defaultOpen = toolOpenByDefault(settings, family);
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const open = userOpen ?? defaultOpen;
-  const [mounted, setMounted] = useState(open);
+  const ordinaryOpen = userOpen ?? defaultOpen;
+  const open = searchOpen || ordinaryOpen;
+  const [mounted, setMounted] = useState(ordinaryOpen);
   useEffect(() => {
-    if (open) setMounted(true);
-  }, [open]);
+    if (ordinaryOpen) setMounted(true);
+  }, [ordinaryOpen]);
 
   const failed = ok === false;
   // 失败分级：之后同类又成功了 = 可恢复（警告色）；否则是真失败（危险色）
@@ -709,7 +710,7 @@ function ToolRow({ block, settings, recovered = false, stale = false }: { block:
       open={open}
       onToggle={(event) => {
         const next = event.currentTarget.open;
-        if (next !== open) setUserOpen(next);
+        if (!searchOpen && next !== open) setUserOpen(next);
       }}
       data-testid="tool-card"
       data-tool-kind={kind}
@@ -776,7 +777,7 @@ function ToolRow({ block, settings, recovered = false, stale = false }: { block:
       </summary>
       <div className="mt-1 min-w-0 space-y-1.5 pb-0.5">
         <ToolInput view={view} input={block.input} />
-        {mounted ? (
+        {mounted || searchOpen ? (
           output !== undefined && !(view.kind === 'edit' && block.result?.ok) ? (
             <OutputView text={output} failed={failed} />
           ) : output !== undefined ? (
@@ -1000,7 +1001,8 @@ export function ChatBlock({
   showAuthor = false,
   queued = false,
   recovered = false,
-  stale = false
+  stale = false,
+  searchOpen = false
 }: {
   block: Block;
   sessionId: string;
@@ -1017,6 +1019,8 @@ export function ChatBlock({
   recovered?: boolean;
   /** 记录尚未补齐，非终态不能当作实时状态。 */
   stale?: boolean;
+  /** 搜索时开放工具输出，退出后恢复用户的展开状态。 */
+  searchOpen?: boolean;
 }) {
   if (block.kind === 'subagent') {
     const label = block.agent ?? '子代理';
@@ -1143,8 +1147,11 @@ export function ChatBlock({
   if (block.kind === 'tool') {
     // 明确提问是会话里必须看见的事实，不跟着「工具显示」一起被藏掉。
     if (questionOf(block) !== null) return <AgentQuestion block={block} />;
-    if (settings.tools === 'hidden') return null;
-    return <ToolRow block={block} settings={settings} recovered={recovered} stale={stale} />;
+    // 隐藏工具仍须提醒失败，但不泄露用户选择隐藏的工具内容。
+    if (settings.tools === 'hidden') return block.result?.ok === false
+      ? <p role="alert" className="text-meta text-danger" data-testid="hidden-tool-failure">有工具执行失败（工具内容已隐藏）</p>
+      : null;
+    return <ToolRow block={block} settings={settings} recovered={recovered} stale={stale} searchOpen={searchOpen} />;
   }
   return (
     <p className="flex items-baseline gap-2 text-meta">
@@ -1284,10 +1291,7 @@ export function StoppedDivider({ text, compact = false }: { text: string; compac
   );
 }
 
-/**
- * 一轮里连续的工具调用 + 思考并成一组（时间线 v2）。组头一行摘要，可整组收起；
- * 里面每一行还是原来的 ToolRow，同类聚合（×N）照旧按同层兄弟算。
- */
+/** 一个摘要控制本段活动；正文始终显示，活动项留在原来的顺序。 */
 export function WorkGroup({
   summary,
   defaultOpen,
@@ -1301,28 +1305,24 @@ export function WorkGroup({
   live: boolean;
   stale?: boolean;
   forceOpen: boolean;
-  children: ReactNode;
+  children: (open: boolean, mounted: boolean) => ReactNode;
 }) {
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const [visited, setVisited] = useState(defaultOpen);
   const open = forceOpen || (userOpen ?? defaultOpen);
   const counts = summaryCounts(summary);
   const spent = durationText(summary.durationMs);
   return (
-    <details
-      className="group/work min-w-0"
-      open={open}
-      onToggle={(event) => {
-        const next = event.currentTarget.open;
-        if (next !== open) setUserOpen(next);
-      }}
+    <div
+      className="min-w-0"
       data-testid="work-group"
-      data-live={live ? 'true' : undefined}
+      data-live={live && !stale ? 'true' : undefined}
     >
-      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 py-1 text-meta text-tertiary hover:text-secondary">
-        <span aria-hidden className="inline-block w-2.5 transition-transform group-open/work:rotate-90 motion-reduce:transition-none">›</span>
+      <button type="button" data-testid="work-group-toggle" aria-expanded={open} disabled={forceOpen} title={forceOpen ? '搜索时展开工作过程' : undefined} onClick={() => { setVisited(true); setUserOpen(!open); }} className="flex min-h-[44px] w-full min-w-0 cursor-pointer items-center gap-2 text-left text-meta text-tertiary hover:text-secondary focus-visible:outline-2 focus-visible:outline-ring">
+        <span aria-hidden className={`inline-block w-2.5 transition-transform motion-reduce:transition-none ${open ? 'rotate-90' : ''}`}>›</span>
         <Icon name="wrench" size={13} className={live && !stale ? 'text-live' : ''} />
-        <span className={`shrink-0 ${live && !stale ? 'shimmer-text' : 'text-secondary'}`}>{stale && (live || summary.running) ? '状态未确认' : live ? '正在处理' : '已处理'}</span>
-        <span className="shrink-0 tabular-nums">{summary.steps} 步</span>
+        <span className="shrink-0 text-secondary">工作过程</span>
+        <span className="shrink-0 tabular-nums">{summary.steps + summary.thinking} 项</span>
         {counts ? <span className="min-w-0 truncate">· {counts}</span> : null}
         {summary.failed > 0 ? (
           <span className="flex shrink-0 items-center gap-1 text-danger">
@@ -1334,8 +1334,8 @@ export function WorkGroup({
           </span>
         ) : null}
         {spent ? <span className="ml-auto shrink-0 tabular-nums">{spent}</span> : null}
-      </summary>
-      <div className="mt-1.5 flex min-w-0 flex-col gap-2 pl-1">{children}</div>
-    </details>
+      </button>
+      <div className="flex min-w-0 flex-col gap-2">{children(open, visited || forceOpen)}</div>
+    </div>
   );
 }

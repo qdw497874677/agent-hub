@@ -41,25 +41,15 @@ test('批准卡：显示、手机尺寸、点允许发出回答；不存在的�
     const response = await route.fetch();
     const entries = (await response.json()) as Array<{ seq: number; at?: number; event?: Record<string, unknown> }>;
     const last = entries[entries.length - 1]!;
-    const request = { ...last, seq: last.seq + 1, event: { kind: 'approval', phase: 'request', id: 'run_x:req_1', title: 'rm -rf build/', expiresAt: Date.now() + 120_000 } };
+    const thinking = { kind: 'thinking', delta: '先确认是否可以清理。' };
+    const request = { kind: 'approval', phase: 'request', id: 'run_x:req_1', title: 'rm -rf build/', expiresAt: Date.now() + 120_000 };
     // 202 回执和 journal 里的 resolved 分开控制：刷新时只认后者。
-    const resolved = {
-      ...last,
-      seq: last.seq + 2,
-      event: { kind: 'approval', phase: 'resolved', id: 'run_x:req_1', decision: 'deny', by: 'runtime', author: { id: 'e2e', name: '运行时' } }
-    };
-    const question = {
-      ...last,
-      seq: last.seq + 3,
-      event: { kind: 'tool_call', name: 'AskUserQuestion', input: JSON.stringify({ question: '用 A 还是 B？', options: [{ label: 'A' }, { label: 'B' }] }) }
-    };
-    const malformed = {
-      ...last,
-      seq: last.seq + 4,
-      event: { kind: 'tool_call', name: 'AskUserQuestion', input: 'RAW_QUESTION_SHOULD_NOT_RENDER' }
-    };
-    const injected = journalResolved ? [request, resolved, question, malformed] : [request, question, malformed];
-    await route.fulfill({ response, json: [...entries, ...injected] });
+    const resolved = { kind: 'approval', phase: 'resolved', id: 'run_x:req_1', decision: 'deny', by: 'runtime', author: { id: 'e2e', name: '运行时' } };
+    const question = { kind: 'tool_call', name: 'AskUserQuestion', input: JSON.stringify({ question: '用 A 还是 B？', options: [{ label: 'A' }, { label: 'B' }] }) };
+    const malformed = { kind: 'tool_call', name: 'AskUserQuestion', input: 'RAW_QUESTION_SHOULD_NOT_RENDER' };
+    // 真正的 journal 序号是连续的；不注入 resolved 时也不能留洞。
+    const injected = [thinking, request, ...(journalResolved ? [resolved] : []), question, malformed];
+    await route.fulfill({ response, json: [...entries, ...injected.map((event, index) => ({ ...last, seq: last.seq + index + 1, event }))] });
   });
   await page.route(`**/api/sessions/${id}/approvals/**`, (route) => {
     ackSubmitted = true;
@@ -68,6 +58,8 @@ test('批准卡：显示、手机尺寸、点允许发出回答；不存在的�
   await page.goto(`/#/p/${project.id}/focus/${id}`);
   const card = page.getByRole('log', { name: '会话记录' }).getByTestId('msg-approval').last();
   await expect(card).toBeVisible();
+  await expect(page.getByTestId('work-group-toggle').first()).toHaveAttribute('aria-expanded', 'false');
+  await expect(card.locator('xpath=ancestor::*[@data-testid="work-group"]')).toHaveCount(0);
   await expect(card).toContainText('rm -rf build/');
   await expect(card.getByTestId('approval-countdown')).toContainText('秒内不回答就当拒绝');
   for (const button of [card.getByTestId('approval-allow'), card.getByTestId('approval-deny')]) {

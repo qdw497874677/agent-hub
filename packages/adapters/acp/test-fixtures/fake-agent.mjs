@@ -174,6 +174,44 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
         process.stderr.write('Error: 401 Unauthorized from provider, api_key=sk-livesecret1234567890 Authorization: Bearer abcdefghijklmnop\n');
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }
+      // 对话活动折叠 E2E：真实 ACP → Hub → SSE；先停在思考中，测试决定何时继续。
+      if (GATE_DIR && all.includes('please-turn-activity')) {
+        const sessionId = msg.params.sessionId;
+        const publish = (update) => send({ method: 'session/update', params: { sessionId, update } });
+        const thought = (text) => publish({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text } });
+        const tool = (name, input, output, status = 'completed') => {
+          const toolCallId = `activity-${turn}-${name}-${status}`;
+          publish({ sessionUpdate: 'tool_call', toolCallId, title: name, kind: 'other', rawInput: input });
+          publish({ sessionUpdate: 'tool_call_update', toolCallId, status, content: [{ type: 'content', content: { type: 'text', text: output } }] });
+        };
+        const go = join(GATE_DIR, 'activity.go');
+        thought('先看目录思路');
+        const deadline = Date.now() + 120_000;
+        while (!existsSync(go) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+        thought('和文件结构');
+        tool('read', { path: 'alpha.txt' }, '活动搜索标记');
+        say(sessionId, '工具之间的正文');
+        tool('bash', { command: 'pwd' }, '/test/workdir');
+        say(sessionId, '这一轮正常结束');
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      if (GATE_DIR && all.includes('please-activity-error')) {
+        const sessionId = msg.params.sessionId;
+        const toolCallId = `activity-error-${turn}`;
+        send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call', toolCallId, title: 'read', kind: 'other', rawInput: { path: 'missing-activity.txt' } } } });
+        send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId, status: 'failed', rawOutput: '测试：文件没有找到' } } });
+        say(sessionId, '读取没有完成。');
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      if (GATE_DIR && all.includes('please-activity-question')) {
+        const sessionId = msg.params.sessionId;
+        const publish = (update) => send({ method: 'session/update', params: { sessionId, update } });
+        const toolCallId = `activity-question-${turn}`;
+        publish({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '提问前的思考' } });
+        publish({ sessionUpdate: 'tool_call', toolCallId, title: 'AskUserQuestion', kind: 'other', rawInput: { question: '是否继续检查？', options: ['继续', '暂停'] } });
+        publish({ sessionUpdate: 'tool_call_update', toolCallId, status: 'completed' });
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
       // 门控（e2e #269 排序）：见文件头 --gate-dir 说明。
       const gated = GATE_DIR ? all.match(/please-(hold|mark):([\w.-]+)/) : null;
       if (GATE_DIR && gated) {
