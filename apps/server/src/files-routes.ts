@@ -3,6 +3,7 @@ import { streamSSE } from 'hono/streaming';
 import type { FileChangeNotice, WorkspaceFilesService } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
+import { reviewAnchor } from './review-anchor.ts';
 
 /**
  * 工作空间文件浏览（ADR 0025 · P1，只读）：
@@ -65,8 +66,14 @@ export function installFilesRoutes(app: Hono<any>, files: WorkspaceFilesService,
     return r.ok ? c.json({ turns: r.value }, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/sessions/:id/git/diff', async (c) => {
-    const r = await files.diff(subjectOf(c), sid(c), c.req.query('path') ?? '', baseOf(c.req.query('base')), turnOf(c.req.query('turn')), memberOf(c.req.query('member')));
-    return r.ok ? c.json(r.value, 200, noStore) : fail(c, r.error);
+    const base = baseOf(c.req.query('base'));
+    const turn = turnOf(c.req.query('turn'));
+    const path = c.req.query('path') ?? '';
+    const r = await files.reviewDiff(subjectOf(c), sid(c), path, base, turn, memberOf(c.req.query('member')));
+    if (!r.ok) return fail(c, r.error);
+    const v = r.value;
+    const anchor = !v.reviewable || (base === 'turn' && turn === undefined) ? null : reviewAnchor({ sourceSessionId: sid(c), path, base, member: v.member, scopeKey: v.scopeKey, turn: v.turn, commit: v.commit, target: v.target, branch: v.branch }, v.diff);
+    return c.json({ ...v.diff, reviewVersion: anchor?.version ?? null, reviewMember: v.member }, 200, noStore);
   });
   app.get('/api/sessions/:id/files/events', async (c) => {
     const raw = c.req.query('paths') ?? '';

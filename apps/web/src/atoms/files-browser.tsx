@@ -6,6 +6,9 @@ import { filesApi, RequestFailed, type FileEntryDto, type FilesContextMemberDto 
 import { clampListWidth, compareScope, crumbs, FILES_LIST_WIDTH_KEY, FILES_QUERY, filesErrorText, filesRefetch, readListWidth, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths, type CompareScope } from './files-core.ts';
 import { filesInvalidationKeys, filesKeys, type FilesKeys } from '../shell/query-keys.ts';
 import { inSelection, isWholeFileAddition, diffWindowRange, parsePatchLines, selectionRange, selectionRef, toggleLine, type DiffRow, type DiffSide, type LineSelection } from './diff-selection.ts';
+import { ReviewEditor, ReviewPanel, useReview } from './review-panel.tsx';
+import type { ReviewDraftDto, ReviewNoteDto } from '../shell/api/files.ts';
+import { useAccount } from '../shell/auth.tsx';
 
 /**
  * 工作目录文件浏览（ADR 0025 · P1，只读）。嵌在会话的「文件 / 改动」标签页里（页签由会话头部管）：
@@ -18,7 +21,7 @@ import { inSelection, isWholeFileAddition, diffWindowRange, parsePatchLines, sel
  * - 不缓存（决定 8）：机器不在线就如实显示「机器离线」。
  */
 type Base = string; // 'session' | 'head' | 'branch' | 'turn' | 'turn:<n>'
-type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number | null; member?: string | null };
+type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number | null; member?: string | null; review?: ReviewNoteDto; nonce?: number };
 /** 刚看过的文件：从全屏回到列表时高亮它、把焦点还给它（TAB 的顺序不被打乱）。 */
 type LastRead = { path: string; member: string | null };
 /** 从对话里的工具路径跳过来：打开这个文件，知道行号就滚到那一行。nonce 变了就再跳一次。 */
@@ -67,6 +70,8 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
   const client = useQueryClient();
   const keys = filesKeys(workspaceId, sessionId);
   const wide = useWide();
+  const accountId = useAccount()?.id ?? null;
+  const review = useReview(sessionId, accountId, tab === 'changes');
   const [base, setBase] = useState<Base>(wanted?.base ?? 'session');
   // 从聊天里「改了 N 个文件」点进来：切到那一轮
   useEffect(() => {
@@ -190,7 +195,7 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
     setLastRead({ path: entry.path, member: entry.member ?? null });
     setOpened({ path: entry.path, confirmed: Boolean(entry.sensitive), diff, member: entry.member ?? null });
   };
-  const activeMember = opened?.member ?? member;
+  const activeMember = opened?.review ? opened.member ?? null : opened?.member ?? member;
   const activeKeys = filesKeys(activeMember ?? workspaceId, sessionId);
   const toggle = (path: string) =>
     setExpanded((current) => {
@@ -344,7 +349,7 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
                     <option value="head">相对当前 HEAD</option>
                     <option value="branch">相对分支起点</option>
                     {(turns.data?.length ?? 0) > 0 ? <option value="turn">本轮（第 {turns.data!.at(-1)!.turn} 轮）</option> : null}
-                    {[...(turns.data ?? [])].reverse().slice(1).map((t) => (
+                    {[...(turns.data ?? [])].reverse().map((t) => (
                       <option key={t.turn} value={`turn:${t.turn}`}>第 {t.turn} 轮{t.files !== null ? ` · ${t.files} 个文件` : ''}</option>
                     ))}
                   </select>
@@ -355,6 +360,11 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
                 </p>
               </div>
               <RootPath root={root} wide={wide} />
+              <ReviewPanel key={`${accountId}:${sessionId}`} accountId={accountId} sessionId={sessionId} state={review} onOpen={(note) => {
+                setBase(note.base);
+                setLastRead({ path: note.path, member: note.member });
+                setOpened({ path: note.path, confirmed: false, diff: true, member: note.member, review: note, nonce: Date.now() });
+              }} />
               {aggregate ? (
                 groupedChanges.some((item) => item.error) ? (
                   <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(groupedChanges.find((item) => item.error)?.error)}</p>
@@ -441,7 +451,7 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
         {/* 手机没进正文时右边不占位；桌面一直是「左列表 + 右正文」，没选文件时右边先说清在比什么 */}
         <main ref={mainRef} className={`min-w-0 flex-1 overflow-auto ${wide || reading ? '' : 'hidden'}`}>
           {opened ? (
-            opened.diff ? <DiffView sessionId={sessionId} member={activeMember} keys={activeKeys} path={opened.path} base={base} scope={scope} wide={wide} root={root} onQuote={onQuote} onBack={back} /> :
+            opened.diff ? <DiffView sessionId={sessionId} member={activeMember} needsMember={members.length > 1 && activeMember === null} keys={activeKeys} path={opened.path} base={base} scope={scope} wide={wide} root={root} onQuote={onQuote} onBack={back} reviewNote={opened.review} revealNonce={opened.nonce} onReviewSaved={() => { void review.refresh(); }} /> :
             <FileView sessionId={sessionId} member={activeMember} keys={activeKeys} opened={opened} wide={wide} root={root} onBack={back} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
           ) : (
             <div className="flex flex-col gap-1 p-6" data-testid="reader-empty">
@@ -625,9 +635,10 @@ const DIFF_WINDOW_OVERSCAN = 20;
  * 而外来 HTML 只能靠命令式打补丁，所以改成自己画行——代价是不再区分并排 / 单列两种版式，
  * 一律单列，宽度交给横向滚动。
  */
-function DiffView({ sessionId, member, keys, path, base, scope, wide, root, onBack, onQuote }: {
+function DiffView({ sessionId, member, needsMember, keys, path, base, scope, wide, root, onBack, onQuote, reviewNote, revealNonce, onReviewSaved }: {
   sessionId: string;
   member: string | null;
+  needsMember: boolean;
   keys: FilesKeys;
   path: string;
   base: Base;
@@ -637,19 +648,39 @@ function DiffView({ sessionId, member, keys, path, base, scope, wide, root, onBa
   root: string | undefined;
   onBack: () => void;
   onQuote?: (ref: string) => void;
+  reviewNote?: ReviewNoteDto;
+  revealNonce?: number;
+  onReviewSaved: () => void;
 }) {
-  const diff = useQuery({ ...fresh, queryKey: keys.diff(path, base), queryFn: () => filesApi.diff(sessionId, path, base, member) });
+  // The review version is session- and member-specific even for a shared HEAD diff.
+  const diff = useQuery({ ...fresh, queryKey: [...keys.diff(path, base), sessionId, member, reviewNote ? revealNonce : null], queryFn: () => filesApi.diff(sessionId, path, base, member) });
   const data = shown(diff);
   const rows = useMemo(() => (data && !data.binary ? parsePatchLines(data.patch) : []), [data]);
   // 整文件新增：不铺绿底，读起来像普通代码
   const plain = useMemo(() => isWholeFileAddition(rows), [rows]);
 
   const [picked, setPicked] = useState<LineSelection | null>(null);
+  const [pickedVersion, setPickedVersion] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Omit<ReviewDraftDto, 'text'> | null>(null);
   // 换文件 / 换对比基准之后，旧的行号就不指同一段代码了
-  useEffect(() => setPicked(null), [path, base]);
+  useEffect(() => { setPicked(null); setPickedVersion(null); setEditing(null); }, [path, base, member, data?.reviewVersion]);
   const range = selectionRange(picked);
   const ref = selectionRef(path, picked);
-  const pick = (side: DiffSide, line: number) => setPicked((current) => toggleLine(current, side, line));
+  const pick = (side: DiffSide, line: number) => { setEditing(null); setPickedVersion(data?.reviewVersion ?? null); setPicked((current) => toggleLine(current, side, line)); };
+  let visibleRange = false;
+  if (picked && range) {
+    let hunkLines = new Set<number>();
+    const matches = () => hunkLines.size === range.end - range.start + 1;
+    for (const row of rows) {
+      if (row.kind === 'hunk') { if (matches()) visibleRange = true; hunkLines = new Set(); continue; }
+      const line = picked.side === 'old' ? row.oldLine : row.newLine;
+      if (line !== undefined && line >= range.start && line <= range.end) hunkLines.add(line);
+    }
+    visibleRange ||= matches();
+  }
+  const canReview = Boolean(!needsMember && data?.reviewVersion && pickedVersion === data.reviewVersion && visibleRange && !data.binary && !data.truncated && !diff.error && !diff.isFetching && base !== 'turn');
+  const canonicalMember = data?.reviewMember !== undefined ? data.reviewMember : member;
+  const reopen = !diff.isFetching && !diff.error && reviewNote && reviewNote.path === path && reviewNote.base === base && reviewNote.member === canonicalMember && data?.reviewVersion === reviewNote.version ? reviewNote : undefined;
   const quote = () => {
     if (!ref) return;
     onQuote?.(ref);
@@ -679,6 +710,7 @@ function DiffView({ sessionId, member, keys, path, base, scope, wide, root, onBa
                     引用到对话
                   </button>
                 ) : null}
+                {canReview ? <button type="button" data-testid="review-add" onClick={() => setEditing({ path, member: data!.reviewMember !== undefined ? data!.reviewMember : member, base, side: picked.side, start: range.start, end: range.end, version: data!.reviewVersion! })} className="min-h-8 rounded bg-card-raised px-2 text-meta text-primary hover:bg-hair">添加备注</button> : null}
                 <button type="button" onClick={() => setPicked(null)} data-testid="diff-quote-clear"
                   className="min-h-6 cursor-pointer rounded px-2 text-meta text-tertiary transition-colors hover:bg-card-raised hover:text-primary [@media(pointer:coarse)]:min-h-8 [@media(pointer:coarse)]:px-3">
                   清除
@@ -688,7 +720,10 @@ function DiffView({ sessionId, member, keys, path, base, scope, wide, root, onBa
               <span className="text-meta text-tertiary">点行号选起止行{onQuote ? '，可引用到对话' : ''}</span>
             )}
           </div>
-          <DiffLines key={`${path}\u0000${base}`} rows={rows} picked={picked} pick={pick} plain={plain} />
+          {needsMember ? <p className="px-3 py-1 text-meta text-tertiary">添加备注前，请在仓库切换栏或改动列表中明确选择仓库（包括主仓库）。</p> : base === 'turn' ? <p className="px-3 py-1 text-meta text-tertiary">添加备注前，请在对比范围中选择具体回合。</p> : picked && !canReview ? <p className="px-3 py-1 text-meta text-tertiary">当前差异无法保存备注，仍可引用到对话。</p> : null}
+          {reviewNote && reviewNote.path === path && reviewNote.base === base && !reopen ? <p className="px-3 py-1 text-meta text-rust">原备注位置已变化或无法确认，未自动定位到当前行。</p> : null}
+          {editing && editing.path === path && editing.base === base && editing.member === (data?.reviewMember !== undefined ? data.reviewMember : member) ? <ReviewEditor key={`${editing.path}:${editing.base}:${editing.side}:${editing.start}:${editing.end}:${editing.version}`} draft={editing} sessionId={sessionId} disabled={!canReview || editing.version !== data?.reviewVersion} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); setPicked(null); onReviewSaved(); }} /> : null}
+          <DiffLines key={`${path}\u0000${base}\u0000${member ?? ''}`} rows={rows} picked={picked} pick={pick} plain={plain} reveal={reopen} revealNonce={revealNonce} />
         </>
       ) : null}
     </div>
@@ -716,16 +751,26 @@ function useCoarsePointer(): boolean {
  *
  * 只对固定行高成立——触屏行号是 32px，高度不再一致，所以那边全量渲染（手机上 diff 也小）。
  */
-function DiffLines({ rows, picked, pick, plain }: {
+function DiffLines({ rows, picked, pick, plain, reveal, revealNonce }: {
   rows: readonly DiffRow[];
   picked: LineSelection | null;
   pick: (side: DiffSide, line: number) => void;
   plain: boolean;
+  reveal?: ReviewNoteDto;
+  revealNonce?: number;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const coarse = useCoarsePointer();
   const virtual = rows.length > DIFF_VIRTUALIZE_THRESHOLD && !coarse;
   const [range, setRange] = useState<{ start: number; end: number } | null>(null);
+
+  useEffect(() => {
+    if (!reveal || !scroller.current) return;
+    const index = rows.findIndex((row) => (reveal.side === 'old' ? row.oldLine : row.newLine) === reveal.start);
+    if (index < 0) return;
+    if (virtual) scroller.current.scrollTop = index * DIFF_ROW_HEIGHT;
+    else scroller.current.querySelector<HTMLElement>(`[data-side="${reveal.side}"][data-line="${reveal.start}"]`)?.scrollIntoView({ block: 'center' });
+  }, [rows, reveal, revealNonce, virtual]);
 
   useEffect(() => {
     if (!virtual) {
@@ -756,7 +801,7 @@ function DiffLines({ rows, picked, pick, plain }: {
     <div ref={scroller} className="files-diff min-h-0 flex-1 overflow-auto pb-4 font-mono text-meta" data-testid="diff-lines">
       {head > 0 ? <div aria-hidden style={{ height: head }} /> : null}
       {rows.slice(from, to).map((row, i) => (
-        <PatchLine key={from + i} row={row} picked={picked} pick={pick} plain={plain} />
+        <PatchLine key={from + i} row={row} picked={picked ?? (reveal ? { side: reveal.side, anchor: reveal.start, end: reveal.end } : null)} pick={pick} plain={plain} />
       ))}
       {tail > 0 ? <div aria-hidden style={{ height: tail }} /> : null}
     </div>
@@ -807,4 +852,3 @@ function Gutter({ side, line, selected, pick }: { side: DiffSide; line: number |
     </button>
   );
 }
-

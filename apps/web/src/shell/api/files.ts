@@ -1,4 +1,4 @@
-import { call, sq, withMember } from './http.ts';
+import { call, post, sq, withMember } from './http.ts';
 
 /** 工作目录文件浏览（ADR 0025，只读）。 */
 export interface FileEntryDto { name: string; path: string; type: 'file' | 'dir' | 'symlink'; size: number; modifiedAt: number; ignored: boolean; sensitive: boolean; git: string | null }
@@ -10,7 +10,23 @@ export interface TurnCheckpointDto { turn: number; promptSeq: number; before: st
 /** 'session' | 'head' | 'branch'（相对分支起点）| 'turn'（最近一轮）| 'turn:3'（第 3 轮）。 */
 export type DiffBaseSpec = string;
 const baseQuery = (base: DiffBaseSpec) => { const [b, n] = base.split(':'); return `base=${b}${n ? `&turn=${n}` : ''}`; };
-export interface FileDiffDto { path: string; patch: string; truncated: boolean; binary: boolean }
+export interface FileDiffDto { path: string; patch: string; truncated: boolean; binary: boolean; reviewVersion?: string | null; reviewMember?: string | null }
+export interface ReviewNoteDto { id: string; member: string | null; path: string; base: string; side: 'old' | 'new'; start: number; end: number; version: string; text: string; anchorState: 'current' | 'stale' | 'unknown'; delivery: null | { batchId: string; targetSessionId: string; state: 'queued' | 'sending' | 'delivered' | 'undelivered' | 'cancelled' | 'unknown' } }
+export type ReviewDraftDto = Pick<ReviewNoteDto, 'path' | 'member' | 'base' | 'side' | 'start' | 'end' | 'version' | 'text'>;
+export interface ReviewDto { notes: ReviewNoteDto[]; targets: { id: string; title: string }[] }
+export const reviewApi = {
+  get: (id: string, options?: { notes?: string[]; statusOnly?: boolean }) => {
+    const params = new URLSearchParams();
+    for (const note of options?.notes ?? []) params.append('note', note);
+    if (options?.statusOnly) params.set('statusOnly', '1');
+    const query = params.toString();
+    return call<ReviewDto>(`${sq(id)}/git/review${query ? `?${query}` : ''}`);
+  },
+  save: (id: string, draft: ReviewDraftDto) => post<ReviewNoteDto>(`${sq(id)}/git/review/notes`, draft),
+  remove: (id: string, noteId: string) => call<void>(`${sq(id)}/git/review/notes/${encodeURIComponent(noteId)}`, { method: 'DELETE' }),
+  send: (id: string, batch: { batchId: string; targetSessionId: string; noteIds: string[] }) => post<unknown>(`${sq(id)}/git/review/send`, batch),
+  retry: (id: string, batchId: string) => post<unknown>(`${sq(id)}/git/review/batches/${encodeURIComponent(batchId)}/retry`, {})
+};
 export interface FilesContextMemberDto { workspaceId: string; name: string; repoId?: string; state: 'ready' | 'preparing' | 'failed' }
 export interface FilesContextGroupDto { root: string; members: readonly FilesContextMemberDto[] }
 export interface FilesContextDto {

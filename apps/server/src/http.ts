@@ -18,6 +18,7 @@ import { installPreviewRoutes, type PreviewApiOptions } from './preview-routes.t
 import { installServiceRoutes, type ServiceApiOptions } from './service-routes.ts';
 import { installContextRoutes } from './context-routes.ts';
 import { installFilesRoutes } from './files-routes.ts';
+import { installReviewRoutes } from './review-routes.ts';
 import { installGitRoutes } from './git-routes.ts';
 import { installRewindRoutes } from './rewind-routes.ts';
 import { workerActionsFor } from './worker-actions.ts';
@@ -267,6 +268,7 @@ export interface AppOptions {
   readonly context?: ContextService;
   /** 工作空间文件浏览（ADR 0025）。 */
   readonly files?: WorkspaceFilesService;
+  readonly diffReview?: import('@agent-hub/domain').DiffReviewStore;
   readonly git?: GitWorkflowService;
   readonly rewind?: RewindService;
   /** 项目主会话（workspace delegation A 阶段）：登记簿 + `/api/coordinators` 与首页主会话。 */
@@ -412,6 +414,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.bots) installBotRoutes(app, options.bots, subjectOf, options.groups?.agentTokens, options.connectors?.hub);
     if (options.context) installContextRoutes(app, options.context, subjectOf);
     if (options.files) installFilesRoutes(app, options.files, subjectOf);
+    if (options.files && options.diffReview) installReviewRoutes(app, deps, options.files, options.diffReview, principalOf);
     if (options.git) installGitRoutes(app, options.git, subjectOf);
     if (options.rewind) installRewindRoutes(app, options.rewind, subjectOf, (c, subject, session, from, atSeq) =>
       noteProvenance(deps, options.activity, c, subject, session, 'rewind', { sessionId: from, atSeq }));

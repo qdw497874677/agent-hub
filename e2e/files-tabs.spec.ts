@@ -4,24 +4,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * PR #156 方案 A：会话头部「对话 / 文件 / 改动」标签切换，手机 390 与桌面 1280 都要好用。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS_TABS'] ?? '/tmp/opencode/shots/files-tabs';
+test.afterAll(() => stopFakeWorker());
 
 async function setup(page: Page, baseURL: string) {
   await loginByApi(page);
+  const workerId = await ensureFakeWorker(page, baseURL);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
   const root = mkdtempSync(join(tmpdir(), 'e2e-tabs-'));
   const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@x', ...args], { cwd: root });
   git('init', '-q');
@@ -30,9 +25,9 @@ async function setup(page: Page, baseURL: string) {
   writeFileSync(join(root, 'README.md'), '# demo\n');
   git('add', '.');
   git('commit', '-qm', 'init');
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 标签 ${Date.now().toString(36)}`, rootPath: root }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 标签 ${Date.now().toString(36)}`, rootPath: root, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '标签切换' }, headers })).json()) as { id: string };
-  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' }, headers });
   expect(derived.status(), await derived.text()).toBe(201);
   const sid = ((await derived.json()) as { id: string }).id;
   // 会话开始之后才改：对比「会话开始时」应能看到

@@ -47,7 +47,7 @@ test('?member= 透传到文件 / git 用例（单仓库会话不带也照常）'
     download: record('download', { path: 'a.ts', size: 0, modifiedAt: 0, binary: false, truncated: false, bytes: new Uint8Array([65]) }),
     find: record('find', ['a.ts']),
     changes: record('changes', { base: 'session', commit: null, target: null, turn: null, files: [] }),
-    diff: record('diff', { path: 'a.ts', patch: '', truncated: false, binary: false })
+    reviewDiff: record('diff', { diff: { path: 'a.ts', patch: '', truncated: false, binary: false }, member: 'ws_web', reviewable: true, scopeKey: 'scope', commit: null, target: null, turn: null, branch: null })
   } as unknown as WorkspaceFilesService;
   const app = new Hono();
   installFilesRoutes(app, files, () => null);

@@ -21,6 +21,8 @@ import { useSessionActions } from '../../atoms/use-session-actions.ts';
 import { waitingForReply } from '../../atoms/live-core.ts';
 import { UndoToast } from '../../atoms/undo-toast.tsx';
 import { TaskBadge } from './task-detail.tsx';
+import { attentionTitle, PHASE_LABEL } from '../../atoms/attention.tsx';
+import { paletteSnapshot } from './palette-recent.ts';
 export type { PaletteAction } from './palette.ts';
 
 
@@ -658,24 +660,53 @@ export function ListView({
 
 /**
  * ⌘K 命令面板：上面一个输入框，下面是「搜到的任务 / 会话」+「操作」两组。
- * 空着时只列操作（跳转、切视图、新建、主题）；打字后先给搜索命中，再给名字对得上的操作。
+ * 空查询先给当前项目待办与真实最近访问，打字后保留原有项目搜索。
  * ↑↓ 在两组之间连续移动，回车执行，Esc 关。
  */
 export function SearchPalette({
   projectId,
+  accountId,
+  canvas,
   onJump,
+  onQuickOpen,
   onClose,
   actions = []
 }: {
   projectId: string;
+  accountId: string | null;
+  canvas: CanvasDto | undefined;
   onJump: (hit: SearchHitDto) => void;
+  onQuickOpen: (sessionId: string) => void;
   onClose: () => void;
   actions?: readonly PaletteAction[];
 }) {
   const [query, setQuery] = useState('');
-  const [cursor, setCursor] = useState(0);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [searchCursor, setSearchCursor] = useState(0);
   const input = useRef<HTMLInputElement | null>(null);
   const trimmed = query.trim();
+  const attention = useQuery({ queryKey: ['attention'], queryFn: api.attention, refetchInterval: 10_000 });
+  // 每次打开只取一次成员及顺序；实时数据仅用于更新或移除已有行。
+  const [snapshot, setSnapshot] = useState<{ attention: string[]; recent: string[] } | null>(null);
+  useEffect(() => {
+    if (snapshot || !canvas || (!attention.data && !attention.isError)) return;
+    setSnapshot(paletteSnapshot(accountId, projectId, canvas.sessions.map((session) => session.id), attention.data?.items ?? []));
+  }, [snapshot, canvas, attention.data, attention.isError, projectId, accountId]);
+
+  const sessions = new Map((canvas?.sessions ?? []).map((session) => [session.id, session]));
+  const currentAttention = new Map((attention.data?.items ?? []).filter((item) => item.projectId === projectId).map((item) => [item.sessionId, item]));
+  const waiting = (snapshot?.attention ?? []).flatMap((id) => {
+    const item = currentAttention.get(id);
+    return item && sessions.has(id) ? [item] : [];
+  });
+  const recent = (snapshot?.recent ?? []).flatMap((id) => {
+    const session = sessions.get(id);
+    return session ? [session] : [];
+  });
+  const quickHits: SearchHitDto[] = trimmed ? [] : [
+    ...waiting.map((item) => ({ kind: 'session' as const, taskId: item.taskId, sessionId: item.sessionId, title: attentionTitle(item), snippet: item.possible ? '可能在等你' : PHASE_LABEL[item.phase] })),
+    ...recent.map((session) => ({ kind: 'session' as const, taskId: session.taskId ?? '', sessionId: session.id, title: session.title?.trim() || `会话 ${session.id.slice(0, 6)}`, snippet: canvas?.tasks.find((task) => task.id === session.taskId)?.title ?? '没有任务' }))
+  ];
 
   useEffect(() => {
     input.current?.focus();
@@ -687,13 +718,25 @@ export function SearchPalette({
     enabled: trimmed.length > 0
   });
 
-  const hits = trimmed === '' ? [] : (results.data?.hits ?? []);
+  const hits = trimmed === '' ? quickHits : (results.data?.hits ?? []);
   const matched = filterActions(actions, trimmed);
   const total = hits.length + matched.length;
+  const keys = [
+    ...hits.map((hit, index) => trimmed ? `search:${hit.kind}:${hit.sessionId ?? hit.taskId}:${index}` : `quick:${hit.sessionId}`),
+    ...matched.map((action) => `action:${action.id}`)
+  ];
+  // 已选行消失时不自动选择位置相同的另一行；用户可用方向键重新选择。
+  useEffect(() => {
+    if (!trimmed && selectedKey === null && snapshot && keys[0]) setSelectedKey(keys[0]);
+  }, [selectedKey, trimmed, snapshot, keys[0]]);
+  const cursor = trimmed ? searchCursor : selectedKey === null ? -1 : keys.indexOf(selectedKey);
+  const select = (index: number) => trimmed ? setSearchCursor(index) : setSelectedKey(keys[index] ?? null);
   const pick = (index: number) => {
+    if (index < 0) return;
     if (index < hits.length) {
       const hit = hits[index];
-      if (hit) onJump(hit);
+      if (hit && !trimmed && hit.sessionId) onQuickOpen(hit.sessionId);
+      else if (hit) onJump(hit);
       return;
     }
     const action = matched[index - hits.length];
@@ -723,19 +766,20 @@ export function SearchPalette({
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
-              setCursor(0);
+              setSelectedKey(null);
+              setSearchCursor(0);
             }}
             onKeyDown={(event) => {
               if (event.key === 'Escape') onClose();
               if (event.key === 'ArrowDown') {
                 event.preventDefault();
-                setCursor((current) => Math.min(current + 1, total - 1));
+                select(Math.max(0, Math.min(cursor + 1, total - 1)));
               }
               if (event.key === 'ArrowUp') {
                 event.preventDefault();
-                setCursor((current) => Math.max(current - 1, 0));
+                select(cursor < 0 ? 0 : Math.max(cursor - 1, 0));
               }
-              if (event.key === 'Enter') pick(cursor);
+              if (event.key === 'Enter') pick(Math.min(cursor, total - 1));
             }}
           />
           <kbd className="hidden shrink-0 rounded-[4px] border border-hair px-1.5 font-sans text-[11px] text-tertiary sm:inline">Esc</kbd>
@@ -751,7 +795,7 @@ export function SearchPalette({
                   <button
                     key={`${hit.kind}-${hit.sessionId ?? hit.taskId}-${index}`}
                     className={`mx-1 block w-[calc(100%-0.5rem)] rounded-control px-2.5 py-2 text-left ${index === cursor ? 'bg-selected' : ''}`}
-                    onMouseEnter={() => setCursor(index)}
+                    onMouseEnter={() => select(index)}
                     onClick={() => onJump(hit)}
                   >
                     <span className="flex items-baseline gap-2">
@@ -765,7 +809,27 @@ export function SearchPalette({
                 ))}
               </>
             )
-          ) : null}
+          ) : (
+            <>
+              {(['等我处理', '最近会话'] as const).map((group, groupIndex) => {
+                const start = groupIndex === 0 ? 0 : waiting.length;
+                const groupHits = groupIndex === 0 ? quickHits.slice(0, waiting.length) : quickHits.slice(waiting.length);
+                return (
+                  <section key={group} aria-label={group} data-testid={groupIndex === 0 ? 'palette-attention' : 'palette-recent'}>
+                    <p className="px-3 pb-1 pt-2 text-[11px] text-tertiary">{group}</p>
+                    {groupHits.length === 0 ? <p className="px-3 py-1.5 text-meta text-tertiary">{!snapshot ? '载入中…' : groupIndex === 0 && attention.isError ? '待办暂时无法加载' : groupIndex === 0 ? '当前项目没有待办' : '还没有最近打开的会话'}</p> : groupHits.map((hit, offset) => {
+                      const index = start + offset;
+                      return <button key={hit.sessionId} type="button" data-testid="palette-quick-session" data-session-id={hit.sessionId} className={`mx-1 flex min-h-[44px] w-[calc(100%-0.5rem)] items-center gap-2.5 rounded-control px-2.5 py-1.5 text-left ${index === cursor ? 'bg-selected' : ''}`} onMouseEnter={() => select(index)} onClick={() => pick(index)}>
+                        <Icon name="message" size={14} className="shrink-0 text-tertiary" />
+                        <span className="min-w-0 flex-1 truncate text-body text-primary">{hit.title}</span>
+                        <span className={`max-w-[40%] truncate text-meta ${groupIndex === 0 ? 'text-rust' : 'text-tertiary'}`}>{hit.snippet}</span>
+                      </button>;
+                    })}
+                  </section>
+                );
+              })}
+            </>
+          )}
           {matched.map((action, offset) => {
             const index = hits.length + offset;
             const header = action.group !== lastGroup ? action.group : null;
@@ -778,7 +842,7 @@ export function SearchPalette({
                   className={`mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2.5 rounded-control px-2.5 py-1.5 text-left text-body ${
                     index === cursor ? 'bg-selected text-primary' : 'text-secondary'
                   }`}
-                  onMouseEnter={() => setCursor(index)}
+                  onMouseEnter={() => select(index)}
                   onClick={() => pick(index)}
                 >
                   <Icon name={action.icon ?? 'command'} size={14} className="text-tertiary" />

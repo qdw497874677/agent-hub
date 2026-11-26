@@ -33,6 +33,8 @@ import { splitArchivedTasks } from '../atoms/task-display.ts';
 import { patchCanvasTask } from './confirmed-patch.ts';
 import { clearOptionFeedback, optionFeedbackIsCurrent, setOptionFeedback } from '../atoms/option-feedback.tsx';
 import type { View } from './route.ts';
+import { useAccount } from './account-context.ts';
+import { rememberPaletteRecent } from '../surfaces/workbench/palette-recent.ts';
 
 const LAST_PROJECT = 'agent-hub:last-project';
 
@@ -63,6 +65,7 @@ function RedirectToMachines() {
 
 function Workspace() {
   const [route, navigate] = useRoute();
+  const account = useAccount();
   // 项目默认落在列表：画布是刻意进去看的全局关系，不是每次打开项目的必经页。
   const narrow = useNarrow();
   const homeView: View = 'list';
@@ -425,6 +428,13 @@ function Workspace() {
   });
   const selectedSession = inCanvas ?? sideSession.data ?? null;
 
+  // 只在会话已获服务端确认、且真的进入对话时记一次；直链和首页入口也包含在内。
+  useEffect(() => {
+    if (account && project && view === 'focus' && selectedSession?.id === selected) {
+      rememberPaletteRecent(account.id, project.id, selectedSession.id);
+    }
+  }, [account?.id, project?.id, view, selected, selectedSession?.id]);
+
   // 专注对话要整段历史：投影只带最后几十条事件，长一点的思考就把正文挤出去了。
   const focusedSession = view === 'focus' ? selectedSession : null;
   const loadHistoryRef = useRef(loadHistory);
@@ -698,8 +708,12 @@ function Workspace() {
 
       {search ? (
         <SearchPalette
+          key={project.id}
           projectId={project.id}
+          accountId={account?.id ?? null}
+          canvas={canvas.data}
           onJump={(hit) => jump(hit.taskId, hit.sessionId)}
+          onQuickOpen={(sessionId) => { setSearch(false); openSession(sessionId); }}
           onClose={() => setSearch(false)}
           actions={paletteActions}
         />

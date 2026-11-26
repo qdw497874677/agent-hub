@@ -1451,6 +1451,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   groups: { groups: groupChat, agents: persistentAgents, agentTokens: apiTokenDeps.apiTokens },
   context: contextService,
   files: filesService,
+  diffReview: store.diffReview,
   git: gitService,
   rewind: rewindService,
   coordinators: { coordinators: store.workspaceCoordinators },

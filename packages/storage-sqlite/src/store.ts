@@ -39,6 +39,7 @@ import { createSqliteCheckpoints, createSqliteTurnRefs } from './turn-checkpoint
 import { createSqliteDeliveries } from './deliveries.ts';
 import { createSqliteBranchAttempts, ensureBranchAttemptTable } from './branch-attempts.ts';
 import { createSqliteAgentHandoffs, ensureAgentHandoffTable } from './agent-handoffs.ts';
+import { createSqliteDiffReview } from './diff-review.ts';
 import { createSqliteProvenance } from './provenance.ts';
 import { createSqliteConnectors } from './connectors.ts';
 import { createSqliteTaskDispatch } from './task-dispatch.ts';
@@ -93,6 +94,7 @@ export interface SqliteStore extends RepositorySet {
   readonly deliveries: DeliveryQueue;
   readonly branchAttempts: import('@agent-hub/domain').BranchAttemptStore;
   readonly agentHandoffs: import('@agent-hub/domain').AgentHandoffStore;
+  readonly diffReview: import('@agent-hub/domain').DiffReviewStore;
   readonly provenance: ProvenanceStore;
   readonly connectors: import('@agent-hub/domain').ConnectorStore;
   readonly agentTasks: import('@agent-hub/domain').AgentTaskStore;
@@ -634,6 +636,7 @@ export function openSqliteStore(file: string): SqliteStore {
     deliveries,
     branchAttempts: createSqliteBranchAttempts(db, saveSession),
     agentHandoffs: createSqliteAgentHandoffs(db, saveSession),
+    diffReview: createSqliteDiffReview(db),
     provenance: createSqliteProvenance(db),
     ...createSqliteConnectors(db),
     dispatches: createSqliteTaskDispatch(db),
