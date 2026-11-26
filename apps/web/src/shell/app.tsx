@@ -76,6 +76,7 @@ function Workspace() {
   // 新开主会话（不是任务）：入口在侧栏动作区，和新建任务并排。
   const [newCoordinator, setNewCoordinator] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [windowFocus, setWindowFocus] = useState<string | null>(null);
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
   const [newModelSession, setNewModelSession] = useState<{ projectId: string; source: SessionDto; model: string } | null>(null);
   const [taskDetail, setTaskDetail] = useState<string | null>(null);
@@ -92,6 +93,8 @@ function Workspace() {
 
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
   const projectRoute = route?.page === 'project' ? route : null;
+  // Workspace 在首页和项目之间复用；离开项目或切换项目时不要把旧抽屉带回来。
+  useEffect(() => { setSidebarOpen(false); }, [projectRoute?.projectId]);
   const project = useMemo(
     () => (projectRoute ? (projects.data ?? []).find((candidate) => candidate.id === projectRoute.projectId) ?? null : null),
     [projectRoute, projects.data]
@@ -541,7 +544,7 @@ function Workspace() {
     <ProjectSidebar
       project={project}
       projects={projects.data ?? []}
-      selectedId={selected}
+      selectedId={onClose && view === 'canvas' ? windowFocus : selected}
       canvas={display?.canvas ?? null}
       live={live}
       onInterrupt={interruptSession}
@@ -672,6 +675,8 @@ function Workspace() {
               onRetrySync={retrySync}
               onDerive={setDeriveFor}
               onOpen={openSession}
+              onProjectSessions={(sessionId) => { setWindowFocus(sessionId); setSidebarOpen(true); }}
+              onWindowFocusChange={setWindowFocus}
               onChanged={refresh}
               onLayoutChange={saveLayout}
               onTaskStatus={setTaskStatus}

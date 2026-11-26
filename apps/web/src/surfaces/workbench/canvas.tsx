@@ -46,6 +46,8 @@ interface Props {
   readonly onDerive: (taskId: string) => void;
   /** 打开专注对话：一条会话，整屏看。 */
   readonly onOpen: (sessionId: string) => void;
+  readonly onProjectSessions: (sessionId: string) => void;
+  readonly onWindowFocusChange: (sessionId: string | null) => void;
   /** 窗口里发完消息、分叉后刷新画布。 */
   readonly onChanged: () => void;
   /** 卡片上的输入行：草稿存在 App 层，切视图不丢（S6.4）。 */
@@ -137,6 +139,8 @@ export function CanvasView({
   onRetrySync,
   onDerive,
   onOpen,
+  onProjectSessions,
+  onWindowFocusChange,
   onChanged,
   onLayoutChange,
   onTaskStatus,
@@ -688,6 +692,8 @@ export function CanvasView({
         onDraftChange={onDraftChange}
         onChanged={onChanged}
         onOpen={onOpen}
+        onProjectSessions={onProjectSessions}
+        onWindowFocusChange={onWindowFocusChange}
         onChangeOption={onChangeOption}
       />
     </div>

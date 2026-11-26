@@ -166,7 +166,7 @@ test.describe('手机上的项目列表（窄屏 320）', () => {
 test.describe('手机抽屉：长任务列表（320/390）', () => {
   test.use({ viewport: { width: 320, height: 700 } });
 
-  test('任务内容在前，全局工具页脚常驻可见、可点，不横溢', async ({ page, baseURL }, testInfo) => {
+  test('任务内容优先，全局工具在列表后可达，不横溢', async ({ page, baseURL }, testInfo) => {
     const { project } = await seed(page, baseURL, 20);
     await openList(page, project.id);
 
@@ -177,21 +177,20 @@ test.describe('手机抽屉：长任务列表（320/390）', () => {
       await expect(drawer).toBeVisible();
       const taskNav = page.getByRole('navigation', { name: '任务与会话' });
       await expect(taskNav).toBeVisible();
+      expect(await taskNav.evaluate((nav) => Boolean(nav.compareDocumentPosition(nav.parentElement!.querySelector('[data-testid="sidebar-new-coordinator"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
       const globalNav = drawer.getByTestId('drawer-global-nav');
       await expect(globalNav).toBeVisible();
 
-      // 长列表滚起来也仍能看到全局工具：它在滚动区之外，是抽屉页脚。
-      await taskNav.evaluate((element) => {
-        element.scrollTop = element.scrollHeight;
-      });
-      await expect(globalNav).toBeVisible();
       await settleSheet(page);
-      const navBox = (await globalNav.boundingBox())!;
       const listBox = (await taskNav.boundingBox())!;
       const sheetBox = (await drawer.boundingBox())!;
       const asideBox = (await drawer.getByTestId('project-sidebar').boundingBox())!;
       expect(Math.abs(sheetBox.width - asideBox.width), '抽屉内容填满 sheet 宽度').toBeLessThanOrEqual(1);
-      expect(navBox.y).toBeGreaterThanOrEqual(listBox.y + listBox.height - 1);
+      expect(listBox.y).toBeLessThan(sheetBox.y + sheetBox.height / 2);
+      await globalNav.scrollIntoViewIfNeeded();
+      const navBox = (await globalNav.boundingBox())!;
+      const scrolledListBox = (await taskNav.boundingBox())!;
+      expect(navBox.y).toBeGreaterThanOrEqual(scrolledListBox.y + scrolledListBox.height - 1);
       expect(navBox.y + navBox.height).toBeLessThanOrEqual(width === 390 ? 844 : 700);
       expect(navBox.height, '全局工具页脚两行以内').toBeLessThan(120);
       expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);

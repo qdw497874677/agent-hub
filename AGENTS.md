@@ -63,64 +63,14 @@ set -a; . ./.env.deploy.local; set +a
 
 ```bash
 npm install
-npm run check              # 架构约束
-npm run typecheck          # 后端 + packages
-npm run typecheck:web
-npm test                   # 单测（不含 e2e/**，并发跑，约 27 秒）
-npm run test:e2e-node      # e2e/**/*.test.ts 的 node:test 用例
-npm run test:all           # 上面两个都跑
-npm run test:serial        # 串行全量（排查并发问题时用）
 npm run build              # 只构建前端
 npm run up                 # 构建前端 + 起 server（默认同机起 worker）
 npm run dev                # server + Vite
 ```
 
-跑真 `npm install` / `npm pack` 的用例默认跳过，需要时 `HUB_TEST_INSTALL=1 npm test`。
+## 4. 测试与验收
 
-## 4. 浏览器 E2E
-
-- 配置：`playwright.config.ts`
-- 独立端口：`E2E_PORT`（默认 `7896`）
-- 独立数据：`E2E_DATA_DIR`（默认 `/tmp/agent-hub-e2e-data`）
-- 浏览器：系统 Chromium（`/usr/bin/chromium`）
-- 单条冒烟：
-
-```bash
-E2E_PORT=7896 E2E_DATA_DIR=/tmp/agent-hub-e2e-data \
-  npx playwright test e2e/auth.spec.ts --reporter=list
-```
-
-E2E 会真的起 server + worker，部分用例会调真实 agent；Grok 未登录时相关用例会失败或跳过。
-
-### 桌面与移动端一致性
-
-- 修改 Web 展示或交互时，必须同时检查桌面端和移动端，不能只因为问题在一端被发现就只修那一端。同一流程的能力、状态含义、操作后果和反馈应一致；优先共用状态判断和交互逻辑。
-- 一致性不等于同布局：可以按屏幕空间和鼠标、键盘、触屏的差异调整入口位置、信息密度和呈现方式，但不能让一端丢失关键操作或反馈，也不能把关键说明只放在悬停里。确需只改一端时，在报告里说明原因，以及另一端为什么无需改动。
-- 共享流程的展示或交互改动，提交前用 Playwright 分别验证桌面和移动视口：既验证两端的共同结果，也验证各自的布局和入口可用。
-
-### 提交前必须跑（前端改动）
-
-**只要改了 `apps/web/**`，提交前必须跑 Playwright**——不是"有空就跑"：
-
-- 改到某条流程：至少跑相关 spec（`e2e/<area>.spec.ts`），并在提交信息或报告里写明命令与结果。
-- 新增交互、改布局、改手机端（<640px）：跑对应 spec，且补一条断言（新 testid 要进用例）。
-- 纯文案改动：仍要跑一次覆盖那句文案的 spec；没有 spec 覆盖就在同一提交里补断言。
-- 不要用「单测过了 / build 过了」代替 Playwright；web 单测和 `build` 只是前置门禁。
-
-每次用独立 `E2E_PORT` 与全新的 `E2E_DATA_DIR`（旧数据目录会因历史同名 bot 撞 `bots.team_id, name` 而整轮起不来）。
-
-### 手动起一个可看的实例
-
-```bash
-mkdir -p /tmp/agent-hub-demo
-HUB_PORT=7897 HUB_DATA_DIR=/tmp/agent-hub-demo \
-HUB_SPAWN_WORKER=1 WORKER_ROOTS=/tmp \
-HUB_TEST_ACCOUNT_FILE=/tmp/agent-hub-demo/test-account \
-HUB_MAIL_PROVIDER=log HUB_MAIL_OUTBOX=/tmp/agent-hub-demo/outbox.jsonl \
-node apps/server/src/main.ts
-```
-
-测试账号密码在 `/tmp/agent-hub-demo/test-account`。截图可以用 `playwright` 的无头 Chromium。
+测试前先读 [测试与验收](docs/testing/README.md)：日常命令、Web 必跑 Playwright、桌面与移动端验证、E2E 隔离、发布门禁和检验记录均在此维护。
 
 ## 5. 部署
 
@@ -133,7 +83,9 @@ node apps/server/src/main.ts
 
 ### 阿里云
 
-先确认本地 `npm run check && npm run typecheck && npm run typecheck:web` 通过，再部署。
+1. 开始发布先核对 GitHub `master`、阿里云当前 `HEAD` 和本地候选提交；涉及 Worker 协议或能力时，同时核对相关 Worker 版本。若基线已移动，先合入并重新验收，不强推、不覆盖未授权的本地改动。
+2. 推送和部署前，按[发布验收与检验记录](docs/testing/README.md#发布验收与检验记录)验证最终 Git 树。
+3. 备份和重启按现有部署脚本走。SSH 中途断开不表示部署失败；先只读核对远端提交、服务和健康状态，再决定要不要重试。
 
 ```bash
 # 只读检查
@@ -176,17 +128,10 @@ scripts/aliyun-ssh.sh '
 - **不自动恢复数据库**；需要恢复时人工确认
 - 健康检查：`http://127.0.0.1:17900/api/health`
 
-部署后至少验证：
-
-1. `/api/health` 200
-2. 页面能登录
-3. 机器页 Worker 在线
-4. 新开一条会话能收到第一条回复
+部署完成后，按同一份[验收清单](docs/testing/README.md#发布验收与检验记录)核对线上版本、基础可用性及获准的业务冒烟，并记录未做的检查。
 
 ## 6. 已知问题与注意事项
 
-- **`npm test` 卡住的旧症结已修**（2026-11-12，REL-1）：e2e 子进程原本 `stdio: pipe` 且 `stop()` 不等待；现在统一走 `apps/server/src/test-support/spawn.ts`（`stdio: 'ignore'` + SIGTERM→3s→SIGKILL），`npm test` 不再包含 `e2e/**`，默认并发约 27 秒。若再卡住先看这个助手。
-- **`package-lock.json` 可能落后**：`npm ci` 会报缺包。现在 `npm run check` 末尾的 `check:lockfile` 会直接失败，`npm install` 后提交锁文件即可。
 - **SSH 允许 root 密码登录**且服务端 OpenSSH 较老；长期应改密钥登录并关闭密码认证。
 - **截图**：远端截图是文件，SSH 终端看不到；用 `scp` 或 SSH 端口转发到本地浏览器。
 

@@ -13,7 +13,16 @@ test.afterAll(() => stopFakeWorker());
 test('任务侧栏和画布打开同一开始会话流程，手机可直接创建', async ({ page, baseURL }) => {
   test.setTimeout(180_000);
   await loginByApi(page);
+  // 留下一台同 agent 的离线机器，确保多机器列表下不会依赖唯一机器的自动选择。
+  const oldWorkerId = await ensureFakeWorker(page, baseURL!, AGENT);
+  stopFakeWorker();
   const workerId = await ensureFakeWorker(page, baseURL!, AGENT);
+  expect(workerId).not.toBe(oldWorkerId);
+  const workersResponse = await page.request.get('/api/workers');
+  expect(workersResponse.ok()).toBe(true);
+  const workers = await workersResponse.json() as Array<{ workerId: string; label: string }>;
+  const workerLabel = workers.find((worker) => worker.workerId === workerId)?.label;
+  expect(workerLabel).toBeTruthy();
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
   const dir = mkdtempSync(join(tmpdir(), 'e2e-sidebar-derive-'));
@@ -73,14 +82,18 @@ test('任务侧栏和画布打开同一开始会话流程，手机可直接创�
     await expect(dialog).toBeVisible();
     if (!(await dialog.locator('#derive-agent').isVisible())) await dialog.getByTestId('derive-agent-section').locator('summary').click();
     await dialog.locator('#derive-agent').selectOption(AGENT);
+    const machine = dialog.getByRole('radiogroup', { name: '机器' }).getByRole('radio', { name: workerLabel!, exact: false });
+    await expect(machine).toBeEnabled();
+    await machine.click();
+    await expect(machine).toHaveAttribute('aria-checked', 'true');
     await dialog.getByTestId('ws-new-empty').click();
     const start = dialog.getByRole('button', { name: '开始', exact: true });
     await expect(start).toBeEnabled();
     await start.click();
     await expect(dialog).toHaveCount(0, { timeout: 60_000 });
     await expect.poll(async () => {
-      const canvas = await (await page.request.get(`/api/projects/${project.id}/canvas`)).json() as { sessions: Array<{ taskId: string; agentId: string }> };
-      return canvas.sessions.some((session) => session.taskId === task.id && session.agentId === AGENT);
+      const canvas = await (await page.request.get(`/api/projects/${project.id}/canvas`)).json() as { sessions: Array<{ taskId: string; agentId: string; workerId: string | null }> };
+      return canvas.sessions.some((session) => session.taskId === task.id && session.agentId === AGENT && session.workerId === workerId);
     }).toBe(true);
     await expect(page).toHaveURL(/\/focus/);
 

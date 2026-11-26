@@ -180,7 +180,7 @@ test.describe('手机 390', () => {
     const { project } = await seed(page, baseURL!, '手机');
     await page.goto(`/#/p/${project.id}/list`);
     await expect(page.getByTestId('list-view')).toBeVisible();
-    // 手机抽屉把项目会话/任务放在前面；全局工具是列表之后的页脚，常驻可见，不用滚到底。
+    // 手机抽屉把项目会话/任务放在前面；全局工具跟在列表后，共用滚动区。
     await page.getByRole('button', { name: '打开侧栏' }).click();
     const drawerNav = page.getByTestId('drawer-global-nav');
     await expect(drawerNav).toBeVisible();
@@ -210,8 +210,22 @@ test.describe('手机 390', () => {
     await page.getByRole('button', { name: '打开侧栏' }).click();
     await drawerNav.getByTestId('nav-machines').click();
     await expect(page).toHaveURL(/#\/machines$/);
-    await page.goto(`/#/p/${project.id}/list`);
+    await page.goBack();
     await expect(page.getByTestId('list-view')).toBeVisible();
+    await expect(page.getByTestId('nav-sheet')).toHaveCount(0);
+    // 首页与项目共用 Workspace；无论通过链接还是浏览器返回离开，都不能残留抽屉。
+    await page.getByRole('button', { name: '打开侧栏' }).click();
+    await drawerNav.getByTestId('nav-home').click();
+    await expect(page).toHaveURL(/#\/$|#\/home$/);
+    await page.goBack();
+    await expect(page.getByTestId('list-view')).toBeVisible();
+    await expect(page.getByTestId('nav-sheet')).toHaveCount(0);
+    await page.getByRole('button', { name: '打开侧栏' }).click();
+    await page.goForward();
+    await expect(page).toHaveURL(/#\/$|#\/home$/);
+    await page.goBack();
+    await expect(page.getByTestId('list-view')).toBeVisible();
+    await expect(page.getByTestId('nav-sheet')).toHaveCount(0);
 
     // 先把列表滚到底：建完任务要自己滚回「未开始」，不能只让 toast 出现。
     await page.getByTestId('list-view').evaluate((element) => {
