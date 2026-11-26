@@ -42,6 +42,12 @@ export function ModelPicker({
   short = false,
   note,
   agentLabel,
+  sessionPicker = false,
+  triggerText,
+  dialogTitle,
+  deferPick = false,
+  newSessionModels,
+  onNewSession,
   placeholder = '默认'
 }: {
   items: readonly ModelItem[];
@@ -61,6 +67,14 @@ export function ModelPicker({
   note?: string;
   /** 仅会话入口显示 Hub Agent；其他调用方仍是普通模型选择器。 */
   agentLabel?: string;
+  /** 会话选项不应在手机打开时弹出软键盘。 */
+  sessionPicker?: boolean;
+  triggerText?: string;
+  dialogTitle?: string;
+  /** 选择后将打开另一个对话框，等待本选择器退出。 */
+  deferPick?: boolean;
+  newSessionModels?: ReadonlySet<string>;
+  onNewSession?: (value: string) => void;
   /** 值为空时按钮上写什么（派生对话框里只能用 hub 模型时写「选择模型…」）。 */
   placeholder?: string;
 }) {
@@ -72,19 +86,20 @@ export function ModelPicker({
   const current = items.find((item) => item.value === value);
   const full = current?.label ?? value;
   const shown = short ? modelName(full) : full;
-  const display = agentLabel ? `${agentLabel} · ${shown || '当前模型未确认'}` : shown || placeholder;
+  const display = triggerText ?? (agentLabel ? shown || '当前模型未确认' : shown || placeholder);
   return (
     <>
       <button
         ref={trigger}
         type="button"
+        data-testid={sessionPicker ? (triggerText ? 'agent-handoff-trigger' : 'session-model-trigger') : undefined}
         id={id}
-        aria-label={`${label}：${agentLabel ? `${agentLabel} · ` : ''}${full || (agentLabel ? '当前模型未确认' : placeholder)}${pending ? '（切换中…）' : ''}`}
+        aria-label={triggerText ?? `${label}：${agentLabel ? `${agentLabel} · ` : ''}${full || (agentLabel ? '当前模型未确认' : placeholder)}${pending ? '（切换中…）' : ''}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-busy={pending || undefined}
-        disabled={agentLabel ? undefined : disabled || pending}
-        aria-disabled={agentLabel && (disabled || pending) ? true : undefined}
+        disabled={sessionPicker ? undefined : disabled || pending}
+        aria-disabled={sessionPicker && (disabled || pending) ? true : undefined}
         title={`${agentLabel ? `${agentLabel} · ` : ''}${full || placeholder}${pending ? ' · 正在等 agent 确认' : ''}`}
         className={`flex min-w-0 items-center justify-between gap-1 text-left ${className}`}
         onClick={(event) => {
@@ -94,11 +109,7 @@ export function ModelPicker({
         }}
         onDoubleClick={(event) => event.stopPropagation()}
       >
-        {agentLabel ? <span className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
-          <span className="min-w-0 flex-1 truncate">{agentLabel}</span>
-          <span aria-hidden className="shrink-0">·</span>
-          <span className="min-w-0 flex-1 truncate">{shown || '当前模型未确认'}{pending ? ' · 切换中…' : ''}</span>
-        </span> : <span className="min-w-0 truncate">{display}{pending ? ' · 切换中…' : ''}</span>}
+        <span className="min-w-0 truncate">{display}{pending ? ' · 切换中…' : ''}</span>
         <span aria-hidden className="shrink-0 text-tertiary">
           ▾
         </span>
@@ -112,11 +123,21 @@ export function ModelPicker({
               scope={scope}
               note={note}
               agentLabel={agentLabel}
+              sessionPicker={sessionPicker}
+              dialogTitle={dialogTitle}
+              recordRecent={!deferPick}
+              newSessionModels={newSessionModels}
+              onNewSession={(picked) => { setOpen(false); requestAnimationFrame(() => onNewSession?.(picked)); }}
               onClose={() => { setOpen(false); restoreFocus(); }}
               onPick={(picked) => {
                 setOpen(false);
-                if (!picked.startsWith('handoff:')) restoreFocus();
-                if (picked !== value) onChange(picked);
+                if (deferPick) {
+                  // 等抽屉卸载并还焦点后再打开确认框，避免两个模态框争焦点。
+                  if (picked !== value) requestAnimationFrame(() => onChange(picked));
+                } else {
+                  restoreFocus();
+                  if (picked !== value) onChange(picked);
+                }
               }}
             />,
             document.body
@@ -133,6 +154,11 @@ function ModelSheet({
   scope,
   note,
   agentLabel,
+  sessionPicker,
+  dialogTitle,
+  recordRecent,
+  newSessionModels,
+  onNewSession,
   onPick,
   onClose
 }: {
@@ -142,6 +168,11 @@ function ModelSheet({
   scope: string;
   note?: string;
   agentLabel?: string;
+  sessionPicker: boolean;
+  dialogTitle?: string;
+  recordRecent: boolean;
+  newSessionModels?: ReadonlySet<string>;
+  onNewSession: (value: string) => void;
   onPick: (value: string) => void;
   onClose: () => void;
 }) {
@@ -151,6 +182,7 @@ function ModelSheet({
   const groups = useMemo(() => groupModels(items, query, recent), [items, query, recent]);
   // 同一个模型可能同时在「最近用过」和它的提供方组里，cmdk 的 value 用「组:模型」保证唯一
   const keyOf = (heading: string, model: string) => `${heading}:${model}`;
+  const title = dialogTitle ?? `选择${label}`;
   const [selected, setSelected] = useState(() => {
     const home = groups.find((group) => group.items.some((item) => item.value === value));
     return home ? keyOf(home.heading, value) : '';
@@ -161,7 +193,7 @@ function ModelSheet({
   }, [groups, query]);
 
   const pick = (picked: string) => {
-    if (!picked.startsWith('handoff:')) {
+    if (recordRecent) {
       try {
         localStorage.setItem(recentKey(scope), JSON.stringify(pushRecent(readRecent(scope), picked)));
       } catch {
@@ -173,7 +205,7 @@ function ModelSheet({
 
   const command = (
         <Command
-          label={`选择${label}`}
+          label={title}
           shouldFilter={false}
           value={selected}
           onValueChange={setSelected}
@@ -193,11 +225,11 @@ function ModelSheet({
               ⌕
             </span>
             <Command.Input
-              autoFocus
+              autoFocus={!sessionPicker || !narrow}
               aria-label={`搜索${label}`}
               value={query}
               onValueChange={setQuery}
-              placeholder={agentLabel ? '搜索 Agent、模型或提供方…' : `搜索${label}或提供方…（共 ${items.length} 个）`}
+              placeholder={agentLabel ? '搜索模型或提供方…' : `搜索${label}或提供方…（共 ${items.length} 个）`}
               spellCheck={false}
               autoCapitalize="off"
               autoCorrect="off"
@@ -211,7 +243,7 @@ function ModelSheet({
               取消
             </button>
           </div>
-          {agentLabel ? <p className="shrink-0 px-3 py-2 text-meta text-secondary">当前：{agentLabel} · {items.find((item) => item.value === value)?.label ?? (value || '当前模型未确认')}</p> : null}
+          {agentLabel ? <p className="shrink-0 px-3 py-2 text-meta text-secondary" data-testid="session-model-current">当前会话：{agentLabel} · {items.find((item) => item.value === value)?.label ?? (value || '当前模型未确认')}<span className="block text-tertiary">只更改当前运行时的模型</span></p> : null}
           {note !== undefined ? (
             // 窄屏：抽屉一打开就在搜索框下面，还没选模型就先看见「换提供方会重启进程」。
             // 放在列表外面，滚动候选时也不会被推走。
@@ -222,7 +254,7 @@ function ModelSheet({
               {note}
             </p>
           ) : null}
-          <Command.List className="min-h-0 flex-1 overflow-y-auto p-1.5 [scroll-padding-block:6px]">
+          <Command.List data-testid={sessionPicker && agentLabel ? 'session-model-list' : undefined} className="min-h-0 flex-1 overflow-y-auto p-1.5 [scroll-padding-block:6px]">
             <Command.Empty className="px-3 py-3 text-meta text-tertiary">没有匹配的{label}</Command.Empty>
             {groups.map((group) => (
               <Command.Group
@@ -235,7 +267,9 @@ function ModelSheet({
                     key={keyOf(group.heading, item.value)}
                     value={keyOf(group.heading, item.value)}
                     disabled={item.disabled === true}
-                    onSelect={() => pick(item.value)}
+                    onSelect={() => newSessionModels?.has(item.value) ? onNewSession(item.value) : pick(item.value)}
+                    aria-label={newSessionModels?.has(item.value) ? `${item.label}，用此模型新开会话` : undefined}
+                    data-testid={newSessionModels?.has(item.value) ? 'new-session-with-model' : undefined}
                     className="flex min-h-[48px] cursor-pointer items-center gap-2 rounded-sm px-3 text-body text-secondary data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-45 data-[selected=true]:bg-selected data-[selected=true]:text-primary sm:min-h-0 sm:py-1.5"
                   >
                     <span aria-hidden className="w-4 shrink-0 text-center text-primary">
@@ -247,9 +281,11 @@ function ModelSheet({
                           {/* 组名已经是提供方了，行里不再重复前缀 */}
                           {item.label.startsWith(`${group.heading}/`) ? item.label.slice(group.heading.length + 1) : item.label}
                         </span>
+                        {agentLabel && item.value === value ? <span className="shrink-0 text-meta text-secondary">当前</span> : null}
                         {item.meta ? <span className="ml-auto shrink-0 text-meta text-tertiary">{item.meta}</span> : null}
                       </span>
                       {item.description ? <span className="block text-meta text-tertiary">{item.description}</span> : null}
+                      {newSessionModels?.has(item.value) ? <span className="block text-meta text-link">用此模型新开会话 →</span> : null}
                     </span>
                   </Command.Item>
                 ))}
@@ -262,7 +298,7 @@ function ModelSheet({
   // 窄屏：底部抽屉，把手能拖、遮罩能点、Esc 能关（都收在 dialog-shell 里）
   if (narrow) {
     return (
-      <Sheet title={`选择${label}`} onClose={onClose} testId="model-sheet" scroll={false} zClassName="z-[60]">
+      <Sheet title={title} onClose={onClose} testId="model-sheet" scroll={false} zClassName="z-[60]">
         {command}
       </Sheet>
     );
@@ -277,7 +313,7 @@ function ModelSheet({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`选择${label}`}
+        aria-label={title}
         className="flex max-h-[60vh] w-full flex-col overflow-hidden rounded-overlay border border-strong bg-overlay shadow-overlay sm:max-w-[440px]"
         onClick={(event) => event.stopPropagation()}
       >

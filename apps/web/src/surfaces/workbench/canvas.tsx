@@ -41,6 +41,8 @@ interface Props {
   readonly live: LiveMap;
   readonly history: Readonly<Record<string, import('../../atoms/live.ts').HistoryState>>;
   readonly onRetryHistory: (session: SessionDto) => void;
+  readonly sync: Readonly<Record<string, 'syncing' | 'stale'>>;
+  readonly onRetrySync: (sessionId: string) => void;
   readonly onDerive: (taskId: string) => void;
   /** 打开专注对话：一条会话，整屏看。 */
   readonly onOpen: (sessionId: string) => void;
@@ -133,6 +135,8 @@ export function CanvasView({
   live,
   history,
   onRetryHistory,
+  sync,
+  onRetrySync,
   onDerive,
   onOpen,
   onProjectSessions,
@@ -682,6 +686,8 @@ export function CanvasView({
         live={live}
         history={history}
         onRetryHistory={onRetryHistory}
+        sync={sync}
+        onRetrySync={onRetrySync}
         drafts={drafts}
         onDraftChange={onDraftChange}
         onChanged={onChanged}

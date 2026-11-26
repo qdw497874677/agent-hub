@@ -30,6 +30,7 @@ function pending(state: PendingPrompt['state'], seq?: number): PendingPrompt {
 const writing: TurnProgress = { phase: 'writing', label: '正在输出…', seconds: 3, detail: 'Codex 正在回复：正在输出…' };
 const starting: TurnProgress = { phase: 'starting', label: '等 Codex 的第一条输出…', seconds: 6, detail: 'Codex 正在回复：等 Codex 的第一条输出…' };
 const waiting: TurnProgress = { phase: 'waiting', label: '等待模型回应…', seconds: 8, detail: 'Codex 正在回复：等待模型回应…' };
+const toolWait: TurnProgress = { phase: 'tool-wait', label: '工具已结束 · 等待模型回应…', seconds: 8, detail: 'Codex 正在回复：工具已结束 · 等待模型回应…' };
 
 test('什么都没有：不显示（回合没在跑、也没有待送的消息）', () => {
   assert.equal(turnHint({ pending: [], delivery: undefined, deliveries: [], progress: null }), null);
@@ -67,6 +68,16 @@ test('只有登记块（附件 / 批准卡这类）：也不算 agent 在动', (
   const hint = turnHint({ pending: [], delivery: sent, deliveries: [sent], progress: waiting });
   assert.equal(hint?.stage, 'delivery');
   assert.equal(hint?.text, '等待模型首次回应');
+});
+
+test('工具已结束后说等待后续，不说首次回应；投递不确定或更新消息仍优先', () => {
+  const sent = delivery(4, 'sending');
+  const hint = turnHint({ pending: [], delivery: sent, deliveries: [sent], progress: toolWait });
+  assert.equal(hint?.phase, 'tool-wait');
+  assert.equal(hint?.text, toolWait.label);
+  assert.equal(turnHint({ pending: [], delivery: sent, deliveries: [sent], progress: toolWait, uncertainDeliveryIds: [sent.id] })?.text, '暂未确认这一轮的结果');
+  assert.equal(turnHint({ pending: [pending('queued', 5)], delivery: sent, deliveries: [sent], progress: toolWait })?.phase, 'queued');
+  assert.equal(turnHint({ pending: [pending('unknown', 5)], delivery: sent, deliveries: [sent], progress: toolWait }), null);
 });
 
 test('当前这句还在排队，上一句在输出：说排队，不把上一句的输出算到它头上', () => {

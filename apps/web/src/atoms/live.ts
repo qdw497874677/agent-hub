@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, streamUrl, type JournalEntryDto, type SessionDto } from '../shell/api.ts';
-import { applyFrame, catchUp, seedLive, withFullHistory, type Frame, type LiveMap } from './live-core.ts';
+import type { Frame, LiveMap } from './live-core.ts';
+import { LiveSync } from './live-sync.ts';
 
 export * from './live-core.ts';
 
-/** 连接状态：手机切后台、换网络时 SSE 会断，界面要说出来，而不是安静地停更。 */
 export type StreamState = 'connecting' | 'open' | 'reconnecting';
 export type HistoryState = 'loading' | 'loaded' | 'error';
 
@@ -12,49 +12,34 @@ export interface LiveStream {
   readonly live: LiveMap;
   readonly state: StreamState;
   readonly history: Readonly<Record<string, HistoryState>>;
-  /** 用画布投影里的历史给内存播种：一条会话只播一次，之后只吃比它新的帧。 */
+  readonly sync: Readonly<Record<string, 'syncing' | 'stale'>>;
+  readonly retrySync: (sessionId: string) => void;
   readonly seed: (sessions: readonly SessionDto[], previews: Readonly<Record<string, readonly JournalEntryDto[]>>) => void;
-  /** 专注对话打开时拉整段历史（投影只有最后几十条）。 */
   readonly loadHistory: (session: SessionDto) => Promise<void>;
 }
 
 const MAX_BACKOFF_MS = 15_000;
 
-/**
- * SSE 一条连接推所有会话；前端按 sessionId 分流。
- * 断了就退避重连；重连成功后按每条会话的 lastSeq 用 `events?after=` 补上断线期间的帧。
- * 用原生 EventSource 而不是 SSE 库：它的自动重连 + 这里的补帧已经够用，不值得多一个依赖。
- */
+/** One SSE connection, with independent per-session transcript freshness. */
 export function useLiveStream(onResync?: () => void): LiveStream {
   const [live, setLive] = useState<LiveMap>({});
   const [state, setState] = useState<StreamState>('connecting');
-  const [history, setHistory] = useState<Record<string, HistoryState>>({});
-  const historyRequests = useRef(new Map<string, Promise<void>>());
-  const liveRef = useRef(live);
-  liveRef.current = live;
+  const [history, setHistory] = useState<Readonly<Record<string, HistoryState>>>({});
+  const [sync, setSync] = useState<Readonly<Record<string, 'syncing' | 'stale'>>>({});
+  const coordinator = useRef<LiveSync | null>(null);
+  if (!coordinator.current) coordinator.current = new LiveSync(api.events, (next, freshness, histories) => {
+    setLive(next);
+    setSync(freshness);
+    setHistory(histories);
+  });
   const resyncRef = useRef(onResync);
   resyncRef.current = onResync;
 
-  const seed = useCallback(
-    (sessions: readonly SessionDto[], previews: Readonly<Record<string, readonly JournalEntryDto[]>>) => {
-      setLive((current) => seedLive(current, sessions, previews));
-    },
-    []
-  );
-
-  const loadHistory = useCallback((session: SessionDto): Promise<void> => {
-    const existing = historyRequests.current.get(session.id);
-    if (existing) return existing;
-    setHistory((current) => ({ ...current, [session.id]: 'loading' }));
-    const request = api.events(session.id).then((entries) => {
-      setLive((current) => withFullHistory(current, session, entries));
-      setHistory((current) => ({ ...current, [session.id]: 'loaded' }));
-    }, () => {
-      setHistory((current) => ({ ...current, [session.id]: 'error' }));
-    }).finally(() => historyRequests.current.delete(session.id));
-    historyRequests.current.set(session.id, request);
-    return request;
+  const seed = useCallback((sessions: readonly SessionDto[], previews: Readonly<Record<string, readonly JournalEntryDto[]>>) => {
+    coordinator.current?.seed(sessions, previews);
   }, []);
+  const loadHistory = useCallback((session: SessionDto) => coordinator.current!.loadHistory(session), []);
+  const retrySync = useCallback((sessionId: string) => coordinator.current?.retrySync(sessionId), []);
 
   useEffect(() => {
     let source: EventSource | null = null;
@@ -62,36 +47,30 @@ export function useLiveStream(onResync?: () => void): LiveStream {
     let attempt = 0;
     let disposed = false;
     let everOpened = false;
-
-    const resync = async (): Promise<void> => {
-      const sessions = Object.entries(liveRef.current);
-      await Promise.all(
-        sessions.map(async ([sessionId, session]) => {
-          const entries = await api.events(sessionId, session.lastSeq).catch(() => []);
-          if (entries.length > 0) setLive((current) => catchUp(current, sessionId, entries));
-        })
-      );
-      resyncRef.current?.();
-    };
+    const syncer = coordinator.current!;
 
     const connect = (): void => {
       if (disposed) return;
-      source = new EventSource(streamUrl());
-      source.addEventListener('open', () => {
+      const current = new EventSource(streamUrl());
+      source = current;
+      current.addEventListener('open', () => {
+        if (disposed || source !== current) return;
         attempt = 0;
         setState('open');
-        if (everOpened) void resync();
+        syncer.open();
+        if (everOpened) resyncRef.current?.();
         everOpened = true;
       });
-      source.addEventListener('frame', (message) => {
-        const frame = JSON.parse((message as MessageEvent<string>).data) as Frame;
-        setLive((current) => applyFrame(current, frame));
+      current.addEventListener('frame', (message) => {
+        if (disposed || source !== current) return;
+        syncer.frame(JSON.parse((message as MessageEvent<string>).data) as Frame);
       });
-      source.addEventListener('error', () => {
+      current.addEventListener('error', () => {
+        if (disposed || source !== current) return;
         setState('reconnecting');
-        // CONNECTING 说明浏览器自己在重连；CLOSED 才需要我们接手（比如 server 重启时回了非 200）。
-        if (source?.readyState !== EventSource.CLOSED) return;
-        source.close();
+        syncer.disconnect();
+        if (current.readyState !== EventSource.CLOSED) return;
+        current.close();
         const delay = Math.min(MAX_BACKOFF_MS, 500 * 2 ** attempt);
         attempt += 1;
         timer = setTimeout(connect, delay);
@@ -99,7 +78,6 @@ export function useLiveStream(onResync?: () => void): LiveStream {
     };
 
     connect();
-    // 手机从后台切回来时 EventSource 可能已经悄悄死了：可见时主动检查一次。
     const onVisible = (): void => {
       if (document.visibilityState !== 'visible' || source?.readyState !== EventSource.CLOSED) return;
       clearTimeout(timer);
@@ -111,9 +89,10 @@ export function useLiveStream(onResync?: () => void): LiveStream {
       disposed = true;
       clearTimeout(timer);
       source?.close();
+      syncer.disconnect();
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
 
-  return { live, state, seed, loadHistory, history };
+  return { live, state, seed, loadHistory, history, sync, retrySync };
 }

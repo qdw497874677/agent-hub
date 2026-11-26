@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Block } from './live-core.ts';
-import { turnProgress } from './turn-progress.ts';
+import { advanceTurnClock, latestPromptSeq, turnProgress } from './turn-progress.ts';
 
 const NOW = 1_700_000_000_000;
 
@@ -79,6 +79,45 @@ test('工具回来后又有文本：回到正在输出', () => {
   const returned: Block = { kind: 'tool', name: 'Bash', input: '{}', result: { ok: true, durationMs: 120 }, seq: 2 };
   const state = progress([prompt(), returned, text('完了', 3)]);
   assert.equal(state?.phase, 'writing');
+});
+
+test('工具已结束时不再说正在用，也不把之前的文本当成正在输出', () => {
+  const settled: Block = { kind: 'tool', name: 'Bash', input: '{}', result: { ok: false, durationMs: 120 }, seq: 3 };
+  const artifact: Block = { kind: 'artifact', path: 'a.png', bytes: 10, seq: 4 };
+  for (const blocks of [[prompt(), settled], [prompt(), thinking(), settled, artifact]]) {
+    const state = progress(blocks);
+    assert.equal(state?.phase, 'tool-wait');
+    assert.equal(state?.label, '工具已结束 · 等待模型回应…');
+  }
+});
+
+test('非活动块不掩盖当前工具或后续输出；空文字也不是输出', () => {
+  const artifact: Block = { kind: 'artifact', path: 'a.png', bytes: 10, seq: 4 };
+  const settled: Block = { kind: 'tool', name: 'Bash', input: '{}', result: { ok: true, durationMs: 1 }, seq: 2 };
+  assert.equal(progress([prompt(), tool('Bash'), artifact])?.phase, 'tool');
+  assert.equal(progress([prompt(), settled, text('', 3), artifact])?.phase, 'tool-wait');
+  assert.equal(progress([prompt(), settled, text('后续', 3), artifact])?.phase, 'writing');
+});
+
+test('计时身份使用当前会话与最新可见 prompt，不因普通块或 prompt 暂缺而重置', () => {
+  const previous = [prompt(1), text('旧回复', 2)];
+  const current = [...previous, prompt(3)];
+  assert.equal(latestPromptSeq(current), 3);
+  let clock = advanceTurnClock({ sessionId: 's', promptSeq: undefined, at: null }, 's', latestPromptSeq(previous), true, 100);
+  clock = advanceTurnClock(clock, 's', latestPromptSeq(current), true, 200);
+  assert.equal(clock.at, 200);
+  clock = advanceTurnClock(clock, 's', latestPromptSeq([...current, text('新回复', 4)]), true, 300);
+  assert.equal(clock.at, 200);
+  clock = advanceTurnClock(clock, 's', undefined, true, 400);
+  assert.equal(clock.at, 200);
+  clock = advanceTurnClock(clock, 's', 3, true, 500);
+  assert.equal(clock.at, 200);
+  clock = advanceTurnClock(clock, 'other', 3, true, 600);
+  assert.equal(clock.at, 600);
+  clock = advanceTurnClock(clock, 'other', 3, false, 700);
+  assert.equal(clock.at, null);
+  clock = advanceTurnClock(clock, 'other', 3, true, 800);
+  assert.equal(clock.at, 800);
 });
 
 test('只有登记类块（附件 / 产物）：在等模型回应，不说「已发送」', () => {

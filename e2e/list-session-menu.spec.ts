@@ -1,9 +1,9 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 列表视图里每条会话行自己的「⋯」：手机上常驻 44px，桌面上也看得见。
@@ -11,21 +11,12 @@ import { piModel } from './hub-model.ts';
  * 确认框和同一套禁用规则（跑着的先停）。
  */
 test.use({ viewport: { width: 390, height: 844 } });
+test.afterAll(() => stopFakeWorker());
 
 interface StreamFrame {
   readonly sessionId: string;
   readonly event: unknown;
   readonly status: string;
-}
-
-async function onlineAgentId(page: Page): Promise<string | undefined> {
-  for (let i = 0; i < 40; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    const agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (agentId) return agentId;
-    await page.waitForTimeout(500);
-  }
-  return undefined;
 }
 
 test('列表行「⋯」：不导航就能删，取消保留，确认只删这一条且不删工作目录', async ({ page, baseURL }, testInfo) => {
@@ -34,11 +25,7 @@ test('列表行「⋯」：不导航就能删，取消保留，确认只删这�
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
 
-  const agentId = await onlineAgentId(page);
-  if (!agentId) {
-    test.skip(true, '这台机器上没有可用的 agent');
-    return;
-  }
+  const workerId = await ensureFakeWorker(page, baseURL!);
 
   // Worker 把进程拉起来后会补发一条「running」状态帧。这条帧要是晚于 interrupt 落盘，
   // 界面就会把已经 stopped 的会话又显示成运行中（库里仍是 stopped）。先旁听 SSE，
@@ -76,7 +63,7 @@ test('列表行「⋯」：不导航就能删，取消保留，确认只删这�
   const suffix = Date.now().toString(36);
   const dir = mkdtempSync(join(tmpdir(), 'e2e-list-menu-'));
   const project = (await (await page.request.post('/api/projects', {
-    data: { name: `e2e 列表菜单 ${suffix}`, rootPath: dir },
+    data: { name: `e2e 列表菜单 ${suffix}`, rootPath: dir, workerId },
     headers
   })).json()) as { id: string };
   const taskA = (await (await page.request.post('/api/tasks', {
@@ -90,7 +77,7 @@ test('列表行「⋯」：不导航就能删，取消保留，确认只删这�
 
   const derive = async (taskId: string, title: string): Promise<string> => {
     const created = await page.request.post('/api/sessions/derive', {
-      data: { taskId, agentId, model: piModel() },
+      data: { taskId, agentId: FAKE_AGENT_ID, model: '', workerId },
       headers
     });
     expect(created.ok(), await created.text()).toBe(true);
@@ -110,14 +97,14 @@ test('列表行「⋯」：不导航就能删，取消保留，确认只删这�
   await waitStarted(doomed);
   await stop(doomed);
   const running = await derive(taskA.id, runningTitle);
+  await waitStarted(running);
   const keep = await derive(taskB.id, keepTitle);
   await waitStarted(keep);
   await stop(keep);
   // 这条只是旁听用；关掉再进项目页，免得它和主页面抢同一个 SSE。
   await watcher.close();
 
-  await page.goto(`/#/p/${project.id}`);
-  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '列表', exact: true }).click();
+  await page.goto(`/#/p/${project.id}/list`);
   await expect(page.getByTestId('list-view')).toBeVisible();
 
   const list = page.getByTestId('list-view');

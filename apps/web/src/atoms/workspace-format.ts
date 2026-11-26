@@ -1,4 +1,4 @@
-import type { WorkspaceDto } from '../shell/api.ts';
+import type { WorkspaceDto } from '@agent-hub/contract';
 
 /** 工作目录的人话名字：有标签用标签，否则用文件夹名。 */
 export function workspaceName(workspace: Pick<WorkspaceDto, 'label' | 'path'>): string {
@@ -11,4 +11,3 @@ export function shortPath(path: string): string {
   const parts = tilde.split('/');
   return parts.length <= 4 ? tilde : `${parts.slice(0, 2).join('/')}/…/${parts.at(-1)}`;
 }
-

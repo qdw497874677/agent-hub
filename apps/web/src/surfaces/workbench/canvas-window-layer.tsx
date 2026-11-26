@@ -95,6 +95,8 @@ interface LayerProps {
   readonly live: LiveMap;
   readonly history: Readonly<Record<string, import('../../atoms/live.ts').HistoryState>>;
   readonly onRetryHistory: (session: SessionDto) => void;
+  readonly sync: Readonly<Record<string, 'syncing' | 'stale'>>;
+  readonly onRetrySync: (sessionId: string) => void;
   readonly drafts: Readonly<Record<string, string>>;
   readonly onDraftChange: (sessionId: string, text: string) => void;
   readonly onChanged: () => void;
@@ -118,7 +120,7 @@ const BTN = 'flex h-9 w-8 shrink-0 items-center justify-center rounded-sm text-m
  * 画布上面的窗口层（屏幕坐标）：画布平移缩放时窗口不动，字始终清楚。
  * 交互分区：标题栏拖窗口、对话区只滚动、右下角改大小；窗口以外的画布照旧。
  */
-export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRetryHistory, drafts, onDraftChange, onChanged, onOpen, onChangeOption, onProjectSessions, onWindowFocusChange }: LayerProps) {
+export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRetryHistory, sync, onRetrySync, drafts, onDraftChange, onChanged, onOpen, onChangeOption, onProjectSessions, onWindowFocusChange }: LayerProps) {
   const { set, act, area } = windows;
   const byId = useMemo(() => new Map(canvas.sessions.map((session) => [session.id, session])), [canvas.sessions]);
   const rects = useMemo(() => (area ? layoutWindows(set, area) : new Map<string, Rect>()), [set, area]);
@@ -140,6 +142,8 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRe
         live={resolveLive(session, canvas.previews[session.id] ?? [], live[session.id])}
         historyState={history[session.id] ?? 'loading'}
         onRetryHistory={() => onRetryHistory(session)}
+        syncState={sync[session.id]}
+        onRetrySync={() => onRetrySync(session.id)}
         draft={drafts[session.id] ?? ''}
         onDraftChange={(text) => onDraftChange(session.id, text)}
         onChanged={onChanged}

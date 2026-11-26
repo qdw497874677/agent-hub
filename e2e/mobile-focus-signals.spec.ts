@@ -82,8 +82,8 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     // 原生模型之间切换不涉及重新托管，不显示跨提供商提醒。
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/#/p/${project.id}/focus/${session.id}`);
-    await page.getByRole('button', { name: /^Agent 和模型：/ }).click();
-    await expect(page.getByRole('dialog', { name: '选择Agent 和模型' })).not.toContainText('需要重启');
+    await page.getByTestId('session-model-trigger').click();
+    await expect(page.getByRole('dialog', { name: '选择模型' }).getByTestId('new-session-with-model')).toHaveCount(0);
     await page.getByRole('button', { name: '取消' }).click();
 
     // Hub 模型与本机模型并存时，把不能原地切换的原因留在选择器里。
@@ -160,6 +160,14 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     // 不再挂着「发送中…」，也不再宣称「正在启动」（启动是从没块推断出来的）。
     await expect(hint).toHaveAttribute('data-stage', 'runtime', { timeout: 30_000 });
     await expect(hint).toHaveText('正在输出…');
+    await expect(hint).toHaveAttribute('role', 'status');
+    const spinner = hint.getByTestId('turn-active-spinner');
+    await expect(spinner).toBeVisible();
+    await expect(spinner).toHaveAttribute('aria-hidden', 'true');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await expect(spinner.locator('.animate-spin')).toBeHidden();
+    await expect(spinner.locator('svg')).toBeVisible();
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
     await expect(log.getByText('please-hold:h1')).toBeVisible();
     // 进度合并不移除消息菜单；「从这里重来」仍从这里进入。
     await expect(log.getByTestId('msg-menu').last()).toBeVisible();
@@ -187,13 +195,12 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
 
     // —— 换提供商的提醒：进模型选择器，选之前就能看见；输入区下面不再常驻一行
     await expect(page.getByTestId('hub-switch-note')).toBeHidden();
-    await page.getByRole('button', { name: /^Agent 和模型：/ }).click();
-    await expect(page.getByTestId('model-scope-note')).toBeVisible();
-    await expect(page.getByRole('option', { name: /scope1/ })).toHaveAttribute('aria-disabled', 'true');
-    await expect(page.getByRole('option', { name: /scope1/ })).toContainText('需要重启，暂不支持在此切换');
+    await page.getByTestId('session-model-trigger').click();
+    const crossSource = page.getByTestId('new-session-with-model').filter({ hasText: 'scope1' });
+    await expect(crossSource).toContainText('不同来源，不能在当前会话切换');
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'mobile-model-note.png') });
     await page.getByRole('button', { name: '取消' }).click();
-    await expect(page.getByTestId('model-scope-note')).toHaveCount(0);
+    await expect(crossSource).toHaveCount(0);
 
     // —— 320：一格也不横向溢出，入口还在
     await page.setViewportSize({ width: 320, height: 720 });
@@ -207,13 +214,14 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     await page.setViewportSize({ width: 1280, height: 800 });
     await expect(page.getByTestId('turn-hint')).toHaveAttribute('data-stage', 'runtime');
     await expect(page.getByTestId('turn-hint')).toHaveText('正在输出…');
+    await expect(spinner).toBeVisible();
     await expect(page.getByTestId('turn-progress')).toHaveCount(0);
     await expect(page.getByTestId('delivery-note')).toHaveCount(0);
     await expect(page.getByTestId('git-branch')).toBeVisible();
     await expect(page.getByTestId('workspace-entry')).toHaveCount(0);
     await expect(page.getByTestId('hub-switch-note')).toHaveCount(0);
-    await page.getByRole('button', { name: /^Agent 和模型：/ }).click();
-    await expect(page.getByRole('option', { name: /scope1/ })).toHaveAttribute('aria-disabled', 'true');
+    await page.getByTestId('session-model-trigger').click();
+    await expect(crossSource).toBeVisible();
     await page.getByRole('button', { name: '取消' }).click();
     await page.setViewportSize({ width: 1440, height: 900 });
     await expect(hint).toHaveAttribute('data-stage', 'runtime');
@@ -227,8 +235,8 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     await page.goto(`/#/p/${project.id}/canvas`);
     await expect(page.locator('.react-flow__node-session').first()).toBeVisible();
     await expect(page.getByTestId('hub-switch-note-card')).toHaveCount(0);
-    await page.locator('.react-flow__node-session').first().getByRole('button', { name: /^Agent 和模型：/ }).click();
-    await expect(page.getByRole('option', { name: /scope1/ })).toHaveAttribute('aria-disabled', 'true');
+    await page.locator('.react-flow__node-session').first().getByTestId('session-model-trigger').click();
+    await expect(crossSource).toBeVisible();
   } finally {
     worker.kill();
     await page.request.delete(`/api/workers/${encodeURIComponent(workerId)}`, { headers }).catch(() => undefined);

@@ -23,6 +23,8 @@ import { UndoToast } from '../../atoms/undo-toast.tsx';
 import { TaskBadge } from './task-detail.tsx';
 import { attentionTitle, PHASE_LABEL } from '../../atoms/attention.tsx';
 import { paletteSnapshot } from './palette-recent.ts';
+import { useAccount } from '../../shell/account-context.ts';
+import { listWorkspaceGroups } from './list-workspaces.ts';
 export type { PaletteAction } from './palette.ts';
 
 
@@ -79,6 +81,30 @@ export function ListView({
   onRefresh?: () => Promise<void>;
 }) {
   const narrow = useNarrow();
+  const account = useAccount();
+  const collapseScope = account ? `agent-hub.list-workspaces:${JSON.stringify([account.id, canvas.project.id])}` : null;
+  const readCollapsed = (scope: string | null): Set<string> => {
+    if (!scope) return new Set();
+    try {
+      const stored: unknown = JSON.parse(sessionStorage.getItem(scope) ?? '[]');
+      return new Set(Array.isArray(stored) ? stored.filter((key): key is string => typeof key === 'string') : []);
+    } catch {
+      return new Set();
+    }
+  };
+  const [collapseState, setCollapseState] = useState(() => ({ scope: collapseScope, keys: readCollapsed(collapseScope) }));
+  const collapsed = collapseState.scope === collapseScope ? collapseState.keys : readCollapsed(collapseScope);
+  const toggleWorkspace = (key: string) => {
+    setCollapseState((current) => {
+      const keys = new Set(current.scope === collapseScope ? current.keys : readCollapsed(collapseScope));
+      if (keys.has(key)) keys.delete(key);
+      else keys.add(key);
+      if (collapseScope) {
+        try { sessionStorage.setItem(collapseScope, JSON.stringify([...keys])); } catch { /* storage is optional */ }
+      }
+      return { scope: collapseScope, keys };
+    });
+  };
   // 主会话的姓名来自登记表：没有它，无任务会话只能说「没有任务的会话」。
   const { ids: coordinatorIds } = useCoordinators(canvas.project.id);
   const groups = useMemo(() => groupSessions(canvas, coordinatorIds), [canvas, coordinatorIds]);
@@ -420,8 +446,29 @@ export function ListView({
           </>
         )}
       </h3>
-      <ul>
-        {group.sessions.map(({ session, label }) => {
+      {listWorkspaceGroups(group, canvas).map((workspaceGroup) => {
+        const expanded = !collapsed.has(workspaceGroup.key);
+        const groupWorker = resolveWorker(workers.list, workspaceGroup.workerId);
+        return (
+        <div key={workspaceGroup.key} data-testid="list-workspace-group" data-workspace-key={workspaceGroup.key} className="mt-1 min-w-0">
+          <button
+            type="button"
+            data-testid="list-workspace-toggle"
+            aria-expanded={expanded}
+            aria-label={`${workspaceGroup.title}，${groupWorker?.label ?? (workspaceGroup.workerId || '本机')}${groupWorker ? groupWorker.state === 'online' ? '，在线' : '，离线' : ''}，${workspaceGroup.sessions.length} 条会话`}
+            onClick={() => toggleWorkspace(workspaceGroup.key)}
+            className="flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-sm px-2 text-left hover:bg-card focus-visible:bg-card focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={14} className="shrink-0 text-tertiary" />
+            <span className="min-w-0 flex-1 truncate text-sub text-secondary" title={workspaceGroup.detail ?? workspaceGroup.title}>{workspaceGroup.title}</span>
+            <span className="max-w-[28%] min-w-0 truncate text-meta text-tertiary" title={groupWorker ? `${groupWorker.label} · ${groupWorker.state === 'online' ? '在线' : '离线'}` : workspaceGroup.workerId || '本机'}>
+              {groupWorker?.label ?? (workspaceGroup.workerId ? workspaceGroup.workerId.slice(0, 8) : '本机')}
+            </span>
+            {groupWorker && groupWorker.state !== 'online' ? <span className="shrink-0 text-meta text-tertiary">离线</span> : null}
+            <span className="shrink-0 whitespace-nowrap text-meta text-tertiary">{workspaceGroup.sessions.length} 条</span>
+          </button>
+          {expanded ? <ul className="ml-3 border-l border-hair pl-2">
+        {workspaceGroup.sessions.map(({ session, label }) => {
           const status = statusOf(session, live);
           const seq = live[session.id]?.lastSeq ?? session.lastSeq;
           const origin = session.origin.kind === 'fork'
@@ -452,7 +499,7 @@ export function ListView({
                   <span className="block truncate text-meta text-tertiary" data-testid="list-session-meta">
                     {localTime(session.createdAt)} · {origin} · {agentLabel(session.agentId)}
                   </span>
-                  <span className="mt-1 flex min-w-0 items-center gap-1.5" data-testid="list-session-place">
+                  <span className="mt-1 hidden min-w-0 items-center gap-1.5 md:flex" data-testid="list-session-place">
                     <WorkerChip
                       worker={worker}
                       fallback={session.workerId ? session.workerId.slice(0, 8) : '本机'}
@@ -478,7 +525,7 @@ export function ListView({
                 aria-haspopup="menu"
                 aria-expanded={menu?.sessionId === session.id}
                 title="会话操作"
-                className="flex size-[44px] shrink-0 items-center justify-center self-center rounded-sm text-body text-tertiary hover:bg-card hover:text-primary focus-visible:bg-card md:size-8"
+                className="flex size-[44px] shrink-0 items-center justify-center self-center rounded-sm text-body text-tertiary hover:bg-card hover:text-primary focus-visible:bg-card"
                 onClick={(event) => {
                   trigger.current = event.currentTarget;
                   const rect = event.currentTarget.getBoundingClientRect();
@@ -490,7 +537,10 @@ export function ListView({
             </li>
           );
         })}
-      </ul>
+          </ul> : null}
+        </div>
+        );
+      })}
     </section>
   ));
 

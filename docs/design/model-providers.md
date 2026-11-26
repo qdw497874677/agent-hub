@@ -51,14 +51,14 @@ interface ProviderAssignment { providerId; scope: 'team' | 'project' | 'worker';
 - 不支持该 protocol 的 runtime 置灰并给原因（能力矩阵新增 `hub_providers` 能力：pi/opencode `available`，grok `limited: 私有 GROK_HOME，看不到本机规则/插件`）。
 - 选了 hub 模型 ⇒ `StartSpec.options.model = 'hub-cliproxy/grok-3-mini-fast'` + `StartSpec.providers = [grant]`。按 §8 D3 只下发选中的提供商；换提供商需要重新启动运行时，不是普通模型选项更新。
 
-### Agent 与模型共用一个入口（分期实施）
+### 会话模型与换 Agent 分开选择
 
-会话里的选择器显示 **Agent · 模型**。目标由 `(agentId, model)` 表示：OpenCode、Codex 是运行时；本机和 Hub 提供商是各运行时下的模型来源，不能用提供商名称推断运行时。可选项以当前机器已验证的运行时、模型及当前权限为准；选择另一运行时不自动换机器或工作目录。参考 [Orca 的模型控件](https://github.com/stablyai/orca/blob/46aae50d7748d7d0f9bf6e4df311a2074636b14a/src/renderer/src/components/native-chat/session/options/controls/NativeChatModelCombobox.tsx#L25-L36) 的可搜索、当前值和切换反馈，以及它[单独确认跨 Agent 交接](https://github.com/stablyai/orca/blob/46aae50d7748d7d0f9bf6e4df311a2074636b14a/src/renderer/src/lib/agent-session/launch/continuation/launch-agent-session-continuation.ts#L100-L138) 的做法。Orca 后者新开标签页，不是模型下拉框直接替换原会话。
+会话里的模型选择器只列当前运行时的模型，明确标出运行时报告的当前值；**换 Agent** 有独立入口。目标由 `(agentId, model)` 表示：OpenCode、Codex 是运行时；本机和 Hub 提供商是各运行时下的模型来源，不能用提供商名称推断运行时。候选以当前机器、模型及权限为准；选择另一运行时不自动换机器或工作目录。参考 [Orca 的模型控件](https://github.com/stablyai/orca/blob/46aae50d7748d7d0f9bf6e4df311a2074636b14a/src/renderer/src/components/native-chat/session/options/controls/NativeChatModelCombobox.tsx#L25-L36) 的搜索、当前值和切换反馈，以及它[单独确认跨 Agent 交接](https://github.com/stablyai/orca/blob/46aae50d7748d7d0f9bf6e4df311a2074636b14a/src/renderer/src/lib/agent-session/launch/continuation/launch-agent-session-continuation.ts#L100-L138) 的做法。Orca 后者新开标签页，不是模型下拉框直接替换原会话。
 
 | 选择 | 执行动作 |
 |---|---|
 | 同 Agent、可原地改模型（第一期） | 保留 Hub 会话及原生会话。只有当前运行时对本次请求回报匹配的目标值才叫「已确认」；仅保存的值标注「待生效」，超时或无确切回执标注「未确认」，只读重查不重发。 |
-| 同 Agent、目标要求重启（后续独立验证） | 新入口先说明原因，不调用旧客户端的重启分支。只有同机、同目录、同原生存储范围的恢复已验证时，才开放确认后重启；启动就绪不等于模型推理成功，失败不声称原进程已恢复。 |
+| 同 Agent、跨本机与 Hub 来源或跨 Hub 提供商 | 不在原会话切换，也不调用旧客户端的隐式重启分支。能确认原任务、机器和工作空间时，提供「用此模型新开会话」；只有确认后才创建，不带旧对话、不自动发送，也不动原会话及草稿。创建结果未知时先去会话列表核对。原地重启和恢复仍需单独验证。 |
 | 换 Agent（第二期） | 「换 Agent，带上下文继续」明确新建一条可见的 Hub 会话及**新原生会话**。新会话标明来源，但不创建分叉或通信连线，也不增加访问权限。首版限普通任务的单工作区会话，保持同一台机器、同一工作区，不传来源原生引用、选项或工具授权。 |
 
 跨 Agent 候选只支持会报告原生会话标识的适配器（目前是 ACP 和 Codex）及其在当前机器上列出的本机模型；Hub 提供商模型不属于这批。Worker 还须在当前连接上声明 `session_start_native_ref`，旧 Worker 上普通会话照常，交接须先升级 Worker。能力声明只是候选依据，不能代替该次启动回执。

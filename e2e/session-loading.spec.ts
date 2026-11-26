@@ -16,6 +16,32 @@ for (const width of [1280, 390]) {
   test(`会话与记录分别加载，慢回执保留新草稿 (${width}px)`, async ({ page, baseURL }) => {
     test.setTimeout(180_000);
     await page.setViewportSize({ width, height: 800 });
+    await page.addInitScript(() => {
+      const NativeEventSource = window.EventSource;
+      window.EventSource = class extends NativeEventSource {
+        private paused = false;
+        private pause = () => { this.paused = true; this.dispatchEvent(new Event('error')); };
+        private resume = () => { this.paused = false; this.dispatchEvent(new Event('open')); };
+        constructor(url: string | URL, init?: EventSourceInit) {
+          super(url, init);
+          window.addEventListener('test-stream-pause', this.pause);
+          window.addEventListener('test-stream-resume', this.resume);
+          this.addEventListener('open', () => { document.documentElement.dataset.liveStreamOpened = 'true'; });
+          this.addEventListener('frame', (message) => {
+            if (this.paused) { message.stopImmediatePropagation(); return; }
+            const frame = JSON.parse((message as MessageEvent<string>).data) as { event?: { kind: string; text?: string } };
+            if (frame.event?.kind === 'prompt' && frame.event.text === '实时到达的新消息') {
+              document.documentElement.dataset.livePromptReceived = 'true';
+            }
+          });
+        }
+        override close() {
+          window.removeEventListener('test-stream-pause', this.pause);
+          window.removeEventListener('test-stream-resume', this.resume);
+          super.close();
+        }
+      };
+    });
     await loginByApi(page);
     const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
     const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
@@ -83,7 +109,14 @@ for (const width of [1280, 390]) {
       await page.unroute(sessionPattern);
       let historyGate = deferred(); releases.push(historyGate.release);
       let failHistory = true;
+      let snapshotCaptured: ReturnType<typeof deferred> | null = null;
       await page.route(eventsPattern, async (route) => {
+        if (snapshotCaptured) {
+          const response = await route.fetch();
+          snapshotCaptured.release();
+          await historyGate.promise;
+          return route.fulfill({ response });
+        }
         await historyGate.promise;
         if (failHistory) return route.fulfill({ status: 500, json: { error: { code: 'test', message: 'test' } } });
         return route.continue();
@@ -101,9 +134,29 @@ for (const width of [1280, 390]) {
       await expect(history).toHaveCount(0);
       await expect(page.getByText('这条会话还没有说话', { exact: false })).toBeVisible();
 
+      const oldText = '补齐前的历史消息';
+      const seeded = await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: oldText }, headers });
+      expect(seeded.ok(), await seeded.text()).toBe(true);
+      await expect.poll(async () => {
+        const response = await page.request.get(`/api/sessions/${session.id}`);
+        return ((await response.json()) as { status: string }).status;
+      }).toBe('done');
+
       historyGate = deferred(); releases.push(historyGate.release);
+      snapshotCaptured = deferred();
+      await page.route(canvasPattern, async (route) => {
+        const response = await route.fetch();
+        const canvas = await response.json() as { previews: Record<string, unknown> };
+        // 历史消息只能由完整读取补出，不能让画布的预览掩盖丢失。
+        delete canvas.previews[session.id];
+        await route.fulfill({ response, json: canvas });
+      });
       await page.reload();
       await expect(history).toContainText('正在读取会话记录');
+      await snapshotCaptured.promise;
+      await expect(page.locator('html')).toHaveAttribute('data-live-stream-opened', 'true');
+      const log = page.getByRole('log', { name: '会话记录' });
+      await expect(log.getByText(oldText, { exact: true })).toHaveCount(0);
       const ackGate = deferred(); releases.push(ackGate.release);
       const ackReached = deferred();
       await page.route(`**/api/sessions/${session.id}/prompt`, async (route) => {
@@ -112,16 +165,51 @@ for (const width of [1280, 390]) {
         await ackGate.promise;
         await route.fulfill({ response });
       });
-      await composer.fill('第一条消息');
+      await composer.fill('实时到达的新消息');
       await page.getByRole('button', { name: '发送', exact: true }).click();
       await ackReached.promise;
+      await expect(page.locator('html')).toHaveAttribute('data-live-prompt-received', 'true');
       await composer.fill('回执期间写的草稿');
       ackGate.release();
-      await expect(page.getByRole('button', { name: /^(发送|排队发送)$/ })).toBeEnabled();
+      await expect(history).toContainText('正在读取会话记录');
       await expect(composer).toHaveValue('回执期间写的草稿');
       historyGate.release();
       await expect(history).toHaveCount(0);
+      await expect(log.getByText(oldText, { exact: true })).toHaveCount(1);
+      await expect(log.getByText('实时到达的新消息', { exact: true })).toHaveCount(1);
+      await expect(page.getByRole('button', { name: /^(发送|排队发送)$/ })).toBeEnabled();
       await expect(composer).toHaveValue('回执期间写的草稿');
+
+      // 断线时遗漏的记录以真实 journal 为准；失败不能伪装成没有新消息。
+      snapshotCaptured = null;
+      const syncGate = deferred(); releases.push(syncGate.release);
+      let failSync = true;
+      await page.route((url) => url.pathname === `/api/sessions/${session.id}/events` && url.searchParams.has('after'), async (route) => {
+        await syncGate.promise;
+        if (failSync) return route.fulfill({ status: 500, json: { error: { code: 'test', message: 'test' } } });
+        return route.continue();
+      });
+      await expect.poll(async () => {
+        const response = await page.request.get(`/api/sessions/${session.id}`);
+        return ((await response.json()) as { status: string }).status;
+      }).toBe('done');
+      await page.evaluate(() => window.dispatchEvent(new Event('test-stream-pause')));
+      const missedText = '断线期间的消息';
+      const missed = await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: missedText }, headers });
+      expect(missed.ok(), await missed.text()).toBe(true);
+      await page.evaluate(() => window.dispatchEvent(new Event('test-stream-resume')));
+      const sync = page.getByTestId('session-sync-state');
+      await expect(sync).toHaveAttribute('data-state', 'syncing');
+      await expect(log.getByText(oldText, { exact: true })).toBeVisible();
+      await expect(log.getByText(missedText, { exact: true })).toHaveCount(0);
+      syncGate.release();
+      await expect(sync).toHaveAttribute('data-state', 'stale');
+      await expect(composer).toHaveValue('回执期间写的草稿');
+      failSync = false;
+      await sync.getByRole('button', { name: '重试' }).click();
+      await expect(log.getByText(missedText, { exact: true })).toHaveCount(1);
+      await expect(log.getByText('实时到达的新消息', { exact: true })).toHaveCount(1);
+      await expect(sync).toHaveCount(0);
     } finally {
       for (const release of releases) release();
       worker.kill();

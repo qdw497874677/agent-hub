@@ -391,7 +391,7 @@ export function resolveLive(
   return {
     blocks: history,
     status: session.status,
-    lastSeq: preview.reduce((highest, entry) => Math.max(highest, entry.seq), session.lastSeq),
+    lastSeq: preview.reduce((highest, entry) => Math.max(highest, entry.seq), 0),
     reason: reasonFromEntries(preview),
     awaiting: awaitingFromHistory(preview, session.status),
     contextUsage: contextUsageFromEntries(preview),
@@ -447,13 +447,13 @@ export function applyFrame(current: LiveMap, frame: Frame): LiveMap {
 
 /**
  * 断线重连后的补帧：把 `events?after=lastSeq` 拿回来的历史当成帧重放。
- * 走 applyFrame 的同一条去重规则，所以和重连后新推来的帧交错到达也不会重复。
+ * 调用方必须先屏蔽并缓存并发实时帧，再按序重放它们。
  */
 export function catchUp(current: LiveMap, sessionId: string, entries: readonly JournalEntryDto[]): LiveMap {
   const previous = current[sessionId];
   if (!previous) return current;
   return entries.reduce<LiveMap>((map, entry) => {
-    const status = entry.event.kind === 'ended' ? entry.event.outcome : (map[sessionId]?.status ?? previous.status);
+    const status = entry.event.kind === 'ended' ? entry.event.outcome : entry.event.kind === 'prompt' ? 'running' : (map[sessionId]?.status ?? previous.status);
     return applyFrame(map, { sessionId, seq: entry.seq, event: entry.event, status });
   }, current);
 }
@@ -480,7 +480,7 @@ export function seedLive(
  * 打开专注对话时换上整段历史。
  *
  * 画布投影只带最后 24 条事件（够卡片用），可一段思考就是上百个 delta——对话页只靠它会是空的。
- * 拉取期间又来了更新的帧（内存比拿回来的历史还新），就保留内存里的，不倒退。
+ * 调用方负责隔离并在安装历史后重放并发实时帧。
  */
 export function withFullHistory(current: LiveMap, session: SessionDto, entries: readonly JournalEntryDto[]): LiveMap {
   const previous = current[session.id];
