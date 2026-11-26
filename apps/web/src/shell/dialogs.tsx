@@ -209,6 +209,11 @@ export function DeriveDialog({
     hubList
   );
   const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
+  // 下载是独立的明确选择，默认不下载；工作目录的选择不会隐式开启它。
+  const [downloadRepo, setDownloadRepo] = useState(false);
+  const [preparedWorkspace, setPreparedWorkspace] = useState<{ id: string; machine: string } | null>(null);
+  const preparedWorkspaceId = preparedWorkspace?.machine === machine ? preparedWorkspace.id : null;
+  const noDownloadChoice = useRef<WorkspaceChoice | null>(null);
   // 组合工作目录：建好的那组留着，准备失败时可以原地重试，不必再建一组
   const [group, setGroup] = useState<WorkspaceGroupView | null>(null);
   // 「开始」点不了时的原因：一行话放在按钮上方，手机上不用去猜、也没有 hover 可看
@@ -226,18 +231,6 @@ export function DeriveDialog({
   });
   // 模型框的空值项：状态为空时显式画出来，别让浏览器把第一项画成「已选」（见 emptyModelOption）
   const emptyModel = emptyModelOption(offered.models, model, hubCovers(workers.byId(machine), agentId, hubProtocols));
-  // 多仓项目默认新建组合工作目录；否则若项目默认隔离，替用户选上「新建隔离 worktree」。
-  const projectIsolated = canvas.project.worktree?.mode === 'isolated';
-  const multiRepo = Boolean(canvas.project.primaryRepoId) && (canvas.project.repos?.length ?? 0) > 1;
-  const [modeTouched, setModeTouched] = useState(false);
-  useEffect(() => {
-    if (modeTouched || choice !== null) return;
-    if (multiRepo) {
-      setChoice({ type: 'new_group', repoIds: canvas.project.repos.map((repo) => repo.id) });
-      return;
-    }
-    if (projectIsolated) setChoice({ type: 'new_worktree' });
-  }, [projectIsolated, multiRepo, modeTouched, choice]);
   const [phase, setPhase] = useState<'idle' | 'preparing' | 'starting'>('idle');
   // 正在等什么、在哪台机器上等：从点「开始」那一刻的选项取，之后改选项也不会把它说错。
   const [busy, setBusy] = useState<{ readonly title: string; readonly scope: string } | null>(null);
@@ -264,12 +257,13 @@ export function DeriveDialog({
       : null;
   const workspaceSummary = (() => {
     if (choice === null) return '还没选工作目录';
-    if (choice.type === 'existing') return chosenWorkspace === null ? '已有的工作目录' : workspaceName(chosenWorkspace);
-    if (choice.type === 'new_empty') return '仅对话 · 空的临时目录';
+    if (choice.type === 'existing') return chosenWorkspace === null ? (choice.workspaceId === preparedWorkspaceId ? '已准备的工作目录' : '已有的工作目录') : workspaceName(chosenWorkspace);
+    if (choice.type === 'new_empty') return '新建空的临时目录';
     if (choice.type === 'new_temporary') return '新建临时工作目录';
     if (choice.type === 'new_worktree') return '新建隔离目录（新分支）';
     if (choice.type === 'new_group') return `新建组合工作目录（${choice.repoIds.length} 个仓库）`;
-    const how = choice.mode === 'link' ? '选已有目录' : canvas.project.repo ? '下载仓库' : '新建空目录';
+    if (choice.mode === 'create' && !canvas.project.repo) return '新建空目录不可用，请重新选择';
+    const how = choice.mode === 'link' ? '选已有目录' : choice.mode === 'create' && canvas.project.repo ? '下载仓库' : '新建空目录';
     return choice.path === null
       ? `新建持久目录 · ${how} · 还没选目录`
       : `新建持久目录 · ${how} · ${shortPath(choice.path)}`;
@@ -297,6 +291,13 @@ export function DeriveDialog({
     mutationFn: async () => {
       if (machine === null) throw new Error('先选机器');
       if (!choice) throw new Error('先选机器和工作目录');
+      if (choice.type === 'new_long_lived' && choice.mode === 'create' && !canvas.project.repo) throw new Error('项目未配置可下载的仓库，请重新选择工作目录');
+      if (!downloadRepo && (choice.type === 'new_temporary' || choice.type === 'new_worktree' || choice.type === 'new_group' || (choice.type === 'new_long_lived' && choice.mode === 'create'))) {
+        throw new Error('请重新选择工作目录；当前未选择下载仓库');
+      }
+      if (downloadRepo && ((choice.type === 'existing' && choice.workspaceId !== preparedWorkspaceId) || choice.type === 'new_empty' || (choice.type === 'new_long_lived' && choice.mode !== 'create'))) {
+        throw new Error('请重新选择用于准备仓库的目录');
+      }
       const place = workers.byId(machine)?.label ?? '这台机器';
       // 选了「新建隔离 worktree」：不在这里建空间，交给 server 按项目配置现建并跑准备命令
       // （workspaceId 为空、workspaceMode=isolated 才会走档位）。
@@ -313,7 +314,7 @@ export function DeriveDialog({
         if (choice.type === 'new_empty') setBusy({ title: '正在新建空的临时目录…', scope: place });
         else if (choice.type === 'new_temporary') setBusy({ title: '正在新建临时工作目录…', scope: place });
         else if (choice.mode === 'link') setBusy({ title: '正在登记持久工作目录…', scope: `${place} · ${shortPath(choice.path ?? '')}` });
-        else if (canvas.project.repo)
+        else if (choice.mode === 'create' && canvas.project.repo)
           setBusy({
             title: '正在下载仓库…',
             scope: `${place} · ${repoName(canvas.project.repo.url)} → ${shortPath(choice.path ?? '')}`
@@ -328,6 +329,7 @@ export function DeriveDialog({
               : longLivedRequest(machine, choice)
         );
         workspaceId = made.id;
+        setPreparedWorkspace({ id: made.id, machine });
         // 建好了就记成「已有的」：重试时不再新建第二个
         setChoice({ type: 'existing', workspaceId });
         await queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] });
@@ -507,16 +509,27 @@ export function DeriveDialog({
                 {workers.loading ? '正在读取机器状态…' : '还没有确认可用的 agent，可以手动选择或等待机器检测完成。'}
               </p>
             )
-          ) : <WorkspaceChooser
+          ) : <fieldset disabled={derive.isPending || retryGroup.isPending} className="min-w-0 disabled:opacity-70"><WorkspaceChooser
             canvas={canvas}
             taskId={taskId}
             agentId={agentId}
             workers={workers.list}
             machine={machine}
-            onMachine={(next) => { if (next !== null) setMachine(next); }}
+            onMachine={(next) => {
+              if (!derive.isPending && !retryGroup.isPending && next !== null && next !== machine) {
+                setMachine(next);
+                // 空临时目录还没绑定到任何机器，切换机器后仍可按同一选择创建。
+                setChoice((current) => current?.type === 'new_empty' ? current : null);
+                noDownloadChoice.current = null;
+                setPreparedWorkspace(null);
+                setGroup(null);
+                retryGroup.reset();
+              }
+            }}
             choice={choice}
             onChoice={(next) => {
-              setModeTouched(true);
+              if (derive.isPending || retryGroup.isPending) return;
+              if (next?.type !== 'existing' || next.workspaceId !== preparedWorkspaceId) setPreparedWorkspace(null);
               // 上一次「重试准备」的错误只针对旧的选项
               if (next?.type !== 'new_group') retryGroup.reset();
               setChoice(next);
@@ -524,8 +537,25 @@ export function DeriveDialog({
             hubProtocols={hubProtocols}
             groups
             chatOnly
+            downloadRepo={downloadRepo}
+            preparedWorkspaceId={preparedWorkspaceId}
+            onDownloadRepo={(next) => {
+              setDownloadRepo(next);
+              setPreparedWorkspace(null);
+              // 已有目录和空目录不参与准备仓库；不把旧路径悄悄变成 clone 目标。
+              if (next) {
+                noDownloadChoice.current = choice?.type === 'existing' || choice?.type === 'new_empty' || (choice?.type === 'new_long_lived' && choice.mode === 'link') ? choice : null;
+                setChoice(null);
+              } else {
+                setChoice(noDownloadChoice.current);
+                noDownloadChoice.current = null;
+              }
+              setGroup(null);
+              retryGroup.reset();
+              derive.reset();
+            }}
             onSwitchAgent={switchAgent}
-          />}
+          /></fieldset>}
         </div>
         <div className="mb-3 max-md:order-6">
           <div className="mb-1 flex items-center justify-between gap-2">

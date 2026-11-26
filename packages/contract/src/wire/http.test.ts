@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveSessionRequest } from './http.ts';
+import { createTeamWorkspaceRequest, createWorkspaceRequest, deriveSessionRequest } from './http.ts';
 import { journalEntrySchema } from './entities.ts';
+
+test('long-lived empty 是显式项目模式，团队及未知模式仍拒绝', () => {
+  for (const mode of ['create', 'link', 'empty']) assert.equal(createWorkspaceRequest.safeParse({ kind: 'long_lived', mode }).success, true);
+  assert.equal(createWorkspaceRequest.safeParse({ kind: 'long_lived', mode: 'unknown' }).success, false);
+  assert.equal(createTeamWorkspaceRequest.safeParse({ mode: 'empty' }).success, false);
+});
 
 test('prompt journal wire 保留可选受限 actor，旧事件兼容', () => {
   for (const promptActor of ['account', 'token', 'system', 'unknown']) {

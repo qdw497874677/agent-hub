@@ -20,7 +20,7 @@ import { useNarrow } from '../../shell/device.ts';
  */
 export type WorkspaceChoice =
   | { readonly type: 'existing'; readonly workspaceId: string }
-  | { readonly type: 'new_long_lived'; readonly mode: 'create' | 'link'; readonly path: string | null }
+  | { readonly type: 'new_long_lived'; readonly mode: 'create' | 'link' | 'empty'; readonly path: string | null }
   | { readonly type: 'new_temporary' }
   /** 只聊天：开一个空的临时目录，不下载仓库、不跑准备命令。 */
   | { readonly type: 'new_empty' }
@@ -87,6 +87,9 @@ export function WorkspaceChooser({
   groups = false,
   longLivedOnly = false,
   chatOnly = false,
+  downloadRepo,
+  onDownloadRepo,
+  preparedWorkspaceId,
   onSwitchAgent
 }: {
   canvas: CanvasDto;
@@ -115,6 +118,10 @@ export function WorkspaceChooser({
    * 只有派生新会话时给；「换个地方继续」还是原来那几种，免得悄悄换掉会话的目录类型。
    */
   chatOnly?: boolean;
+  /** 新会话独立选择是否准备仓库；其他入口不传，保持原有行为。 */
+  downloadRepo?: boolean;
+  onDownloadRepo?: (download: boolean) => void;
+  preparedWorkspaceId?: string | null;
   /**
    * 有在线机器、但没有一台能跑当前 agent 时的出口：展开并聚焦原来的 agent 选择器。
    * 只有派生对话框有这个选择器；「换个地方继续」是固定 agent，不传。
@@ -212,13 +219,14 @@ export function WorkspaceChooser({
 
   // 换机器：之前选的工作目录不在这台上了，清掉，免得误开到别处
   useEffect(() => {
-    if (choice?.type === 'existing' && !here.some(({ workspace }) => workspace.id === choice.workspaceId)) onChoice(null);
-  }, [choice, here, onChoice]);
+    if (downloadRepo === undefined && choice?.type === 'existing' && !here.some(({ workspace }) => workspace.id === choice.workspaceId)) onChoice(null);
+  }, [choice, here, onChoice, downloadRepo]);
 
   // 这台机器上能不能开 worktree：有 git 的持久工作目录，或者项目绑了仓库（会先下载）
   const sameMachine = (views.data ?? []).filter(({ workspace }) => machine !== null && hostOf(workspace) === machine);
+  const hasRepo = canvas.project.repo !== null || (canvas.project.repos?.length ?? 0) > 0;
   const gitHere =
-    canvas.project.repo !== null ||
+    hasRepo ||
     sameMachine.some(({ workspace }) => workspace.kind === 'long_lived' && workspace.isGit === true && workspace.state !== 'removed');
   const temporariesHere = sameMachine.filter(
     ({ workspace }) => workspace.kind === 'temporary' && workspace.ownerTaskId === taskId && workspace.state !== 'removed'
@@ -368,6 +376,15 @@ export function WorkspaceChooser({
 
       {machine === null ? null : (
         <>
+          {downloadRepo !== undefined && (downloadRepo || gitHere || (Boolean(canvas.project.primaryRepoId) && canvas.project.repos.length > 1)) ? (
+            <div className="mb-3 rounded-sm border border-hair px-3 py-2">
+              <label className="flex min-h-[32px] cursor-pointer items-center gap-2 text-body text-primary">
+                <input type="checkbox" data-testid="ws-download-repo" className="h-4 w-4 accent-[var(--color-fg)]" checked={downloadRepo} onChange={(event) => onDownloadRepo?.(event.target.checked)} />
+                {hasRepo ? '下载仓库' : '准备仓库'}
+              </label>
+              <p className="pl-6 text-meta text-tertiary">{downloadRepo ? '开始时准备仓库，可能下载仓库或运行准备命令；不会覆盖已有目录。' : '不准备仓库，可使用已有目录或新建空目录。'}</p>
+            </div>
+          ) : null}
           {/* 标题行顺带说「这台机器上还没有」：不再单独占一行灰字，把纵向空间留给可选方式。 */}
           <div className="mb-1 flex items-baseline justify-between gap-2">
             <p className="min-w-0 truncate text-meta text-secondary" title="机器上的一个文件夹，agent 只在这里面干活。">工作目录</p>
@@ -378,7 +395,10 @@ export function WorkspaceChooser({
             ) : null}
           </div>
           <div role="radiogroup" aria-label="选择工作目录" className="flex flex-col gap-1.5">
-            {here.map(({ workspace, runningTaskIds, otherProjectSessions }) => {
+            {choice?.type === 'existing' && choice.workspaceId === preparedWorkspaceId && !here.some(({ workspace }) => workspace.id === choice.workspaceId) ? (
+              <div role="radio" aria-checked="true" className={rowClass(true)}><Radio on /><span className="text-body text-primary">已准备的工作目录 · 正在读取详情…</span></div>
+            ) : null}
+            {(downloadRepo === true ? here.filter(({ workspace }) => workspace.id === preparedWorkspaceId) : here).map(({ workspace, runningTaskIds, otherProjectSessions }) => {
               const selected = choice?.type === 'existing' && choice.workspaceId === workspace.id;
               const others = runningTaskIds.some((id) => id !== taskId);
               return (
@@ -419,14 +439,14 @@ export function WorkspaceChooser({
                 </button>
               );
             })}
-            {chatOnly && !longLivedOnly ? (
+            {chatOnly && !longLivedOnly && downloadRepo !== true ? (
               <NewEmpty
                 machineName={machineName}
                 selected={choice?.type === 'new_empty'}
                 onSelect={() => onChoice({ type: 'new_empty' })}
               />
             ) : null}
-            {longLivedOnly ? null : (
+            {longLivedOnly || downloadRepo === false ? null : (
             <NewTemporary
               canvas={canvas}
               taskId={taskId}
@@ -437,7 +457,7 @@ export function WorkspaceChooser({
               onSelect={() => onChoice({ type: 'new_temporary' })}
             />
             )}
-            {longLivedOnly ? null : (
+            {longLivedOnly || downloadRepo === false ? null : (
             <NewWorktree
               canvas={canvas}
               taskId={taskId}
@@ -448,15 +468,16 @@ export function WorkspaceChooser({
               onFixGit={() => setLinkSignal((value) => value + 1)}
             />
             )}
-            <NewLongLived
+            {downloadRepo === true && !canvas.project.repo ? null : <NewLongLived
               canvas={canvas}
               machine={machine}
               machineName={machineName}
               choice={choice}
               onChoice={onChoice}
-            />
+              downloadRepo={downloadRepo}
+            />}
             {/* 手机：常用三种排在前面，不常用的两种折起来，别插在中间打断比较。 */}
-            {narrow ? (
+            {narrow && downloadRepo === undefined ? (
               <details
                 data-testid="ws-advanced"
                 open={advancedOpen || groupSelected}
@@ -473,17 +494,17 @@ export function WorkspaceChooser({
                   </span>
                 </summary>
                 <div className="flex flex-col gap-1.5 p-1">
-                  {groupNode}
-                  {linkNode}
+                  {downloadRepo === false ? null : groupNode}
+                  {downloadRepo === true ? null : linkNode}
                 </div>
               </details>
             ) : null}
           </div>
           {/* 关联入口放在所有 radio 之后：单选组要连续，它是组外的补充（样式也就轻一层）。 */}
-          {narrow ? null : (
+          {narrow && downloadRepo === undefined ? null : (
             <>
-              {groupNode}
-              {linkNode}
+              {downloadRepo === false ? null : groupNode}
+              {downloadRepo === true ? null : linkNode}
             </>
           )}
         </>
@@ -497,13 +518,15 @@ function NewLongLived({
   machine,
   machineName,
   choice,
-  onChoice
+  onChoice,
+  downloadRepo
 }: {
   canvas: CanvasDto;
   machine: string;
   machineName: string;
   choice: WorkspaceChoice | null;
   onChoice: (choice: WorkspaceChoice) => void;
+  downloadRepo?: boolean;
 }) {
   const selected = choice?.type === 'new_long_lived';
   const [picking, setPicking] = useState(false);
@@ -513,10 +536,11 @@ function NewLongLived({
         type="button"
         role="radio"
         aria-checked={selected}
+        data-testid="ws-new-long-lived"
         className="flex w-full items-start gap-2 text-left"
         onClick={() => {
           if (selected) return;
-          onChoice({ type: 'new_long_lived', mode: 'create', path: null });
+          onChoice({ type: 'new_long_lived', mode: downloadRepo === false ? 'empty' : 'create', path: null });
           setPicking(true);
         }}
       >
@@ -530,7 +554,7 @@ function NewLongLived({
       </button>
       {selected ? (
         <div className="w-full pl-5">
-          <div className="mb-1.5 flex flex-wrap gap-1.5" role="radiogroup" aria-label="怎么新建">
+          {downloadRepo === undefined ? <div className="mb-1.5 flex flex-wrap gap-1.5" role="radiogroup" aria-label="怎么新建">
             {(
               [
                 ['create', canvas.project.repo ? '下载仓库' : '新建空目录'],
@@ -554,12 +578,16 @@ function NewLongLived({
                 {text}
               </button>
             ))}
-          </div>
+          </div> : downloadRepo === false ? <div className="mb-1.5 flex flex-wrap gap-1.5" role="radiogroup" aria-label="怎么选择持久目录">
+            {([['empty', '新建空目录'], ['link', '选已有目录']] as const).map(([mode, text]) => (
+              <button key={mode} type="button" role="radio" aria-checked={choice.mode === mode} className={`min-h-[32px] rounded-sm border px-2 text-meta ${choice.mode === mode ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary hover:border-strong'}`} onClick={() => { if (choice.mode !== mode) { onChoice({ type: 'new_long_lived', mode, path: null }); setPicking(true); } }}>{text}</button>
+            ))}
+          </div> : null}
           <p className="text-meta text-tertiary">
             {choice.path === null ? (
               choice.mode === 'link' ? (
                 '选一个这台机器上已有的目录'
-              ) : canvas.project.repo ? (
+              ) : canvas.project.repo && choice.mode === 'create' ? (
                 <>
                   选一个空文件夹放 <span className="font-mono">{repoName(canvas.project.repo.url)}</span>（可以就地「新建文件夹」）
                 </>
@@ -570,7 +598,7 @@ function NewLongLived({
               <>
                 将把 <span className="font-mono">{shortPath(choice.path)}</span> 登记成持久工作目录（不会删它）
               </>
-            ) : canvas.project.repo ? (
+            ) : canvas.project.repo && choice.mode === 'create' ? (
               <>
                 将把 <span className="font-mono">{repoName(canvas.project.repo.url)}</span> 下载到 {machineName} 的{' '}
                 <span className="font-mono">{shortPath(choice.path)}</span>（用这台机器自己的 git 凭据）
@@ -634,7 +662,7 @@ function NewEmpty({
     >
       <Radio on={selected} />
       <span className="min-w-0 flex-1">
-        <span className="block text-body text-primary">仅对话</span>
+    <span className="block text-body text-primary">新建空的临时目录</span>
         <span className="mt-0.5 block text-meta text-secondary">空的临时目录，不下载仓库、不运行准备命令</span>
         {selected ? (
           <span className="mt-1 block text-meta text-tertiary">
@@ -666,7 +694,7 @@ function NewTemporary({
 }) {
   const title = canvas.tasks.find((task) => task.id === taskId)?.title ?? '';
   return (
-    <button type="button" role="radio" aria-checked={selected} className={rowClass(selected)} onClick={onSelect}>
+    <button type="button" role="radio" aria-checked={selected} data-testid="ws-new-temporary" className={rowClass(selected)} onClick={onSelect}>
       <Radio on={selected} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-body text-primary">

@@ -231,6 +231,8 @@ export interface PrepareLongLivedCommand {
   /** 人选的机器（null = 本机）。记账时记真实 Worker id。 */
   readonly workerId: string | null;
   readonly plan: LongLivedPlan;
+  /** Explicitly create an empty directory even when the project has a repository. */
+  readonly skipRepo?: boolean;
   /** Server 本机的起点（没有本机 Worker 报 roots 时兜底）。 */
   readonly home: string;
   readonly actor?: Subject | null;
@@ -254,7 +256,8 @@ export async function prepareLongLivedWorkspaceUseCase(
   const prepared = await prepareTeamWorkspace(deps, {
     teamId: project.teamId,
     originProjectId: project.id,
-    repo: project.repo ? { url: project.repo.url, branch: project.repo.defaultBranch } : null,
+    repo: !command.skipRepo && project.repo ? { url: project.repo.url, branch: project.repo.defaultBranch } : null,
+    requireEmpty: command.skipRepo === true,
     slug: projectSlug(project.name) ?? 'project',
     workerId: command.workerId,
     plan: command.plan,
@@ -283,6 +286,8 @@ export interface PrepareTeamWorkspaceCommand {
   readonly slug: string;
   readonly workerId: string | null;
   readonly plan: LongLivedPlan;
+  /** Project-scoped empty mode must not reuse a registered repository. */
+  readonly requireEmpty?: boolean;
   readonly home: string;
   readonly actor: Subject | null;
 }
@@ -326,7 +331,7 @@ export async function prepareTeamWorkspace(
     }
   } else {
     const place = command.plan.path
-      ? await chosenPlace(deps, claimFor, machine, command.plan.path, command.home)
+      ? await chosenPlace(deps, claimFor, machine, command.plan.path, command.home, command.requireEmpty === true)
       : await managedPlace(deps, command.slug, machine.route, command);
     if (!place.ok) return place;
     if (command.repo) {
@@ -360,6 +365,8 @@ export async function prepareTeamWorkspace(
       source = 'created';
     }
     const again = await claimFor(path);
+    if (command.requireEmpty && !again.ok) return again;
+    if (command.requireEmpty && again.ok && again.value && !isRegisteredEmpty(again.value)) return err(conflict('这个目录已登记为仓库，不能作为空目录使用'));
     if (again.ok && again.value) return ok(again.value);
   }
 
@@ -379,7 +386,12 @@ export async function prepareTeamWorkspace(
   // 保存结果必须显式消费：撞到同位置唯一登记就复用它；历史重复 / 改目录撞车则拒绝，不能假装建成。
   const saved = await deps.workspaces.save(created.value);
   if (saved.status === 'ambiguous' || saved.status === 'place-taken') return err(ambiguousPlaceError());
+  if (command.requireEmpty && !isRegisteredEmpty(saved.workspace)) return err(conflict('这个目录已登记为仓库，不能作为空目录使用'));
   return ok(saved.workspace);
+}
+
+function isRegisteredEmpty(workspace: Workspace): boolean {
+  return workspace.isGit === false && workspace.repoUrl === null;
 }
 
 export function actorId(actor: Subject | null): string | null {
@@ -414,7 +426,8 @@ async function chosenPlace(
   claimFor: (path: string) => Promise<Result<Workspace | null, DomainError>>,
   machine: Machine,
   raw: string,
-  home: string
+  home: string,
+  requireEmpty: boolean
 ): Promise<Result<{ readonly parent: string; readonly name: string; readonly exists: boolean }, DomainError>> {
   const trimmed = raw.trim();
   if (!trimmed.startsWith('/')) return err(invalid('目录必须是绝对路径'));
@@ -441,6 +454,7 @@ async function chosenPlace(
   }
   const taken = await claimFor(path);
   if (!taken.ok) return taken;
+  if (requireEmpty && taken.value && !isRegisteredEmpty(taken.value)) return err(conflict('这个目录已登记为仓库，不能作为空目录使用'));
   return ok({ parent: parentListed.value.path, name, exists: target.value !== null });
 }
 

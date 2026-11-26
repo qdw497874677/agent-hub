@@ -648,6 +648,35 @@ test('创建工作空间：显式 empty 在绑定仓库的项目里也不调用 
   assert.equal(world.git.calls.length, gitCalls);
 });
 
+test('项目持久 empty：浏览器与开放 API 均保留选择路径且不 clone', async () => {
+  const { david, mint, api, world } = await setup();
+  const call = api((await mint(david, ['projects:read', 'projects:write', 'sessions:write', 'workers:read'])).token);
+  const project = (await call('/projects', post({ name: 'empty-test', repoUrl: 'https://example.com/private.git' }))).body;
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online', roots: ['/srv/work'] } as never);
+  world.deps.gateway.listDirectories = async (_workerId, path) => ({ ok: true, value: { path, exists: path === '/srv/work', entries: [] } });
+  const calls = world.git.calls.length;
+  for (const [path, request] of [
+    ['/srv/work/empty-api', (body: unknown) => call(`/projects/${project.id}/workspaces`, post(body))],
+    ['/srv/work/empty-browser', (body: unknown) => david(`/api/projects/${project.id}/workspaces`, post(body))]
+  ] as const) {
+    const made = await request({ kind: 'long_lived', mode: 'empty', workerId: 'w1', path });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    assert.equal(made.body.path, path);
+    assert.equal(made.body.source, 'created');
+    assert.equal(made.body.isGit, false);
+    assert.equal(made.body.repoUrl, null);
+    const invalid = await request({ kind: 'long_lived', mode: 'empty', workerId: 'w1', path: 'relative/path' });
+    assert.equal(invalid.status, 400);
+    const unknown = await request({ kind: 'long_lived', mode: 'unexpected', workerId: 'w1' });
+    assert.equal(unknown.status, 400);
+  }
+  assert.equal(world.git.calls.length, calls);
+  const legacy = await call(`/projects/${project.id}/workspaces`, post({ kind: 'long_lived', mode: 'create', workerId: 'w1', path: '/srv/work/legacy' }));
+  assert.equal(legacy.status, 201, JSON.stringify(legacy.body));
+  assert.equal(legacy.body.path, '/srv/work/legacy');
+  assert.equal(legacy.body.source, 'cloned');
+});
+
 test('同步仓库：项目绑定多个仓库时拒绝补克隆同级目录，引导使用组合工作空间', async () => {
   const { david, mint, api, world } = await setup();
   const call = api((await mint(david, ['projects:read', 'projects:write'])).token);

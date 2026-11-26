@@ -705,6 +705,7 @@ export function createApp(options: AppOptions): Hono {
             projectId: c.req.param('projectId'),
             workerId: request.workerId,
             plan: request.mode === 'link' ? { mode: 'link', path: request.path ?? '' } : request.path?.trim() ? { mode: 'create', path: request.path } : { mode: 'create' },
+            skipRepo: request.mode === 'empty',
             home: homedir(),
             actor: subjectOf(c)
           });

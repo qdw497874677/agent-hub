@@ -342,6 +342,38 @@ test('新建持久工作空间选到空目录（目录选择器里刚「新建�
   assert.equal(cloned.value.path, '/home/me/code/clone-here');
 });
 
+test('持久 empty：绑定仓库仍只建空目录，拒绝占用和已登记仓库', async () => {
+  const w = await folderless();
+  disk(w);
+  assert.ok((await setProjectRepoUseCase(w.deps, { projectId: w.project.id, repoUrl: 'https://x/demo.git' })).ok);
+  const create = (path: string) => prepareLongLivedWorkspaceUseCase(w.deps, {
+    projectId: w.project.id, workerId: 'remote-1', plan: { mode: 'create', path }, skipRepo: true, home: '/home/me'
+  });
+  const calls = w.git.calls.length;
+  const deps = { ...w.deps, repoAuth: { forUrl: async () => { throw new Error('empty must not resolve repo auth'); }, forPath: async () => { throw new Error('empty must not resolve repo auth'); } } };
+  const empty = await prepareLongLivedWorkspaceUseCase(deps, {
+    projectId: w.project.id, workerId: 'remote-1', plan: { mode: 'create', path: '/srv/work/fresh' }, skipRepo: true, home: '/home/me'
+  });
+  assert.ok(empty.ok, empty.ok ? '' : empty.error.message);
+  assert.equal(empty.value.source, 'created');
+  assert.equal(empty.value.isGit, false);
+  assert.equal(empty.value.repoUrl, null);
+  const again = await create('/srv/work/fresh');
+  assert.ok(again.ok);
+  assert.equal(again.value.id, empty.value.id);
+  for (const path of ['relative/path', '/srv/work/full']) assert.equal((await create(path)).ok, false, path);
+  const registered = newWorkspace({ projectId: w.project.id, workerId: 'remote-1', path: '/srv/work/repo', kind: 'long_lived', source: 'cloned', isGit: true, repoUrl: 'https://x/demo.git', now: 1 });
+  assert.ok(registered.ok);
+  await w.deps.workspaces.save(registered.value);
+  const reusedRepo = await create('/srv/work/repo');
+  assert.equal(reusedRepo.ok, false);
+  const occupied = newWorkspace({ projectId: w.project.id, workerId: 'remote-1', path: '/srv/work/full', kind: 'long_lived', source: 'created', isGit: false, now: 1 });
+  assert.ok(occupied.ok);
+  await w.deps.workspaces.save(occupied.value);
+  assert.equal((await create('/srv/work/full')).ok, false, '登记的目录后来有内容也不能作为空目录');
+  assert.equal(w.git.calls.length, calls);
+});
+
 test('老数据迁移：本机 Worker 上线把 workerId=null 的工作空间改记成它的 id；remote 上线不碰；幂等', async () => {
   const w = await folderless();
   const made = newWorkspace({ projectId: w.project.id, workerId: null, path: '/tmp/old', kind: 'long_lived', source: 'linked', now: w.deps.now() });

@@ -39,7 +39,7 @@ export const workspaces = {
     {
       method: 'post', path: `${V1}/projects/{projectId}/workspaces`, tags: ['workspaces'], summary: '新建临时或长期工作空间',
       description:
-        '为项目建一个工作空间：temporary 要 taskId（可选 mode=isolated 新开 worktree，默认 isolated；mode=shared 复用长期目录；mode=empty 新建空临时目录，纯聊天用、不碰仓库）；long_lived 要 mode=create|link（link 时给 path）。\n' +
+        '为项目建一个工作目录：temporary 要 taskId（mode=isolated 新开 worktree，默认 isolated；mode=shared 复用长期目录；mode=empty 新建空临时目录，不准备仓库）；long_lived 要 mode=create|empty|link（create 沿用项目仓库配置；empty 不下载仓库；link 登记已有目录，须给 path）。\n' +
         '参数：projectId；body 见 createWorkspaceRequest。\n' +
         '返回：workspace。\n' +
         '下一步：开会话时把 workspaceId 传回去；非 git 项目只能建普通目录。\n' +

@@ -305,7 +305,7 @@ export const createWorkspaceRequest = z.discriminatedUnion('kind', [
   z.object({
     workerId: z.string().min(1).nullable().default(null),
     kind: z.literal('long_lived'),
-    mode: z.enum(['create', 'link']),
+    mode: z.enum(['create', 'link', 'empty']),
     path: z.string().optional()
   }),
   z.object({

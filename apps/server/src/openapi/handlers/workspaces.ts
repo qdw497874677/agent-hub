@@ -68,7 +68,8 @@ export function installWorkspaces(app: OpenAPIHono<Env>, rt: V1Runtime): void {
         : await prepareLongLivedWorkspaceUseCase(rt.deps, {
             projectId,
             workerId: input.workerId ?? null,
-            plan: input.mode === 'link' ? { mode: 'link', path: input.path ?? '' } : { mode: 'create' },
+            plan: input.mode === 'link' ? { mode: 'link', path: input.path ?? '' } : input.path?.trim() ? { mode: 'create', path: input.path } : { mode: 'create' },
+            skipRepo: input.mode === 'empty',
             home: homedir(),
             actor
           });

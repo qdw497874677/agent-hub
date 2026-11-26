@@ -1,10 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { chooseHubModel, piModel } from './hub-model.ts';
+import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
+
+test.afterAll(stopFakeWorker);
 
 /**
  * 隔离 worktree + 准备命令（docs/design/worktree.md §3 §4）。
@@ -45,12 +48,13 @@ async function makeProject(page: Page, headers: Record<string, string>) {
 }
 
 /** UI 用：把这台机器上的一个 git 目录登记成长期工作目录，好让「新建隔离 worktree」可选。 */
-async function linkGitWorkspace(page: Page, headers: Record<string, string>, projectId: string, path: string) {
+async function linkGitWorkspace(page: Page, headers: Record<string, string>, projectId: string, path: string, workerId: string) {
   const res = await page.request.post(`/api/projects/${projectId}/workspaces`, {
-    data: { workerId: null, kind: 'long_lived', mode: 'link', path },
+    data: { workerId, kind: 'long_lived', mode: 'link', path },
     headers
   });
   expect(res.status(), await res.text()).toBe(201);
+  expect(await res.json()).toMatchObject({ workerId, path, isGit: true });
 }
 
 function worktreeBody(command: string) {
@@ -185,24 +189,25 @@ test('显式选定的工作目录优先于档位', async ({ page, baseURL }) => 
   expect(await temporaryWorkspaces(page, headers, project.id)).toHaveLength(0);
 });
 
-test('UI：隔离 worktree 是工作目录里的一个选项，勾它机器照样能选', async ({ page, baseURL }) => {
+test('UI：明确准备仓库后才可选隔离 worktree，机器照样能选', async ({ page, baseURL }) => {
   test.setTimeout(120_000);
   const headers = await login(page, baseURL ?? '');
-  const agentId = await onlineAgent(page);
-  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const workerId = await ensureFakeWorker(page, baseURL!);
 
   const dir = mkdtempSync(join(tmpdir(), 'e2e-worktree-ui-'));
+  try {
   execFileSync('git', ['init', '-q', '-b', 'main', dir]);
   // 空仓库没有 main 这个 ref，worktree 会报 `fatal: invalid reference: main`
   execFileSync('git', ['-C', dir, '-c', 'user.email=e2e@example.invalid', '-c', 'user.name=e2e', 'commit', '-q', '--allow-empty', '-m', 'init']);
   const project = (await (
     await page.request.post('/api/projects', {
-      data: { name: `e2e worktree ui ${Date.now().toString(36)}`, rootPath: dir },
+      // Register the Git directory explicitly below; rootPath here would seed an uninspected linked row.
+      data: { name: `e2e worktree ui ${Date.now().toString(36)}` },
       headers
     })
   ).json()) as { id: string };
   await configure(page, headers, project.id, `node -e "console.log('ui-setup-ok')"`);
-  await linkGitWorkspace(page, headers, project.id, dir);
+  await linkGitWorkspace(page, headers, project.id, dir, workerId);
   const task = await makeTask(page, headers, project.id);
 
   // 手机视口：底部操作区要常驻（内容区自己滚），不能被滚出屏幕
@@ -214,12 +219,20 @@ test('UI：隔离 worktree 是工作目录里的一个选项，勾它机器照�
 
   const run = page.getByRole('dialog', { name: '开始会话' });
   const worktree = run.getByTestId('ws-new-worktree');
+  if (!(await run.locator('#derive-agent').isVisible())) await run.getByTestId('derive-agent-section').locator('summary').click();
+  await run.locator('#derive-agent').selectOption(FAKE_AGENT_ID);
+  const switchMachine = run.getByTestId('machine-select-alternative');
+  if (await switchMachine.isVisible()) await switchMachine.click();
+  const prepare = run.getByTestId('ws-download-repo');
+  await expect(prepare).toHaveAccessibleName('准备仓库');
+  await expect(prepare).not.toBeChecked();
+  await expect(worktree).toHaveCount(0);
+  await prepare.check();
   await expect(worktree).toContainText('新建隔离目录');
-  // 项目默认 isolated：打开就替用户选上，不用再点一下
+  await expect(worktree).toHaveAttribute('aria-checked', 'false');
+  await expect(run.getByRole('button', { name: '开始', exact: true })).toBeDisabled();
+  await worktree.click();
   await expect(worktree).toHaveAttribute('aria-checked', 'true');
-  // 只有 Hub 模型的机器：模型框显式写「选择模型…」，不替人选（选好之后才轮到工作目录这一关）
-  await chooseHubModel(run);
-  await expect(run.getByRole('button', { name: '开始', exact: true })).toBeEnabled();
   // 选了隔离档之后，机器和工作目录那块不该被禁用（机器始终可选）
   const region = run.getByTestId('derive-workspace-region');
   await expect(region).not.toHaveCSS('pointer-events', 'none');
@@ -232,4 +245,7 @@ test('UI：隔离 worktree 是工作目录里的一个选项，勾它机器照�
   expect(spaces).toHaveLength(1);
   expect(spaces[0]?.source).toBe('worktree');
   expect(spaces[0]?.setup?.state).toBe('ready');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
