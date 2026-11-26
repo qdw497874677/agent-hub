@@ -22,7 +22,7 @@ const ICONS: Readonly<Record<string, IconName>> = {
  *   窄屏（抽屉 / 首页顶部）默认四列图标格；抽屉页脚用五列，九项也能压在两行内，不把任务列表挤到屏幕外。
  * - `rail`：侧栏收起成图标栏时只剩图标，名字进 tooltip。
  */
-export function GlobalNav({ layout = 'list', columns = 4 }: { layout?: 'list' | 'rail'; columns?: 4 | 5 }) {
+export function GlobalNav({ layout = 'list', columns = 4, onNavigate }: { layout?: 'list' | 'rail'; columns?: 4 | 5; onNavigate?: () => void }) {
   const account = useAccount();
   const [route] = useRoute();
   const active = activeGlobalNavId(route?.page ?? null);
@@ -39,6 +39,7 @@ export function GlobalNav({ layout = 'list', columns = 4 }: { layout?: 'list' | 
             <a
               key={item.id}
               href={item.href}
+              onClick={(event) => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) onNavigate?.(); }}
               data-testid={`nav-${item.id}`}
               aria-current={on ? 'page' : undefined}
               aria-label={item.label}
@@ -63,6 +64,7 @@ export function GlobalNav({ layout = 'list', columns = 4 }: { layout?: 'list' | 
           <a
             key={item.id}
             href={item.href}
+            onClick={(event) => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) onNavigate?.(); }}
             data-testid={`nav-${item.id}`}
             aria-current={on ? 'page' : undefined}
             className={`flex min-h-[44px] flex-col items-center justify-center gap-1 rounded-md px-1 text-meta lg:min-h-7 lg:flex-row lg:justify-start lg:gap-2.5 lg:px-2 lg:text-sub ${

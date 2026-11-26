@@ -297,6 +297,27 @@ export function ProjectSidebar({
 
   // 列表里 ↑ / ↓ 在会话行之间移动焦点（Home / End 到头尾）。
   const listRef = useRef<HTMLElement>(null);
+  const location = useRef<'waiting' | 'expanded' | 'done'>('waiting');
+  useEffect(() => {
+    if (!drawer || location.current !== 'waiting' || !canvas || !selectedId) return;
+    const session = canvas.sessions.find((item) => item.id === selectedId);
+    if (!session) return;
+    location.current = 'expanded';
+    if (session.settledAt != null) setShowSettled(true);
+    if (session.taskId) setFoldedTasks((current) => {
+      if (!current.has(session.taskId!)) return current;
+      const next = new Set(current);
+      next.delete(session.taskId!);
+      return next;
+    });
+  }, [drawer, canvas, selectedId]);
+  useEffect(() => {
+    if (!drawer || location.current !== 'expanded' || !selectedId) return;
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-testid="sidebar-session-row"][data-session-id="${CSS.escape(selectedId)}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: 'nearest' });
+    location.current = 'done';
+  }, [drawer, canvas, selectedId, foldedTasks, showSettled]);
   const onListKey = (event: ReactKeyboardEvent<HTMLElement>) => {
     if ((event.target as HTMLElement).closest('[data-sidebar-derive]')) return;
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
@@ -355,6 +376,17 @@ export function ProjectSidebar({
     );
   }
 
+  const projectActions = (
+    <div className={`space-y-0.5 px-2 pb-2 ${drawer ? 'border-t border-hair pt-2' : ''}`}>
+      <button className={ROW} onClick={onNewTask}><Icon name="plus" className="text-tertiary" />新建任务</button>
+      <button className={ROW} data-testid="sidebar-new-coordinator" onClick={onNewCoordinator}><Icon name="message" className="text-tertiary" />新开主会话</button>
+      <button className={ROW} onClick={onSearch} title="搜索任务与会话">
+        <Icon name="search" className="text-tertiary" /><span className="flex-1">搜索</span>
+        {coarsePointer() ? null : <kbd className="font-sans text-meta text-tertiary">{MOD}K</kbd>}
+      </button>
+    </div>
+  );
+
   return (
     <aside className={`flex min-h-0 shrink-0 flex-col border-r border-hair bg-panel ${drawer ? 'h-[calc(75dvh_-_28px)] w-full' : 'h-full w-64'}`} aria-label="项目导航" data-testid="project-sidebar">
       {/* 项目切换：原生下拉保留（键盘 / 读屏 / 手机滚轮都现成），只是画成一行带首字母和箭头的按钮。 */}
@@ -394,25 +426,10 @@ export function ProjectSidebar({
         )}
       </div>
 
-      <div className="space-y-0.5 px-2 pb-2">
-        <button className={ROW} onClick={onNewTask}>
-          <Icon name="plus" className="text-tertiary" />
-          新建任务
-        </button>
-        <button className={ROW} data-testid="sidebar-new-coordinator" onClick={onNewCoordinator}>
-          <Icon name="message" className="text-tertiary" />
-          新开主会话
-        </button>
-        <button className={ROW} onClick={onSearch} title="搜索任务与会话">
-          <Icon name="search" className="text-tertiary" />
-          <span className="flex-1">搜索</span>
-          {coarsePointer() ? null : (
-            <kbd className="font-sans text-meta text-tertiary">{MOD}K</kbd>
-          )}
-        </button>
-      </div>
+      <div className={drawer ? 'flex min-h-0 flex-1 flex-col overflow-y-auto' : 'contents'}>
+      {!drawer ? projectActions : null}
 
-      <nav ref={listRef} onKeyDown={onListKey} className="min-h-0 flex-1 overflow-y-auto border-t border-hair px-2 py-2" aria-label="任务与会话">
+      <nav ref={listRef} onKeyDown={onListKey} className={drawer ? 'shrink-0 border-t border-hair px-2 py-2' : 'min-h-0 flex-1 overflow-y-auto border-t border-hair px-2 py-2'} aria-label="任务与会话">
         <p className="px-2 pb-1 text-meta text-tertiary">任务</p>
         {tasks.length === 0 ? (
           <p className="px-2 py-1 text-meta text-tertiary">还没有任务</p>
@@ -486,11 +503,12 @@ export function ProjectSidebar({
           ) : null}
         </div>
       </nav>
+      {drawer ? projectActions : null}
 
       {drawer ? (
-        // 移动抽屉：全局工具是项目内容的次要区，放在任务列表滚动区之外，但不抢首屏。
+        // 移动抽屉：全局工具跟在任务列表和项目动作之后，共用滚动区。
         <div className="shrink-0 border-t border-hair px-2 py-2" data-testid="drawer-global-nav">
-          <GlobalNav columns={5} />
+          <GlobalNav columns={5} onNavigate={onClose} />
         </div>
       ) : (
         <div className="border-t border-hair px-2 py-2">
@@ -498,7 +516,7 @@ export function ProjectSidebar({
         </div>
       )}
 
-      <div className="flex items-center gap-0.5 border-t border-hair px-2 py-1.5">
+      <div className={`flex items-center gap-0.5 border-t border-hair px-2 py-1.5 ${drawer ? 'shrink-0' : ''}`}>
         <div className="min-w-0 flex-1">
           <MachinesBadge />
         </div>
@@ -506,6 +524,7 @@ export function ProjectSidebar({
         <MessagesEntry />
         <NotificationBell placement="up" />
         <AccountMenu placement="up" />
+      </div>
       </div>
       {settings ? <WorkspacesDialog project={project} onClose={() => setSettings(false)} /> : null}
       {menu && menuSession ? (

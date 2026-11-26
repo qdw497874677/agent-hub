@@ -11,6 +11,7 @@ import {
   restoreWindow, retile, tileCapacity, toggleMaximize, windowsKey, type Rect, type WindowSet, type WindowStore
 } from './canvas-windows.ts';
 import { localWindowStore } from './canvas-windows-store.ts';
+import { Sheet } from '../../shell/dialog-shell.tsx';
 
 /** 窗口区留出的边：右边是画布控件，下边是窗口条。 */
 const MARGIN = { top: 12, left: 12, right: 60, bottom: 52 } as const;
@@ -100,6 +101,8 @@ interface LayerProps {
   /** 进会话页（整页）。 */
   readonly onOpen: (sessionId: string) => void;
   readonly onChangeOption: (sessionId: string, optionId: string, value: string | boolean) => Promise<void>;
+  readonly onProjectSessions: (sessionId: string) => void;
+  readonly onWindowFocusChange: (sessionId: string | null) => void;
 }
 
 export function sessionTitle(canvas: CanvasDto, session: SessionDto): string {
@@ -115,12 +118,17 @@ const BTN = 'flex h-9 w-8 shrink-0 items-center justify-center rounded-sm text-m
  * 画布上面的窗口层（屏幕坐标）：画布平移缩放时窗口不动，字始终清楚。
  * 交互分区：标题栏拖窗口、对话区只滚动、右下角改大小；窗口以外的画布照旧。
  */
-export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRetryHistory, drafts, onDraftChange, onChanged, onOpen, onChangeOption }: LayerProps) {
+export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRetryHistory, drafts, onDraftChange, onChanged, onOpen, onChangeOption, onProjectSessions, onWindowFocusChange }: LayerProps) {
   const { set, act, area } = windows;
   const byId = useMemo(() => new Map(canvas.sessions.map((session) => [session.id, session])), [canvas.sessions]);
   const rects = useMemo(() => (area ? layoutWindows(set, area) : new Map<string, Rect>()), [set, area]);
   const top = focused(set);
   const open = set.windows.filter((w) => byId.has(w.sessionId));
+  const [chooser, setChooser] = useState(false);
+  useEffect(() => { onWindowFocusChange(top?.sessionId ?? null); }, [top?.sessionId, onWindowFocusChange]);
+  useEffect(() => {
+    if (!narrow || !area || !top || !byId.has(top.sessionId)) setChooser(false);
+  }, [narrow, area, top, byId]);
   if (!area || open.length === 0) return null;
 
   const pane = (sessionId: string, actions: ReactNode) => {
@@ -178,10 +186,28 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRe
           onSwipe={go}
           title={sessionTitle(canvas, byId.get(shown.sessionId)!)}
           count={`${index + 1}/${open.length}`}
+          onChoose={() => setChooser(true)}
           onBack={() => act((current) => minimizeWindow(current, shown.sessionId))}
           onClose={() => act((current) => closeWindow(current, shown.sessionId))}
         />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{pane(shown.sessionId, null)}</div>
+        {chooser ? (
+          <Sheet title="已打开的窗口" testId="window-chooser" onClose={() => setChooser(false)} footer={
+            <button className="min-h-[44px] w-full rounded-md border border-hair px-3 text-left text-sub text-primary hover:bg-hover" onClick={() => { setChooser(false); onProjectSessions(shown.sessionId); }}>
+              查看项目全部会话 <span aria-hidden className="float-right">→</span>
+            </button>
+          }>
+            <p className="px-2 pb-2 text-meta text-tertiary">已打开 {open.length} 个窗口</p>
+            {open.map((w) => {
+              const current = w.sessionId === shown.sessionId;
+              return <button key={w.sessionId} data-testid="window-chooser-item" data-session-id={w.sessionId} aria-current={current ? 'true' : undefined} className={`flex min-h-[44px] w-full items-center gap-3 rounded-md px-3 text-left text-sub ${current ? 'bg-selected text-primary' : 'text-secondary hover:bg-hover'}`} onClick={() => { act((value, cap) => restoreWindow(value, w.sessionId, cap)); setChooser(false); }}>
+                <span className="min-w-0 flex-1 truncate">{sessionTitle(canvas, byId.get(w.sessionId)!)}</span>
+                <span className="shrink-0 font-mono text-meta text-tertiary">#{w.sessionId.slice(-4)}</span>
+                {current ? <span className="shrink-0 text-meta text-tertiary">当前</span> : null}
+              </button>;
+            })}
+          </Sheet>
+        ) : null}
       </div>
     );
   }
@@ -309,12 +335,12 @@ function WaitingDot({ sessionId, blocks, agentLabel }: { sessionId: string; bloc
 }
 
 /** 手机：顶部一条，左右滑切换打开的窗口（只在这条上滑，不和对话区的滚动、选字抢）。 */
-function SwipeStrip({ title, count, onSwipe, onBack, onClose }: { title: string; count: string; onSwipe: (step: number) => void; onBack: () => void; onClose: () => void }) {
+function SwipeStrip({ title, count, onSwipe, onBack, onClose, onChoose }: { title: string; count: string; onSwipe: (step: number) => void; onBack: () => void; onClose: () => void; onChoose: () => void }) {
   const start = useRef<{ x: number; y: number } | null>(null);
   return (
     <div
       data-testid="window-swipe-strip"
-      className="flex h-11 shrink-0 touch-none items-center gap-2 border-b border-hair bg-card px-2"
+      className="flex h-[44px] shrink-0 touch-none items-center gap-2 border-b border-hair bg-card px-2"
       onPointerDown={(event) => {
         start.current = { x: event.clientX, y: event.clientY };
       }}
@@ -330,9 +356,9 @@ function SwipeStrip({ title, count, onSwipe, onBack, onClose }: { title: string;
         ‹ 画布
       </button>
       <span className="min-w-0 flex-1 truncate text-center text-meta text-secondary">{title}</span>
-      <span className="shrink-0 font-mono text-meta text-tertiary" data-testid="window-count">
-        {count}
-      </span>
+      <button className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center gap-1 px-1 text-meta text-secondary hover:text-primary" aria-label={`窗口 ${count}`} aria-haspopup="dialog" onClick={onChoose}>
+        窗口 <span className="font-mono" data-testid="window-count">{count}</span>
+      </button>
       <button className="flex h-11 w-9 shrink-0 items-center justify-center text-meta text-tertiary hover:text-primary" aria-label="关闭窗口" onClick={onClose}>
         ×
       </button>

@@ -1,0 +1,114 @@
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { expect, test } from '@playwright/test';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
+import { loginByApi } from './login.ts';
+
+test.afterAll(() => stopFakeWorker());
+
+test('手机窗口选择、滑动和项目全部会话不影响草稿或运行', async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const root = mkdtempSync(join(tmpdir(), 'window-navigation-'));
+  try {
+    await loginByApi(page);
+    const workerId = await ensureFakeWorker(page, baseURL!, FAKE_AGENT_ID, { agentArgs: ['--gate-dir', root] });
+    const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
+    const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
+    const post = async <T>(url: string, data: unknown): Promise<T> => {
+      const response = await page.request.post(url, { data, headers });
+      expect(response.ok(), await response.text()).toBe(true);
+      return await response.json() as T;
+    };
+    const project = await post<{ id: string }>('/api/projects', { name: `窗口导航 ${Date.now()}`, rootPath: root, workerId });
+    const task = await post<{ id: string }>('/api/tasks', { projectId: project.id, title: '窗口导航任务' });
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) ids.push((await post<{ id: string }>('/api/sessions/derive', { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' })).id);
+    const [a, b, c, settled] = ids as [string, string, string, string];
+    const stopped = await page.request.post(`/api/sessions/${settled}/interrupt`, { headers });
+    expect(stopped.ok(), await stopped.text()).toBe(true);
+    await post(`/api/sessions/${settled}/settle`, { settled: true });
+    await post(`/api/sessions/${a}/prompt`, { text: 'please-hold:navigation' });
+    await expect.poll(() => existsSync(join(root, 'hold-navigation.started')), { timeout: 30000 }).toBe(true);
+    await page.goto(`/#/p/${project.id}/canvas`);
+    const card = (id: string) => page.locator(`.react-flow__node-session[data-id="${id}"]`);
+    await expect(page.locator('.react-flow__node-session')).toHaveCount(4);
+    await card(a).getByRole('button', { name: '在画布中展开' }).click();
+    const shown = page.getByTestId('canvas-window');
+    await expect(shown).toHaveAttribute('data-session-id', a);
+    await shown.getByLabel('发送消息').fill('保留的草稿');
+    await page.getByRole('button', { name: '‹ 画布' }).click();
+    await card(b).locator('header').dispatchEvent('contextmenu', { clientX: 10, clientY: 10 });
+    await page.getByRole('menuitem', { name: '在画布中展开' }).click();
+    const trigger = page.getByRole('button', { name: '窗口 2/2' });
+    expect((await trigger.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await trigger.click();
+    const chooser = page.getByTestId('window-chooser');
+    await expect(chooser.getByTestId('window-chooser-item')).toHaveCount(2);
+    expect((await chooser.getByTestId('window-chooser-item').first().boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await chooser.getByRole('button', { name: /查看项目全部会话/ }).boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await expect(chooser.locator(`[data-session-id="${b}"]`)).toHaveAttribute('aria-current', 'true');
+    await chooser.locator(`[data-session-id="${a}"]`).click();
+    await expect(shown).toHaveAttribute('data-session-id', a);
+    await expect(shown.getByLabel('发送消息')).toHaveValue('保留的草稿');
+    await page.getByRole('button', { name: '窗口 1/2' }).click();
+    await page.keyboard.press('Escape');
+    await expect(chooser).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '窗口 1/2' })).toBeFocused();
+    const strip = (await page.getByTestId('window-swipe-strip').boundingBox())!;
+    await page.mouse.move(strip.x + 200, strip.y + 22); await page.mouse.down();
+    await page.mouse.move(strip.x + 80, strip.y + 22, { steps: 8 }); await page.mouse.up();
+    await expect(shown).toHaveAttribute('data-session-id', b);
+    await page.getByRole('button', { name: '窗口 2/2' }).click();
+    await expect(chooser).toBeVisible();
+    await page.setViewportSize({ width: 1280, height: 844 });
+    await expect(chooser).toHaveCount(0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(chooser).toHaveCount(0);
+    await page.setViewportSize({ width: 320, height: 700 });
+    await page.evaluate((taskId) => localStorage.setItem('agent-hub.sidebar.collapsed-tasks', JSON.stringify([taskId])), task.id);
+    await page.getByRole('button', { name: '窗口 2/2' }).click();
+    await page.getByRole('button', { name: /查看项目全部会话/ }).click();
+    await expect(page.getByTestId('window-chooser')).toHaveCount(0);
+    const drawer = page.getByTestId('nav-sheet');
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    await expect(drawer).toBeFocused();
+    await expect(drawer.locator(`[data-testid="sidebar-session-row"][data-session-id="${b}"] [aria-current="page"]`)).toBeVisible();
+    await expect(drawer.getByTestId('sidebar-settled-toggle')).toContainText('已收起 1');
+    await expect(drawer.locator(`[data-testid="sidebar-session-row"][data-session-id="${settled}"]`)).toHaveCount(0);
+    await drawer.getByTestId('sidebar-settled-toggle').click();
+    await expect(drawer.getByTestId('sidebar-settled-list').locator(`[data-session-id="${settled}"]`)).toBeVisible();
+    await drawer.getByTestId('sidebar-settled-toggle').click();
+    await page.keyboard.press('Escape');
+    await expect(drawer).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '窗口 2/2' })).toBeFocused();
+    await page.getByRole('button', { name: '窗口 2/2' }).click();
+    await page.getByRole('button', { name: /查看项目全部会话/ }).click();
+    const taskToggle = drawer.locator('button[title="窗口导航任务"]');
+    await taskToggle.click();
+    await expect(drawer.locator(`[data-testid="sidebar-session-row"][data-session-id="${b}"]`)).toHaveCount(0);
+    await taskToggle.click();
+    await drawer.locator(`[data-testid="sidebar-session-row"][data-session-id="${c}"] [data-testid="sidebar-session"]`).click();
+    await expect(page).toHaveURL(new RegExp(c));
+    expect(existsSync(join(root, 'hold-navigation.go'))).toBe(false);
+    const events = await (await page.request.get(`/api/sessions/${a}/events`)).json() as Array<{ event: { kind: string } }>;
+    expect(events.some(({ event }) => event.kind === 'ended')).toBe(false);
+    writeFileSync(join(root, 'hold-navigation.go'), 'go');
+    await expect.poll(async () => {
+      const journal = await (await page.request.get(`/api/sessions/${a}/events`)).json() as Array<{ event: { kind: string } }>;
+      return journal.some(({ event }) => event.kind === 'ended');
+    }).toBe(true);
+
+    // 桌面仍然是窗口层，不出现手机窗口选择入口。
+    await page.setViewportSize({ width: 1280, height: 844 });
+    await page.goto(`/#/p/${project.id}/canvas`);
+    await expect(page.getByTestId('canvas-window-layer')).toBeVisible();
+    await expect(page.getByRole('button', { name: /^窗口 \d/ })).toHaveCount(0);
+    const desktopSidebar = page.getByTestId('project-sidebar');
+    await expect(desktopSidebar).toBeVisible();
+    expect(await desktopSidebar.getByTestId('sidebar-new-coordinator').evaluate((action) => Boolean(action.compareDocumentPosition(action.closest('aside')!.querySelector('nav[aria-label="任务与会话"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+  } finally {
+    stopFakeWorker();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
