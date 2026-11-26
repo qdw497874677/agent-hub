@@ -1,3 +1,4 @@
+import { isUnknownOutcomeEnded } from '../attention.ts';
 import type { Delivery } from '../delivery.ts';
 import type { JournalEntry } from '../event.ts';
 import type { SessionId } from '../ids.ts';
@@ -60,7 +61,7 @@ export async function readJournalTail(
  * journal 尾部给出的这一轮证据：
  * - `idle`：尾部有结束证据，或窗口完整且没有未收尾的 prompt；
  * - `open`：最后一条未收尾的 prompt 还在等结束证据；
- * - `unknown`：窗口被截断又没找到任何证据，无法证明结束。
+ * - `unknown`：结果未确认，或窗口被截断又没找到任何证据，无法证明结束。
  */
 export type TurnTailVerdict = 'idle' | 'open' | 'unknown';
 
@@ -74,7 +75,7 @@ export function turnVerdictInTail(
 ): TurnTailVerdict {
   for (let i = tail.entries.length - 1; i >= 0; i--) {
     const entry = tail.entries[i]!;
-    if (entry.event.kind === 'ended') return 'idle';
+    if (entry.event.kind === 'ended') return isUnknownOutcomeEnded(entry.event) ? 'unknown' : 'idle';
     if (entry.event.kind !== 'prompt') continue;
     if (isUnstartedPrompt(entry)) continue;
     return 'open';

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ServerToWorker, SessionEventDto } from '@agent-hub/contract';
 import { RpcFailure, assetsFetch, assetsSync, branchAgentSessionRefSchema, providerTest, sessionStartReadyOptionsSchema } from '@agent-hub/contract';
-import { allowsFor, asSessionId, asTaskId, withExecutableArg } from '@agent-hub/domain';
+import { allowsFor, asSessionId, asTaskId, isUnknownOutcomeEnded, withExecutableArg } from '@agent-hub/domain';
 import type { RuntimeSession, SessionEvent, StartSpec } from '@agent-hub/domain';
 import { authHeaders } from '../provider-proxy.ts';
 import { createMcpEndpoint, type McpEndpoint } from '../mcp-endpoint.ts';
@@ -463,7 +463,7 @@ export function installSessions(ctx: LinkCtx, transport: Transport): Sessions {
           transport.send({ type: 'event', sessionId: eventSessionId, event: enriched as SessionEventDto });
           // ended 只是**这一轮**结束：进程留着（保活），下一句 prompt 直接发，只告诉 hub 它还活着。
           // 真结束（进程退出 / dispose_session / 空闲回收）才发 status:'ended'。
-          if (event.kind === 'ended' && sessions.get(eventSessionId) === session) {
+          if (event.kind === 'ended' && !isUnknownOutcomeEnded(event) && sessions.get(eventSessionId) === session) {
             transport.send({ type: 'status', sessionId: eventSessionId, status: 'idle' });
             // 回合结束了但后台子代理还在跑：opencode 之后不再推任何 update，
             // 只能周期性重放历史把完成总结拉回来（收到全部 end / 回收时循环自己停）。

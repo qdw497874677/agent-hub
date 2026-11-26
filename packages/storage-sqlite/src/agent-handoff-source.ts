@@ -88,7 +88,7 @@ export function prepareAgentHandoffSource(db: DatabaseSync, sessionId: string, e
       CASE WHEN length(CAST(payload AS BLOB)) <= 1048576 AND json_valid(payload) THEN CASE WHEN json_type(payload, '$.deliveryId') = 'text' AND length(CAST(json_extract(payload, '$.deliveryId') AS BLOB)) <= 512 THEN json_extract(payload, '$.deliveryId') END END AS delivery_id,
       CASE WHEN length(CAST(payload AS BLOB)) <= 1048576 AND json_valid(payload) THEN CASE WHEN json_extract(payload, '$.outcome') IN ('done','failed','interrupted','stopped') THEN json_extract(payload, '$.outcome') END END AS outcome,
       CASE WHEN length(CAST(payload AS BLOB)) <= 1048576 AND json_valid(payload) THEN json_type(payload, '$.reason') END AS reason_type,
-      CASE WHEN length(CAST(payload AS BLOB)) <= 1048576 AND json_valid(payload) THEN CASE WHEN json_type(payload, '$.reason') = 'text' THEN instr(json_extract(payload, '$.reason'), ?) ELSE 0 END ELSE 0 END AS unknown_outcome
+      CASE WHEN length(CAST(payload AS BLOB)) <= 1048576 AND json_valid(payload) THEN CASE WHEN json_type(payload, '$.outcomeUnknown') IS NOT NULL THEN 1 WHEN json_type(payload, '$.reason') = 'text' THEN instr(json_extract(payload, '$.reason'), ?) ELSE 0 END ELSE 0 END AS unknown_outcome
       FROM journal INDEXED BY handoff_source_journal
       WHERE session_id = ? AND type IN ('prompt', 'ended') LIMIT ?`).all(UNKNOWN_OUTCOME_MARKER, sessionId, AGENT_HANDOFF_SOURCE_BUDGET - deliveries.length + 1) as EventRow[];
     if (events.length + deliveries.length > AGENT_HANDOFF_SOURCE_BUDGET) return unproven;

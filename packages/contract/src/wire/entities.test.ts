@@ -4,6 +4,20 @@ import { journalEntrySchema, lineageEdgeSchema, sessionEventSchema, sessionOrigi
 import { forkSessionRequest } from './http.ts';
 import { serverToWorkerSchema } from './worker.ts';
 
+test('ended uncertainty is additive and only literal true is accepted', () => {
+  for (const event of [
+    { kind: 'ended', outcome: 'interrupted', reason: 'outcome_unknown' },
+    { kind: 'ended', outcome: 'interrupted', outcomeUnknown: true },
+    { kind: 'ended', outcome: 'done', deliveryId: 'd', outcomeUnknown: true }
+  ]) {
+    assert.deepEqual(sessionEventSchema.parse(event), event);
+    assert.deepEqual(journalEntrySchema.parse({ seq: 1, at: 2, event }).event, event);
+  }
+  for (const outcomeUnknown of [false, null, 1, 'true']) {
+    assert.equal(sessionEventSchema.safeParse({ kind: 'ended', outcome: 'interrupted', outcomeUnknown }).success, false);
+  }
+});
+
 test('first-prompt fork sequence zero is accepted as origin and lineage, but not a requested fork', () => {
   const start = { kind: 'start_session', sessionId: 'child', taskId: null, agentId: 'echo', workspaceRoot: '/tmp', resume: null, options: {} };
   for (const atSeq of [0, 1, 42]) {

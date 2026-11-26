@@ -254,15 +254,55 @@ test('prompt 带上作者；只有一个人说过话时不显示作者，老消�
   assert.equal(multipleAuthors(blocks), true);
 });
 
-test('结果未知：interrupted + outcome_unknown → 交给人的 unknown 块，带上一条用户输入', () => {
+test('结果未知：只由结构化字段识别，普通中断不受原因文本影响', () => {
   let blocks = applyBlocks([], { kind: 'prompt', text: '改一下 README' }, 1);
   blocks = applyBlocks(blocks, { kind: 'text', delta: '好的' }, 2);
-  blocks = applyBlocks(blocks, { kind: 'ended', outcome: 'interrupted', reason: 'Hermes 这一轮的结果未知（outcome_unknown）' }, 3);
-  assert.deepEqual(blocks[blocks.length - 1], { kind: 'unknown', text: 'Hermes 这一轮的结果未知（outcome_unknown）', prompt: '改一下 README', seq: 3 });
+  blocks = applyBlocks(blocks, { kind: 'ended', outcome: 'interrupted', reason: '运行时未确认结果', outcomeUnknown: true }, 3);
+  assert.deepEqual(blocks[blocks.length - 1], { kind: 'unknown', text: '运行时未确认结果', prompt: '改一下 README', seq: 3 });
+  assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'interrupted', reason: 'Hermes 这一轮的结果未知（outcome_unknown）' }, 2), [
+    { kind: 'stopped', text: '这一轮被打断了 · Hermes 这一轮的结果未知（outcome_unknown）', seq: 2 }
+  ]);
   // 普通中断不出「重发 / 不用了」卡片，只留一条分隔线
   assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'interrupted', reason: '连不上 Hermes 的事件流' }, 2), [
     { kind: 'stopped', text: '这一轮被打断了 · 连不上 Hermes 的事件流', seq: 2 }
   ]);
+});
+
+test('带投递键的历史未知只是不确定证据，直到对应投递真正结束', () => {
+  const session = { id: 's1', status: 'running', lastSeq: 2 } as SessionDto;
+  const entries: JournalEntryDto[] = [
+    { seq: 1, at: 1, event: { kind: 'prompt', text: '改一下 README' } },
+    { seq: 2, at: 2, event: { kind: 'ended', outcome: 'interrupted', outcomeUnknown: true, deliveryId: 'a' } }
+  ];
+  const seeded = resolveLive(session, entries, undefined)!;
+  assert.deepEqual(seeded.uncertainDeliveryIds, ['a']);
+  assert.deepEqual(seeded.endedDeliveryIds, []);
+  assert.deepEqual(seeded.blocks.map((block) => block.kind), ['prompt']);
+  assert.equal(seeded.awaiting, true);
+  const full = withFullHistory({}, session, entries);
+  assert.deepEqual(full.s1?.uncertainDeliveryIds, ['a']);
+  const replayed = catchUp(base, 's1', entries.slice(1));
+  assert.equal(replayed.s1?.status, 'running');
+  assert.equal(replayed.s1?.awaiting, true);
+  assert.deepEqual(replayed.s1?.uncertainDeliveryIds, ['a']);
+  const unrelated = applyFrame(full, { sessionId: 's1', seq: 3, status: 'running', event: { kind: 'ended', outcome: 'done', deliveryId: 'b' } });
+  assert.deepEqual(unrelated.s1?.uncertainDeliveryIds, ['a']);
+  const terminal = applyFrame(unrelated, { sessionId: 's1', seq: 4, status: 'done', event: { kind: 'ended', outcome: 'done', deliveryId: 'a' } });
+  assert.deepEqual(terminal.s1?.uncertainDeliveryIds, []);
+  assert.deepEqual(terminal.s1?.endedDeliveryIds, ['b', 'a']);
+  const rebuilt = withFullHistory(terminal, session, [...entries,
+    { seq: 3, at: 3, event: { kind: 'ended', outcome: 'done', deliveryId: 'b' } },
+    { seq: 4, at: 4, event: { kind: 'ended', outcome: 'done', deliveryId: 'a' } }
+  ]);
+  assert.deepEqual(rebuilt.s1?.uncertainDeliveryIds, []);
+  for (const malformed of [false, null, 'true']) {
+    const event = { kind: 'ended', outcome: 'failed', deliveryId: 'a', outcomeUnknown: malformed } as unknown as JournalEntryDto['event'];
+    const cached = withFullHistory({}, session, [entries[0]!, { seq: 2, at: 2, event }]);
+    assert.deepEqual(cached.s1?.uncertainDeliveryIds, ['a']);
+    assert.deepEqual(cached.s1?.endedDeliveryIds, []);
+    assert.deepEqual(cached.s1?.blocks.map((block) => block.kind), ['prompt']);
+    assert.equal(cached.s1?.awaiting, true);
+  }
 });
 
 test('批准卡：request 出卡，resolved 写回同一张卡；不改「正在回复」', () => {

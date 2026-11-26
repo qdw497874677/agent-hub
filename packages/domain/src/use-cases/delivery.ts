@@ -1,4 +1,5 @@
 import { afterFailure, type Delivery } from '../delivery.ts';
+import { isUnknownOutcomeEnded } from '../attention.ts';
 import type { JournalEntry } from '../event.ts';
 import { notFound, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -102,7 +103,7 @@ function latestDelivered(recent: readonly Delivery[]): Delivery | undefined {
 function endedCovers(delivery: Delivery, after: readonly JournalEntry[], recent: readonly Delivery[]): boolean {
   let bare: JournalEntry | undefined;
   for (const entry of after) {
-    if (entry.event.kind !== 'ended') continue;
+    if (entry.event.kind !== 'ended' || isUnknownOutcomeEnded(entry.event)) continue;
     if (entry.event.deliveryId === delivery.id) return true;
     if (entry.event.deliveryId === undefined && !bare) bare = entry;
   }
@@ -274,7 +275,7 @@ export async function findDeliveryEnded(deps: Pick<Deps, 'sessions'>, delivery: 
   const sessionId = delivery.sessionId as SessionId;
   const after = await deps.sessions.eventsAfter(sessionId, delivery.seq as Seq);
   for (const entry of after) {
-    if (entry.event.kind === 'ended' && entry.event.deliveryId === delivery.id) return entry;
+    if (entry.event.kind === 'ended' && entry.event.deliveryId === delivery.id && !isUnknownOutcomeEnded(entry.event)) return entry;
   }
   return null;
 }

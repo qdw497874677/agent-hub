@@ -27,14 +27,15 @@ export const PHASE_RANK: Readonly<Record<Phase, number>> = {
 };
 
 /**
- * Hermes 在 worker / 网关中途重启、这一轮到底跑没跑完说不清时，落在 ended 原因里的固定标记。
- * 它已经随事件持久化；判定「结果未知」只读这个标记，不从会话状态或超时反推。
+ * 老 Hermes Worker 曾把未知结果写到 ended 原因中。只用于兼容旧协议和历史记录；
+ * 新事件用结构化字段，不从会话状态或超时反推结果。
  */
 export const UNKNOWN_OUTCOME_MARKER = 'outcome_unknown';
 
-/** 这条事件是不是「结果未知」的收尾：ended · interrupted，且原因里带持久化标记。 */
+/** Structured uncertainty (including malformed persisted markers) or a legacy interrupted marker. */
 export function isUnknownOutcomeEnded(event: SessionEvent): boolean {
-  return event.kind === 'ended' && event.outcome === 'interrupted' && event.reason?.includes(UNKNOWN_OUTCOME_MARKER) === true;
+  return event.kind === 'ended' && ('outcomeUnknown' in event ||
+    (event.outcome === 'interrupted' && typeof event.reason === 'string' && event.reason.includes(UNKNOWN_OUTCOME_MARKER)));
 }
 
 /** agent 显式提问的工具名（ask 类工具 / ACP input-required 落成的 tool_call）。 */
@@ -81,7 +82,7 @@ export function derivePhase(input: PhaseInput): PhaseView {
   const lastPrompt = lastIndex(events, (e) => e.kind === 'prompt');
   const lastEnded = lastIndex(events, (e) => e.kind === 'ended');
   const turnOver = lastEnded >= 0 && lastEnded > lastPrompt;
-  // 3. 结果未知：只认 Hermes 已落库的 ended 标记。真失败 / 普通断连各有自己的原因，
+  // 3. 结果未知：只认已落库的明确标记。真失败 / 普通断连各有自己的原因，
   //    不会因为会话状态像「中断」就被算成结果未知（见 ADR 0031 / Hermes 运行时）。
   if (turnOver && isUnknownOutcomeEnded(events[lastEnded]!.event)) {
     const ended = events[lastEnded]!;

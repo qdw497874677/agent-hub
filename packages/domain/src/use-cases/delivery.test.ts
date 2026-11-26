@@ -226,6 +226,67 @@ test('an exact unknown outcome is a safe notice only; terminal A cannot label B'
   assert.deepEqual(markers, [{ kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId: a.value.deliveryId }]);
 });
 
+test('keyed unknown ends never release or replay and a later genuine end remains accepted', async () => {
+  const w = await world({ queue: serialQueue() });
+  w.online();
+  const a = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'A' });
+  const b = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'B' });
+  assert.ok(a.ok && b.ok && a.value.deliveryId && b.value.deliveryId);
+  await settle();
+  const id = a.value.deliveryId;
+  for (const event of [
+    { kind: 'ended', outcome: 'interrupted', reason: 'legacy outcome_unknown', deliveryId: id },
+    { kind: 'ended', outcome: 'interrupted', outcomeUnknown: true, deliveryId: id },
+    { kind: 'ended', outcome: 'done', outcomeUnknown: true, deliveryId: id },
+    { kind: 'ended', outcome: 'done', outcomeUnknown: false, deliveryId: id },
+    { kind: 'ended', outcome: 'done', deliveryId: b.value.deliveryId }
+  ]) await ingestWorkerEvent(w.deps, w.sid, event as never);
+  assert.equal((await w.deps.sessions.tail(w.sid, 20)).filter(e => e.event.kind === 'ended').length, 0);
+  // Old persisted rows bypassed today's ingest; they still cannot serve as proof.
+  for (const event of [
+    { kind: 'ended', outcome: 'interrupted', reason: 'outcome_unknown', deliveryId: id },
+    { kind: 'ended', outcome: 'done', outcomeUnknown: false, deliveryId: id },
+    { kind: 'ended', outcome: 'interrupted', outcomeUnknown: true, deliveryId: id }
+  ]) {
+    const session = await w.deps.sessions.byId(w.sid);
+    assert.ok(session);
+    await w.deps.sessions.append(applyEvent(session, event as never, 1001), event as never, 1001);
+  }
+  assert.equal(await reconcileInFlightDelivery(w.deps, w.sid), false);
+  assert.equal(await releaseAfterTurn(w.deps, w.sid, id), false);
+  await pumpDeliveries(w.deps);
+  assert.equal(w.sent.length, 1);
+  await ingestWorkerEvent(w.deps, w.sid, { kind: 'ended', outcome: 'failed', deliveryId: id });
+  assert.equal(await releaseAfterTurn(w.deps, w.sid, id), true);
+  assert.equal((await w.deliveries.inFlight(w.sid))?.id, b.value.deliveryId);
+  await ingestWorkerEvent(w.deps, w.sid, { kind: 'ended', outcome: 'done', deliveryId: id });
+  assert.equal(await releaseAfterTurn(w.deps, w.sid, id), false);
+  assert.equal(w.sent.length, 2);
+});
+
+test('unkeyed mixed-worker legacy unknown is normalized on ingest', async () => {
+  const w = await world();
+  await ingestWorkerEvent(w.deps, w.sid, { kind: 'ended', outcome: 'interrupted', reason: 'old outcome_unknown text' });
+  const rows = await w.deps.sessions.tail(w.sid, 10);
+  assert.deepEqual(rows.at(-1)?.event, { kind: 'ended', outcome: 'interrupted', reason: 'old outcome_unknown text', outcomeUnknown: true });
+});
+
+test('historically delivered unknown end does not prove the prior turn finished', async () => {
+  const w = await world();
+  w.online();
+  const a = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'A' });
+  assert.ok(a.ok && a.value.deliveryId);
+  await settle();
+  const delivery = await w.deliveries.byId(a.value.deliveryId);
+  assert.ok(delivery);
+  const session = await w.deps.sessions.byId(w.sid);
+  assert.ok(session);
+  const event = { kind: 'ended', outcome: 'interrupted', deliveryId: delivery.id, outcomeUnknown: true } as const;
+  await w.deps.sessions.append(applyEvent(session, event, 1001), event, 1001);
+  await w.deliveries.save({ ...delivery, state: 'delivered' });
+  assert.equal(await turnInProgress(w.deps, w.sid), true);
+});
+
 test('failed and upgrade readiness wait without attempts; explicit retry starts fresh', async () => {
   const w = await world({ queue: serialQueue() });
   w.online();

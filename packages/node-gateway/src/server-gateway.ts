@@ -55,7 +55,7 @@ import {
   wsStatus,
   linkEcho
 } from '@agent-hub/contract';
-import { DEFAULT_HEARTBEAT, allowsFor, decideTrial, initialLink, linkIsDead, reduceLink } from '@agent-hub/domain';
+import { DEFAULT_HEARTBEAT, allowsFor, decideTrial, initialLink, isUnknownOutcomeEnded, linkIsDead, reduceLink } from '@agent-hub/domain';
 import type { HeartbeatPolicy, LinkEvent, LinkHealth } from '@agent-hub/domain';
 import type {
   AgentAlias,
@@ -1264,7 +1264,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         return;
       }
       if (frame.type === 'event') {
-        if (frame.event.kind === 'ended' && frame.event.deliveryId) {
+        if (frame.event.kind === 'ended' && frame.event.deliveryId && !isUnknownOutcomeEnded(frame.event)) {
           const deliveryId = frame.event.deliveryId;
           const start = starts.get(frame.sessionId);
           // A reused ID is ambiguous: an unkeyed-generation ended event might

@@ -67,6 +67,8 @@ nextRetryAt(attempt, now) = now + min(2s · 2^(attempt-1), 60s) ± 10% 抖动
 - Hub 在发送前发现启动已换代，可以把未发送的消息退回队列。同一连接、同一启动和投递号的 Worker 拒收回执，则必须证明尚未交给适配器；当前启动上的这类拒收会暂停队列，队首可以显式重试（启动新一代运行时）或撤回。准备失败不伪造回合结束，断线或不确定是否已执行也不自动重送。
 - 部署先更新 Worker，再更新 Hub。若要从启用了就绪门的新 Hub 回滚到不支持它的旧 Hub，先停止接收新消息并核对在途回合，再重启相关 Worker 后恢复业务；不支持保留新协议的活跃运行时直接热回连旧 Hub。重启不会把没有结束证据的 `sending` 自动改回待发。
 - OpenCode 的当前 `session/prompt` 在同一连接上收到精确匹配的单条 `provider.invalid-request` 错误响应，且未换代或被中断时，可以用该投递号记录 `ended(failed)`，走原有回合收尾后放行后续消息；不重送失败的原消息。未能证明终态的适配器错误只记录安全提示，不释放投递占位。界面只在提示匹配当前在途投递时显示「暂未确认这一轮的结果」，不从等待时长推断失败。
+- 有投递号但无法确认结果时，适配器用 `diagnostic.uncertainDeliveryId` 标记对应的在途消息。它不是回合结束，不放行后续消息，也不触发重送；如果随后拿到同一投递的确切终态，才按正常规则收尾。
+- 没有投递号的旧回合可用 `ended(interrupted)` 携带 `outcomeUnknown: true` 表达「结果未知」。Hub 兼容旧 Worker 和旧记录的原因标记，无须重写历史；Web 只读结构化字段。即使这类未知记录带有投递号，也不能作为结束证据。
 
 **端口** `ports/delivery-queue.ts`：`enqueue / claimDue(now) / markDelivered / markFailed(nextAt, error) / cancel / pendingFor(sessionId)`。
 

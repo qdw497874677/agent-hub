@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { applyEvent, UNKNOWN_OUTCOME_MARKER, type Delivery, type JournalEntry, type Session, type SessionEvent, type AgentHandoffDeliveryEvidence, type AgentHandoffFirst, type AgentHandoffRecord, type AgentHandoffReservation, type AgentHandoffStartup, type AgentHandoffStore } from '@agent-hub/domain';
+import { applyEvent, isUnknownOutcomeEnded, UNKNOWN_OUTCOME_MARKER, type Delivery, type JournalEntry, type Session, type SessionEvent, type AgentHandoffDeliveryEvidence, type AgentHandoffFirst, type AgentHandoffRecord, type AgentHandoffReservation, type AgentHandoffStartup, type AgentHandoffStore } from '@agent-hub/domain';
 import { installAgentHandoffSourceIndexes, prepareAgentHandoffSource } from './agent-handoff-source.ts';
 import { toSession } from './mappers.ts';
 import { inTransaction } from './tx.ts';
@@ -173,10 +173,12 @@ export function createSqliteAgentHandoffs(db: DatabaseSync, saveSession: (sessio
             AND json_extract(payload,'$.outcome') IN ('done','failed','interrupted','stopped')
             AND (json_type(payload,'$.reason') IS NULL OR json_type(payload,'$.reason')='text')
             AND (json_type(payload,'$.reason') IS NULL OR instr(json_extract(payload,'$.reason'),?)=0)
+            AND json_type(payload,'$.outcomeUnknown') IS NULL
             AND (SELECT count(*) FROM json_each(payload) WHERE key='kind')=1
             AND (SELECT count(*) FROM json_each(payload) WHERE key='deliveryId')=1
             AND (SELECT count(*) FROM json_each(payload) WHERE key='outcome')=1
             AND (SELECT count(*) FROM json_each(payload) WHERE key='reason')<=1
+            AND (SELECT count(*) FROM json_each(payload) WHERE key='outcomeUnknown')=0
             THEN 1 ELSE 0 END AS valid
             FROM journal INDEXED BY handoff_first_ended
             WHERE session_id=? AND type='ended'
@@ -239,7 +241,7 @@ export function createSqliteAgentHandoffs(db: DatabaseSync, saveSession: (sessio
             THEN json_extract(payload, '$.deliveryId') = ? ELSE 0 END LIMIT 2`);
         for (const entry of entries) {
           const event = entry.event;
-          if (event.kind !== 'ended' || !small(event.deliveryId ?? '') || used.has(event.deliveryId!)) continue;
+          if (event.kind !== 'ended' || isUnknownOutcomeEnded(event) || !small(event.deliveryId ?? '') || used.has(event.deliveryId!)) continue;
           const id = event.deliveryId!;
           const matches = db.prepare("SELECT seq FROM message_delivery WHERE id=? AND session_id=? AND kind='prompt' AND state='delivered' LIMIT 2").all(id, sourceSessionId) as { seq: number }[];
           if (matches.length !== 1 || !Number.isSafeInteger(matches[0]!.seq) || !prompts.has(matches[0]!.seq) || matches[0]!.seq >= entry.seq) continue;

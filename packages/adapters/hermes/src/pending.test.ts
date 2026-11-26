@@ -253,7 +253,7 @@ test('状态查询确认终态也带 deliveryId：流断了但 GET 说 completed
   }
 });
 
-test('结果未知：ended 不带 deliveryId，且本地仍挡住下一句', async () => {
+test('结果未知：精确送达只发诊断，本地仍挡住下一句', async () => {
   const home = await mkdtemp(join(tmpdir(), 'hermes-untagged-'));
   const hermes = await fakeHermes((req, res) => {
     if (req.method === 'POST' && req.url === '/v1/runs') {
@@ -274,8 +274,8 @@ test('结果未知：ended 不带 deliveryId，且本地仍挡住下一句', asy
   try {
     const s = session(hermes.baseUrl, home);
     assert.equal((await s.prompt({ text: 'hi', parts: [], deliveryId: 'delivery-3' })).ok, true);
-    const ended = (await take(s.events(), (e) => e.kind === 'ended')).find((e) => e.kind === 'ended');
-    assert.deepEqual(ended, { kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON });
+    const seen = await take(s.events(), (e) => e.kind === 'diagnostic' && e.uncertainDeliveryId === 'delivery-3');
+    assert.deepEqual(seen, [{ kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId: 'delivery-3' }]);
     // 结局未知不等于停了：这一轮的记录还在，下一句也不能被放进来（fail closed）。
     assert.equal((await readPending(home))?.runId, 'r3');
     const next = await s.prompt({ text: 'again', parts: [] });
@@ -350,8 +350,8 @@ test('对账结果未知：记录留着，本地闸门挡住下一句', async ()
   try {
     const s = session(hermes.baseUrl, home);
     await s.reconcile();
-    const seen = await take(s.events(), (e) => e.kind === 'ended');
-    assert.deepEqual(seen.find((e) => e.kind === 'ended'), { kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON });
+    const seen = await take(s.events(), (e) => e.kind === 'diagnostic');
+    assert.deepEqual(seen, [{ kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId: 'delivery-9' }]);
     const kept = await readPending(home);
     assert.equal(kept?.runId, 'r9');
     assert.equal(kept?.key, 'k9');
@@ -361,6 +361,160 @@ test('对账结果未知：记录留着，本地闸门挡住下一句', async ()
     assert.equal(next.ok ? '' : next.error.code, 'conflict');
     assert.equal((await readPending(home))?.runId, 'r9', '未知结局不能被一次失败的提交删掉');
   } finally {
+    await hermes.close();
+  }
+});
+
+test('对账未取得 run id 的精确送达：只报告未知，保留提交占位，不自动提交', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hermes-reconcile-held-'));
+  const pending = { key: 'held-key', inputHash: 'held-hash', runId: null, at: 1, deliveryId: 'held-delivery' };
+  await writeFile(join(home, PENDING_FILE), JSON.stringify(pending));
+  let requests = 0;
+  const hermes = await fakeHermes((_req, res) => { requests++; res.writeHead(500).end(); });
+  try {
+    const s = session(hermes.baseUrl, home);
+    await s.reconcile();
+    assert.deepEqual(await take(s.events(), (e) => e.kind === 'diagnostic'), [
+      { kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId: 'held-delivery' }
+    ]);
+    assert.deepEqual(await readPending(home), pending);
+    const other = await s.prompt({ text: 'different', parts: [], deliveryId: 'other' });
+    assert.equal(other.ok ? '' : other.error.code, 'conflict');
+    await s.interrupt();
+    assert.deepEqual(await readPending(home), pending);
+    assert.equal(requests, 0);
+  } finally {
+    await hermes.close();
+  }
+});
+
+test('对账不认识的状态保留记录和闸门，按原送达归属报告未知', async () => {
+  for (const [statusBody, deliveryId] of [
+    ['{"status":"new-status"}', 'original'],
+    ['{"status":null}', undefined]
+  ] as const) {
+    const home = await mkdtemp(join(tmpdir(), 'hermes-reconcile-novel-'));
+    const pending = { key: 'k', inputHash: 'h', runId: 'r', at: 1, ...(deliveryId ? { deliveryId } : {}) };
+    await writeFile(join(home, PENDING_FILE), JSON.stringify(pending));
+    const requests: string[] = [];
+    const hermes = await fakeHermes((req, res) => {
+      requests.push(`${req.method} ${req.url}`);
+      res.writeHead(200, { 'content-type': 'application/json' }).end(statusBody);
+    });
+    try {
+      const s = session(hermes.baseUrl, home);
+      await s.reconcile();
+      const seen = await take(s.events(), (e) => e.kind === (deliveryId ? 'diagnostic' : 'ended'));
+      assert.deepEqual(seen, deliveryId
+        ? [{ kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId: deliveryId }]
+        : [{ kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON, outcomeUnknown: true }]);
+      assert.deepEqual(await readPending(home), pending);
+      const next = await s.prompt({ text: 'different', parts: [], deliveryId: 'other' });
+      assert.equal(next.ok ? '' : next.error.code, 'conflict');
+      assert.deepEqual(requests, ['GET /v1/runs/r']);
+    } finally {
+      await hermes.close();
+    }
+  }
+});
+
+test('对账查不到状态：精确报告未知，重启后真实终态仍归属原送达', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hermes-reconcile-missing-'));
+  await writeFile(join(home, PENDING_FILE), JSON.stringify({ key: 'k', inputHash: 'h', runId: 'r', at: 1, deliveryId: 'original' }));
+  let available = false;
+  let posts = 0;
+  const hermes = await fakeHermes((req, res) => {
+    if (req.method === 'POST') posts++;
+    if (!available) return res.writeHead(503).end();
+    return res.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"completed"}');
+  });
+  try {
+    const first = session(hermes.baseUrl, home);
+    await first.reconcile();
+    assert.deepEqual(await take(first.events(), (e) => e.kind === 'diagnostic'), [
+      { kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId: 'original' }
+    ]);
+    assert.equal((await first.prompt({ text: 'wrong turn', parts: [], deliveryId: 'other' })).ok, false);
+    assert.equal(posts, 0);
+    available = true;
+    const resumed = session(hermes.baseUrl, home);
+    await resumed.reconcile();
+    assert.deepEqual(await take(resumed.events(), (e) => e.kind === 'ended'), [
+      { kind: 'ended', outcome: 'done', deliveryId: 'original' }
+    ]);
+    assert.equal(await readPending(home), null);
+  } finally {
+    await hermes.close();
+  }
+});
+
+test('没有送达 id 的未知结果保留旧标记并带结构化字段', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hermes-unknown-legacy-'));
+  await writeFile(join(home, PENDING_FILE), JSON.stringify({ key: 'k', inputHash: 'h', runId: 'r', at: 1 }));
+  const hermes = await fakeHermes((_req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"unknown"}'));
+  try {
+    const s = session(hermes.baseUrl, home);
+    await s.reconcile();
+    assert.deepEqual(await take(s.events(), (e) => e.kind === 'ended'), [
+      { kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON, outcomeUnknown: true }
+    ]);
+    assert.equal((await readPending(home))?.runId, 'r');
+  } finally {
+    await hermes.close();
+  }
+});
+
+test('流返回 unknown 且没有送达 id 时仍能给旧 Hub 展示', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hermes-stream-legacy-'));
+  const hermes = await fakeHermes((req, res) => {
+    if (req.method === 'POST') return res.writeHead(202, { 'content-type': 'application/json' }).end('{"run_id":"r","status":"started"}');
+    if (req.url?.endsWith('/events')) return res.writeHead(200, { 'content-type': 'text/event-stream' }).end();
+    return res.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"unknown"}');
+  });
+  try {
+    const s = session(hermes.baseUrl, home);
+    assert.equal((await s.prompt({ text: 'one', parts: [] })).ok, true);
+    assert.deepEqual(await take(s.events(), (e) => e.kind === 'ended'), [
+      { kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON, outcomeUnknown: true }
+    ]);
+    assert.equal((await readPending(home))?.runId, 'r');
+  } finally {
+    await hermes.close();
+  }
+});
+
+test('事件流重连耗尽：精确未知诊断，不结束或重新提交', async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'hermes-exhausted-'));
+  let streams = 0;
+  let posts = 0;
+  const hermes = await fakeHermes((req, res) => {
+    if (req.method === 'POST') {
+      posts++;
+      return res.writeHead(202, { 'content-type': 'application/json' }).end('{"run_id":"r","status":"started"}');
+    }
+    if (req.url?.endsWith('/events')) {
+      streams++;
+      return res.writeHead(200, { 'content-type': 'text/event-stream' }).end();
+    }
+    return res.writeHead(503).end();
+  });
+  const originalTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+    if (ms !== undefined && ms >= 1000 && ms <= 10000) return originalTimeout(callback, 0, ...args);
+    return originalTimeout(callback, ms, ...args);
+  }) as typeof setTimeout);
+  try {
+    const s = session(hermes.baseUrl, home);
+    assert.equal((await s.prompt({ text: 'one', parts: [], deliveryId: 'd' })).ok, true);
+    assert.deepEqual(await take(s.events(), (e) => e.kind === 'diagnostic'), [
+      { kind: 'diagnostic', level: 'warn', text: '暂未确认这一轮的结果', uncertainDeliveryId: 'd' }
+    ]);
+    assert.equal(streams, 20);
+    assert.equal(posts, 1);
+    assert.equal((await readPending(home))?.deliveryId, 'd');
+    assert.equal((await s.prompt({ text: 'other', parts: [], deliveryId: 'other' })).ok, false);
+  } finally {
+    t.mock.restoreAll();
     await hermes.close();
   }
 });
@@ -431,7 +585,7 @@ test('对账未知后点停：只有查实终态才收掉；停失败 / 状态�
   try {
     const s = session(hermes.baseUrl, home);
     await s.reconcile();
-    await take(s.events(), (e) => e.kind === 'ended');
+    await take(s.events(), (e) => e.kind === 'diagnostic' && e.uncertainDeliveryId === 'delivery-11');
 
     // stop 失败：查状态还是 unknown → 记录和闸门都留着
     await s.interrupt();

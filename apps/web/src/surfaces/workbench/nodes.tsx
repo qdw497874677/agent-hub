@@ -27,6 +27,7 @@ import type { PendingPrompt } from '../../atoms/pending-prompt.ts';
 import { heldPromptSeqs, markQueued } from '../../atoms/prompt-delivery.ts';
 import { PendingPrompts, usePromptDelivery } from '../../atoms/prompt-delivery.tsx';
 import { useDeliveries } from '../../atoms/delivery-note.tsx';
+import { uncertainSending } from '../../atoms/turn-hint.ts';
 import { NEXT_STATUS } from './task-status.ts';
 import { TaskBadge } from './task-detail.tsx';
 import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
@@ -121,12 +122,14 @@ function CardResizer({ kind, selected, onResized }: { kind: CardKind; selected: 
 function BlockView({
   block,
   showAuthor,
-  queued = false
+  queued = false,
+  uncertain = false
 }: {
   block: LiveSession['blocks'][number];
   showAuthor: boolean;
   /** 这条用户消息还在等（排队 / 发送中 / 未送达）：淡一点，并在右下角点一个小圆点。 */
   queued?: boolean;
+  uncertain?: boolean;
 }) {
   if (block.kind === 'thinking') return null;
   if (block.kind === 'prompt') {
@@ -145,14 +148,14 @@ function BlockView({
           </p>
         ) : null}
         {names.length > 0 ? <p className="max-w-[85%] truncate font-mono text-meta text-tertiary">{names.join(' · ')}</p> : null}
-        {queued ? <CardQueuedDot /> : null}
+        {uncertain ? <p className="text-meta text-ochre" data-testid="card-delivery-uncertain">暂未确认这一轮的结果</p> : queued ? <CardQueuedDot /> : null}
       </div>
     );
   }
   if (block.kind === 'unknown') {
     return (
-      <p role="status" className="whitespace-pre-wrap border-l-2 border-ochre bg-ochre/10 px-2 py-1 text-meta text-ochre">
-        这一轮结果不确定，打开会话决定是否重发
+      <p role="status" data-testid="card-msg-unknown" className="whitespace-pre-wrap border-l-2 border-ochre bg-ochre/10 px-2 py-1 text-meta text-ochre">
+        这一轮结果待确认。先核对工作目录和会话记录，再决定下一步。
       </p>
     );
   }
@@ -335,6 +338,9 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   // 排队 / 发送中 / 未送达的用户消息只在原处淡一点、多一个圆点，不搬家：
   // 以前它们被抽到 composer 上方的独立区块，一条消息会来回跳三次。
   const timeline = cardBlocks(markQueued(blocks, heldPromptSeqs(deliveriesBySeq)));
+  const uncertainSeqs = new Set([...deliveriesBySeq.values()]
+    .filter((item) => uncertainSending(item, live?.uncertainDeliveryIds ?? []))
+    .map((item) => item.seq));
 
   async function send(text: string): Promise<void> {
     setBusy(true);
@@ -570,7 +576,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             </p>
           ) : (
             timeline.map((block, index) => (
-              <BlockView key={index} block={block} showAuthor={showAuthor} queued={block.queued === true} />
+              <BlockView key={index} block={block} showAuthor={showAuthor} queued={block.queued === true} uncertain={block.kind === 'prompt' && uncertainSeqs.has(block.seq)} />
             ))
           )}
           {/* 还没写进对话的消息就是日志末尾的普通一行：发完立刻看得到「已收到 · 排队中」还是「未送达」。 */}

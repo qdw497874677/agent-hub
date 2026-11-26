@@ -208,6 +208,16 @@ test('ended：同会话 + 精确 deliveryId + seq > 来源，取最早一条；�
   }
 });
 
+test('ended structured and malformed uncertainty remain conservative without exposing reason', () => {
+  const f = openFixture();
+  for (const [seq, outcomeUnknown] of [[2, true], [3, false], [4, null]] as const) {
+    f.journal('s', seq, 'ended', JSON.stringify({ kind: 'ended', outcome: 'done', deliveryId: 'd', outcomeUnknown, reason: 'private' }), seq * 10);
+    const result = f.observe.ended('s', 'd', seq - 1);
+    assert.deepEqual(result, { seq, at: seq * 10, outcome: 'done', unknownOutcome: true });
+    assert.doesNotMatch(JSON.stringify(result), /private/);
+  }
+});
+
 test('promptActor：同会话和 delivery seq 精确关联，脏数据及旧数据不猜', () => {
   const f = openFixture();
   f.project('p1'); f.task('t1', 'p1'); f.session('s1', 't1'); f.session('s2', 't1');

@@ -92,6 +92,8 @@ export type SessionEvent =
       readonly kind: 'ended';
       readonly outcome: 'done' | 'stopped' | 'interrupted' | 'failed';
       readonly reason?: string;
+      /** Display-only historical uncertainty; never proof that a delivery ended. */
+      readonly outcomeUnknown?: true;
       /**
        * 这条 ended 属于哪一条 prompt 送达（送出时带下去的 deliveryId）。
        *

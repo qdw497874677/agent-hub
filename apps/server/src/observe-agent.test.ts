@@ -205,9 +205,13 @@ test('unknown outcome 显示结果未知，不当作成功或失败', async () =
   const { reader } = world({
     ends: { d1: { seq: 2, at: NOW + 1_000, outcome: 'done', unknownOutcome: true } }
   });
-  const end = endNode(await reader.get('d1', subject()));
+  const trace = await reader.get('d1', subject());
+  const end = endNode(trace);
   assert.equal(end?.state, 'unknown');
   assert.equal(end?.stateLabel, '结果未知');
+  assert.equal(end?.endedAt, null);
+  assert.equal(headNode(trace)?.endedAt, null);
+  assert.deepEqual(headNode(trace)?.links, [{ to: 'end:d1', label: '同一送达的待确认记录' }]);
   assert.ok(end?.attrs.some((attr) => attr.key === '说明' && attr.value.includes('未知')));
 });
 

@@ -91,6 +91,9 @@ test('尾部裁决骨架：ended 收尾，未开局的 prompt 跳过，其余 pr
     turnVerdictInTail({ entries, truncated }, (item) => skipped.has(item.seq));
 
   assert.equal(verdict([entry(1, { kind: 'prompt', text: 'a' }), entry(2, { kind: 'ended', outcome: 'done' })]), 'idle');
+  const uncertain = entry(2, { kind: 'ended', outcome: 'interrupted', deliveryId: 'a', outcomeUnknown: true });
+  assert.equal(verdict([entry(1, { kind: 'prompt', text: 'a' }), uncertain]), 'unknown');
+  assert.equal(verdict([uncertain, entry(3, { kind: 'ended', outcome: 'done', deliveryId: 'a' })]), 'idle');
   assert.equal(verdict([entry(1, { kind: 'prompt', text: 'a' })]), 'open');
   assert.equal(
     verdict([entry(1, { kind: 'prompt', text: 'a' }), entry(2, { kind: 'ended', outcome: 'done' }), entry(3, { kind: 'prompt', text: 'queued' })], new Set([3])),

@@ -35,8 +35,9 @@ import { createHermesEventMapper, type HermesControl } from './map-event.ts';
 export const REQUIRED_FEATURES = ['run_submission', 'run_status', 'run_events_sse', 'run_stop'] as const;
 
 /** 澄清问题的固定回答：hub 里没有人在线答 Hermes 的追问（设计文档 §14.1，保守选择）。 */
-/** 结果未知的固定原因文字：界面认它给「重发 / 不用了」（outcome_unknown 是 Hermes 的说法）。 */
+/** 旧 Hub 依靠此文字展示未归属的结果未知；新 Hub 使用 outcomeUnknown。 */
 export const UNKNOWN_OUTCOME_REASON = 'Hermes 这一轮的结果未知（outcome_unknown）';
+const UNKNOWN_OUTCOME_WARNING = '暂未确认这一轮的结果';
 
 /** Hermes 明确报出的终态：只有这些能证明远端这一轮停了。 */
 const TERMINAL_RUN_STATUSES = ['completed', 'failed', 'cancelled', 'interrupted'] as const;
@@ -571,11 +572,20 @@ export class HermesSession implements RuntimeSession {
     return next;
   }
 
+  private reportUnknown(deliveryId?: string): void {
+    if (deliveryId) {
+      this.queue.push({ kind: 'diagnostic', level: 'warn', text: UNKNOWN_OUTCOME_WARNING, uncertainDeliveryId: deliveryId });
+    } else {
+      // 旧 Hub 仍需标记文字，新 Hub 不再依赖它判断状态。
+      this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON, outcomeUnknown: true });
+    }
+  }
+
   /**
    * 开会话时对账：上次 worker 停掉前有一轮没收尾（记了 run_id），查 Hermes 说清结局。
    * 还在跑 → 接着跟；结果未知 → 交给人，记录留着、本地闸门挡着（点停也要查实终态才收）；
    * 明确终态 → 有 deliveryId 就补一条带 id 的 ended（精确收掉 hub 那条送达），老记录只记诊断。
-   * 只提交了、没拿到 run_id 的不动（但占住提交位）：下次发同一条会沿用同一个幂等键。
+   * 只提交了、没拿到 run_id 的保留提交位，不自动重发；若以后重发同一条则沿用幂等键。
    */
   async reconcile(): Promise<void> {
     if (!this.home) return;
@@ -583,7 +593,8 @@ export class HermesSession implements RuntimeSession {
     if (!pending) return;
     if (!pending.runId) {
       this.submission = { key: pending.key, inputHash: pending.inputHash, ...(pending.deliveryId ? { deliveryId: pending.deliveryId } : {}) };
-      this.queue.push({ kind: 'diagnostic', level: 'warn', text: 'worker 重启前只提交了一半，不确定 Hermes 收没收到；只放同一条重发。' });
+      if (pending.deliveryId) this.reportUnknown(pending.deliveryId);
+      else this.queue.push({ kind: 'diagnostic', level: 'warn', text: 'worker 重启前只提交了一半，不确定 Hermes 收没收到；只放同一条重发。' });
       return;
     }
     const status = await this.status(pending.runId);
@@ -594,15 +605,13 @@ export class HermesSession implements RuntimeSession {
       void this.follow(pending.runId, abort, pending.deliveryId);
       return;
     }
-    if (!status || status.status === 'unknown') {
-      // 结果未知不证明停了：记录留着（下次还能再查），用本地闸门挡住下一句；用户只能重发，
-      // 点停也要等状态查询确认同一个 run 的终态才收。
+    if (!status || !(TERMINAL_RUN_STATUSES as readonly string[]).includes(status.status)) {
+      // 未知或不认识的状态不证明停了：保留记录和闸门，点停也要查实同一个 run 的终态。
       this.run = { id: pending.runId, abort: new AbortController(), following: false };
-      this.queue.push({ kind: 'diagnostic', level: 'warn', text: 'worker 重启前提交的一轮 Hermes，结果不确定；没有自动重试，请看工作区后决定是否重发。' });
-      this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON });
+      this.reportUnknown(pending.deliveryId);
       return;
     }
-    if (pending.deliveryId && (TERMINAL_RUN_STATUSES as readonly string[]).includes(status.status)) {
+    if (pending.deliveryId) {
       const mapped = createHermesEventMapper()({ event: `run.${status.status}`, ...(status.error ? { error: status.error } : {}) });
       for (const event of mapped.events) this.queue.push(tagEnded(event, pending.deliveryId));
     } else {
@@ -616,7 +625,7 @@ export class HermesSession implements RuntimeSession {
    *
    * `terminal` 只认 Hermes 明确报出的终态（SSE 终态帧 / 状态查询确认 completed、failed、
    * cancelled、interrupted）；`unknown` 是「查不到 / 结果未知 / 事件流耗尽」，它**不证明**
-   * 远端那一轮停了：这时 ended 不带 deliveryId，并且继续占着 `this.run` 的本地闸门。
+   * 远端那一轮停了：按送达归属报告不确定性，并且继续占着 `this.run` 的本地闸门。
    */
   private async follow(runId: string, abort: AbortController, deliveryId?: string, fresh = false): Promise<void> {
     const map = createHermesEventMapper();
@@ -629,7 +638,7 @@ export class HermesSession implements RuntimeSession {
           this.gateway.endpoint,
           runId,
           (raw) => {
-            if (terminal || unknown) return;
+            if (terminal || unknown || abort.signal.aborted || this.run?.abort !== abort) return;
             const mapped = map(raw);
             // 先放开「正在跑」再推终态：收到 ended 就马上发下一轮，不该撞上「上一轮还没结束」
             if (mapped.terminal && this.run?.id === runId) this.run = null;
@@ -656,12 +665,12 @@ export class HermesSession implements RuntimeSession {
         if (abort.signal.aborted) break;
         this.log(`Hermes 事件流断了：${(error as Error).message}`);
       }
-      if (terminal || unknown || abort.signal.aborted) break;
+      if (terminal || unknown || abort.signal.aborted || this.run?.abort !== abort) break;
       const status = await this.status(runId);
+      if (abort.signal.aborted || this.run?.abort !== abort) break;
       if (status?.status === 'unknown') {
         // D3：结果未知不自动处理（不重放、不当成功），交给人；也不能当成「已停」的证据。
-        this.queue.push({ kind: 'diagnostic', level: 'warn', text: 'Hermes 重启过，这一轮是否执行完不确定；没有自动重试，请看工作区后决定是否重发。' });
-        this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON });
+        this.reportUnknown(deliveryId);
         unknown = true;
         break;
       }
@@ -676,17 +685,19 @@ export class HermesSession implements RuntimeSession {
       }
       await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 10_000)));
     }
-    if (!terminal && !unknown && !abort.signal.aborted) {
-      // 重连用尽也没拿到终态：不证明这一轮停了，ended 不带 id。
-      this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: '连不上 Hermes 的事件流' });
+    if (!terminal && !unknown && !abort.signal.aborted && this.run?.abort === abort) {
+      // 重连用尽也没拿到终态：不证明这一轮停了。
+      this.reportUnknown(deliveryId);
       unknown = true;
     }
-    // 有了结局（包括结果未知、已经交给人）就不用再对账；连不上 / 被 dispose 的留着，下次开会话再查
-    this.withdrawRun(runId);
+    // 旧流的迟到回调不能影响接替它的另一轮。
+    if (!terminal && this.run?.abort !== abort) return;
+    // 跟流结束后撤掉本轮批准；只有确认终态才清 pending，未知状态留待下次对账。
+    if (!terminal) this.withdrawRun(runId);
     if (terminal) await this.clearPendingFor(runId);
     // 只有确认的终态（或主动 dispose）才放开「上一轮还没结束」；未知结局继续 fail closed。
     if ((terminal || abort.signal.aborted) && this.run?.id === runId) this.run = null;
-    // 流已经跟完了，但结局未知：留下本地闸门，等用户重发；点停也要先查实终态才收。
+    // 流已经跟完但结局未知：留下本地闸门；点停也要先查实终态才收。
     else if (unknown && this.run?.id === runId) this.run.following = false;
   }
 

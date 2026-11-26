@@ -234,7 +234,7 @@ export function createRewindService(deps: RewindDeps) {
         if (!delivery || delivery.id !== deliveryId || delivery.sessionId !== sessionId || delivery.kind !== 'prompt' || !Number.isSafeInteger(delivery.seq) || delivery.seq < 1) return;
         const events = await deps.sessions.eventsAfter(asSessionId(sessionId), (delivery.seq - 1) as never);
         if (!events.some((entry) => entry.seq === delivery.seq && entry.event.kind === 'prompt')) return;
-        if (delivery.state !== 'sending' && (delivery.state !== 'delivered' || !events.some((entry) => entry.seq > delivery.seq && entry.event.kind === 'ended' && entry.event.deliveryId === deliveryId))) return;
+        if (delivery.state !== 'sending' && (delivery.state !== 'delivered' || !(await findDeliveryEnded(deps, delivery)))) return;
         await deps.turnRefs.record(sessionId, delivery.seq, turnRef, deliveryId);
       });
     },

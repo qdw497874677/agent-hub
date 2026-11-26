@@ -14015,6 +14015,12 @@
                                   "reason": {
                                     "type": "string"
                                   },
+                                  "outcomeUnknown": {
+                                    "type": "boolean",
+                                    "enum": [
+                                      true
+                                    ]
+                                  },
                                   "deliveryId": {
                                     "type": "string",
                                     "minLength": 1,

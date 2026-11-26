@@ -16,7 +16,7 @@
  * 各钩子自身仍是幂等的（`SessionInbox.end` 的约定）；这里的去重是少做无用功，
  * 正确性不押在去重上。
  */
-import type { Deps, SessionId } from '@agent-hub/domain';
+import { isUnknownOutcomeEnded, type Deps, type SessionId } from '@agent-hub/domain';
 
 export type TurnOutcome = 'done' | 'stopped' | 'interrupted' | 'failed';
 
@@ -189,7 +189,7 @@ export async function finishFromJournalTail(
 ): Promise<boolean> {
   await deps.queue.run(sessionId, async () => undefined);
   const tail = (await deps.sessions.tail(sessionId, 1))[0];
-  if (!tail || tail.event.kind !== 'ended') return false;
+  if (!tail || tail.event.kind !== 'ended' || isUnknownOutcomeEnded(tail.event)) return false;
   return finisher.finish({
     sessionId,
     seq: tail.seq,

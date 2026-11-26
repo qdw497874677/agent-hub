@@ -35,18 +35,30 @@ for (const width of [1280, 390]) {
         const result = await route.fetch();
         const body = await result.json();
         body.previews[session.id] = entries();
-        body.sessions = body.sessions.map((s: any) => s.id === session.id ? { ...s, status: 'running', lastSeq: 4 } : s);
+        body.sessions = body.sessions.map((s: any) => s.id === session.id ? { ...s, status: 'running', lastSeq: entries().length } : s);
         await route.fulfill({ response: result, json: body });
       });
-      await page.route(new RegExp(`/api/sessions/${session.id}/events(?:\\?.*)?$`), (route) => route.fulfill({ json: entries() }));
+      await page.route(new RegExp(`/api/sessions/${session.id}/events(?:\\?.*)?$`), (route) => {
+        const after = Number(new URL(route.request().url()).searchParams.get('after') ?? 0);
+        return route.fulfill({ json: entries().filter((entry) => entry.seq > after) });
+      });
       await page.route(`**/api/sessions/${session.id}/deliveries`, (route) => route.fulfill({ json: deliveries() }));
       await page.addInitScript(() => {
         class FakeSource {
-          readyState = 1;
+          static CLOSED = 2;
+          readyState = 0;
           listeners: Record<string, (event: any) => void> = {};
-          constructor() { (window as any).emitTestFrame = (frame: unknown) => this.listeners.frame?.({ data: JSON.stringify(frame) }); }
+          constructor() {
+            (window as any).emitTestFrame = (frame: unknown) => this.listeners.frame?.({ data: JSON.stringify(frame) });
+            queueMicrotask(() => {
+              if (this.readyState === FakeSource.CLOSED) return;
+              this.readyState = 1;
+              this.listeners.open?.({});
+              (window as any).testStreamOpened = true;
+            });
+          }
           addEventListener(name: string, callback: (event: any) => void) { this.listeners[name] = callback; }
-          close() {}
+          close() { this.readyState = FakeSource.CLOSED; }
         }
         (window as any).EventSource = FakeSource;
       });
@@ -55,7 +67,10 @@ for (const width of [1280, 390]) {
       const b = () => page.getByTestId('msg-user').filter({ hasText: '第二轮 B' });
       await open();
       await expect(page.getByTestId('turn-hint')).toHaveText('等待模型首次回应');
-      await page.evaluate((sessionId) => (window as any).emitTestFrame({ sessionId, seq: 5, status: 'running', event: { kind: 'diagnostic', level: 'error', text: 'SECRET RAW DIAGNOSTIC', uncertainDeliveryId: 'a' } }), session.id);
+      await page.waitForFunction(() => (window as any).testStreamOpened === true);
+      await expect(page.getByTestId('session-history-state')).toHaveCount(0);
+      await expect(page.getByTestId('session-sync-state')).toHaveCount(0);
+      await page.evaluate((sessionId) => (window as any).emitTestFrame({ sessionId, seq: 2, status: 'running', event: { kind: 'diagnostic', level: 'error', text: 'SECRET RAW DIAGNOSTIC', uncertainDeliveryId: 'a' } }), session.id);
       await expect(page.getByTestId('turn-hint')).toHaveText('暂未确认这一轮的结果');
       mode = 'unrelated';
       await page.reload();
@@ -65,8 +80,13 @@ for (const width of [1280, 390]) {
       await expect(page.getByTestId('turn-hint')).toHaveText('暂未确认这一轮的结果');
       await expect(page.getByText('SECRET RAW DIAGNOSTIC')).toHaveCount(0);
       await expect(page.getByRole('button', { name: '立即重试' })).toHaveCount(0);
+      await page.goto(`/#/p/${project.id}/canvas`);
+      const canvasCard = page.locator('.react-flow__node-session');
+      await expect(canvasCard.getByTestId('card-delivery-uncertain')).toHaveText('暂未确认这一轮的结果');
+      await expect(canvasCard.getByTestId('card-msg-unknown')).toHaveCount(0);
+      await expect(canvasCard.getByRole('button', { name: '立即重试' })).toHaveCount(0);
       mode = 'queued';
-      await page.reload();
+      await open();
       await expect(a().getByTestId('delivery-note')).toContainText('暂未确认这一轮的结果');
       await expect(b().getByTestId('delivery-note')).toContainText('已排队 · 等待上一轮状态确认');
       await expect(b().getByRole('button', { name: '撤回' })).toBeVisible();
@@ -79,6 +99,7 @@ for (const width of [1280, 390]) {
       mode = 'ended';
       await page.reload();
       await expect(b()).toBeVisible();
+      await expect(page.getByTestId('turn-hint')).toHaveText('等待模型首次回应');
       await expect(page.getByText('暂未确认这一轮的结果')).toHaveCount(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });

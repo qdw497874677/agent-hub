@@ -97,7 +97,7 @@ import type { ServerGateway } from '@agent-hub/node-gateway';
 import { createGitWorkspace, createLocalFs, readBuildInfo, createWorkspaceBrowser, offlineWorkspaceBrowser } from '@agent-hub/node-gateway';
 import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
 import type { AccountDeps } from '@agent-hub/domain';
-import { componentJobFinished, createAccessPolicy, isFileAssetKind, loadResourcePolicy } from '@agent-hub/domain';
+import { componentJobFinished, createAccessPolicy, isFileAssetKind, isUnknownOutcomeEnded, loadResourcePolicy } from '@agent-hub/domain';
 
 import { backupArgs, runBackup } from './backup.ts';
 import { createTaskGate } from './task-gate.ts';
@@ -473,7 +473,9 @@ const finishTurn = (
 // `ended` 帧里的 seq / outcome / reason / deliveryId 都是落盘时定下的：直接当作回合身份交给总闸。
 // `idle` 状态帧走 finishFromJournalTail，只有 journal 末尾确实是 ended 才收尾。
 hub.stream.subscribe((frame) => {
-  if (frame.event?.kind === 'ended') finishTurn(frame.sessionId, frame.seq, frame.event.outcome, frame.event.reason, frame.event.deliveryId);
+  if (frame.event?.kind === 'ended' && !isUnknownOutcomeEnded(frame.event)) {
+    finishTurn(frame.sessionId, frame.seq, frame.event.outcome, frame.event.reason, frame.event.deliveryId);
+  }
 });
 // 重启不重发在途消息；只有 journal 中属于同一投递的结束证据才能收尾。
 void reconcileSendingDeliveries({ ...deps, deliveries: store.deliveries })

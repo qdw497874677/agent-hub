@@ -71,6 +71,7 @@ test('historical evidence is exact and cancellation is not a no-send receipt', (
     f => { f.prompt(1, 'a'); f.event(2, 'ended', { kind: 'ended', outcome: 'done' }); },
     f => { f.end(1, 'a'); f.prompt(2, 'a'); },
     f => { f.prompt(1, 'a'); f.event(2, 'ended', { kind: 'ended', deliveryId: 'a', outcome: 'interrupted', reason: 'outcome_unknown' }); },
+    ...[true, false, null].map(outcomeUnknown => (f: ReturnType<typeof fixture>) => { f.prompt(1, 'a'); f.event(2, 'ended', { kind: 'ended', deliveryId: 'a', outcome: 'done', outcomeUnknown }); }),
     f => { f.event(1, 'prompt', '{'); f.delivery('a', 1); f.end(2, 'a'); },
     f => { f.event(1, 'prompt', { kind: 'prompt' }); f.delivery('a', 1, 'cancelled', 'prompt', 0); },
     f => { f.prompt(1, 'a'); f.end(2, 'a'); f.event(3, 'ended', '{'); },

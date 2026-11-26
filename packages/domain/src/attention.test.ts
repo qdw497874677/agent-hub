@@ -75,6 +75,9 @@ test('结果未知标记：ended · interrupted 且原因里带 outcome_unknown 
   assert.equal(isUnknownOutcomeEnded({ kind: 'ended', outcome: 'interrupted', reason: 'worker 断了' }), false);
   assert.equal(isUnknownOutcomeEnded({ kind: 'ended', outcome: 'interrupted' }), false);
   assert.equal(isUnknownOutcomeEnded({ kind: 'ended', outcome: 'failed', reason: 'outcome_unknown' }), false);
+  assert.equal(isUnknownOutcomeEnded({ kind: 'ended', outcome: 'interrupted', outcomeUnknown: true }), true);
+  assert.equal(isUnknownOutcomeEnded({ kind: 'ended', outcome: 'done', outcomeUnknown: true }), true);
+  assert.equal(isUnknownOutcomeEnded({ kind: 'ended', outcome: 'done', outcomeUnknown: false } as never), true);
   assert.equal(isUnknownOutcomeEnded({ kind: 'text', delta: 'outcome_unknown' }), false);
 });
 

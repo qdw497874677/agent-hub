@@ -1,4 +1,4 @@
-import { MODEL_PINNED } from '@agent-hub/domain';
+import { MODEL_PINNED, isUnknownOutcomeEnded } from '@agent-hub/domain';
 import type {
   WorkLogRepository,
   Artifact,
@@ -311,9 +311,11 @@ export function toArtifact(row: Row): Artifact {
 }
 
 export function toJournalEntry(row: Row): JournalEntry {
+  const event = JSON.parse(str(row, 'payload')) as SessionEvent;
   return {
     seq: num(row, 'seq'),
-    event: JSON.parse(str(row, 'payload')) as SessionEvent,
+    event: event.kind === 'ended' && isUnknownOutcomeEnded(event) && event.outcomeUnknown === undefined
+      ? { ...event, outcomeUnknown: true } : event,
     at: num(row, 'at'),
     ...(row['turn'] === undefined || row['turn'] === null ? {} : { turn: num(row, 'turn') })
   };

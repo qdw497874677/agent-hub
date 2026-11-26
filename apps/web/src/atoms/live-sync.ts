@@ -1,5 +1,5 @@
 import type { JournalEntryDto, SessionDto } from '@agent-hub/contract';
-import { applyFrame, awaitingAfter, catchUp, seedLive, withFullHistory, type Frame, type LiveMap } from './live-core.ts';
+import { applyFrame, awaitingAfter, catchUp, keyedUnknownId, seedLive, withFullHistory, type Frame, type LiveMap } from './live-core.ts';
 
 type SyncState = 'syncing' | 'stale';
 type HistoryState = 'loading' | 'loaded' | 'error';
@@ -206,7 +206,7 @@ export class LiveSync {
             for (const entry of entries) {
               if (base && entry.seq <= cursor) continue;
               if (entry.event.kind === 'prompt') status = 'running';
-              if (entry.event.kind === 'ended') status = entry.event.outcome;
+              if (entry.event.kind === 'ended' && !keyedUnknownId(entry.event)) status = entry.event.outcome;
               awaiting = awaitingAfter(awaiting, entry.event, status);
             }
             this.live = { ...this.live, [id]: { ...installed, status, awaiting } };

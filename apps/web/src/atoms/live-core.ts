@@ -55,8 +55,7 @@ export type Block = Sequenced &
     /** 这一轮失败了（ended · failed）：原因写进对话里，不只是状态点变红——否则看着就是「发了没回」。 */
     | { readonly kind: 'error'; readonly text: string }
     /**
-     * 这一轮结果未知（Hermes 的 outcome_unknown：worker / 网关中途重启过）：不自动重放、不当成功，
-     * 交给人选「重发这一轮」还是「不用了」。prompt 是上一条用户输入（重发只带文字，附件不带）。
+     * 这一轮结果未知：不自动重放、不当成功。prompt 是上一条用户输入。
      */
     | { readonly kind: 'unknown'; readonly text: string; readonly prompt: string | null }
     /**
@@ -138,15 +137,21 @@ export interface LiveSession {
   readonly endedDeliveryIds?: readonly string[];
 }
 
+export function keyedUnknownId(event: SessionEventDto | null): string | undefined {
+  if (event?.kind !== 'ended' || !('outcomeUnknown' in event)) return undefined;
+  const id = event.deliveryId;
+  return typeof id === 'string' && id !== '' ? id : undefined;
+}
+
 function uncertainId(event: SessionEventDto | null): string | undefined {
+  if (event?.kind === 'ended') return keyedUnknownId(event);
   if (event?.kind !== 'diagnostic') return undefined;
-  // Additive wire field; older servers simply omit it.
-  const id = (event as typeof event & { readonly uncertainDeliveryId?: unknown }).uncertainDeliveryId;
+  const id = event.uncertainDeliveryId;
   return typeof id === 'string' && id !== '' ? id : undefined;
 }
 
 function endedId(event: SessionEventDto | null): string | undefined {
-  if (event?.kind !== 'ended') return undefined;
+  if (event?.kind !== 'ended' || keyedUnknownId(event)) return undefined;
   const id = (event as typeof event & { readonly deliveryId?: unknown }).deliveryId;
   return typeof id === 'string' && id !== '' ? id : undefined;
 }
@@ -166,9 +171,6 @@ export type LiveMap = Readonly<Record<string, LiveSession>>;
  * 会话卡只渲染对话流；diagnostic 与 ended 不进卡片（见 visual-direction §5）。
  * 例外是卡顿提醒：它挂在末尾提示「可以中断」，之后来了任何事件就撤掉——卡顿已经过去了。
  */
-/** 运行时报「结果未知」时 reason 里带的标记（见 Hermes 运行时 UNKNOWN_OUTCOME_REASON）。 */
-export const UNKNOWN_OUTCOME_MARKER = 'outcome_unknown';
-
 const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K` : String(n));
 
 /** 压缩分隔线上的字：「上下文已压缩 · 182K → 24K token」；失败写原因。 */
@@ -317,9 +319,10 @@ function foldBlocks(blocks: readonly Block[], event: SessionEventDto, seq: numbe
     case 'artifact':
       return [...blocks, { kind: 'artifact', path: event.path, bytes: event.bytes, seq }];
     case 'ended':
-      if (event.outcome === 'interrupted' && event.reason?.includes(UNKNOWN_OUTCOME_MARKER)) {
+      if (keyedUnknownId(event)) return blocks;
+      if (event.outcome === 'interrupted' && event.outcomeUnknown === true) {
         const prompt = [...blocks].reverse().find((block) => block.kind === 'prompt');
-        return [...blocks, { kind: 'unknown', text: event.reason, prompt: prompt?.kind === 'prompt' ? prompt.text : null, seq }];
+        return [...blocks, { kind: 'unknown', text: event.reason ?? '', prompt: prompt?.kind === 'prompt' ? prompt.text : null, seq }];
       }
       if (event.outcome === 'failed') return [...blocks, { kind: 'error', text: event.reason ?? '这一轮失败了，agent 没有说原因', seq }];
       if (event.outcome === 'stopped' || event.outcome === 'interrupted') {
@@ -345,7 +348,7 @@ export function blocksFromEntries(entries: readonly JournalEntryDto[]): readonly
 export function reasonFromEntries(entries: readonly JournalEntryDto[]): string | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const event = entries[index]?.event;
-    if (event?.kind === 'ended') return event.reason ?? null;
+    if (event?.kind === 'ended' && !keyedUnknownId(event)) return event.reason ?? null;
   }
   return null;
 }
@@ -364,7 +367,7 @@ export function reasonFromEntries(entries: readonly JournalEntryDto[]): string |
  */
 export function awaitingAfter(previous: boolean, event: SessionEventDto | null, status: SessionDto['status']): boolean {
   if (event === null) return status === 'running' && previous;
-  if (event.kind === 'ended') return false;
+  if (event.kind === 'ended') return keyedUnknownId(event) ? previous : false;
   if (event.kind === 'diagnostic' || event.kind === 'context_usage' || event.kind === 'compaction' || event.kind === 'approval' || event.kind === 'commands') return previous;
   return true;
 }
@@ -375,7 +378,7 @@ export function awaitingAfter(previous: boolean, event: SessionEventDto | null, 
  */
 export function awaitingFromHistory(entries: readonly JournalEntryDto[], status: SessionDto['status']): boolean {
   if (status !== 'running') return false;
-  const last = [...entries].sort((a, b) => b.seq - a.seq).find((entry) => entry.event.kind !== 'diagnostic' && entry.event.kind !== 'context_usage' && entry.event.kind !== 'compaction' && entry.event.kind !== 'approval' && entry.event.kind !== 'commands');
+  const last = [...entries].sort((a, b) => b.seq - a.seq).find((entry) => !keyedUnknownId(entry.event) && entry.event.kind !== 'diagnostic' && entry.event.kind !== 'context_usage' && entry.event.kind !== 'compaction' && entry.event.kind !== 'approval' && entry.event.kind !== 'commands');
   return last !== undefined && last.event.kind !== 'ended';
 }
 
@@ -418,7 +421,7 @@ export function applyFrame(current: LiveMap, frame: Frame): LiveMap {
   if (previous && frame.event !== null && frame.seq <= previous.lastSeq) return current;
   const blocks = previous?.blocks ?? [];
   const reason =
-    frame.event?.kind === 'ended' && frame.event.reason !== undefined ? frame.event.reason : (previous?.reason ?? null);
+    frame.event?.kind === 'ended' && !keyedUnknownId(frame.event) && frame.event.reason !== undefined ? frame.event.reason : (previous?.reason ?? null);
   const awaiting = awaitingAfter(previous?.awaiting ?? false, frame.event, frame.status);
   const contextUsage =
     frame.event?.kind === 'context_usage'
@@ -431,7 +434,7 @@ export function applyFrame(current: LiveMap, frame: Frame): LiveMap {
   const uncertainDeliveryIds = (previous?.uncertainDeliveryIds ?? []).filter((item) => item !== end);
   const next: LiveSession = {
     blocks: frame.event ? applyBlocks(blocks, frame.event, frame.seq) : blocks,
-    status: frame.status,
+    status: keyedUnknownId(frame.event) ? (previous?.status ?? 'running') : frame.status,
     awaiting,
     // 只有带事件的帧才推进游标：状态帧和它旁边那条事件共用同一个 seq，
     // 推进了就会把那条事件当成「旧帧」丢掉——提问气泡曾整条消失过。
@@ -453,7 +456,7 @@ export function catchUp(current: LiveMap, sessionId: string, entries: readonly J
   const previous = current[sessionId];
   if (!previous) return current;
   return entries.reduce<LiveMap>((map, entry) => {
-    const status = entry.event.kind === 'ended' ? entry.event.outcome : entry.event.kind === 'prompt' ? 'running' : (map[sessionId]?.status ?? previous.status);
+    const status = entry.event.kind === 'ended' && !keyedUnknownId(entry.event) ? entry.event.outcome : entry.event.kind === 'prompt' ? 'running' : (map[sessionId]?.status ?? previous.status);
     return applyFrame(map, { sessionId, seq: entry.seq, event: entry.event, status });
   }, current);
 }

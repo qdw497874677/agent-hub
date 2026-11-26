@@ -67,9 +67,9 @@ const firstOutputIndexPredicate = `type = 'text' AND CASE WHEN json_valid(payloa
 export const AGENT_OBSERVE_ENDED_SQL = `SELECT seq, at,
     ${jsonField('$.outcome')} AS outcome,
     CASE WHEN json_valid(payload) THEN
-      CASE WHEN json_extract(payload, '$.outcome') = 'interrupted'
+      CASE WHEN json_type(payload, '$.outcomeUnknown') IS NOT NULL OR (json_extract(payload, '$.outcome') = 'interrupted'
             AND json_type(payload, '$.reason') = 'text'
-            AND instr(json_extract(payload, '$.reason'), ?) > 0
+            AND instr(json_extract(payload, '$.reason'), ?) > 0)
            THEN 1 ELSE 0 END
     ELSE 0 END AS unknown_outcome
   FROM journal

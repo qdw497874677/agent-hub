@@ -272,7 +272,7 @@ function traceFor(row: ValidTurnRecord, project: Project, ended: AgentTurnEnd | 
   const outputId = `output:${row.id}`;
   const links: ObserveLink[] = [
     ...(firstOutput ? [{ to: outputId, label: '同一送达的首条输出' }] : []),
-    ...(ended ? [{ to: endId, label: 'deliveryId 对得上的结束' }] : [])
+    ...(ended ? [{ to: endId, label: ended.unknownOutcome ? '同一送达的待确认记录' : 'deliveryId 对得上的结束' }] : [])
   ];
   const root: ObserveNode = {
     id: headId,
@@ -280,9 +280,9 @@ function traceFor(row: ValidTurnRecord, project: Project, ended: AgentTurnEnd | 
     kind: 'turn',
     state: row.state,
     stateLabel: DELIVERY_LABEL[row.state],
-    // createdAt 只是入队时间，不是回合开始；ending 只来自精确的 ended。
+    // createdAt 只是入队时间，不是回合开始；未知记录也不证明结束。
     startedAt: null,
-    endedAt: ended ? ended.at : null,
+    endedAt: ended && !ended.unknownOutcome ? ended.at : null,
     // 没有准确的回合开始，就不编耗时。
     durationMs: null,
     durationLabel: null,
@@ -314,13 +314,13 @@ function traceFor(row: ValidTurnRecord, project: Project, ended: AgentTurnEnd | 
       state: ended.unknownOutcome ? 'unknown' : ended.outcome,
       stateLabel: ended.unknownOutcome ? '结果未知' : OUTCOME_LABEL[ended.outcome],
       startedAt: null,
-      endedAt: ended.at,
+      endedAt: ended.unknownOutcome ? null : ended.at,
       durationMs: null,
       durationLabel: null,
       parentId: null,
       links: [],
       attrs: [
-        { key: '结束 seq', value: String(ended.seq) },
+        { key: ended.unknownOutcome ? '记录 seq' : '结束 seq', value: String(ended.seq) },
         ...(ended.unknownOutcome ? [{ key: '说明', value: '结果未知，不当作成功或失败' }] : [])
       ]
     });

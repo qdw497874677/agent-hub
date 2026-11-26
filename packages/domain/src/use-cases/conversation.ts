@@ -1,4 +1,5 @@
 import type { HandoffStats } from '../handoff.ts';
+import { isUnknownOutcomeEnded } from '../attention.ts';
 import { locationOf } from './workspaces.ts';
 import { routeOf } from './machine-dirs.ts';
 import { markInterrupted, type Session } from '../session.ts';
@@ -444,6 +445,8 @@ export function ingestWorkerEvent(
     if (!(await handoffWorkerEventsAllowed(deps, sessionId))) return ok(session);
 
     const deliveries = deps.deliveries;
+    // Uncertainty is historical display data, not a keyed terminal receipt.
+    if (event.kind === 'ended' && event.deliveryId !== undefined && isUnknownOutcomeEnded(event)) return ok(session);
     if (event.kind === 'ended' && deliveries) {
       const inFlight = await deliveries.inFlight(sessionId);
       if (event.deliveryId !== undefined) {
@@ -467,6 +470,9 @@ export function ingestWorkerEvent(
     // 才精确收掉 sending 并放行下一句；否则 1s 泵可能在钩子完成前就送出 B。
     // Worker 事件不可信：不能让它写入 Hub 的发起类别。
     let safeEvent = event.kind === 'prompt' ? (({ promptActor: _ignored, ...rest }) => rest)(event) : event;
+    if (safeEvent.kind === 'ended' && isUnknownOutcomeEnded(safeEvent) && safeEvent.outcomeUnknown === undefined) {
+      safeEvent = { ...safeEvent, outcomeUnknown: true };
+    }
     if (safeEvent.kind === 'diagnostic' && safeEvent.uncertainDeliveryId !== undefined) {
       const inFlight = await deliveries?.inFlight(sessionId);
       if (!inFlight || inFlight.sessionId !== sessionId || inFlight.id !== safeEvent.uncertainDeliveryId

@@ -121,6 +121,18 @@ test('idle 兜底：journal 末尾不是 ended 就什么都不做（不猜 outco
   assert.equal((await deps.sessions.byId(sessionId))!.status, 'running', '状态没被这次兜底改掉');
 });
 
+test('idle 兜底：旧的未知结果即使投递号匹配也不跑收尾钩子', async () => {
+  const { deps, sessionId } = await seedSession();
+  const w = world({ inFlight: async () => ({ id: 'a', sessionId }) });
+  const finisher = createTurnFinisher({ ...w.deps, releaseDelivery: async () => void w.calls.push('release') });
+  await recordEvent(deps, { sessionId, event: { kind: 'ended', outcome: 'interrupted', deliveryId: 'a', outcomeUnknown: true } });
+  assert.equal(await finishFromJournalTail(deps, finisher, sessionId), false);
+  assert.deepEqual(w.calls, []);
+  await recordEvent(deps, { sessionId, event: { kind: 'ended', outcome: 'done', deliveryId: 'a' } });
+  assert.equal(await finishFromJournalTail(deps, finisher, sessionId), true);
+  assert.deepEqual(w.calls, [`fake:${sessionId}`, `feishu:${sessionId}`, `files:${sessionId}`, `inbox:${sessionId}:done:`, 'release']);
+});
+
 test('回程与检查点先于收件箱：收件箱放行前回复已经取过', async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));

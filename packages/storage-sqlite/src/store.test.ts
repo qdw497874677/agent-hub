@@ -253,6 +253,25 @@ test('journal：append 分配连续序号，eventsAfter 与 tail 切片正确，
   store.close();
 });
 
+test('journal decoder adds structured uncertainty to legacy interrupted rows on every read', async () => {
+  const store = openSqliteStore(':memory:');
+  let { session } = await seeded(store);
+  const events: SessionEvent[] = [
+    { kind: 'ended', outcome: 'interrupted', reason: 'old outcome_unknown private' },
+    { kind: 'ended', outcome: 'interrupted', reason: 'ordinary' },
+    { kind: 'ended', outcome: 'failed', reason: 'outcome_unknown' },
+    { kind: 'ended', outcome: 'interrupted', outcomeUnknown: true }
+  ];
+  for (const event of events) {
+    session = applyEvent(session, event, now);
+    await store.sessions.append(session, event, now);
+  }
+  const expected = [{ ...events[0], outcomeUnknown: true }, ...events.slice(1)];
+  assert.deepEqual((await store.sessions.eventsAfter(session.id, 0)).map(e => e.event), expected);
+  assert.deepEqual((await store.sessions.tail(session.id, 4)).map(e => e.event), expected);
+  store.close();
+});
+
 test('artifact 与画布布局往返', async () => {
   const store = openSqliteStore(':memory:');
   const { project, task, session } = await seeded(store);

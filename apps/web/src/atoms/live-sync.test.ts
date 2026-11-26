@@ -131,6 +131,32 @@ test('history lifecycle folds prompt after done and approval after ended', async
   assert.equal(f.live.s?.awaiting, false);
 });
 
+test('full reconciliation keeps keyed unknown evidence nonterminal until its matching end', async () => {
+  for (const marker of [true, false, null]) {
+    const f = fixture();
+    const prompt: JournalEntryDto = { seq: 1, at: 0, event: { kind: 'prompt', text: 'work' } };
+    const unknown: JournalEntryDto = { seq: 2, at: 0, event: { kind: 'ended', outcome: 'interrupted', deliveryId: 'a', outcomeUnknown: marker } as JournalEntryDto['event'] };
+    const ended: JournalEntryDto = { seq: 3, at: 0, event: { kind: 'ended', outcome: 'done', deliveryId: 'a' } };
+    f.coordinator.seed([session], { s: [prompt] });
+    const load = f.coordinator.loadHistory(session);
+    assert.equal(f.requests[0]?.after, undefined);
+    f.requests[0]!.resolve([prompt, unknown]);
+    await load;
+    assert.equal(f.live.s?.status, 'running');
+    assert.equal(f.live.s?.awaiting, true);
+    assert.deepEqual(f.live.s?.uncertainDeliveryIds, ['a']);
+    assert.deepEqual(f.live.s?.endedDeliveryIds, []);
+    assert.deepEqual(f.live.s?.blocks.map((block) => block.kind), ['prompt']);
+    const reload = f.coordinator.loadHistory(session);
+    f.requests[1]!.resolve([prompt, unknown, ended]);
+    await reload;
+    assert.equal(f.live.s?.status, 'done');
+    assert.equal(f.live.s?.awaiting, false);
+    assert.deepEqual(f.live.s?.uncertainDeliveryIds, []);
+    assert.deepEqual(f.live.s?.endedDeliveryIds, ['a']);
+  }
+});
+
 test('offline full history loads while freshness stays stale until stream reconciliation', async () => {
   const f = fixture();
   const load = f.coordinator.loadHistory(session);

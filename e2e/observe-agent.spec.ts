@@ -79,8 +79,9 @@ test('Agent 运行记录：同一会话的两条消息只认各自的结束证�
     };
 
     const a = await prompt(aKey);
-    expect(a.state).toBe('sending');
+    expect(a.state).toBe('queued');
     await expect.poll(() => existsSync(marker(aKey, 'started')), { timeout: 30_000 }).toBe(true);
+    await expect.poll(async () => (await deliveries()).find((item) => item.id === `agent:${a.deliveryId}`)?.nativeState).toBe('sending');
     const b = await prompt(bKey);
     expect(b.state).toBe('queued');
     expect(b.seq).toBeGreaterThan(a.seq);

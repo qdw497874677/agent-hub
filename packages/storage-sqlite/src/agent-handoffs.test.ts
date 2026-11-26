@@ -101,6 +101,8 @@ test('firstEnded uses exact indexed delivery key, rejects ambiguity and malforme
   const update = f.db.prepare("UPDATE journal SET payload=? WHERE session_id='target' AND seq=2");
   for (const payload of [
     JSON.stringify({kind:'ended',deliveryId:'delivery',outcome:'done',reason:'outcome_unknown'}),
+    ...[true, false, null].map(outcomeUnknown => JSON.stringify({kind:'ended',deliveryId:'delivery',outcome:'done',outcomeUnknown})),
+    '{"kind":"ended","deliveryId":"delivery","outcome":"done","outcomeUnknown":true,"outcomeUnknown":null}',
     JSON.stringify({kind:'ended',deliveryId:'delivery',outcome:'done',reason:null}),
     JSON.stringify({kind:'text',deliveryId:'delivery',outcome:'done'}),
     '{"kind":"ended","deliveryId":"delivery","outcome":"done","outcome":"failed"}',
@@ -308,6 +310,16 @@ test('history uses only exact delivered prompt and unique end at or before the p
   const history = await f.store.historyFor('source',3);
   assert.deepEqual(history.entries.map(e => e.seq), [1,2,3]);
   assert.deepEqual(history.deliveries, [{ sessionId:'source', promptSeq:1, deliveryId:'d1', ended:{ seq:3, outcome:'done' } }]);
+  const update = f.db.prepare("UPDATE journal SET payload=? WHERE session_id='source' AND seq=3");
+  for (const event of [
+    {kind:'ended', outcome:'interrupted', deliveryId:'d1', reason:'outcome_unknown'},
+    {kind:'ended', outcome:'done', deliveryId:'d1', outcomeUnknown:true},
+    {kind:'ended', outcome:'done', deliveryId:'d1', outcomeUnknown:false}
+  ]) {
+    update.run(JSON.stringify(event));
+    assert.deepEqual((await f.store.historyFor('source',3)).deliveries, []);
+  }
+  update.run(JSON.stringify({kind:'ended', outcome:'done', deliveryId:'d1'}));
   assert.deepEqual((await f.store.historyFor('source',5)).deliveries, []);
   f.db.exec("UPDATE message_delivery SET state='sending'");
   assert.deepEqual((await f.store.historyFor('source',3)).deliveries, []);
