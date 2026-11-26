@@ -7,6 +7,7 @@ import { providerOf } from './model-list.ts';
 import { useOptionFeedback } from './option-feedback.tsx';
 import { useHandoffCandidates } from './agent-handoff.tsx';
 import type { SessionDto } from '../shell/api.ts';
+import { useNewSessionWithModel } from '../shell/new-session-with-model.ts';
 
 interface Props {
   readonly options: readonly RuntimeOptionDto[];
@@ -46,6 +47,7 @@ const CHIP = 'rounded-full border border-hair bg-transparent px-2.5 hover:bg-hov
 export function OptionControls({ options, values, onChange, sessionId, agentLabel, session, projectId, compact = false, disabled = false }: Props) {
   const feedback = useOptionFeedback(sessionId);
   const handoff = useHandoffCandidates(session, projectId);
+  const openNewSession = useNewSessionWithModel();
   // 一次请求没回来之前，这个可调项显示“切换中…”，但绝不显示还没被确认的目标值。
   const [pending, setPending] = useState<Readonly<Record<string, true>>>({});
   const runChange = (optionId: string, value: string | boolean) => {
@@ -109,30 +111,35 @@ export function OptionControls({ options, values, onChange, sessionId, agentLabe
         }
         const items = flatChoices(option);
         // 本轮只支持原地切换；来源不同时不能走旧的隐式重启路径。
+        const newSessionModels = new Set<string>();
         const scoped = option.category === 'model' ? items.map((item) => {
           const restart = String(current) !== '' && !sameModelScope(item.value, String(current));
           const unknown = String(current) === '' && item.value !== '';
           const uncertain = status?.state === 'unconfirmed' && status.observed === undefined;
           const source = modelScope(item.value).kind === 'hub' ? 'Hub' : '本机';
+          const canStartNew = restart && !item.disabled && !disabled && !waiting && openNewSession !== null && session.taskId !== null && session.kind !== 'side' && !session.parentSessionId && !!session.workerId && (!!session.workspaceId || !!session.groupId);
+          if (canStartNew) newSessionModels.add(item.value);
           return { ...item, group: `${source} · ${providerOf(item)}`, keywords: [...(item.keywords ?? []), agentLabel],
-            ...(restart || unknown || uncertain ? { disabled: true, description: uncertain ? '当前切换结果未确认，暂不能切换' : restart ? '需要重启，暂不支持在此切换' : '当前模型未确认，暂不能切换' } : {}) };
+            ...(item.disabled ? {} : canStartNew ? { description: '不同来源，不能在当前会话切换' } : restart || unknown || uncertain ? { disabled: true, description: uncertain ? '当前切换结果未确认，暂不能切换' : restart ? '不同来源，当前会话不能切换；此处暂不能新建会话' : '当前模型未确认，暂不能切换' } : {}) };
         }) : null;
         // 模型一律走同一个选择器（按提供方分组、可搜索），和派生对话框、Bot 设置一致
         if (scoped !== null) {
           return (
             <ModelPicker
               key={option.id}
-              label="Agent 和模型"
+              label="模型"
               agentLabel={agentLabel}
-              note={handoff.note}
+              sessionPicker
               scope={option.id}
-              items={[...scoped, ...handoff.items]}
+              items={scoped}
+              newSessionModels={newSessionModels}
+              onNewSession={(value) => openNewSession?.(session, value)}
               value={String(current)}
-              disabled={disabled || waiting || (!hasModel && handoff.items.length === 0)}
+              disabled={disabled || waiting || !hasModel}
               pending={waiting}
-              onChange={(value) => value.startsWith('handoff:') ? handoff.choose(value) : runChange(option.id, value)}
-              short={compact}
-              className={`${compact ? `min-w-[44px] flex-1 basis-0 option-control ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} max-w-[220px] text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
+              onChange={(value) => runChange(option.id, value)}
+              short
+              className={`${compact ? `min-w-[44px] shrink basis-auto option-control ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} max-w-[180px] text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
             />
           );
         }
@@ -174,6 +181,20 @@ export function OptionControls({ options, values, onChange, sessionId, agentLabe
           </select>
         );
       })}
+      <ModelPicker
+        label="换 Agent"
+        dialogTitle="选择要换的 Agent"
+        deferPick
+        triggerText="换 Agent"
+        sessionPicker
+        scope={`handoff:${sessionId}`}
+        items={handoff.items}
+        value=""
+        note={handoff.note}
+        disabled={disabled}
+        onChange={handoff.choose}
+        className={`${compact ? `shrink-0 option-control ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} min-h-[44px] text-meta text-secondary outline-none hover:border-strong focus:border-ring md:min-h-0`}
+      />
     </div>{handoff.dialog}</>;
 }
 

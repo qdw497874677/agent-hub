@@ -56,10 +56,10 @@ for (const width of [1280, 390]) {
         else if (/\/api\/sessions\/[^/]+\/agent-handoff\/first$/.test(url)) firsts.push(request.postDataJSON());
       });
       await page.goto(`/#/p/${project.id}/focus/${source.id}`);
-      const picker = page.getByRole('button', { name: /Agent 和模型：/ });
+      const picker = page.getByTestId('agent-handoff-trigger');
       await expect(picker).toBeVisible();
       await picker.click();
-      const dialog = page.getByRole('dialog', { name: '选择Agent 和模型' });
+      const dialog = page.getByRole('dialog', { name: '选择要换的 Agent' });
       await dialog.getByRole('option', { name: /handoffacp.*fake\/m1/ }).last().click();
       await expect(page.getByTestId('handoff-confirm')).toContainText('同一台机器、同一工作区');
       await page.getByRole('button', { name: '确认新建会话' }).click();

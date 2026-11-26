@@ -57,10 +57,10 @@ async function expectAligned(row: Locator, label: string, touch: boolean) {
     expect(b.left + b.width, `${label}：${b.name} 没超出底栏右边`).toBeLessThanOrEqual(rowBox.right + 1);
   }
   if (touch) for (const b of options) expect(Math.abs(b.height - 44), `${label}：${b.name} 是 44px 触屏目标`).toBeLessThanOrEqual(0.5);
-  const model = boxes.find((b) => b.name.startsWith('Agent 和模型：'));
+  const model = boxes.find((b) => b.name.startsWith('模型：'));
   const effort = boxes.find((b) => b.name === '思考强度');
   const agent = boxes.find((b) => b.name === 'Agent');
-  expect(model, `${label}：Agent 和模型选择器存在`).toBeDefined();
+  expect(model, `${label}：当前会话的模型选择器存在`).toBeDefined();
   expect(effort, `${label}：思考强度选择器存在`).toBeDefined();
   if (model && effort) {
     expect(model.left, `${label}：模型在思考强度左边`).toBeLessThan(effort.left);
@@ -77,7 +77,7 @@ async function exercise(page: Page, scope: Locator, label: string, touch: boolea
   const boxes = await expectAligned(row, label, touch);
   void boxes;
   await expect(row.getByRole('combobox', { name: '思考强度' })).toHaveValue('high');
-  await expect(row.getByRole('button', { name: /^Agent 和模型：.+ · .+$/ })).toBeVisible();
+  await expect(row.getByRole('button', { name: /^模型：.+ · .+$/ })).toBeVisible();
   const send = scope.getByRole('button', { name: '发送' });
   await expect(send).toBeDisabled();
   await scope.getByRole('textbox', { name: '发送消息' }).fill('你好');

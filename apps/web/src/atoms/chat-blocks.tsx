@@ -631,7 +631,7 @@ function RunChip({ kind, count }: { kind: ToolRowKind; count: number }) {
  * 没用 `content-visibility: auto`：折叠的 `<details>` 本来就不渲染内容，真正的开销已经被挡住了；
  * 而自动跳过屏幕外的行会让里面的元素量出零尺寸，e2e 里「参数可见」的断言会随机挂。
  */
-function ToolRow({ block, settings, recovered = false }: { block: Extract<Block, { kind: 'tool' }>; settings: DisplaySettings; recovered?: boolean }) {
+function ToolRow({ block, settings, recovered = false, stale = false }: { block: Extract<Block, { kind: 'tool' }>; settings: DisplaySettings; recovered?: boolean; stale?: boolean }) {
   const view = toolView(block.name, block.input);
   const family = toolFamily(block.name, view);
   const kind = toolRowKind(block.name, view);
@@ -680,7 +680,7 @@ function ToolRow({ block, settings, recovered = false }: { block: Extract<Block,
   const mark = ok === null ? '⋯' : ok ? '✓' : '✗';
   const head = toolHeadline(block.name, view);
   const stat = view.kind === 'edit' ? diffStat(view.diff) : null;
-  const spent = block.result === null ? '运行中' : block.result.durationMs > 0 ? `${block.result.durationMs}ms` : '';
+  const spent = block.result === null ? (stale ? '状态未确认' : '运行中') : block.result.durationMs > 0 ? `${block.result.durationMs}ms` : '';
   const output = block.result?.output;
   // 有东西可展开才画那个尖角：单行 bash 还在跑的时候就没什么可看的。
   const expandable = block.result !== null || view.kind !== 'shell';
@@ -712,7 +712,7 @@ function ToolRow({ block, settings, recovered = false }: { block: Extract<Block,
         >
           ›
         </span>
-        <span aria-hidden className={`shrink-0 text-meta ${failed ? failTone : ok === null ? 'text-live' : 'text-tertiary'}`}>
+        <span aria-hidden className={`shrink-0 text-meta ${failed ? failTone : ok === null && !stale ? 'text-live' : 'text-tertiary'}`}>
           {mark}
         </span>
         {run.first || head.target !== '' ? (
@@ -982,7 +982,8 @@ export function ChatBlock({
   running,
   showAuthor = false,
   queued = false,
-  recovered = false
+  recovered = false,
+  stale = false
 }: {
   block: Block;
   sessionId: string;
@@ -997,12 +998,14 @@ export function ChatBlock({
   queued?: boolean;
   /** 工具失败后同类又成功了（时间线分组算出来的）：画成警告色而不是红色。 */
   recovered?: boolean;
+  /** 记录尚未补齐，非终态不能当作实时状态。 */
+  stale?: boolean;
 }) {
   if (block.kind === 'subagent') {
     const label = block.agent ?? '子代理';
     const status =
       block.status === 'running'
-        ? { text: '运行中', className: 'text-live' }
+        ? stale ? { text: '状态未确认', className: 'text-tertiary' } : { text: '运行中', className: 'text-live' }
         : block.status === 'failed'
           ? { text: '失败', className: 'text-rust' }
           : block.status === 'cancelled'
@@ -1018,11 +1021,11 @@ export function ChatBlock({
         data-status={block.status}
       >
         <summary className="flex cursor-pointer list-none items-baseline gap-2 py-1 text-meta text-secondary">
-          <span className={block.status === 'failed' ? 'text-rust' : (block.status === 'running' ? 'text-live' : 'text-tertiary')}>◈</span>
+          <span className={block.status === 'failed' ? 'text-rust' : (block.status === 'running' && !stale ? 'text-live' : 'text-tertiary')}>◈</span>
           <span className="shrink-0 font-mono text-sage">{label}</span>
           {block.title ? <span className="min-w-0 truncate text-secondary">{block.title}</span> : null}
           <span className={`ml-auto shrink-0 ${status.className}`}>{status.text}</span>
-          <span className="shrink-0 text-tertiary">{steps > 0 ? `${steps} 步` : '等待输出'}</span>
+          <span className="shrink-0 text-tertiary">{steps > 0 ? `${steps} 步` : stale && block.status === 'running' ? '暂无输出' : '等待输出'}</span>
         </summary>
         <div className="mt-1 space-y-2 border-l border-hair pl-3">
           {block.children.length === 0 ? (
@@ -1037,6 +1040,7 @@ export function ChatBlock({
                 settings={settings}
                 last={block.status === 'running' && index === block.children.length - 1}
                 running={block.status === 'running'}
+                stale={stale}
               />
             ))
           )}
@@ -1111,7 +1115,7 @@ export function ChatBlock({
       </p>
     );
   }
-  if (block.kind === 'thinking') return <ThinkingBlock text={block.text} settings={settings} live={last && running} />;
+  if (block.kind === 'thinking') return <ThinkingBlock text={block.text} settings={settings} live={last && running && !stale} />;
   if (block.kind === 'text') {
     return (
       <div data-testid="msg-assistant">
@@ -1123,7 +1127,7 @@ export function ChatBlock({
     // 明确提问是会话里必须看见的事实，不跟着「工具显示」一起被藏掉。
     if (questionOf(block) !== null) return <AgentQuestion block={block} />;
     if (settings.tools === 'hidden') return null;
-    return <ToolRow block={block} settings={settings} recovered={recovered} />;
+    return <ToolRow block={block} settings={settings} recovered={recovered} stale={stale} />;
   }
   return (
     <p className="flex items-baseline gap-2 text-meta">
@@ -1271,12 +1275,14 @@ export function WorkGroup({
   summary,
   defaultOpen,
   live,
+  stale = false,
   forceOpen,
   children
 }: {
   summary: WorkSummary;
   defaultOpen: boolean;
   live: boolean;
+  stale?: boolean;
   forceOpen: boolean;
   children: ReactNode;
 }) {
@@ -1297,8 +1303,8 @@ export function WorkGroup({
     >
       <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 py-1 text-meta text-tertiary hover:text-secondary">
         <span aria-hidden className="inline-block w-2.5 transition-transform group-open/work:rotate-90 motion-reduce:transition-none">›</span>
-        <Icon name="wrench" size={13} className={live ? 'text-live' : ''} />
-        <span className={`shrink-0 ${live ? 'shimmer-text' : 'text-secondary'}`}>{live ? '正在处理' : '已处理'}</span>
+        <Icon name="wrench" size={13} className={live && !stale ? 'text-live' : ''} />
+        <span className={`shrink-0 ${live && !stale ? 'shimmer-text' : 'text-secondary'}`}>{stale && (live || summary.running) ? '状态未确认' : live ? '正在处理' : '已处理'}</span>
         <span className="shrink-0 tabular-nums">{summary.steps} 步</span>
         {counts ? <span className="min-w-0 truncate">· {counts}</span> : null}
         {summary.failed > 0 ? (

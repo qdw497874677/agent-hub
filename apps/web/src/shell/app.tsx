@@ -35,6 +35,8 @@ import { clearOptionFeedback, optionFeedbackIsCurrent, setOptionFeedback } from 
 import type { View } from './route.ts';
 import { useAccount } from './account-context.ts';
 import { rememberPaletteRecent } from '../surfaces/workbench/palette-recent.ts';
+import { NewSessionWithModelContext } from './new-session-with-model.ts';
+import { NewModelSessionDialog } from './new-model-session-dialog.tsx';
 
 const LAST_PROJECT = 'agent-hub:last-project';
 
@@ -75,6 +77,7 @@ function Workspace() {
   const [newCoordinator, setNewCoordinator] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
+  const [newModelSession, setNewModelSession] = useState<{ projectId: string; source: SessionDto; model: string } | null>(null);
   const [taskDetail, setTaskDetail] = useState<string | null>(null);
   const [search, setSearch] = useState(false);
   // 草稿存在 App 层而不是 Inspector 里：S6.4 要求切视图不丢草稿，
@@ -172,7 +175,7 @@ function Workspace() {
   }, [canvas, projects]);
 
   // 内存里的会话流：先用画布投影的历史播种，之后只吃比它新的帧；断线重连后补帧并刷新画布。
-  const { live, seed, loadHistory, history, state: stream } = useLiveStream(refresh);
+  const { live, seed, loadHistory, history, sync, retrySync, state: stream } = useLiveStream(refresh);
 
   const seedRef = useRef(seed);
   seedRef.current = seed;
@@ -582,6 +585,7 @@ function Workspace() {
   );
 
   return (
+    <NewSessionWithModelContext.Provider value={(source, model) => setNewModelSession({ projectId: project.id, source, model })}>
     <div className="flex h-full">
       <div className="hidden h-full lg:flex">{sidebar()}</div>
       {/* 手机/平板侧栏走同一个抽屉：Esc、焦点陷阱、外部点按关闭、关掉把焦点还给汉堡按钮。
@@ -617,6 +621,8 @@ function Workspace() {
           live={resolveLive(selectedSession, canvas.data.previews[selectedSession.id] ?? [], live[selectedSession.id])}
           historyState={history[selectedSession.id] ?? 'loading'}
           onRetryHistory={() => void loadHistory(selectedSession)}
+          syncState={sync[selectedSession.id]}
+          onRetrySync={() => retrySync(selectedSession.id)}
           draft={drafts[selectedSession.id] ?? ''}
           onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
           onBack={backFromFocus}
@@ -662,6 +668,8 @@ function Workspace() {
               live={live}
               history={history}
               onRetryHistory={(session) => void loadHistory(session)}
+              sync={sync}
+              onRetrySync={retrySync}
               onDerive={setDeriveFor}
               onOpen={openSession}
               onChanged={refresh}
@@ -764,6 +772,19 @@ function Workspace() {
           }}
         />
       ) : null}
+      {newModelSession?.projectId === project.id && canvas.data ? (
+        <NewModelSessionDialog
+          key={`${newModelSession.source.id}:${newModelSession.model}`}
+          canvas={canvas.data}
+          source={newModelSession.source}
+          model={newModelSession.model}
+          onClose={() => setNewModelSession(null)}
+          onCreated={(session) => {
+            setNewModelSession(null);
+            openSession(session.id);
+          }}
+        />
+      ) : null}
       {createdTask ? (
         <UndoToast
           testId="task-created-toast"
@@ -780,5 +801,6 @@ function Workspace() {
       ) : null}
       </div>
     </div>
+    </NewSessionWithModelContext.Provider>
   );
 }

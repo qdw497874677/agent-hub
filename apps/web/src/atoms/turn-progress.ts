@@ -15,8 +15,9 @@ import type { Block } from './live-core.ts';
  * - `waiting`：有块了，但只是登记信息（附件、批准卡之类），模型还没开口；
  * - `writing`：模型已经在输出（文本 / 思考）；
  * - `tool`：最后一块是工具调用，正等着工具回来。
+ * - `tool-wait`：最后的工具已结束，等待后续回应。
  */
-export type TurnPhase = 'starting' | 'waiting' | 'writing' | 'tool';
+export type TurnPhase = 'starting' | 'waiting' | 'writing' | 'tool' | 'tool-wait';
 
 export interface TurnProgress {
   readonly phase: TurnPhase;
@@ -43,6 +44,30 @@ export interface TurnProgressInput {
 /** 工具名最长显示 20 个字符，再长就截断——一行提示不该被一个 MCP 工具名撑开。 */
 const TOOL_NAME_MAX = 20;
 
+/** 最新可见 prompt 的序号；没有时不能凭空推断这一轮的身份。 */
+export function latestPromptSeq(blocks: readonly Block[]): number | undefined {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (block?.kind === 'prompt') return block.seq;
+  }
+  return undefined;
+}
+
+export interface TurnClock {
+  readonly sessionId: string;
+  readonly promptSeq: number | undefined;
+  readonly at: number | null;
+}
+
+/** 会话或可见 prompt 改变时重记；暂时没有 prompt 不抹掉已知身份。 */
+export function advanceTurnClock(clock: TurnClock, sessionId: string, promptSeq: number | undefined, awaiting: boolean, now: number): TurnClock {
+  if (!awaiting) return { sessionId, promptSeq, at: null };
+  if (clock.sessionId !== sessionId || clock.at === null || (promptSeq !== undefined && clock.promptSeq !== promptSeq)) {
+    return { sessionId, promptSeq, at: now };
+  }
+  return clock;
+}
+
 /**
  * 这一轮该显示什么；不该显示时返回 null（回合已结束 / 还没开口）。
  *
@@ -61,7 +86,10 @@ export function turnProgress({ blocks, awaiting, startedAt, now, agentLabel }: T
   }
   const after = blocks.slice(lastPrompt + 1);
   const seconds = Math.max(0, Math.floor((now - startedAt) / 1_000));
-  const last = after[after.length - 1];
+  // 产物、审批卡等不是模型输出；它们不能掩盖最近一次工具或文字活动。
+  const lastActivity = [...after].reverse().find((block) =>
+    block.kind === 'tool' || ((block.kind === 'text' || block.kind === 'thinking') && block.text.length > 0)
+  );
 
   let phase: TurnPhase;
   let label: string;
@@ -70,10 +98,13 @@ export function turnProgress({ blocks, awaiting, startedAt, now, agentLabel }: T
     // 「启动中」是从「还没有任何块」推出来的：进程可能早就起来了，只是还没说话。
     // 所以只说在等什么，不替运行时宣称已经启动。
     label = `等 ${agentLabel} 的第一条输出…`;
-  } else if (last?.kind === 'tool') {
+  } else if (lastActivity?.kind === 'tool' && lastActivity.result !== null) {
+    phase = 'tool-wait';
+    label = '工具已结束 · 等待模型回应…';
+  } else if (lastActivity?.kind === 'tool') {
     phase = 'tool';
-    label = `正在用 ${shortTool(last.name)}…`;
-  } else if (after.some((block) => block.kind === 'text' || block.kind === 'thinking')) {
+    label = `正在用 ${shortTool(lastActivity.name)}…`;
+  } else if (lastActivity?.kind === 'text' || lastActivity?.kind === 'thinking') {
     phase = 'writing';
     label = '正在输出…';
   } else {

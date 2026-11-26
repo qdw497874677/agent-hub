@@ -90,7 +90,7 @@ export function useHandoffCandidates(session: SessionDto, projectId: string): { 
   const dialog = target ? <DialogShell title="换 Agent，带上下文继续" onClose={() => { if (!busy) setTarget(null); }}>
     <div className="space-y-3 text-body text-secondary" data-testid="handoff-confirm">
       <p className="text-head text-primary">新建 {target.agentId} · {target.model} 会话？</p>
-      <p>保留原会话和草稿，在同一台机器、同一工作区新建会话；不会中断原会话或自动发送。</p>
+      <p>来源 Agent：{session.agentId}。保留原会话和草稿，在同一台机器、同一工作区新建会话；不会中断原会话或自动发送。</p>
       <p>机器：{worker?.label ?? '未知'} · 工作区：{session.workspaceId ?? '未知'}</p>
       <p>首条消息可携带可确认出处的部分对话。旧附件、工具状态、审批、原生会话和选项不会迁移；不会增加访问权限。工作目录相同不代表文件隔离。</p>
       {error ? <p role="alert" className="text-rust">{error}</p> : null}

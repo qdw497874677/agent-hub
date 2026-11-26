@@ -27,7 +27,6 @@ import { backgroundActivityText } from '../../atoms/background-activity.ts';
 import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
 import { useTurnProgress } from '../../atoms/use-turn-progress.ts';
 import { turnHint } from '../../atoms/turn-hint.ts';
-import { TurnWave } from '../../atoms/wave.tsx';
 import { sessionCommands } from '../../atoms/commands.ts';
 import { useIsFetching, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FILES_QUERY, shown } from '../../atoms/files-core.ts';
@@ -81,6 +80,9 @@ interface Props {
   readonly live: LiveSession | null;
   readonly historyState: import('../../atoms/live.ts').HistoryState;
   readonly onRetryHistory: () => void;
+  /** 补齐实时记录时保留已显示的内容；同步失败由宿主提供重试。 */
+  readonly syncState?: 'syncing' | 'stale';
+  readonly onRetrySync?: () => void;
   readonly draft: string;
   readonly onDraftChange: (text: string) => void;
   /** 整页时的「← 返回」；画布窗口里没有（窗口自己有关闭）。 */
@@ -124,6 +126,8 @@ export function FocusView({
   live,
   historyState,
   onRetryHistory,
+  syncState,
+  onRetrySync,
   draft,
   onDraftChange,
   onBack,
@@ -586,6 +590,11 @@ export function FocusView({
         uncertainDeliveryIds: live?.uncertainDeliveryIds,
         withdrawQueued: true
       });
+  // 断线后的旧输出不能证明此刻仍在运行；送达层的独立反馈则仍然显示。
+  const visibleHint = syncState && hint?.stage === 'runtime' ? null : hint;
+  // 批准卡仍然保留原有回合和停止行为；只让动画为尚未处理的批准让位。
+  const currentTurn = lastPrompt === undefined ? blocks : blocks.filter((block) => block.seq > lastPrompt);
+  const hasPendingApproval = currentTurn.some((block) => block.kind === 'approval' && block.resolved === null);
   /**
    * 输入框上方那条：桌面是「正在做什么 / 分支」，窄屏不重复进度（已移到对话末尾），
    * 只留一个「工作区」入口——分支、路径、加仓库都在里面。
@@ -1226,6 +1235,11 @@ export function FocusView({
                 <span>{historyState === 'error' ? '会话记录读取失败' : '正在读取会话记录…'}</span>
                 {historyState === 'error' ? <button type="button" onClick={onRetryHistory} className="min-h-11 text-sage underline underline-offset-2">重试</button> : null}
               </div>
+            ) : syncState ? (
+              <div data-testid="session-sync-state" data-state={syncState} role={syncState === 'stale' ? 'alert' : 'status'} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-tertiary">
+                <span>{syncState === 'syncing' ? '正在补齐会话记录…' : '会话记录未同步'}</span>
+                {syncState === 'stale' && onRetrySync ? <button type="button" onClick={onRetrySync} className="min-h-11 text-sage underline underline-offset-2">重试</button> : null}
+              </div>
             ) : null}
             <div
               data-testid="session-startup-status"
@@ -1239,11 +1253,11 @@ export function FocusView({
               {startupState === 'failed' ? <span>· 有排队消息时，可在队首重试或撤回</span> : null}
               {startupState === 'upgrade_required' ? <a className="min-h-11 content-center underline underline-offset-2" href={session.workerId ? `#/machines/${encodeURIComponent(session.workerId)}` : '#/machines'}>查看机器并更新</a> : null}
             </div>
-            {blocks.length === 0 && delivery.pending.length === 0 ? historyState === 'loaded' ? (
+            {blocks.length === 0 && delivery.pending.length === 0 ? historyState === 'loaded' && !syncState ? (
               <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
             ) : null : (
               <FileLinksContext.Provider value={fileLinks}>
-              <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: hint && delivery.pending.length === 0 ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed', uncertainDeliveryIds: live?.uncertainDeliveryIds }}>
+              <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: visibleHint && delivery.pending.length === 0 ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed', uncertainDeliveryIds: live?.uncertainDeliveryIds }}>
               {timelineItems.map((item) => {
                 const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }) => (
                   <ChatBlock
@@ -1254,6 +1268,7 @@ export function FocusView({
                     settings={settings}
                     last={index === timelineBlocks.length - 1}
                     running={turnRunning}
+                    stale={Boolean(syncState)}
                     showAuthor={showAuthor}
                     queued={block.queued === true}
                     recovered={recovered}
@@ -1261,7 +1276,7 @@ export function FocusView({
                 );
                 if (item.type === 'work') {
                   return (
-                    <WorkGroup key={item.key} summary={item.summary} defaultOpen={item.open} live={item.live} forceOpen={settings.tools === 'expanded'}>
+                    <WorkGroup key={item.key} summary={item.summary} defaultOpen={item.open} live={item.live} stale={Boolean(syncState)} forceOpen={settings.tools === 'expanded'}>
                       {item.items.map(renderBlock)}
                     </WorkGroup>
                   );
@@ -1280,7 +1295,7 @@ export function FocusView({
                 pending={delivery.pending}
                 onRetry={(pending) => void retryPending(pending)}
                 onDiscard={delivery.discard}
-                quiet={hint !== null}
+                quiet={visibleHint !== null}
                 hasDelivery={(pending) => pending.seq !== undefined && deliveriesBySeq.has(pending.seq)}
                 className={settings.compact ? 'gap-2' : 'gap-4'}
                 renderPrompt={(pending, _index, seq) => (
@@ -1300,17 +1315,25 @@ export function FocusView({
                 <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
               ) : null}
               {/* 两端唯一的当前进度：贴在对话末尾，不再在输入框上方重复。 */}
-              {hint ? (
+              {visibleHint ? (
                 <p
-                  className="flex min-w-0 items-center gap-1.5 self-start text-meta text-secondary"
+                  className="flex min-h-8 min-w-0 items-center gap-2 self-start text-meta text-tertiary"
                   data-testid="turn-hint"
-                  data-stage={hint.stage}
-                  data-phase={hint.phase}
-                  title={hint.detail}
-                  aria-label={hint.detail}
+                  data-stage={visibleHint.stage}
+                  data-phase={visibleHint.phase}
+                  title={visibleHint.detail}
+                  aria-label={visibleHint.detail}
+                  role="status"
                 >
-                  {hint.text === '暂未确认这一轮的结果' ? null : <TurnWave />}
-                  <span className="min-w-0 truncate">{hint.text}</span>
+                  {visibleHint.text === '暂未确认这一轮的结果' || hasPendingApproval || syncState ? null : (
+                    <span data-testid="turn-active-spinner" aria-hidden="true" className="relative size-[15px] shrink-0">
+                      <span className="absolute inset-0 animate-spin rounded-full border-[1.5px] border-current/25 border-t-current motion-reduce:hidden" />
+                      <svg viewBox="0 0 16 16" fill="none" className="hidden size-full motion-reduce:block" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M4 2h8M4 14h8M5 2c0 3 1 4 3 6-2 2-3 3-3 6m6-12c0 3-1 4-3 6 2 2 3 3 3 6" />
+                      </svg>
+                    </span>
+                  )}
+                  <span className="min-w-0 break-words">{visibleHint.text}</span>
                 </p>
               ) : null}
               </DeliveryContext.Provider>

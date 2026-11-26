@@ -179,8 +179,8 @@ test('配置、归档和停止都在回执后立刻反馈，不被旧画布或�
     await page.getByTestId('list-session-row').filter({ hasText: stopTitle }).click();
     await expect(page.getByLabel('发送消息')).toBeVisible();
 
-    const modelButton = page.getByRole('button', { name: /^Agent 和模型：/ });
-    await expect(modelButton).toHaveAttribute('aria-label', /^Agent 和模型：.+ · A$/);
+    const modelButton = page.getByTestId('session-model-trigger');
+    await expect(modelButton).toHaveAttribute('aria-label', /^模型：.+ · A$/);
     const sheet = page.getByRole('dialog');
 
     let optionGate: Deferred | null = null;

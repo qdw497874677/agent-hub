@@ -11,7 +11,8 @@ import type { TurnPhase, TurnProgress } from './turn-progress.ts';
  * 1. 还只在本机、或刚拿到回执还没写进对话的那一条（`pending`）才是「当前这一句」——
  *    上一句的运行时进度不能算到它头上；
  * 2. 服务器收下了（`DeliveryDto` 的 queued / sending）——排队 / 投递在途，仍是送达层的事实；
- * 3. 只有**看到这一轮的输出或工具**（`writing` / `tool`）才说运行时。
+ * 3. 只有**看到这一轮的输出或工具**（`writing` / `tool` / `tool-wait`）才说运行时；
+ *    工具结束后只说等待后续，不再说工具正在执行。
  *    「还没有块」（`starting`）和「只有登记块」（`waiting`）都只是没有证据，不等于 agent 在动。
  *
  * 两条硬约束：
@@ -66,7 +67,7 @@ export interface TurnHint {
   /** 完整说明：不悬停、不展开也能读懂（`title` / `aria-label`）。 */
   readonly detail: string;
   readonly stage: TurnHintStage;
-  readonly phase: 'sending' | 'queued' | 'starting' | 'waiting' | 'writing' | 'tool';
+  readonly phase: 'sending' | 'queued' | 'starting' | 'waiting' | 'writing' | 'tool' | 'tool-wait';
 }
 
 export interface TurnHintInput {
@@ -117,7 +118,7 @@ export function turnHint({ pending, delivery, deliveries, progress, withdrawQueu
       if (uncertainSending(delivery, uncertainDeliveryIds)) {
         return { text: '暂未确认这一轮的结果', detail: '暂未确认这一轮的结果', stage: 'delivery', phase: 'sending' };
       }
-      if (progress !== null && RUNTIME_ACTIVITY.has(progress.phase)) {
+      if (progress !== null && (RUNTIME_ACTIVITY.has(progress.phase) || progress.phase === 'tool-wait')) {
         return { text: progress.label, detail: progress.detail, stage: 'runtime', phase: progress.phase };
       }
       return {
@@ -136,8 +137,8 @@ export function turnHint({ pending, delivery, deliveries, progress, withdrawQueu
   }
   if (delivery?.state === 'cancelled') return null;
 
-  // 3. 运行时：只认输出 / 工具。「还没有块」和「只有登记块」都不算 agent 在动。
-  if (progress !== null && RUNTIME_ACTIVITY.has(progress.phase)) {
+  // 3. 运行时：只认输出 / 工具及工具结束后的等待。「还没有块」和「只有登记块」都不算 agent 在动。
+  if (progress !== null && (RUNTIME_ACTIVITY.has(progress.phase) || progress.phase === 'tool-wait')) {
     return { text: progress.label, detail: progress.detail, stage: 'runtime', phase: progress.phase };
   }
   return null;
