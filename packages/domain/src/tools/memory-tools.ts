@@ -8,7 +8,7 @@ import type { MemoryService } from '../use-cases/memory.ts';
  * 记忆工具（ADR 0019 · P1）。调用方永远是授权绑定的会话；作用域只能用简写，hub 按会话补全。
  * 描述里明确「先搜」：搜比把东西塞进上下文便宜。
  */
-const SCOPE = { type: 'string', enum: ['user', 'role', 'project', 'session'] };
+const SCOPE = { type: 'string', enum: ['user', 'role', 'project', 'session'], description: 'Use role only if this session was derived with a role.' };
 const KIND = { type: 'string', enum: [...MEMORY_KINDS] };
 export const MEMORY_TOOLS: readonly ToolDescriptor[] = [
   {
@@ -22,7 +22,7 @@ export const MEMORY_TOOLS: readonly ToolDescriptor[] = [
       type: 'object',
       properties: {
         query: { type: 'string', minLength: 1, maxLength: 500 },
-        scopes: { type: 'array', items: SCOPE, maxItems: 4 },
+        scopes: { type: 'array', items: SCOPE, maxItems: 4, description: 'Omit to search all available scopes; specify scopes only to narrow the search.' },
         kinds: { type: 'array', items: KIND, maxItems: 4 },
         include: { type: 'array', items: { type: 'string', enum: ['entries', 'sources'] } },
         limit: { type: 'integer', minimum: 1, maximum: 20, default: 8 },

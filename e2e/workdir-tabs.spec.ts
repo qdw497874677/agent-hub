@@ -9,7 +9,7 @@ import { TEST_EMAIL } from './login.ts';
 type Terminal = { id: string; state: 'pending' | 'running' | 'closing' | 'ended' };
 const shots = process.env['E2E_SCREENSHOTS'];
 
-async function fixture(page: Page, root: string) {
+async function fixture(page: Page, root: string, grant = true) {
   const port = await reservePort();
   const origin = `http://127.0.0.1:${port}`;
   const passwordFile = join(root, 'password');
@@ -34,10 +34,10 @@ async function fixture(page: Page, root: string) {
     }
   };
   let hub = await start();
-  const api = async <T>(path: string, data?: unknown, expected = data === undefined ? 200 : 201) => {
+  const api = async <T>(path: string, data?: unknown, expected = data === undefined ? 200 : 201, method = 'POST') => {
     const csrf = (await page.context().cookies(origin)).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
     const headers = { origin, 'x-hub-csrf': csrf };
-    const r = data === undefined ? await page.request.get(`${origin}${path}`) : await page.request.post(`${origin}${path}`, { headers, data });
+    const r = data === undefined ? await page.request.get(`${origin}${path}`) : await page.request.fetch(`${origin}${path}`, { method, headers, data });
     expect(r.status(), `${path}: ${await r.text()}`).toBe(expected);
     return await r.json() as T;
   };
@@ -64,7 +64,7 @@ async function fixture(page: Page, root: string) {
       }, { timeout: 35_000 }).toBe(true);
       await expect.poll(async () => (await api<{ available: boolean }>(terminals)).available).toBe(enabled);
     };
-    await restart();
+    if (grant) await restart();
     return { origin, projectId: project.id, workspaceId: workdir.id, workerId, path, terminals, restart, api, stop: () => stop(hub) };
   } catch (error) {
     await stop(hub);
@@ -76,6 +76,69 @@ for (const width of [1280, 390]) {
   const touch = width < 640;
   test.describe(`工作目录标签 ${width}px`, () => {
     test.use({ viewport: { width, height: touch ? 620 : 844 }, hasTouch: touch, isMobile: touch });
+    test('未获终端授权不影响正常会话，标签优先使用会话和任务标题', async ({ page }) => {
+      const root = mkdtempSync(join(tmpdir(), 'workdir-labels-'));
+      let world: Awaited<ReturnType<typeof fixture>> | null = null;
+      try {
+        world = await fixture(page, root, false);
+        const { api, origin, projectId, workspaceId, workerId, terminals } = world;
+        const task = await api<{ id: string }>('/api/tasks', { projectId, title: '测试任务标题' });
+        const start = () => api<{ id: string }>('/api/sessions/derive', { taskId: task.id, workerId, workspaceId, agentId: FAKE_AGENT_ID, model: '' });
+        const first = await start();
+        const second = await start();
+        let terminalReads = 0;
+        page.on('request', (request) => {
+          if (request.method() === 'GET' && new URL(request.url()).pathname === terminals) terminalReads++;
+        });
+        await page.goto(`${origin}/#/p/${projectId}/workdir/${workspaceId}`);
+        const tabs = page.getByTestId('workdir-tabs');
+        const add = tabs.getByTestId('workdir-add');
+        const unavailable = tabs.getByTestId('workdir-terminal-status');
+        await add.click();
+        await expect(unavailable).toContainText('终端');
+        await expect(tabs.getByTestId('workdir-new-terminal')).toBeDisabled();
+        await tabs.getByTestId('workdir-open-session').filter({ hasText: first.id.slice(-4) }).click();
+        await expect(tabs.getByTestId('focus-header')).toContainText('测试任务标题');
+        const activeTab = touch ? tabs.getByTestId('workdir-choose-tab') : tabs.getByTestId('workdir-tab-session').filter({ visible: true });
+        await expect(activeTab).toContainText('测试任务标题');
+        await expect(activeTab).not.toContainText(first.id.slice(-4));
+        await expect(unavailable).toBeHidden();
+        await expect(tabs.getByText('工作目录不可用', { exact: true })).toHaveCount(0);
+
+        await add.click();
+        await tabs.getByTestId('workdir-open-session').click();
+        if (touch) await activeTab.click();
+        const options = tabs.getByTestId('workdir-tab-session').filter({ visible: true });
+        await expect(options).toHaveCount(2);
+        for (const session of [first, second]) {
+          await expect(options.filter({ hasText: session.id.slice(-4) })).toContainText('测试任务标题');
+        }
+        if (touch) await page.keyboard.press('Escape');
+        const renamed = '一个会话的自定义标题，名字很长也不能遮住右边的新增按钮';
+        await api(`/api/sessions/${second.id}/title`, { title: renamed }, 200, 'PUT');
+        // Measure across the old 3 s interval: the authoritative 403 is not a retry loop.
+        await expect.poll(() => terminalReads).toBe(1);
+        await expect(tabs.getByTestId('focus-header')).toBeVisible();
+        await page.clock.install();
+        await page.clock.runFor(6_100);
+        expect(terminalReads).toBe(1);
+        await expect(tabs.getByLabel('发送消息')).toBeVisible();
+        await page.reload();
+        await expect(tabs.getByTestId('focus-header')).toContainText(renamed);
+        if (touch) {
+          await expect(activeTab).toContainText(renamed);
+          await expect(add).toBeInViewport({ ratio: 1 });
+          expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
+        } else {
+          await expect(options.filter({ hasText: renamed })).toHaveCount(1);
+        }
+      } finally {
+        stopFakeWorker();
+        if (world) await world.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     test('无会话时可开真实 PTY；切换与刷新不断进程，关标签才释放目录', async ({ page }) => {
       test.setTimeout(150_000);
       const root = mkdtempSync(join(tmpdir(), 'workdir-tabs-'));
@@ -144,7 +207,7 @@ for (const width of [1280, 390]) {
         await expect(composer).toHaveValue('这个草稿随标签切换保留');
         if (shots) await page.screenshot({ path: join(shots, `workdir-session-${width}.png`) });
         if (touch) await tabs.getByTestId('workdir-choose-tab').click();
-        await tabs.getByRole('button', { name: /^关闭会话/ }).click();
+        await tabs.getByRole('button', { name: '关闭会话共享同目录', exact: true }).click();
         if (touch && !(await tabs.getByTestId('workdir-tab-terminal').isVisible())) await tabs.getByTestId('workdir-choose-tab').click();
         await expect(tabs.getByTestId('workdir-tab-session')).toHaveCount(0);
         expect((await api<{ sessions: Array<{ id: string }> }>(canvasPath)).sessions[0]?.id).toBe(session.id);

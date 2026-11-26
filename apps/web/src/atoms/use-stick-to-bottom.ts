@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import {
   MIN_OVERFLOW,
   contentEffect,
@@ -7,6 +7,8 @@ import {
   holdsScroll,
   maxScrollOf,
   nearEndOf,
+  nextFollowReserve,
+  needsBottomSnap,
   needsEndProbe,
   reachedEnd,
   scrollKey,
@@ -44,29 +46,27 @@ export interface StickToBottom<T extends HTMLElement> {
  */
 export function useStickToBottom<T extends HTMLElement>(resetKey: string): StickToBottom<T> {
   const ref = useRef<T | null>(null);
+  const requestEnd = useRef<((smooth: boolean) => void) | null>(null);
   const [nearEnd, setNearEnd] = useState(true);
 
-  // 换会话、首次挂载：先落到最后，别让首帧闪在顶部（状态机随后从 following 重来）。
+  // 换会话时先清理旧的尾部预留，再定位并接上新状态机，避免旧清理晚于新会话定位。
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
     setNearEnd(nearEndOf(measureOf(el)));
+    const follow = attachFollow(el, setNearEnd);
+    requestEnd.current = follow.requestEnd;
+    return () => {
+      requestEnd.current = null;
+      follow.dispose();
+    };
   }, [resetKey]);
 
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    return attachFollow(el, setNearEnd);
-  }, [resetKey]);
-
-  // 平滑滚到底之后，滚动事件会让状态机自己恢复跟随（和拖滚动条到底一样），这里不另设监听。
   const scrollToEnd = useCallback((smooth = true) => {
-    const el = ref.current;
-    if (!el) return;
     const reduced =
       typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-    el.scrollTo({ top: el.scrollHeight, behavior: smooth && !reduced ? 'smooth' : 'auto' });
+    requestEnd.current?.(smooth && !reduced);
   }, []);
 
   return { nearEnd, ref, scrollToEnd };
@@ -77,14 +77,19 @@ function measureOf(el: HTMLElement): ScrollGeometry {
 }
 
 /** 把状态机接到一个真实滚动区上；返回卸载函数。 */
-function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () => void {
+function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): { requestEnd: (smooth: boolean) => void; dispose: () => void } {
   let state: FollowState = createFollowState();
   let last: ScrollGeometry = measureOf(el);
+  // 只有显式提供尾部空间的视图启用：收起活动行时避免整段记录向下弹。
+  const spacer = el.querySelector<HTMLElement>('[data-follow-spacer]');
+  let reserve = 0;
+  let naturalHeight = last.scrollHeight;
   let contact: Contact | null = null;
   let attempt = 0;
   let frame: number | null = null;
   let idle: ReturnType<typeof setTimeout> | null = null;
   let lastScrollAt = 0;
+  let smoothReturn = false;
   // 记一份本地值：普通滚动每帧都来，只在跨过阈值时才麻烦 React。
   let near = nearEndOf(last);
 
@@ -119,7 +124,7 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
 
   /** scrollTop 写超过上限时浏览器会钳到底，正好把缩放下差的那几像素一起吃掉。 */
   function snap(): void {
-    if (el.scrollTop !== el.scrollHeight) el.scrollTop = el.scrollHeight;
+    if (needsBottomSnap(measure())) el.scrollTop = el.scrollHeight;
     last = measure();
   }
 
@@ -128,9 +133,8 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
     // 惯性还没走完：等 touchend / 静止（见 onTouchEnd、scheduleIdle）再来。
     if (holdsScroll(contact)) return;
 
-    const pending = state.attempt;
-    snap();
-    dispatch({ attempt: pending, type: 'return.run' });
+    // 接触期间的内容变化也要先结算预留空间，再贴底。
+    onContent();
   }
 
   function scheduleFrame(): void {
@@ -162,6 +166,11 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
       idle = null;
       if (contact === 'momentum') contact = null;
 
+      if (smoothReturn) {
+        smoothReturn = false;
+        onContent();
+      }
+
       if (needsEndProbe(state, contact)) dispatch({ atEnd: probe(), type: 'scroll.settled' });
 
       runReturn();
@@ -177,6 +186,7 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
   }
 
   function onWheel(event: WheelEvent): void {
+    smoothReturn = false;
     dispatch({ overflow: overflowing(), trigger: 'wheel', type: 'scroll.intent', upward: event.deltaY < 0 });
   }
 
@@ -185,6 +195,8 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
     if (direction === null) return;
     // 输入框里的翻页键是给输入框的，不是给列表的。
     if (event.target !== el && isTextEntry(event.target)) return;
+
+    smoothReturn = false;
 
     dispatch({
       overflow: overflowing(),
@@ -195,7 +207,22 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
   }
 
   function onContent(): void {
+    // 隐藏页签没有可用的布局尺寸，别把它当成内容清空。
+    if (el.clientHeight === 0) return;
     const effect = contentEffect(state, contact);
+    const current = measure();
+    const nextHeight = current.scrollHeight - reserve;
+
+    // 不在读者手指或惯性期间改几何，也不改变离底阅读的位置。
+    // 预留有上限，后续输出先填补空白；不借此伪造任何状态提示。
+    if (spacer && effect === 'snap' && maxScrollOf(last) > MIN_OVERFLOW) {
+      const next = nextFollowReserve(naturalHeight, nextHeight, reserve);
+      if (next !== reserve) {
+        reserve = next;
+        spacer.style.height = `${reserve}px`;
+      }
+    }
+    if (effect !== 'defer') naturalHeight = nextHeight;
 
     if (effect === 'idle') {
       // 停在读者放下的地方：只记住新的尺寸，等下一次滚动再判定。
@@ -209,6 +236,9 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
       return;
     }
 
+    // 平滑回底过程中不让内容观察器打断动画；静止后再补齐新的内容。
+    if (smoothReturn) return;
+
     snap();
     if (state.type === 'returning') dispatch({ attempt: state.attempt, type: 'return.run' });
   }
@@ -216,6 +246,7 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
   function onPointerDown(event: PointerEvent): void {
     // 触屏走 touch 那条：只有那里拿得到松手之后的惯性。
     if (event.pointerType === 'touch') return;
+    smoothReturn = false;
     contact = 'pointer';
   }
 
@@ -224,6 +255,7 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
   }
 
   function onTouchStart(): void {
+    smoothReturn = false;
     contact = 'touch';
   }
 
@@ -257,6 +289,8 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
           onContent();
         });
   resize?.observe(el);
+  // 容器高度不变时，图片或异步排版仍可能改变记录高度。
+  if (el.firstElementChild) resize?.observe(el.firstElementChild);
 
   el.addEventListener('scroll', onScroll, { passive: true });
   el.addEventListener('wheel', onWheel, { passive: true });
@@ -274,11 +308,19 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
   snap();
   reportNear();
 
-  return () => {
+  function requestEnd(smooth: boolean): void {
+    dispatch({ type: 'follow.request' });
+    smoothReturn = smooth;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+    if (smooth) scheduleIdle();
+  }
+
+  function dispose(): void {
     if (frame !== null) cancelAnimationFrame(frame);
     if (idle !== null) clearTimeout(idle);
     observer?.disconnect();
     resize?.disconnect();
+    if (spacer) spacer.style.height = '';
     el.removeEventListener('scroll', onScroll);
     el.removeEventListener('wheel', onWheel);
     el.removeEventListener('keydown', onKeyDown);
@@ -290,7 +332,8 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): () 
     el.removeEventListener('touchcancel', onTouchEnd);
     window.removeEventListener('blur', onContactLost);
     document.removeEventListener('visibilitychange', onVisibilityChange);
-  };
+  }
+  return { dispose, requestEnd };
 }
 
 /** 输入类元素：它们自己会用翻页键。 */

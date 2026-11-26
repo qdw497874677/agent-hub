@@ -22,6 +22,23 @@ const SHOTS = process.env['E2E_SCREENSHOTS'];
 
 test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒在选择器里', async ({ page, baseURL, context }) => {
   test.setTimeout(240_000);
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      private pause = () => this.dispatchEvent(new Event('error'));
+      private resume = () => this.dispatchEvent(new Event('open'));
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        window.addEventListener('test-stream-pause', this.pause);
+        window.addEventListener('test-stream-resume', this.resume);
+      }
+      override close() {
+        window.removeEventListener('test-stream-pause', this.pause);
+        window.removeEventListener('test-stream-resume', this.resume);
+        super.close();
+      }
+    };
+  });
   await loginByApi(page);
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const csrf = (await context.cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
@@ -172,6 +189,28 @@ test('手机专注对话：一条进度 + 工作区入口 + 换提供方提醒�
     // 进度合并不移除消息菜单；「从这里重来」仍从这里进入。
     await expect(log.getByTestId('msg-menu').last()).toBeVisible();
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'mobile-signal-waiting.png') });
+
+    // 同一轮已有输出，只是暂时失去实时连接；不要在旧气泡下重新插入「发送中…」。
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 800 });
+      const bubble = log.getByTestId('msg-user').last();
+      const box = () => bubble.evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        return { y: rect.top, height: rect.height };
+      });
+      await expect(bubble).toBeVisible();
+      const before = await box();
+      await page.evaluate(() => window.dispatchEvent(new Event('test-stream-pause')));
+      const sync = log.getByTestId('session-sync-state');
+      await expect(sync).toHaveAttribute('data-state', 'stale');
+      await expect(hint).toHaveCount(0);
+      await expect(bubble.getByTestId('delivery-note')).toHaveCount(0);
+      expect(await box()).toEqual(before);
+      await page.evaluate(() => window.dispatchEvent(new Event('test-stream-resume')));
+      await expect(sync).toHaveCount(0);
+      await expect(hint).toHaveAttribute('data-stage', 'runtime');
+      expect(await box()).toEqual(before);
+    }
 
     // —— 工作区抽屉：分支、路径、复制、添加仓库、去 git 都在里面
     await expect(page.getByTestId('git-branch')).toHaveCount(0); // 窄屏不再平铺

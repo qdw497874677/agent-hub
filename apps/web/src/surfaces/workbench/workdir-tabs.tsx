@@ -4,10 +4,11 @@ import { TerminalPanel } from '../../atoms/terminal-panel.tsx';
 import { newClientMessageId } from '../../atoms/pending-prompt.ts';
 import { workspaceName } from '../../atoms/workspace-format.ts';
 import { api, RequestFailed, type CanvasDto, type WorkspaceDto } from '../../shell/api.ts';
+import { useCoordinators } from '../../shell/coordinators.ts';
 import { workdirTerminalPath } from '../../shell/api/hub.ts';
 import { resolveWorker, useWorkers } from '../../shell/workers.tsx';
 import { useWorkspaceViews } from './workspace-chooser.tsx';
-import { eligibleWorkdir } from './workdir-model.ts';
+import { eligibleWorkdir, terminalErrorText, terminalPollInterval, workdirLabels, workdirSessionLabel } from './workdir-model.ts';
 
 /** Registered directories are a separate source from the session-derived tree. */
 export function WorkdirEntries({ projectId, onOpen }: { projectId: string; onOpen: (id: string) => void }) {
@@ -48,15 +49,23 @@ export function WorkdirTabs({ accountId, projectId, workspace, canvas, onBack, o
   const menuRef = useRef<HTMLDivElement>(null);
   const addRef = useRef<HTMLButtonElement>(null);
   const chooseRef = useRef<HTMLButtonElement>(null);
+  const interactionVersion = useRef(0);
   const workers = useWorkers();
+  const { ids: coordinatorIds } = useCoordinators(canvas.project.id);
   const worker = resolveWorker(workers.list, workspace.workerId);
-  const query = useQuery({ queryKey: ['workdir-terminals', accountId, projectId, workspace.id], queryFn: () => api.workdirTerminals(projectId, workspace.id), retry: false, refetchInterval: 3000 });
+  const query = useQuery({ queryKey: ['workdir-terminals', accountId, projectId, workspace.id], queryFn: () => api.workdirTerminals(projectId, workspace.id), retry: false, refetchInterval: (current) => terminalPollInterval(current.state.error instanceof RequestFailed ? current.state.error.status : undefined, current.state.data, !!layout.pendingCreate || layout.closing.length > 0 || creating, current.state.status === 'error') });
   const terminals = query.isError ? [] : query.data?.terminals ?? [];
   useEffect(() => {
     if (!openSessionId) return;
     const tab: Tab = { kind: 'session', id: openSessionId };
     setLayout((current) => ({ ...current, tabs: current.tabs.some((t) => keyOf(t) === keyOf(tab)) ? current.tabs : [...current.tabs, tab], selected: keyOf(tab) }));
   }, [openSessionId]);
+  useEffect(() => {
+    const markInteraction = () => { interactionVersion.current += 1; };
+    document.addEventListener('pointerdown', markInteraction, true);
+    document.addEventListener('keydown', markInteraction, true);
+    return () => { document.removeEventListener('pointerdown', markInteraction, true); document.removeEventListener('keydown', markInteraction, true); };
+  }, []);
   useEffect(() => {
     if (!menu) return;
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); setMenu(null); (menu === 'add' ? addRef : chooseRef).current?.focus(); } };
@@ -104,11 +113,12 @@ export function WorkdirTabs({ accountId, projectId, workspace, canvas, onBack, o
       return;
     }
     setLayout((current) => ({ ...current, closing: [...new Set([...current.closing, tab.id])] }));
-    try { await api.closeWorkdirTerminal(projectId, workspace.id, tab.id); setError(null); } catch { setError('关闭待确认，正在重新核对'); }
+    try { await api.closeWorkdirTerminal(projectId, workspace.id, tab.id); setError(null); } catch { setError('关闭待确认，请稍后核对终端状态'); }
     void query.refetch();
   };
   const create = async () => {
     if (creating) return;
+    const startedAt = interactionVersion.current;
     setCreating(true); setMenu(null); setError(null);
     const requestId = layout.pendingCreate ?? newClientMessageId();
     // Persist before issuing the POST: a reload after an ambiguous response must reuse this id.
@@ -118,24 +128,32 @@ export function WorkdirTabs({ accountId, projectId, workspace, canvas, onBack, o
       const terminal = await api.createWorkdirTerminal(projectId, workspace.id, requestId);
       setLayout((current) => ({ ...current, pendingCreate: null, tabs: [...current.tabs.filter((t) => keyOf(t) !== `terminal:${terminal.id}`), { kind: 'terminal', id: terminal.id }], selected: `terminal:${terminal.id}` }));
       await query.refetch();
-    } catch (e) { setError(`创建结果未确认：${e instanceof Error ? e.message : '请重试'}；重试不会重复创建`); }
+    } catch { setError('创建结果未确认，请重试；重试不会重复创建'); if (interactionVersion.current === startedAt) setMenu((current) => current ?? 'add'); }
     finally { setCreating(false); }
   };
-  const label = (tab: Tab) => tab.kind === 'session' ? canvas.sessions.find((s) => s.id === tab.id)?.title || `会话 ${tab.id.slice(-4)}` : terminals.find((t) => t.id === tab.id)?.title || '终端';
+  const labelItem = (tab: Tab) => {
+    if (tab.kind === 'terminal') return { id: tab.id, title: terminals.find((t) => t.id === tab.id)?.title || '终端' };
+    const session = canvas.sessions.find((s) => s.id === tab.id);
+    const task = canvas.tasks.find((t) => t.id === session?.taskId);
+    return workdirSessionLabel(tab.id, session, task, coordinatorIds.has(tab.id));
+  };
+  const labels = workdirLabels(layout.tabs.map(labelItem));
+  const label = (tab: Tab) => labels[layout.tabs.findIndex((item) => keyOf(item) === keyOf(tab))] ?? labelItem(tab).title;
+  const unopenedSessions = canvas.sessions.filter((s) => s.workspaceId === workspace.id && !s.groupId && !layout.tabs.some((t) => t.kind === 'session' && t.id === s.id));
+  const unopenedLabels = workdirLabels(unopenedSessions.map((s) => labelItem({ kind: 'session', id: s.id })));
   const terminal = selected?.kind === 'terminal' ? terminals.find((t) => t.id === selected.id) : undefined;
   const unsupported = query.data?.available === false && query.data.reason === '机器不支持独立终端';
   // Disabling admission still permits an authorized running terminal to be drained.
   const canAttach = !query.isError && (query.data?.available === true || (query.data?.available === false && query.data.reason === '工作目录终端未启用'));
-  const unavailable = query.isError ? (query.error instanceof RequestFailed && query.error.status === 404 ? '工作目录或独立终端接口不可用' : query.error instanceof Error ? query.error.message : '读取终端失败') : query.data?.available === false ? query.data.reason || '独立终端不可用' : null;
+  const unavailable = query.isError ? terminalErrorText(query.error instanceof RequestFailed ? query.error.status : undefined) : query.data?.available === false ? query.data.reason || '独立终端不可用' : null;
   return <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="workdir-tabs">
     <div ref={menuRef} className="flex min-h-[44px] shrink-0 items-center gap-1 border-b border-hair bg-panel px-2">
-      <button type="button" onClick={onBack} className="min-h-[44px] px-2 text-sub text-tertiary" aria-label="返回列表">←</button>
-      <span className="max-w-36 truncate px-1 text-sub text-primary" title={workspace.path}>{workspaceName(workspace)}</span>
+      <button type="button" onClick={onBack} className="min-h-[44px] shrink-0 px-2 text-sub text-tertiary" aria-label="返回列表">←</button>
+      <span className="max-w-24 min-w-0 truncate px-1 text-sub text-primary md:max-w-36" title={workspace.path}>{workspaceName(workspace)}</span>
       <div className="hidden min-w-0 flex-1 items-center overflow-x-auto md:flex">{layout.tabs.map((tab) => <div key={keyOf(tab)} className={`flex shrink-0 items-center border-b-2 ${layout.selected === keyOf(tab) ? 'border-sage text-primary' : 'border-transparent text-tertiary'}`}><button type="button" data-testid={`workdir-tab-${tab.kind}`} aria-current={layout.selected === keyOf(tab) ? 'page' : undefined} onClick={() => select(tab)} className="min-h-[44px] max-w-40 truncate px-3 text-sub">{label(tab)}{tab.kind === 'terminal' && layout.closing.includes(tab.id) ? ' · 关闭待确认' : ''}</button><button type="button" data-testid="workdir-close-tab" aria-label={`关闭${label(tab)}`} className="min-h-[44px] min-w-[44px]" onClick={() => void close(tab)}>×</button></div>)}</div>
-      <div className="relative ml-auto md:hidden"><button ref={chooseRef} type="button" data-testid="workdir-choose-tab" className="min-h-[44px] px-3 text-sub text-primary" aria-expanded={menu === 'tabs'} onClick={() => setMenu(menu === 'tabs' ? null : 'tabs')}>{selected ? label(selected) : '选择标签'} · {layout.tabs.length}</button>{menu === 'tabs' ? <div className="absolute right-0 top-full z-30 w-64 rounded-md border border-hair bg-panel p-1 shadow-lg">{layout.tabs.map((tab) => <div key={keyOf(tab)} className="flex"><button type="button" data-testid={`workdir-tab-${tab.kind}`} onClick={() => select(tab)} className="min-h-[44px] min-w-0 flex-1 truncate px-3 text-left text-sub">{label(tab)}{tab.kind === 'terminal' && layout.closing.includes(tab.id) ? ' · 关闭待确认' : ''}</button><button type="button" data-testid="workdir-close-tab" aria-label={`关闭${label(tab)}`} className="min-h-[44px] min-w-[44px]" onClick={() => void close(tab)}>×</button></div>)}</div> : null}</div>
-      <div className="relative"><button ref={addRef} type="button" data-testid="workdir-add" aria-label="新建标签" aria-expanded={menu === 'add'} onClick={() => setMenu(menu === 'add' ? null : 'add')} className="min-h-[44px] min-w-[44px] text-lg">＋</button>{menu === 'add' ? <div className="absolute right-0 top-full z-30 max-h-80 w-56 overflow-y-auto rounded-md border border-hair bg-panel p-1 shadow-lg"><button type="button" data-testid="workdir-new-session" onClick={() => { setMenu(null); if (worker) onNewSession(workspace, worker.workerId); }} disabled={!worker} className="min-h-[44px] w-full px-3 text-left text-sub disabled:opacity-50">新建会话</button>{!unsupported ? <button type="button" data-testid="workdir-new-terminal" disabled={!query.data?.available || query.isError || creating} onClick={() => void create()} className="min-h-[44px] w-full px-3 text-left text-sub disabled:opacity-50">{layout.pendingCreate ? '确认上次创建' : '新建终端'}</button> : null}{canvas.sessions.filter((s) => s.workspaceId === workspace.id && !s.groupId && !layout.tabs.some((t) => t.kind === 'session' && t.id === s.id)).map((s) => <button key={s.id} type="button" data-testid="workdir-open-session" onClick={() => { const tab: Tab = { kind: 'session', id: s.id }; setLayout((current) => ({ ...current, tabs: [...current.tabs, tab], selected: keyOf(tab) })); setMenu(null); restoreMenuFocus(); }} className="block min-h-[44px] w-full truncate border-t border-hair px-3 text-left text-sub">打开 {s.title || `会话 ${s.id.slice(-4)}`}</button>)}</div> : null}</div>
+      <div className="relative ml-auto min-w-0 flex-1 md:hidden"><button ref={chooseRef} type="button" data-testid="workdir-choose-tab" className="flex min-h-[44px] w-full min-w-0 items-center px-3 text-sub text-primary" aria-label={`${selected ? label(selected) : '选择标签'} · ${layout.tabs.length}`} title={selected ? label(selected) : '选择标签'} aria-expanded={menu === 'tabs'} onClick={() => setMenu(menu === 'tabs' ? null : 'tabs')}><span className="min-w-0 truncate">{selected ? label(selected) : '选择标签'}</span><span className="shrink-0 whitespace-nowrap"> · {layout.tabs.length}</span></button>{menu === 'tabs' ? <div className="absolute right-0 top-full z-30 w-64 rounded-md border border-hair bg-panel p-1 shadow-lg">{layout.tabs.map((tab) => <div key={keyOf(tab)} className="flex"><button type="button" data-testid={`workdir-tab-${tab.kind}`} onClick={() => select(tab)} className="min-h-[44px] min-w-0 flex-1 truncate px-3 text-left text-sub">{label(tab)}{tab.kind === 'terminal' && layout.closing.includes(tab.id) ? ' · 关闭待确认' : ''}</button><button type="button" data-testid="workdir-close-tab" aria-label={`关闭${label(tab)}`} className="min-h-[44px] min-w-[44px]" onClick={() => void close(tab)}>×</button></div>)}</div> : null}</div>
+      <div className="relative shrink-0"><button ref={addRef} type="button" data-testid="workdir-add" aria-label="新建标签" aria-expanded={menu === 'add'} onClick={() => setMenu(menu === 'add' ? null : 'add')} className="min-h-[44px] min-w-[44px] text-lg">＋</button>{menu === 'add' ? <div className="absolute right-0 top-full z-30 max-h-80 w-56 overflow-y-auto rounded-md border border-hair bg-panel p-1 shadow-lg"><button type="button" data-testid="workdir-new-session" onClick={() => { setMenu(null); if (worker) onNewSession(workspace, worker.workerId); }} disabled={!worker} className="min-h-[44px] w-full px-3 text-left text-sub disabled:opacity-50">新建会话</button>{!unsupported ? <button type="button" data-testid="workdir-new-terminal" disabled={!query.data?.available || query.isError || creating} onClick={() => void create()} className="min-h-[44px] w-full px-3 text-left text-sub disabled:opacity-50">{layout.pendingCreate ? '确认上次创建' : '新建终端'}</button> : null}{(error || unavailable) ? <p role="status" data-testid="workdir-terminal-status" className="px-3 py-2 text-meta text-tertiary">{error || unavailable}</p> : null}{unopenedSessions.map((s, index) => <button key={s.id} type="button" data-testid="workdir-open-session" onClick={() => { const tab: Tab = { kind: 'session', id: s.id }; setLayout((current) => ({ ...current, tabs: [...current.tabs, tab], selected: keyOf(tab) })); setMenu(null); restoreMenuFocus(); }} className="block min-h-[44px] w-full truncate border-t border-hair px-3 text-left text-sub">打开 {unopenedLabels[index]}</button>)}</div> : null}</div>
     </div>
-    {error || unavailable ? <p role="status" data-testid="workdir-state" className="border-b border-hair px-4 py-2 text-sub text-tertiary">{error || unavailable}</p> : null}
-    {selected?.kind === 'session' ? renderSession(selected.id) : terminal && !query.isError ? terminal.state === 'ended' ? <div className="p-6 text-sub text-tertiary">终端已结束</div> : terminal.state === 'closing' || layout.closing.includes(terminal.id) ? <div className="p-6 text-sub text-tertiary">关闭待确认</div> : terminal.state === 'pending' ? <div className="p-6 text-sub text-tertiary">终端启动待确认</div> : canAttach && terminal.state === 'running' ? <TerminalPanel key={`${accountId}:${terminal.id}`} sessionId={terminal.id} workerId={workspace.workerId} active socketPath={`${workdirTerminalPath(projectId, workspace.id)}/${encodeURIComponent(terminal.id)}/socket`} /> : <div className="p-6 text-sub text-tertiary">终端状态暂不可用</div> : selected?.kind === 'terminal' ? <div className="p-6 text-sub text-tertiary">{layout.closing.includes(selected.id) ? '关闭待确认' : '终端状态暂不可用'}</div> : <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-sub text-tertiary"><p>这里还没有打开的标签</p><p>用右上角的 ＋ 新建会话或终端。</p></div>}
+    {selected?.kind === 'session' ? renderSession(selected.id) : terminal && !query.isError ? terminal.state === 'ended' ? <div className="p-6 text-sub text-tertiary">终端已结束</div> : terminal.state === 'closing' || layout.closing.includes(terminal.id) ? <div className="p-6 text-sub text-tertiary">关闭待确认</div> : terminal.state === 'pending' ? <div className="p-6 text-sub text-tertiary">终端启动待确认</div> : canAttach && terminal.state === 'running' ? <TerminalPanel key={`${accountId}:${terminal.id}`} sessionId={terminal.id} workerId={workspace.workerId} active socketPath={`${workdirTerminalPath(projectId, workspace.id)}/${encodeURIComponent(terminal.id)}/socket`} /> : <div role="status" className="p-6 text-sub text-tertiary">{unavailable || '终端状态暂不可用'}</div> : selected?.kind === 'terminal' ? <div role="status" className="p-6 text-sub text-tertiary">{error || unavailable || (layout.closing.includes(selected.id) ? '关闭待确认' : '终端状态暂不可用')}</div> : <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-sub text-tertiary"><p>这里还没有打开的标签</p><p>用右上角的 ＋ 新建会话或终端。</p></div>}
   </div>;
 }

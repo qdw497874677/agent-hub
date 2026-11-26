@@ -29,7 +29,7 @@ import { ftsTerms } from './memory.ts';
 const DAY = 24 * 60 * 60 * 1000;
 const user = (id: string, role: string): User => ({ id, email: `${id}@x.test`, displayName: id, role, teamId: 'T', disabledAt: null, deletedAt: null, clusterAdmin: false }) as unknown as User;
 
-async function world(extra: { distiller?: MemoryDistiller; checkDistillModel?: MemoryServiceDeps['checkDistillModel'] } = {}) {
+async function world(extra: { distiller?: MemoryDistiller; checkDistillModel?: MemoryServiceDeps['checkDistillModel']; roleOf?: MemoryServiceDeps['roleOf'] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'mem-'));
   const store = openSqliteStore(join(dir, 'hub.db'));
   let clock = 10 * DAY;
@@ -72,6 +72,7 @@ async function world(extra: { distiller?: MemoryDistiller; checkDistillModel?: M
     ...(extra.checkDistillModel ? { checkDistillModel: extra.checkDistillModel } : {}),
     audit: { append: async (entry) => void audits.push(entry) },
     principalOf: async (id) => (users.has(id) ? principal(id) : null),
+    roleOf: extra.roleOf,
     sourceTtlMs: 0
   });
   const agent = { kind: 'session', sessionId: session.value.id } as const;
@@ -224,6 +225,11 @@ test('MCP 工具：描述要求先搜；工具调用走会话身份；静态引�
   assert.match(search!.description, /FIRST/);
   assert.deepEqual(MEMORY_TOOLS.map((t) => t.name).sort(), ['memory.forget', 'memory.get', 'memory.list', 'memory.search', 'memory.write']);
   assert.ok(estimateTokens(MEMORY_GUIDANCE) <= MEMORY_GUIDANCE_TOKEN_LIMIT);
+  assert.match(MEMORY_GUIDANCE, /omit scopes/i);
+  assert.match(MEMORY_GUIDANCE, /role if you have one/i);
+  const schema = search!.inputSchema as { properties: { scopes: { description: string; items: { description: string } } } };
+  assert.match(schema.properties.scopes.description, /Omit to search all available scopes/);
+  assert.match(schema.properties.scopes.items.description, /only if this session was derived with a role/);
   const provider = createMemoryToolProvider(w.service);
   const ctx = { grant: { sessionId: w.agent.sessionId }, now: 0 } as never;
   const wrote = await provider.call('memory.write', { scope: 'session', kind: 'episodic', title: '进度', body: '做完第一步了' }, ctx);
@@ -232,6 +238,41 @@ test('MCP 工具：描述要求先搜；工具调用走会话身份；静态引�
   assert.ok(listed.ok);
   assert.equal((listed.value as unknown[]).length, 1);
   w.close();
+});
+
+test('默认搜索按会话角色选择可见作用域，显式 role 在无角色时严格拒绝', async () => {
+  const ordinary = await world();
+  const role = await world({ roleOf: async () => 'reviewer' });
+  try {
+    for (const w of [ordinary, role]) {
+      const project = await w.service.write(w.agent, { scope: 'project', kind: 'semantic', title: '部署约定', body: '部署流程快照' });
+      assert.ok(project.ok);
+    }
+    const ordinaryFound = await ordinary.service.search(ordinary.agent, { query: '部署流程', include: ['entries'] });
+    assert.ok(ordinaryFound.ok);
+    assert.deepEqual(ordinaryFound.value.map((hit) => hit.scope), [ordinary.pkey]);
+    const deniedSearch = await ordinary.service.search(ordinary.agent, { query: '部署流程', scopes: ['project', 'role'] });
+    assert.equal(deniedSearch.ok, false);
+    if (!deniedSearch.ok) assert.deepEqual(deniedSearch.error, { code: 'invalid', message: '这条会话没有角色（不是按角色派生的），不能用 role 作用域' });
+    const deniedWrite = await ordinary.service.write(ordinary.agent, { scope: 'role', kind: 'semantic', title: '规则', body: '角色规则' });
+    assert.equal(deniedWrite.ok, false);
+    if (!deniedWrite.ok) assert.equal(deniedWrite.error.code, 'invalid');
+    const deniedList = await ordinary.service.list(ordinary.agent, { scope: 'role' });
+    assert.equal(deniedList.ok, false);
+    if (!deniedList.ok) assert.equal(deniedList.error.code, 'invalid');
+
+    const roleWrite = await role.service.write(role.agent, { scope: 'role', kind: 'semantic', title: '角色约定', body: '部署流程审核' });
+    assert.ok(roleWrite.ok);
+    const roleFound = await role.service.search(role.agent, { query: '部署流程', include: ['entries'] });
+    assert.ok(roleFound.ok);
+    assert.deepEqual(roleFound.value.map((hit) => hit.scope).sort(), [role.pkey, 'role:T/reviewer'].sort());
+    const roleOnly = await role.service.search(role.agent, { query: '部署流程', scopes: ['role'], include: ['entries'] });
+    assert.ok(roleOnly.ok);
+    assert.deepEqual(roleOnly.value.map((hit) => hit.scope), ['role:T/reviewer']);
+  } finally {
+    ordinary.close();
+    role.close();
+  }
 });
 
 test('FTS 查询词：短词走 LIKE，标点当分隔', () => {
