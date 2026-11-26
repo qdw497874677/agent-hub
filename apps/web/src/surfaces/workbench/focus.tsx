@@ -7,7 +7,7 @@ import { useDelegations } from '../../shell/delegations.ts';
 import { DelegationOriginBanner, DelegationPanel } from './delegation-panel.tsx';
 import { DelegateDialog } from './delegate-dialog.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
 import { api, sessionGroupId, sessionStartupApi } from '../../shell/api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
@@ -91,7 +91,6 @@ interface Props {
   /** 整页时的「← 返回」；画布窗口里没有（窗口自己有关闭）。 */
   readonly onBack?: () => void;
   readonly onProjectNavigation?: () => void;
-  readonly onNewTask?: () => void;
   readonly onSearch?: () => void;
   /** 画布窗口：顶栏变成拖动把手，右边挂窗口按钮（最小化/最大化/打开/关闭）。 */
   readonly windowChrome?: { readonly actions: ReactNode };
@@ -138,7 +137,6 @@ export function FocusView({
   onDraftChange,
   onBack,
   onProjectNavigation,
-  onNewTask,
   onSearch,
   onChanged,
   onOpenSession,
@@ -834,7 +832,6 @@ export function FocusView({
           lastSeq={live?.lastSeq ?? session.lastSeq}
           attention={status === 'done' && answerItem ? { possible: answerItem.possible } : null}
         />
-        {onNewTask ? <button type="button" className="flex size-[44px] shrink-0 items-center justify-center text-sub text-tertiary hover:text-primary md:hidden" aria-label="新建任务" onClick={onNewTask}>＋</button> : null}
         <span className="flex shrink-0 items-center">
           <button
             className="hidden h-11 shrink-0 items-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary md:flex md:px-2 md:h-9"
@@ -854,19 +851,18 @@ export function FocusView({
           <span className="hidden md:flex">
             <DisplayMenu settings={settings} onChange={changeSettings} />
           </span>
-          <Dropdown label="更多" icon="⋯" triggerRef={moreRef} testId="session-more-trigger" menuClassName="max-h-[min(75dvh,640px)] overflow-y-auto overscroll-contain">
+          <Dropdown key={session.id} label="更多" icon="⋯" triggerRef={moreRef} testId="session-more-trigger" menuClassName="max-h-[min(75dvh,640px)] overflow-y-auto overscroll-contain">
             {(close) => (
-              <>
-                <MenuGroup label="工具" className="md:hidden">
-                  {tabs.filter((t) => t !== 'chat').map((t) => <MenuItem key={t} title={sessionTabLabel(t, t === 'changes' ? changeCount : undefined)} testId={`session-more-${t}`} onClick={() => { close(); setTab(t); }} />)}
-                  <MenuItem title="工作区" testId="session-more-workspace" onClick={() => { close(); setWorkspaceOpen(true); }} />
+              <SessionMenuPages narrow={narrow}>{(page, navigate) => <>
+                {narrow && page === 'home' ? <MenuGroup label="工具">
+                  {tabs.filter((t) => t !== 'chat').map((t) => <MenuItem key={t} className="min-h-[44px]" title={sessionTabLabel(t, t === 'changes' ? changeCount : undefined)} testId={`session-more-${t}`} onClick={() => { close(); setTab(t); }} />)}
+                  <MenuItem className="min-h-[44px]" title="工作区" testId="session-more-workspace" onClick={() => { close(); setWorkspaceOpen(true); }} />
+                  {onSearch ? <MenuItem className="min-h-[44px]" title="搜索任务与会话" onClick={() => { close(); onSearch(); }} /> : null}
+                  <MenuItem className="min-h-[44px] border-t border-hair" title="会话与显示 ›" testId="session-more-details" onClick={() => navigate('details')} />
+                  <MenuItem className="min-h-[44px]" title="会话操作与预设 ›" testId="session-more-actions" onClick={() => navigate('actions')} />
+                </MenuGroup> : null}
+                {narrow && page === 'details' ? <MenuGroup label="会话与显示">
                   <MenuItem title="会话来历" testId="session-more-provenance" onClick={() => { close(); setProvenanceOpen(true); }} />
-                  <MenuItem title="交给其他 Agent 继续" hint="新建会话，带上下文继续" testId="agent-handoff-trigger" onClick={() => { close(); moreRef.current?.focus(); setMobileHandoffSession(session.id); }} />
-                  {onSearch ? <MenuItem title="搜索任务与会话" onClick={() => { close(); onSearch(); }} /> : null}
-                </MenuGroup>
-                {/* 手机上 header 只留标题、状态和「⋯」（连接 / 详情 / Aa 都在 sm 以上才显示），
-                    这三个入口在这里补一份；桌面上不渲染，避免和 header 重复。 */}
-                <MenuGroup label="详情与显示" className="md:hidden">
                   <MenuItem
                     title="详情"
                     hint="查看会话、工作目录和用量"
@@ -891,7 +887,9 @@ export function FocusView({
                       setDisplayOpen(true);
                     }}
                   />
-                </MenuGroup>
+                </MenuGroup> : null}
+                {!narrow || page === 'actions' ? <>
+                {narrow ? <MenuGroup label="继续会话"><MenuItem title="交给其他 Agent 继续" hint="新建会话，带上下文继续" testId="agent-handoff-trigger" onClick={() => { close(); moreRef.current?.focus(); setMobileHandoffSession(session.id); }} /></MenuGroup> : null}
                 <MenuGroup label="这次会话" className="border-t border-hair md:border-t-0">
                   <MenuItem
                     title="分叉"
@@ -1005,7 +1003,8 @@ export function FocusView({
                     }}
                   />
                 </MenuGroup>
-              </>
+                </> : null}
+              </>}</SessionMenuPages>
             )}
           </Dropdown>
           {windowChrome?.actions}
@@ -1514,6 +1513,33 @@ export function FocusView({
     {docked ? detailsPanel : null}
     </div>
   );
+}
+
+type SessionMenuPage = 'home' | 'details' | 'actions';
+
+/** 菜单卸载时丢弃层级，回到上一层时把焦点交还对应入口。 */
+function SessionMenuPages({ narrow, children }: { narrow: boolean; children: (page: SessionMenuPage, navigate: (page: SessionMenuPage) => void) => ReactNode }) {
+  const [page, setPage] = useState<SessionMenuPage>('home');
+  const root = useRef<HTMLDivElement>(null);
+  const focusAfterNavigation = useRef<{ next: SessionMenuPage; previous: SessionMenuPage } | null>(null);
+  useLayoutEffect(() => {
+    const pending = focusAfterNavigation.current;
+    if (!pending || pending.next !== page) return;
+    focusAfterNavigation.current = null;
+    const selector = page === 'home' ? `[data-testid="session-more-${pending.previous}"]` : '[data-testid="session-more-back"]';
+    root.current?.querySelector<HTMLButtonElement>(selector)?.focus();
+  }, [page]);
+  const navigate = (next: SessionMenuPage) => {
+    if (next === page) return;
+    focusAfterNavigation.current = { next, previous: page };
+    setPage(next);
+  };
+  return <div ref={root} onKeyDown={(event) => {
+    if (narrow && page !== 'home' && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); navigate('home'); }
+  }}>
+    {narrow && page !== 'home' ? <button type="button" role="menuitem" data-testid="session-more-back" className="sticky top-0 z-10 flex min-h-[44px] w-full items-center gap-2 border-b border-hair bg-overlay px-3 text-left text-sub text-secondary hover:text-primary" onClick={() => navigate('home')}>← 返回</button> : null}
+    {children(page, navigate)}
+  </div>;
 }
 
 /** 手机交接的确认状态跟随来源会话销毁，不覆盖新会话。 */

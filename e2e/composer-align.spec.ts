@@ -111,12 +111,14 @@ for (const mode of [{ name: '320px 触屏', w: 320, h: 700, touch: true }, { nam
       const { projectId, id, dir } = await setup(page, baseURL!);
       try {
         await page.goto(`/#/p/${projectId}/focus/${id}`);
+        const header = page.getByTestId('focus-header');
+        await expect(header).toBeVisible();
+        await expect(header.getByRole('button', { name: '新建任务', exact: true })).toHaveCount(0);
         if (mode.touch) {
-          await expect(page.getByTestId('focus-header')).toBeVisible();
           await expect(page.getByTestId('session-tabs')).toBeHidden();
           await expect(page.getByTestId('workspace-entry')).toHaveCount(0);
           await expect(page.getByTestId('provenance-row')).toBeHidden();
-          const headerHeight = (await page.getByTestId('focus-header').boundingBox())!.height;
+          const headerHeight = (await header.boundingBox())!.height;
           expect(headerHeight, '只有一行会话页头').toBeLessThanOrEqual(52);
           expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
           const more = page.getByTestId('session-more-trigger');
@@ -124,9 +126,46 @@ for (const mode of [{ name: '320px 触屏', w: 320, h: 700, touch: true }, { nam
           expect(moreBox.width).toBeGreaterThanOrEqual(44);
           expect(moreBox.height).toBeGreaterThanOrEqual(44);
           await more.click();
-          await expect(page.getByTestId('session-more-workspace')).toBeVisible();
+          const menu = header.getByRole('menu');
+          const details = menu.getByTestId('session-more-details');
+          const actions = menu.getByTestId('session-more-actions');
+          for (const item of ['files', 'changes', 'preview', 'workspace']) {
+            await expect(menu.getByTestId(`session-more-${item}`)).toBeVisible();
+          }
+          await expect(menu.getByRole('menuitem', { name: '搜索任务与会话' })).toBeVisible();
+          await expect(menu.getByTestId('session-more-provenance')).toHaveCount(0);
+          await expect(menu.getByTestId('agent-handoff-trigger')).toHaveCount(0);
+          expect(await menu.evaluate((el) => el.scrollHeight <= el.clientHeight + 1), '手机首层无需滚动').toBe(true);
+          if (SHOTS) await page.screenshot({ path: join(SHOTS, `more-${mode.w}.png`) });
+
+          await details.click();
+          await expect(menu.getByTestId('session-more-provenance')).toBeVisible();
+          await expect(menu.getByTestId('session-more-workspace')).toHaveCount(0);
+          await menu.getByTestId('session-more-back').click();
+          await expect(details).toBeFocused();
+
+          await actions.click();
+          await expect(menu.getByTestId('agent-handoff-trigger')).toBeVisible();
           await page.keyboard.press('Escape');
+          await expect(actions).toBeFocused();
+          await page.keyboard.press('Escape');
+          await expect(menu).toBeHidden();
           await expect(more).toBeFocused();
+
+          await more.click();
+          await details.click();
+          await page.getByRole('textbox', { name: '发送消息' }).click();
+          await expect(menu).toBeHidden();
+          await more.click();
+          await expect(details).toBeVisible();
+          await expect(menu.getByTestId('session-more-back')).toHaveCount(0);
+          await page.keyboard.press('Escape');
+        } else {
+          const more = header.getByTestId('session-more-trigger');
+          await more.click();
+          await expect(header.getByRole('menuitem', { name: /^分叉/ })).toBeVisible();
+          await expect(header.getByTestId('session-more-actions')).toHaveCount(0);
+          await page.keyboard.press('Escape');
         }
         await exercise(page, page.locator('body'), `${mode.name} 会话页`, mode.touch);
         await page.goto(`/#/p/${projectId}/canvas`);
@@ -134,6 +173,14 @@ for (const mode of [{ name: '320px 触屏', w: 320, h: 700, touch: true }, { nam
         await card.locator('header').dblclick({ position: { x: 60, y: 8 } });
         const win = page.locator(`[data-testid="canvas-window"][data-session-id="${id}"]`);
         await expect(win).toBeVisible();
+        if (mode.touch) {
+          await win.getByTestId('session-more-trigger').click();
+          await win.getByTestId('session-more-actions').click();
+          await expect(win.getByTestId('session-side-open')).toBeVisible();
+          await win.getByTestId('session-more-back').click();
+          await expect(win.getByTestId('session-more-workspace')).toBeVisible();
+          await page.keyboard.press('Escape');
+        }
         await exercise(page, win, `${mode.name} 画布窗口`, mode.touch);
       } finally {
         stopFakeWorker();

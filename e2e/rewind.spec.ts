@@ -194,6 +194,7 @@ test('从这里重来：只回滚对话，文件不变；非 git 临时目录有
     // 继续到别处时不能提交 WIP；无 WIP 的交接仍可用。
     await page.goto(`/#/p/${project.id}/focus/${s1}`);
     await page.getByRole('button', { name: '更多' }).click();
+    await page.getByTestId('session-more-actions').click();
     await page.getByRole('menuitem', { name: /换个地方继续/ }).click();
     const continueDialog = page.getByRole('dialog', { name: '换个地方继续' });
     await expect(continueDialog.getByTestId('continue-wip')).toBeDisabled();

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 import { currentRun } from './run-id.ts';
 
 /**
@@ -23,6 +23,7 @@ const RUN = currentRun().replace(/[^a-z0-9]/gi, '').slice(-8).toLowerCase();
 const SERVER_A = `echo-a-${RUN}`;
 const SERVER_B = `echo-b-${RUN}`;
 const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/session-mcp';
+test.afterAll(() => stopFakeWorker());
 
 test('会话详情：关掉的 MCP 服务器单独列出、能打开，刷新后仍保持', async ({ page, baseURL }) => {
   test.setTimeout(120_000);
@@ -30,24 +31,18 @@ test('会话详情：关掉的 MCP 服务器单独列出、能打开，刷新后
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
 
-  let agentId: string | undefined;
-  for (let i = 0; i < 60 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  expect(agentId, '本机 Worker 必须在线').toBeTruthy();
+  const workerId = await ensureFakeWorker(page, baseURL!);
 
   const dir = mkdtempSync(join(tmpdir(), 'e2e-mcp-toggle-'));
   const project = (await (
-    await page.request.post('/api/projects', { headers, data: { name: `e2e mcp 开关 ${RUN}`, rootPath: dir } })
+    await page.request.post('/api/projects', { headers, data: { name: `e2e mcp 开关 ${RUN}`, rootPath: dir, workerId } })
   ).json()) as { id: string };
   const task = (await (
     await page.request.post('/api/tasks', { headers, data: { projectId: project.id, title: `MCP 开关 ${RUN}` } })
   ).json()) as { id: string };
   const derived = await page.request.post('/api/sessions/derive', {
     headers,
-    data: { taskId: task.id, agentId, model: piModel() }
+    data: { taskId: task.id, agentId: FAKE_AGENT_ID, workerId, model: '' }
   });
   expect(derived.status(), await derived.text()).toBe(201);
   const sid = ((await derived.json()) as { id: string }).id;
@@ -154,24 +149,18 @@ test('清单里两个服务器：名字/transport/来源都对，关掉那行变
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
 
-  let agentId: string | undefined;
-  for (let i = 0; i < 60 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  expect(agentId, '本机 Worker 必须在线').toBeTruthy();
+  const workerId = await ensureFakeWorker(page, baseURL!);
 
   const dir = mkdtempSync(join(tmpdir(), 'e2e-mcp-rows-'));
   const project = (await (
-    await page.request.post('/api/projects', { headers, data: { name: `e2e mcp 行 ${RUN}`, rootPath: dir } })
+    await page.request.post('/api/projects', { headers, data: { name: `e2e mcp 行 ${RUN}`, rootPath: dir, workerId } })
   ).json()) as { id: string };
   const task = (await (
     await page.request.post('/api/tasks', { headers, data: { projectId: project.id, title: `MCP 行 ${RUN}` } })
   ).json()) as { id: string };
   const derived = await page.request.post('/api/sessions/derive', {
     headers,
-    data: { taskId: task.id, agentId, model: piModel() }
+    data: { taskId: task.id, agentId: FAKE_AGENT_ID, workerId, model: '' }
   });
   expect(derived.status(), await derived.text()).toBe(201);
   const sid = ((await derived.json()) as { id: string }).id;
@@ -242,6 +231,7 @@ test('清单里两个服务器：名字/transport/来源都对，关掉那行变
   await narrow.waitFor({ state: 'visible', timeout: 3_000 }).catch(() => undefined);
   if (!(await narrow.isVisible())) {
     await page.getByRole('button', { name: '更多' }).click();
+    await page.getByTestId('session-more-details').click();
     await page.getByRole('menuitem', { name: /^详情/ }).click();
   }
   const narrowMcp = narrow.getByTestId('session-mcp');

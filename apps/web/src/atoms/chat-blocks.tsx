@@ -229,6 +229,7 @@ export function MenuItem({
   disabled,
   danger = false,
   testId,
+  className = '',
   onClick
 }: {
   title: string;
@@ -237,13 +238,14 @@ export function MenuItem({
   /** 危险操作：标题用 rust，悬停时淡淡染一层，别和普通项长得一样。 */
   danger?: boolean;
   testId?: string;
+  className?: string;
   onClick: () => void;
 }) {
   return (
     <button
       role="menuitem"
       data-testid={testId}
-      className={`block w-full px-3 py-2.5 text-left text-sub disabled:opacity-40 ${
+      className={`block w-full px-3 py-2.5 text-left text-sub disabled:opacity-40 ${className} ${
         danger ? 'text-rust hover:bg-rust/10 hover:text-rust' : 'text-secondary hover:text-primary'
       }`}
       disabled={disabled}

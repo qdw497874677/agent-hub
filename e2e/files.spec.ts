@@ -63,6 +63,7 @@ test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新
   await page.goto(`/#/p/${project.id}/focus/${sid}`);
   // 手机上「详情」收进了「更多」菜单（IA 分层改动之后）。
   await page.getByRole('button', { name: '更多' }).click();
+  await page.getByTestId('session-more-details').click();
   await page.getByRole('menuitem', { name: /^详情/ }).click();
   await page.getByTestId('open-files').click();
   // 详情 → 浏览文件：关掉详情，切到会话的「文件」标签页（不再是全屏浮层）

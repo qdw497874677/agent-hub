@@ -12,6 +12,9 @@ export async function hideSessionOptions(scope: Page | Locator): Promise<void> {
 }
 
 export async function showSessionHandoff(page: Page, compact: boolean): Promise<Locator> {
-  if (compact) await page.getByTestId('session-more-trigger').click();
+  if (compact) {
+    await page.getByTestId('session-more-trigger').click();
+    await page.getByTestId('session-more-actions').click();
+  }
   return page.getByTestId('agent-handoff-trigger');
 }

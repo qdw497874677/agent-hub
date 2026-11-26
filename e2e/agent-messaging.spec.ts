@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 import { piModel } from './hub-model.ts';
 
 /**
@@ -11,23 +12,30 @@ import { piModel } from './hub-model.ts';
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/agent-messaging';
 type Msg = { messageId: string; kind: string; status: string; reply: string | null; failure: string | null; replyTo: string | null; from: string };
+test.afterEach(() => stopFakeWorker());
 
-async function world(page: Page, baseURL: string) {
+async function world(page: Page, baseURL: string, legacy = false) {
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
   const dir = mkdtempSync(join(tmpdir(), 'e2e-msg-'));
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 协作 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
+  let workerId: string | undefined;
+  let agentId: string | undefined;
+  if (legacy) {
+    for (let i = 0; i < 40 && !agentId; i++) {
+      const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
+      agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
+      if (!agentId) await page.waitForTimeout(500);
+    }
+    test.skip(!agentId, '这台机器上没有可用的 agent');
+  } else {
+    workerId = await ensureFakeWorker(page, baseURL);
+    agentId = FAKE_AGENT_ID;
+  }
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 协作 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: 'agent 协作' }, headers })).json()) as { id: string };
   const session = async (): Promise<string> => {
-    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
+    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, workerId, model: legacy ? piModel() : '' }, headers });
     expect(derived.status(), await derived.text()).toBe(201);
     return ((await derived.json()) as { id: string }).id;
   };
@@ -64,6 +72,7 @@ test('A ask B：B 这一轮结束后回复排回 A；审计按 traceId 串起来
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/p/${w.project}/focus/${a}`);
   await page.getByRole('button', { name: '更多' }).click();
+  await page.getByTestId('session-more-details').click();
   await page.getByRole('menuitem', { name: /^详情/ }).click();
   const panel = page.getByRole('complementary', { name: '会话详情' }).getByTestId('session-messages');
   await expect(panel.getByTestId('agent-message-row').first()).toBeVisible();
@@ -74,7 +83,7 @@ test('A ask B：B 这一轮结束后回复排回 A；审计按 traceId 串起来
 
 test('B 忙：第二条排队，等第一轮结束后才投', async ({ page, baseURL }) => {
   test.setTimeout(240_000);
-  const w = await world(page, baseURL!);
+  const w = await world(page, baseURL!, true);
   const [a, b, c] = [await w.session(), await w.session(), await w.session()];
   expect((await w.link(a, b)).status()).toBe(201);
   expect((await w.link(c, b)).status()).toBe(201);
@@ -105,7 +114,7 @@ test('没权限 / 找不到 / 派生要人批：拒绝有审计；批准卡片�
   const agentId = w.agentId;
   const tooHigh = await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [], limits: { maxDepth: 9 } } });
   expect(tooHigh.status(), '超过默认 2 倍的上限被拒').toBe(400);
-  const saved = await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [{ name: 'reviewer', description: '审代码', agentId, model: piModel(), reuse: 'sticky' }], limits: { maxDepth: 8 } } });
+  const saved = await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [{ name: 'reviewer', description: '审代码', agentId, model: '', reuse: 'sticky' }], limits: { maxDepth: 8 } } });
   expect(saved.status(), await saved.text()).toBe(200);
   const spawnAsk = await w.send(a, { kind: 'ask', to: 'role:reviewer', body: '帮我审一下这个改动' });
   expect(spawnAsk.status()).toBe(201);
@@ -115,6 +124,7 @@ test('没权限 / 找不到 / 派生要人批：拒绝有审计；批准卡片�
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/p/${w.project}/focus/${a}`);
   await page.getByRole('button', { name: '更多' }).click();
+  await page.getByTestId('session-more-details').click();
   await page.getByRole('menuitem', { name: /^详情/ }).click();
   const card = page.getByRole('complementary', { name: '会话详情' }).getByTestId('spawn-approval');
   await expect(card).toContainText('role:reviewer');

@@ -102,9 +102,10 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
     await expect(page.getByTestId('files-panel-files')).toBeHidden();
 
     // 详情 → 浏览文件：切到会话的「文件」标签页，详情关掉，旧浮层不再出现
-    // 桌面走 header 的「详情」按钮；手机上 header 收起来了，入口在「更多」菜单第一组。
-    if (width < 640) {
+    // 桌面走 header 的「详情」按钮；手机入口在「更多」的「详情」分类。
+    if (width < 768) {
       await page.getByTestId('session-more-trigger').click();
+      await page.getByTestId('session-more-details').click();
       await page.getByRole('menuitem', { name: /^详情/ }).click();
     } else {
       await page.getByRole('button', { name: '详情' }).click();

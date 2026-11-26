@@ -630,7 +630,6 @@ function Workspace() {
           onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
           onBack={backFromFocus}
           onProjectNavigation={() => setSidebarOpen(true)}
-          onNewTask={() => setNewTask(true)}
           onSearch={() => setSearch(true)}
           onChanged={refresh}
           onOpenSession={openSession}

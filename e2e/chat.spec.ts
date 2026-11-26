@@ -3,26 +3,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 会话页就是对话（参照 OpenCode web）：从画布点卡片直接进对话；
  * 详情（能力、资产、事件流）在抽屉里；分叉、换个地方继续在「更多」和消息菜单里；显示设置按账号记住。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'];
+test.afterAll(stopFakeWorker);
 
 async function openFromCanvas(page: Page, baseURL: string, say?: string) {
   await loginByApi(page);
+  const workerId = await ensureFakeWorker(page, baseURL, FAKE_AGENT_ID, { agentArgs: ['--fork'] });
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-  const agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-  test.skip(!agentId, '这台机器上没有可用的 agent');
   const dir = mkdtempSync(join(tmpdir(), 'e2e-chat-'));
   const name = `e2e 对话 ${Date.now().toString(36)}`;
-  const project = (await (await page.request.post('/api/projects', { data: { name, rootPath: dir }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name, rootPath: dir, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '第一个任务，随便聊聊' }, headers })).json()) as { id: string };
-  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' }, headers });
   expect(derived.status(), await derived.text()).toBe(201);
   const { id } = (await derived.json()) as { id: string };
   if (say) {
@@ -55,15 +54,19 @@ for (const width of [360, 430]) {
     }
 
     await page.getByRole('button', { name: '更多' }).click();
+    await page.getByTestId('session-more-actions').click();
     await expect(page.getByRole('menuitem', { name: /^分叉/ })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: /从某一步分叉/ })).toHaveCount(0);
     await expect(page.getByRole('menuitem', { name: /换个地方继续/ })).toBeVisible();
-    // 桌面上「连接」「详情」「Aa」在 header 里；手机上这三个入口收进「更多」的第一组
+    // 桌面上「连接」「详情」「Aa」在 header 里；手机上收进「详情」分类。
+    await page.getByTestId('session-more-back').click();
+    await page.getByTestId('session-more-details').click();
     await expect(page.getByRole('menuitem', { name: /^连接会话/ })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: /^显示设置/ })).toBeVisible();
     await page.keyboard.press('Escape');
+    await expect(page.getByTestId('session-more-details')).toBeFocused();
 
-    await page.getByRole('button', { name: '更多' }).click();
+    await page.getByTestId('session-more-details').click();
     await page.getByRole('menuitem', { name: /^详情/ }).click();
     const sheet = page.getByRole('complementary', { name: '会话详情' });
     await expect(sheet).toBeVisible();
@@ -122,7 +125,7 @@ test('显示设置：每个选项都能切，刷新后还在', async ({ page, ba
   await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('agent-hub.display.')).forEach((k) => localStorage.removeItem(k)));
 });
 
-test('真回复：用户气泡 + markdown 回复；「更多」→分叉进新会话，看到分叉前的对话和分界线', async ({ page, baseURL }) => {
+test('回复：用户气泡 + markdown 回复；「更多」→分叉进新会话，看到分叉前的对话和分界线', async ({ page, baseURL }) => {
   test.setTimeout(180_000);
   const { log, project } = await openFromCanvas(page, baseURL!, '只回复两个字：好的');
   await expect(log.getByTestId('msg-user')).toContainText('好的');
