@@ -53,7 +53,7 @@ function parseRepos(raw: string | null): ProjectRepo[] | null {
   try {
     const value: unknown = JSON.parse(raw);
     if (!Array.isArray(value)) throw new Error('not an array');
-    const normalized = normalizeRepos(value as Partial<ProjectRepo>[]);
+    const normalized = normalizeRepos(value as Partial<ProjectRepo>[], { allowLegacyDuplicateIds: true });
     if (!normalized.ok) throw new Error(normalized.error.message);
     return [...normalized.value];
   } catch (error) {

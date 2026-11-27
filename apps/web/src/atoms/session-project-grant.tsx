@@ -29,7 +29,7 @@ type RowNote =
  * 写回是串行的（一次 PUT 带完整并集，最后一项走 DELETE），所以哪一行在写、写没写成，
  * 就显示在那一行下面：底下再挂一条全局提示，手机上永远在视口外。
  *
- * 手机首屏放不下六行开关：整段收成一行摘要（标题 + 服务端已确认的状态），点开才是那六项；桌面默认展开。
+ * 手机首屏放不下所有开关：整段收成一行摘要（标题 + 服务端已确认的状态），桌面默认展开。
  * 摘要不跟着乐观值走，正在写的时候另加「保存中」。
  */
 export function SessionProjectGrant({ sessionId }: { sessionId: string }) {
@@ -49,7 +49,7 @@ export function SessionProjectGrant({ sessionId }: { sessionId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<'saved' | 'revoked' | null>(null);
   const [revokeArmed, setRevokeArmed] = useState(false);
-  /** 手机上一行摘要、桌面直接摊开：六行开关不该占掉底部抽屉的第一屏。 */
+  /** 手机上收成一行摘要，桌面直接摊开。 */
   const [open, setOpen] = useState(desktopExpanded);
   /** 在途请求的轮次。下次读写或切会话都会换轮，旧回包不能解锁、不能落地。 */
   const inFlight = useRef<number | null>(null);
@@ -92,7 +92,11 @@ export function SessionProjectGrant({ sessionId }: { sessionId: string }) {
           ? await projectToolGrantApi.revoke(sessionId)
           : await projectToolGrantApi.set(sessionId, next);
       if (token !== seq.current) return;
-      client.setQueryData<ProjectToolGrantView>(key, updated);
+      client.setQueryData<ProjectToolGrantView>(key, (previous) => ({
+        ...updated,
+        repositoryReadAvailable: updated.repositoryReadAvailable ?? previous?.repositoryReadAvailable
+      }));
+      void client.invalidateQueries({ queryKey: key });
       setOverride(null);
       setSaved(next.length === 0 ? 'revoked' : 'saved');
       if (target !== 'all') setRowNotes((old) => ({ ...old, [target]: { kind: 'saved', wanted } }));
@@ -132,7 +136,8 @@ export function SessionProjectGrant({ sessionId }: { sessionId: string }) {
       </section>
     );
   }
-  if (view.error !== null && view.data === undefined) {
+  // 不把过期缓存当成当前可用性：重新查询失权或失败时收起开关。
+  if (view.error !== null) {
     return (
       <section data-testid="project-grant" className="min-w-0">
         <div className="flex min-w-0 items-baseline gap-2">
@@ -183,18 +188,21 @@ export function SessionProjectGrant({ sessionId }: { sessionId: string }) {
         </p>
 
         <ul className="mt-1.5 divide-y divide-hair border-y border-hair">
-          {PROJECT_TOOL_GRANT_SCOPES.map((scope) => (
+          {PROJECT_TOOL_GRANT_SCOPES.filter((scope) => scope !== 'repo:read' || view.data?.repositoryReadAvailable === true || confirmed.includes(scope)).map((scope) => (
             <Fragment key={scope}>
               {GROUP_LABEL[scope] ? (
                 <li aria-hidden className="pt-1.5 pb-0.5 text-meta text-tertiary">
                   {GROUP_LABEL[scope]}
                 </li>
               ) : null}
+              {scope === 'repo:read' && view.data?.repositoryReadAvailable !== true ? (
+                <li className="pt-1.5 text-meta text-tertiary">当前仓库读取能力不可用，可关闭已有授权。</li>
+              ) : null}
               <GrantRow
                 scope={scope}
                 enabled={scopes.includes(scope)}
                 saving={saving === scope}
-                locked={locked}
+                locked={locked || (scope === 'repo:read' && view.data?.repositoryReadAvailable !== true && !scopes.includes(scope))}
                 note={rowNotes[scope]}
                 onToggle={(on) => toggle(scope, on)}
                 onRetry={() => retry(scope)}
@@ -330,6 +338,10 @@ const SCOPE_COPY: Readonly<Record<GrantScope, { readonly label: string; readonly
   'asset:write': {
     label: '改项目资产',
     hint: '可提交新的或修订的项目自有资产等待审批，并按角色管理未来会话的资产启用；不直接发布、不改上游共享资产、不影响运行中的会话'
+  },
+  'repo:read': {
+    label: '读取项目仓库',
+    hint: '读取获准仓库的远端快照，不更新本地文件，也不授予推送权限'
   }
 };
 

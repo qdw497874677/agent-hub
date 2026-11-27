@@ -255,6 +255,7 @@ export interface ToolWiringInput {
   readonly subjectOf: (sessionId: SessionId) => Promise<Subject | null>;
   readonly enqueueDispatch: (request: AgentTaskRequest) => Promise<void>;
   readonly projectSessionTools?: ToolProvider;
+  readonly projectRepositoryTools?: ToolProvider;
   readonly projectAssetTools?: ToolProvider;
   readonly workspaceReportTools?: ToolProvider;
   readonly projectSessionScopeCap?: NonNullable<Parameters<typeof createToolGateway>[0]['scopeCap']>;
@@ -281,6 +282,7 @@ export function wireTools(input: ToolWiringInput): ToolGateway {
     scopeCap: input.projectSessionScopeCap,
     providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService),
       ...(input.projectSessionTools ? [input.projectSessionTools] : []),
+      ...(input.projectRepositoryTools ? [input.projectRepositoryTools] : []),
       ...(input.projectAssetTools ? [input.projectAssetTools] : []),
       ...(input.workspaceReportTools ? [input.workspaceReportTools] : []),
       createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),

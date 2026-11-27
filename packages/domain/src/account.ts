@@ -182,6 +182,7 @@ export type AuditAction =
   | 'project.repos'
   | 'project.asset_sets'
   | 'project.repos_check'
+  | 'project.hub_credential'
   | 'workspace.setup'
   | 'workspace.transfer'
   | 'workspace.owner.reconcile'

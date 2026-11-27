@@ -362,6 +362,12 @@ function fetchFailure(code: ProjectGitFetchFailureCode): DomainError {
     case 'closed':
       return unavailable('项目 Git 抓取已关闭');
     case 'upstream':
+    case 'not_found':
+    case 'bad_path':
+    case 'bad_tip':
+    case 'tip_mismatch':
+    case 'unsupported':
+    case 'binary':
     case 'git_failed':
     case 'io':
     case 'generic':

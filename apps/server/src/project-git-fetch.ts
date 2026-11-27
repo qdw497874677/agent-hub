@@ -67,6 +67,12 @@ const MESSAGES: Record<ProjectGitFetchFailureCode, string> = {
   git_failed: '仓库抓取失败',
   bundle_invalid: '仓库抓取结果校验失败',
   io: '仓库抓取暂存失败',
+  bad_path: '仓库路径不合法',
+  not_found: '仓库路径不存在',
+  unsupported: '仓库路径类型不支持',
+  binary: '仓库文件不是 UTF-8 文本',
+  tip_mismatch: '仓库分支提交已变化',
+  bad_tip: '仓库提交标识不合法',
   generic: '仓库抓取失败'
 };
 
@@ -83,6 +89,12 @@ export type ProjectGitFetchFailureCode =
   | 'git_failed'
   | 'bundle_invalid'
   | 'io'
+  | 'bad_path'
+  | 'not_found'
+  | 'unsupported'
+  | 'binary'
+  | 'tip_mismatch'
+  | 'bad_tip'
   | 'generic';
 
 export interface ProjectGitFetchRequest {
@@ -151,6 +163,33 @@ export interface ProjectGitFetcher {
   close(): Promise<void>;
 }
 
+export interface ProjectGitSnapshotInput extends ProjectGitFetchRequest {
+  readonly path: string | null;
+  readonly expectedTip: string | null;
+  /** Optional final authorization check before each upstream request. */
+  readonly authorizeUpstream?: () => Promise<boolean>;
+}
+
+export interface ProjectGitSnapshotResult {
+  readonly branch: string;
+  readonly tip: string;
+  readonly kind: 'directory' | 'text';
+  readonly path: string;
+  readonly entries?: readonly { readonly name: string; readonly kind: 'directory' | 'file' | 'symlink' | 'submodule' }[];
+  readonly content?: string;
+}
+
+export type ProjectGitSnapshotOutcome =
+  | { readonly ok: true; readonly result: ProjectGitSnapshotResult }
+  | { readonly ok: false; readonly code: ProjectGitFetchFailureCode; readonly message: string };
+
+export type ProjectGitSnapshotOptions = Omit<ProjectGitFetchOptions, 'outputDir' | 'maxBundleBytes'>;
+
+export interface ProjectGitSnapshotReader {
+  read(input: ProjectGitSnapshotInput): Promise<ProjectGitSnapshotOutcome>;
+  close(): Promise<void>;
+}
+
 class FetchFailure extends Error {
   readonly code: ProjectGitFetchFailureCode;
 
@@ -161,7 +200,7 @@ class FetchFailure extends Error {
   }
 }
 
-function failure(code: ProjectGitFetchFailureCode): ProjectGitFetchOutcome {
+function failure(code: ProjectGitFetchFailureCode): { readonly ok: false; readonly code: ProjectGitFetchFailureCode; readonly message: string } {
   return { ok: false, code, message: MESSAGES[code] ?? MESSAGES.generic };
 }
 
@@ -308,6 +347,7 @@ interface BridgeOptions {
   readonly maxUpstreamBytes: number;
   readonly maxUploadPackRequestBytes: number;
   readonly state: OperationState;
+  readonly authorizeUpstream?: () => Promise<boolean>;
 }
 
 const BRIDGE_IN_FLIGHT_LIMIT = 2;
@@ -394,6 +434,7 @@ async function startBridge(options: BridgeOptions): Promise<Bridge> {
       'user-agent': USER_AGENT
     };
     if (options.authorization !== undefined) headers['authorization'] = options.authorization;
+    await authorizeUpstream();
     const response = await options.egress.fetch(upstreamUrl(base, '/info/refs'), {
       method: 'GET',
       headers,
@@ -429,6 +470,7 @@ async function startBridge(options: BridgeOptions): Promise<Bridge> {
     };
     if (encoding === 'gzip') headers['content-encoding'] = 'gzip';
     if (options.authorization !== undefined) headers['authorization'] = options.authorization;
+    await authorizeUpstream();
     const response = await options.egress.fetch(upstreamUrl(base, '/git-upload-pack'), {
       method: 'POST',
       headers,
@@ -437,6 +479,16 @@ async function startBridge(options: BridgeOptions): Promise<Bridge> {
       redirect: 'error'
     });
     await relayResponse(response, res, RESULT_CONTENT_TYPE, options);
+  }
+
+  async function authorizeUpstream(): Promise<void> {
+    if (options.authorizeUpstream === undefined) return;
+    try {
+      if (await options.authorizeUpstream() === true) return;
+    } catch {
+      // Do not expose authorization errors to the caller or upstream.
+    }
+    throw new FetchFailure('blocked');
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -590,6 +642,7 @@ async function readBoundedBody(req: IncomingMessage, cap: number): Promise<Buffe
 
 interface GitResult {
   readonly stdout: string;
+  readonly bytes: Buffer;
 }
 
 interface RunGitOptions {
@@ -599,6 +652,7 @@ interface RunGitOptions {
   readonly extraEnv?: Readonly<Record<string, string>>;
   readonly signal: AbortSignal;
   readonly capture?: boolean;
+  readonly overflowCode?: ProjectGitFetchFailureCode;
   readonly onSpawn?: (info: { readonly args: readonly string[]; readonly env: Readonly<Record<string, string>> }) => void;
 }
 
@@ -637,7 +691,7 @@ function runGit(args: readonly string[], options: RunGitOptions): Promise<GitRes
     }
 
     let settled = false;
-    let stdout = '';
+    const chunks: Buffer[] = [];
     let stdoutBytes = 0;
 
     const finish = (callback: () => void): void => {
@@ -661,17 +715,18 @@ function runGit(args: readonly string[], options: RunGitOptions): Promise<GitRes
       stdoutBytes += chunk.length;
       if (stdoutBytes > MAX_GIT_STDOUT_BYTES) {
         killTree(child);
-        finish(() => reject(new FetchFailure('git_failed')));
+        finish(() => reject(new FetchFailure(options.overflowCode ?? 'git_failed')));
         return;
       }
-      stdout += chunk.toString('utf8');
+      chunks.push(chunk);
     });
     child.once('error', () => {
       finish(() => reject(new FetchFailure('git_failed')));
     });
-    child.once('exit', (code) => {
+    child.once('close', (code) => {
       finish(() => {
-        if (code === 0) resolve({ stdout });
+        const bytes = Buffer.concat(chunks);
+        if (code === 0) resolve({ stdout: bytes.toString('utf8'), bytes });
         else reject(new FetchFailure('git_failed'));
       });
     });
@@ -798,8 +853,89 @@ function parseSingleHead(output: string, ref: string): string | null {
   return match[1] as string;
 }
 
-export function createProjectGitFetcher(options: ProjectGitFetchOptions): ProjectGitFetcher {
-  if (!isAbsolute(options.outputDir)) {
+function checkedSnapshotPath(path: string | null): string | null {
+  if (path === null || path === '') return '';
+  if (typeof path !== 'string' || path.length > 4096 || /[\\:\u0000-\u001f\u007f]/u.test(path)) return null;
+  const segments = path.split('/');
+  if (segments.some((segment) => !safeTreeName(segment))) return null;
+  return path;
+}
+
+function safeTreeName(name: string): boolean {
+  return name.length > 0 && Buffer.byteLength(name) <= 255 && name !== '.' && name !== '..' &&
+    !/[\\/:\u0000-\u001f\u007f]/u.test(name) && !/[. ]$/u.test(name) &&
+    name.toLowerCase() !== '.git' && name.toLowerCase() !== '.gitmodules';
+}
+
+type SnapshotEntry = { name: string; kind: 'directory' | 'file' | 'symlink' | 'submodule'; oid: string };
+
+async function readSnapshot(
+  run: (args: readonly string[], capture?: boolean) => Promise<GitResult>,
+  config: readonly string[], repoDir: string, branch: string, tip: string, path: string
+): Promise<ProjectGitSnapshotResult> {
+  const decode = (bytes: Buffer): string => {
+    try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+    catch { throw new FetchFailure('binary'); }
+  };
+  const treeEntries = async (oid: string): Promise<SnapshotEntry[]> => {
+    const bytes = (await run([...config, '-C', repoDir, 'ls-tree', '-z', oid], true)).bytes;
+    const entries: SnapshotEntry[] = [];
+    const names = new Set<string>();
+    const rawNames = new Set<string>();
+    let offset = 0;
+    let count = 0;
+    while (offset < bytes.length) {
+      const end = bytes.indexOf(0, offset);
+      if (end === -1) throw new FetchFailure('unsupported');
+      const record = bytes.subarray(offset, end);
+      const tab = record.indexOf(9);
+      if (tab === -1) throw new FetchFailure('unsupported');
+      const header = record.subarray(0, tab).toString('ascii');
+      const match = /^(040000 tree|100644 blob|100755 blob|120000 blob|160000 commit) ([0-9a-f]{40}|[0-9a-f]{64})$/u.exec(header);
+      if (match === null) throw new FetchFailure('unsupported');
+      if (++count > 1000) throw new FetchFailure('too_large');
+      const nameBytes = record.subarray(tab + 1);
+      const rawName = nameBytes.toString('hex');
+      if (rawNames.has(rawName)) throw new FetchFailure('unsupported');
+      rawNames.add(rawName);
+      let name: string;
+      try { name = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(nameBytes); }
+      catch { offset = end + 1; continue; }
+      if (names.has(name)) throw new FetchFailure('unsupported');
+      names.add(name);
+      if (!safeTreeName(name)) { offset = end + 1; continue; }
+      const kind = match[1] === '040000 tree' ? 'directory' : match[1] === '120000 blob' ? 'symlink' :
+        match[1] === '160000 commit' ? 'submodule' : 'file';
+      entries.push({ name, kind, oid: match[2] as string });
+      offset = end + 1;
+    }
+    return entries;
+  };
+  let current: SnapshotEntry = { name: '', kind: 'directory', oid: tip };
+  for (const segment of path === '' ? [] : path.split('/')) {
+    if (current.kind !== 'directory') throw new FetchFailure('unsupported');
+    const matches = (await treeEntries(current.oid)).filter((entry) => entry.name === segment);
+    if (matches.length === 0) throw new FetchFailure('not_found');
+    if (matches.length !== 1) throw new FetchFailure('unsupported');
+    current = matches[0] as SnapshotEntry;
+  }
+  if (current.kind === 'directory') {
+    const entries = (await treeEntries(current.oid)).map(({ name, kind }) => ({ name, kind }));
+    return { branch, tip, kind: 'directory', path, entries };
+  }
+  if (current.kind !== 'file') throw new FetchFailure('unsupported');
+  const sizeText = (await run([...config, '-C', repoDir, 'cat-file', '-s', current.oid], true)).stdout.trim();
+  if (!/^\d+$/u.test(sizeText)) throw new FetchFailure('unsupported');
+  if (!Number.isSafeInteger(Number(sizeText)) || Number(sizeText) > MAX_GIT_STDOUT_BYTES) throw new FetchFailure('too_large');
+  const bytes = (await run([...config, '-C', repoDir, 'cat-file', 'blob', current.oid], true)).bytes;
+  if (bytes.length !== Number(sizeText)) throw new FetchFailure('unsupported');
+  const content = decode(bytes);
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(content)) throw new FetchFailure('binary');
+  return { branch, tip, kind: 'text', path, content };
+}
+
+function createProjectGitEngine(options: ProjectGitSnapshotOptions & { readonly outputDir?: string; readonly maxBundleBytes?: number }) {
+  if (options.outputDir !== undefined && !isAbsolute(options.outputDir)) {
     throw new Error('ProjectGitFetch: outputDir 必须是绝对路径');
   }
   const allowedOrigins = parseAllowedOrigins(options.allowedOrigins, 'ProjectGitFetch');
@@ -832,7 +968,7 @@ export function createProjectGitFetcher(options: ProjectGitFetchOptions): Projec
   let closed = false;
   let closing: Promise<void> | null = null;
 
-  async function fetchOnce(input: ProjectGitFetchRequest): Promise<ProjectGitFetchOutcome> {
+  async function fetchOnce(input: ProjectGitFetchRequest, snapshot?: { path: string; expectedTip: string | null; authorizeUpstream?: () => Promise<boolean> }): Promise<ProjectGitFetchOutcome | ProjectGitSnapshotOutcome> {
     let target: URL;
     let branch: string;
     let authorization: string | undefined;
@@ -857,7 +993,7 @@ export function createProjectGitFetcher(options: ProjectGitFetchOptions): Projec
     let scratch: string | null = null;
     let bridge: Bridge | null = null;
     try {
-      await mkdir(runtime.outputDir, { recursive: true, mode: 0o700 });
+      if (snapshot === undefined && runtime.outputDir !== undefined) await mkdir(runtime.outputDir, { recursive: true, mode: 0o700 });
       await mkdir(runtime.scratchRoot, { recursive: true, mode: 0o700 });
       scratch = await mkdtemp(join(runtime.scratchRoot, 'agent-hub-git-fetch-'));
       const home = join(scratch, 'home');
@@ -880,6 +1016,7 @@ export function createProjectGitFetcher(options: ProjectGitFetchOptions): Projec
           ...(extraEnv === undefined ? {} : { extraEnv }),
           signal: deadline.signal,
           capture,
+          ...(snapshot === undefined ? {} : { overflowCode: 'too_large' as const }),
           ...(options.testOnlyOnGitSpawn === undefined ? {} : { onSpawn: options.testOnlyOnGitSpawn })
         });
 
@@ -891,7 +1028,8 @@ export function createProjectGitFetcher(options: ProjectGitFetchOptions): Projec
         timeoutMs: runtime.timeoutMs,
         maxUpstreamBytes: runtime.maxUpstreamBytes,
         maxUploadPackRequestBytes: runtime.maxUploadPackRequestBytes,
-        state
+        state,
+        ...(snapshot?.authorizeUpstream === undefined ? {} : { authorizeUpstream: snapshot.authorizeUpstream })
       });
       await options.testOnlyOnBridgeReady?.(bridge.url);
 
@@ -930,6 +1068,14 @@ export function createProjectGitFetcher(options: ProjectGitFetchOptions): Projec
 
       const tip = (await run([...config, '-C', repoDir, 'rev-parse', '--verify', '--quiet', ref], true)).stdout.trim();
       if (!isOid(tip)) throw new FetchFailure('bundle_invalid');
+
+      if (snapshot !== undefined) {
+        if (snapshot.expectedTip !== null && snapshot.expectedTip !== tip) throw new FetchFailure('tip_mismatch');
+        const result = await readSnapshot(run, config, repoDir, branch, tip, snapshot.path);
+        if (deadline.signal.aborted) throw new FetchFailure('timeout');
+        if (closed) throw new FetchFailure('closed');
+        return { ok: true, result };
+      }
 
       await run([...config, '-C', repoDir, 'bundle', 'create', bundleTmp, ref]);
       await run([...config, '-C', repoDir, 'bundle', 'verify', bundleTmp]);
@@ -975,6 +1121,7 @@ export function createProjectGitFetcher(options: ProjectGitFetchOptions): Projec
       const bundleSha256 = await sha256File(bundleTmp, deadline.signal);
 
       if (deadline.signal.aborted) throw new FetchFailure('timeout');
+      if (runtime.outputDir === undefined) throw new FetchFailure('io');
       const outPath = join(runtime.outputDir, `git-fetch-${randomBytes(12).toString('hex')}.bundle`);
       try {
         await copyFile(bundleTmp, outPath, fsConstants.COPYFILE_EXCL);
@@ -1031,7 +1178,21 @@ export function createProjectGitFetcher(options: ProjectGitFetchOptions): Projec
       if (!limiter.tryAcquire()) return failure('busy');
       try {
         if (closed) return failure('closed');
-        return await fetchOnce(input);
+        return await fetchOnce(input) as ProjectGitFetchOutcome;
+      } finally {
+        limiter.release();
+      }
+    },
+    async read(input: ProjectGitSnapshotInput): Promise<ProjectGitSnapshotOutcome> {
+      if (closed) return failure('closed');
+      const path = checkedSnapshotPath(input.path);
+      if (path === null) return failure('bad_path');
+      if (input.expectedTip !== null && (typeof input.expectedTip !== 'string' || !isOid(input.expectedTip))) return failure('bad_tip');
+      if (!limiter.tryAcquire()) return failure('busy');
+      try {
+        if (closed) return failure('closed');
+        return await fetchOnce(input, { path, expectedTip: input.expectedTip,
+          ...(input.authorizeUpstream === undefined ? {} : { authorizeUpstream: input.authorizeUpstream }) }) as ProjectGitSnapshotOutcome;
       } finally {
         limiter.release();
       }
@@ -1044,4 +1205,15 @@ export function createProjectGitFetcher(options: ProjectGitFetchOptions): Projec
       return closing;
     }
   };
+}
+
+export function createProjectGitFetcher(options: ProjectGitFetchOptions): ProjectGitFetcher {
+  if (typeof options.outputDir !== 'string' || !isAbsolute(options.outputDir)) {
+    throw new Error('ProjectGitFetch: outputDir 必须是绝对路径');
+  }
+  return createProjectGitEngine(options);
+}
+
+export function createProjectGitSnapshotReader(options: ProjectGitSnapshotOptions): ProjectGitSnapshotReader {
+  return createProjectGitEngine(options);
 }

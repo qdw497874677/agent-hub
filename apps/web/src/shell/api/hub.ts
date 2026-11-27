@@ -40,7 +40,7 @@ export type {
   MetadataSearchSessionDto,
   MetadataSearchTaskDto
 } from '@agent-hub/contract';
-import { call, post } from './http.ts';
+import { call, post, RequestFailed } from './http.ts';
 import type { AgentMessageDto, SessionPeerDto } from './messages.ts';
 import type { ProjectReposCheckDto, ProjectReposPatch, ProjectWorktreePatch } from './projects.ts';
 import type {
@@ -52,6 +52,23 @@ import type {
 import type { CleanupPolicyDto, CleanupRecordsDto } from './workspaces.ts';
 
 export interface WorkdirTerminal { id: string; title: string; state: 'pending' | 'running' | 'closing' | 'ended'; createdAt: number }
+
+export type HubCredentialDetails = {
+  readonly binding: { readonly credentialId: string; readonly name: string; readonly version: number } | null;
+  readonly credentials: readonly { readonly id: string; readonly name: string; readonly version: number }[];
+};
+export type HubCredentialCheck = { readonly status: 'ok' | 'branch_missing' | 'unavailable'; readonly branch: string | null };
+const hubCredentialPath = (projectId: string, repoId: string) => `/api/projects/${encodeURIComponent(projectId)}/repos/${encodeURIComponent(repoId)}/hub-credential`;
+export const hubCredentialApi = {
+  unavailable: (error: unknown) => error instanceof RequestFailed && (error.status === 403 || error.status === 404),
+  view: (projectId: string, repoId: string) => call<HubCredentialDetails>(hubCredentialPath(projectId, repoId)),
+  bind: (projectId: string, repoId: string, credentialId: string) => call(hubCredentialPath(projectId, repoId), { method: 'PUT', body: JSON.stringify({ credentialId }) }),
+  unbind: (projectId: string, repoId: string) => call(hubCredentialPath(projectId, repoId), { method: 'DELETE' }),
+  create: (projectId: string, repoId: string, name: string, credential: string) => call(hubCredentialPath(projectId, repoId) + '/create', { method: 'POST', redirect: 'error', cache: 'no-store', body: JSON.stringify({ name, credential }) }),
+  check: (projectId: string, repoId: string) => post<HubCredentialCheck>(hubCredentialPath(projectId, repoId) + '/check', {}),
+  rotate: (projectId: string, repoId: string, credential: string, credentialId: string, version: number) => call(hubCredentialPath(projectId, repoId) + '/rotate', { method: 'PUT', redirect: 'error', cache: 'no-store', body: JSON.stringify({ credential, credentialId, version }) }),
+  revoke: (projectId: string, repoId: string, credentialId: string, version: number) => call(hubCredentialPath(projectId, repoId) + '/revoke', { method: 'DELETE', body: JSON.stringify({ credentialId, version }) })
+};
 export interface WorkdirTerminals { available: boolean; reason?: string; terminals: WorkdirTerminal[] }
 export const workdirTerminalPath = (projectId: string, workspaceId: string) => `/api/projects/${encodeURIComponent(projectId)}/workdir-tabs/${encodeURIComponent(workspaceId)}/terminals`;
 

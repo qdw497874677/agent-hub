@@ -15,7 +15,7 @@ import type { SessionId, TaskId } from './ids.ts';
  * artifact = 任务/会话的产出物（issue #216 P2）：列、按 id 读、登记外部引用；
  * files = 只读浏览会话工作空间（复用 WorkspaceFilesService 的路径与 workspace.files.read 校验）。
  */
-export type ToolScope = 'task:read' | 'task:log:write' | 'task:status:write' | 'agent:message' | 'memory' | 'context' | 'task:create' | 'connector' | 'git' | 'session:control' | 'workspace:delegate' | 'delegation:report' | 'project' | 'artifact' | 'files' | 'project:read' | 'project:task-write' | 'project:asset-write' | 'project:worktree-open' | 'project:message-send' | 'project:candidate-import';
+export type ToolScope = 'task:read' | 'task:log:write' | 'task:status:write' | 'agent:message' | 'memory' | 'context' | 'task:create' | 'connector' | 'git' | 'session:control' | 'workspace:delegate' | 'delegation:report' | 'project' | 'artifact' | 'files' | 'project:read' | 'project:task-write' | 'project:asset-write' | 'project:worktree-open' | 'project:message-send' | 'project:candidate-import' | 'project:repo-read';
 
 /**
  * 项目会话的显式授权对应的工具 scope：**故意不在默认授权里**，也不和旧工具共用。
@@ -30,6 +30,7 @@ export const PROJECT_ASSET_WRITE_TOOL_SCOPE = 'project:asset-write' as const;
 export const PROJECT_WORKTREE_OPEN_TOOL_SCOPE = 'project:worktree-open' as const;
 export const PROJECT_MESSAGE_SEND_TOOL_SCOPE = 'project:message-send' as const;
 export const PROJECT_CANDIDATE_IMPORT_TOOL_SCOPE = 'project:candidate-import' as const;
+export const PROJECT_REPO_READ_TOOL_SCOPE = 'project:repo-read' as const;
 
 export const PROJECT_SESSION_TOOL_SCOPES: readonly ToolScope[] = [
   PROJECT_READ_TOOL_SCOPE,
@@ -37,7 +38,8 @@ export const PROJECT_SESSION_TOOL_SCOPES: readonly ToolScope[] = [
   PROJECT_ASSET_WRITE_TOOL_SCOPE,
   PROJECT_WORKTREE_OPEN_TOOL_SCOPE,
   PROJECT_MESSAGE_SEND_TOOL_SCOPE,
-  PROJECT_CANDIDATE_IMPORT_TOOL_SCOPE
+  PROJECT_CANDIDATE_IMPORT_TOOL_SCOPE,
+  PROJECT_REPO_READ_TOOL_SCOPE
 ];
 
 /** 限定受限执行会话向本次派工的原会话回报；由应用层实时核实，不是默认或项目授权。 */

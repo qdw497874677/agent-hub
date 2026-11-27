@@ -4,14 +4,20 @@ import { inMemoryAccounts, inMemoryDeps } from '@agent-hub/domain/testing';
 import { seedAccount } from '@agent-hub/domain';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
+import { createManagedCredentialLogin, type ManagedCredentialLogin } from './auth.ts';
+import { managedCredentialAdminTransport } from './hub-credential-activation.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 
-function harness() {
+function harness(managedOrigin?: string) {
   let clock = 1_000_000;
   const accounts = inMemoryAccounts(() => clock);
   const { deps } = inMemoryDeps({ now: () => clock });
-  const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts } });
+  const credentialAdmin: ManagedCredentialLogin | undefined = managedOrigin ? createManagedCredentialLogin({
+    allows: (c) => managedCredentialAdminTransport(c, managedOrigin), now: () => clock
+  }) : undefined;
+  const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts, ...(credentialAdmin ? { credentialAdmin } : {}) } });
+  if (credentialAdmin) app.get('/test-admin-proof', (c) => c.json({ valid: credentialAdmin.token(c) !== '' }));
   const jar = new Map<string, string>();
   const call = async (path: string, init: RequestInit & { csrf?: boolean; base?: string } = {}) => {
     const headers: Record<string, string> = { 'content-type': 'application/json', ...(init.headers as Record<string, string>) };
@@ -103,4 +109,40 @@ test('登录退避：同一邮箱连错 5 次后 429', async () => {
   const attempt = () => call('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'x@x.co', password: 'wrong wrong' }) });
   for (let i = 0; i < 5; i += 1) assert.equal((await attempt()).status, 400);
   assert.equal((await attempt()).status, 429);
+});
+
+test('托管凭证管理需要在配置的 HTTPS 入口用密码登录并绑定当前登录态', async () => {
+  const origin = 'https://secure.example.test';
+  const host = 'secure.example.test';
+  const { call, accounts, jar, tick } = harness(origin);
+  await seedAccount(accounts, { email: 'admin@x.co', password: 'owner password', role: 'owner', displayName: 'o' });
+  const login = (base: string, headers: Record<string, string>) => call('/api/auth/login', {
+    method: 'POST', base, headers, body: JSON.stringify({ email: 'admin@x.co', password: 'owner password' })
+  });
+  const fromPlain = await login('http://hub', {});
+  assert.equal(fromPlain.status, 200);
+  assert.equal(jar.has('__Host-hub_credential_admin'), false);
+  const wrongOrigin = await login(origin, { host });
+  assert.equal(wrongOrigin.status, 200);
+  assert.equal(jar.has('__Host-hub_credential_admin'), false);
+  assert.deepEqual((await call('/test-admin-proof', { base: origin, headers: { host } })).body, { valid: false });
+
+  const approved = await login(origin, { host, origin });
+  assert.equal(approved.status, 200);
+  const proofCookie = approved.cookies.find((line) => line.startsWith('__Host-hub_credential_admin='));
+  assert.ok(proofCookie);
+  assert.match(proofCookie, /Secure/);
+  assert.match(proofCookie, /HttpOnly/);
+  assert.match(proofCookie, /SameSite=Strict/);
+  assert.deepEqual((await call('/test-admin-proof', { base: origin, headers: { host } })).body, { valid: true });
+  assert.deepEqual((await call('/test-admin-proof', { headers: { host } })).body, { valid: false });
+  assert.deepEqual((await call('/test-admin-proof', { base: origin, headers: { host: 'other.example.test' } })).body, { valid: false });
+  assert.deepEqual((await call('/test-admin-proof', { base: origin, headers: { host, origin: 'https://other.example.test' } })).body, { valid: false });
+
+  const actualLogin = jar.get('__Host-hub_login')!;
+  jar.set('__Host-hub_login', 'another-login-token');
+  assert.deepEqual((await call('/test-admin-proof', { base: origin, headers: { host } })).body, { valid: false });
+  jar.set('__Host-hub_login', actualLogin);
+  tick(32 * DAY);
+  assert.deepEqual((await call('/test-admin-proof', { base: origin, headers: { host } })).body, { valid: false });
 });

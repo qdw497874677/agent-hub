@@ -62,6 +62,15 @@ test('normalizeRepos：保留调用方给的 id（改名不改 id）', () => {
   assert.equal(kept.value[0]!.defaultBranch, 'main');
 });
 
+test('normalizeRepos：拒绝写入重复 id，但旧清单仍可读并修正', () => {
+  const list = [
+    { id: 'same', name: 'api', url: 'https://x.test/a.git' },
+    { id: ' same ', name: 'web', url: 'https://x.test/b.git' }
+  ];
+  assert.equal(normalizeRepos(list, { acceptTokenSecret: false }).ok, false);
+  assert.equal(normalizeRepos(list, { allowLegacyDuplicateIds: true }).ok, true);
+});
+
 test('repoNameFromUrl：从常见地址形态派生合法目录名', () => {
   assert.equal(repoNameFromUrl('git@github.com:me/Agent_Hub.git'), 'agent-hub');
   assert.equal(repoNameFromUrl('https://example.com/a/b/'), 'b');

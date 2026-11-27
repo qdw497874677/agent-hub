@@ -288,18 +288,21 @@ export interface NormalizeReposOptions {
    * 不能信任调用方塞进来的引用（否则可以指向别人的令牌）。
    */
   readonly acceptTokenSecret?: boolean;
+  /** Read old records without silently replacing a malformed repo list with the legacy single repo. Never set on writes. */
+  readonly allowLegacyDuplicateIds?: boolean;
 }
 
 /**
  * 校验并规范化项目的仓库清单（PATCH /api/projects/:id 的 repos 字段）。
  * - 最多 `PROJECT_REPOS_MAX` 个；空数组合法（= 不绑仓库）；
  * - 名字缺省时从 URL 派生，给了就必须合规且项目内唯一；
- * - id 缺省时按 (name, url) 确定性生成；给了就保留（改名字不改 id）。
+ * - id 缺省时按 (name, url) 确定性生成；给了就保留（改名字不改 id），且项目内必须唯一。
  * - `tokenSecret` 默认照原样保留（storage 用），请求路径传 `acceptTokenSecret: false` 忽略。
  */
 export function normalizeRepos(input: readonly Partial<ProjectRepo>[], options: NormalizeReposOptions = {}): Result<readonly ProjectRepo[], DomainError> {
   if (input.length > PROJECT_REPOS_MAX) return err(invalid(`一个项目最多 ${PROJECT_REPOS_MAX} 个仓库`));
   const seen = new Set<string>();
+  const seenIds = new Set<string>();
   const repos: ProjectRepo[] = [];
   for (const raw of input) {
     const url = typeof raw.url === 'string' ? raw.url.trim() : '';
@@ -317,13 +320,15 @@ export function normalizeRepos(input: readonly Partial<ProjectRepo>[], options: 
     }
     if (seen.has(name)) return err(invalid(`仓库名重复：${name}`));
     seen.add(name);
-    const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+    const id = (typeof raw.id === 'string' ? raw.id.trim() : '') || deriveRepoId(name, url);
+    if (seenIds.has(id) && !options.allowLegacyDuplicateIds) return err(invalid(`仓库 id 重复：${id}`));
+    seenIds.add(id);
     // 令牌只保留密钥箱里的名字（trim 后非空才算）；空串 / 省略 = 不写这个字段。
     // 请求路径（acceptTokenSecret: false）完全忽略调用方给的名字。
     const tokenSecret =
       options.acceptTokenSecret !== false && typeof raw.tokenSecret === 'string' ? raw.tokenSecret.trim() : '';
     repos.push({
-      id: id === '' ? deriveRepoId(name, url) : id,
+      id,
       name,
       url,
       defaultBranch,

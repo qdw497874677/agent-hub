@@ -13,6 +13,7 @@ import { installDelegationAcceptanceRoutes, type DelegationAcceptanceRouteOption
 import type { WorkspaceDelegationHandoffProjectionService } from './workspace-delegation-handoff.ts';
 import { installProjectReposRoutes } from './project-repos-routes.ts';
 import { installProjectGitProbeRoutes, type ProjectGitProbeRouteOptions } from './project-git-probe-routes.ts';
+import { installDisabledHubCredentialRoutes, installHubCredentialRoutes } from './hub-credential-routes.ts';
 import { projectDto } from './project-dto.ts';
 import { installPreviewRoutes, type PreviewApiOptions } from './preview-routes.ts';
 import { installServiceRoutes, type ServiceApiOptions } from './service-routes.ts';
@@ -215,6 +216,7 @@ export interface AppOptions {
   readonly agentHandoff?: AgentHandoffService;
   readonly taskArchiveBlockers?: TaskArchiveBlockers;
   readonly projectGitProbe?: ProjectGitProbeRouteOptions;
+  readonly hubCredentials?: { readonly broker: Parameters<typeof installHubCredentialRoutes>[1]; readonly authorize: Parameters<typeof installHubCredentialRoutes>[3] };
   readonly deps: Deps;
   readonly hub: StreamHub;
   readonly token: string | null;
@@ -389,6 +391,7 @@ export function createApp(options: AppOptions): Hono {
     installHandoffMutationGate(app, deps, '/api', subjectOf);
     if (options.agentHandoff) installAgentHandoffRoutes(app, options.agentHandoff, principalOf);
     if (options.projectGitProbe) installProjectGitProbeRoutes(app, options.projectGitProbe, subjectOf);
+    if (options.hubCredentials) installHubCredentialRoutes(app, options.hubCredentials.broker, subjectOf, options.hubCredentials.authorize);
     if (options.admin) installAdmin(app, options.admin, principalOf);
     if (options.auth.team) installTeam(app, options.auth.team, principalOf);
     if (options.auth.accessAdmin) installAccessRoutes(app, options.auth.accessAdmin, subjectOf);
@@ -460,6 +463,7 @@ export function createApp(options: AppOptions): Hono {
     return next();
   });
   if (!options.auth) installHandoffMutationGate(app, deps, '/api', subjectOf);
+  if (!options.auth || !options.hubCredentials) installDisabledHubCredentialRoutes(app);
 
   if (options.services) {
     installServiceRoutes(

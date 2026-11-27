@@ -1,7 +1,7 @@
 import type { Context, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { getConnInfo } from '@hono/node-server/conninfo';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import {
   acceptInviteRequest,
   changePasswordRequest,
@@ -62,6 +62,7 @@ export interface AuthOptions {
   readonly mailDelivery?: boolean;
   /** 自定义角色 + 显式授权（ADR 0017）：认证时挂到 Principal 上。 */
   readonly access?: AccessRepos;
+  readonly credentialAdmin?: ManagedCredentialLogin;
 }
 
 export const CSRF_HEADER = 'x-hub-csrf';
@@ -75,9 +76,36 @@ function isHttps(c: Context): boolean {
   return new URL(c.req.url).protocol === 'https:' || c.req.header('x-forwarded-proto') === 'https';
 }
 const loginCookieName = (secure: boolean) => (secure ? `__Host-${LOGIN}` : LOGIN);
+const CREDENTIAL_ADMIN = '__Host-hub_credential_admin';
 
 function readLoginCookie(c: Context): string {
   return getCookie(c, loginCookieName(true)) ?? getCookie(c, LOGIN) ?? '';
+}
+
+export interface ManagedCredentialLogin {
+  issue(c: Context, login: IssuedLogin): void;
+  token(c: Context): string;
+}
+
+/** The proof is separately minted by Hub on password login at its approved HTTPS entrance. */
+export function createManagedCredentialLogin(options: { allows(c: Context): boolean; now(): number }): ManagedCredentialLogin {
+  const key = randomBytes(32);
+  const sign = (token: string, expiry: string) => createHmac('sha256', key).update(`${expiry}:${token}`).digest('base64url');
+  return {
+    issue(c, login) {
+      if (!options.allows(c)) return;
+      const expiry = String(login.expiresAt);
+      const maxAge = Math.max(0, Math.floor((login.expiresAt - options.now()) / 1000));
+      setCookie(c, CREDENTIAL_ADMIN, `${expiry}.${sign(login.token, expiry)}`, { path: '/', secure: true, httpOnly: true, sameSite: 'Strict', maxAge });
+    },
+    token(c) {
+      if (!options.allows(c)) return '';
+      const token = getCookie(c, loginCookieName(true)) ?? '';
+      const proof = getCookie(c, CREDENTIAL_ADMIN)?.match(/^(\d{1,16})\.([\w-]{43})$/);
+      if (!token || !proof || !proof[1] || !proof[2] || Number(proof[1]) <= options.now()) return '';
+      return sameSecret(proof[2], sign(token, proof[1])) ? token : '';
+    }
+  };
 }
 
 function clientKey(c: Context): string {
@@ -126,6 +154,7 @@ export function installAuth(app: Hono, options: AuthOptions): { principalOf: Pri
 
   const clearCookies = (c: Context) => {
     deleteCookie(c, loginCookieName(true), { path: '/', secure: true });
+    if (options.credentialAdmin) deleteCookie(c, CREDENTIAL_ADMIN, { path: '/', secure: true });
     deleteCookie(c, LOGIN, { path: '/' });
     deleteCookie(c, CSRF, { path: '/' });
   };
@@ -232,6 +261,7 @@ export function installAuth(app: Hono, options: AuthOptions): { principalOf: Pri
     if (result.ok) {
       backoff.succeed(email);
       await securityEvent(accounts, result.value.user, 'auth.login', result.value.user.email, '', ip);
+      options.credentialAdmin?.issue(c, result.value);
     } else {
       backoff.fail(email);
       const known = await accounts.users.byEmail(email);

@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { createProjectGitFetcher } from './project-git-fetch.ts';
+import { createProjectGitFetcher, createProjectGitSnapshotReader } from './project-git-fetch.ts';
 import type { ProjectGitFetchOptions, ProjectGitFetchOutcome, ProjectGitFetchResult } from './project-git-fetch.ts';
 
 const REPO_URL = 'https://git.example.com/org/repo.git';
@@ -185,7 +185,7 @@ function expectOk(outcome: ProjectGitFetchOutcome): ProjectGitFetchResult {
   return outcome.result;
 }
 
-function expectFailure(outcome: ProjectGitFetchOutcome, code: string): void {
+function expectFailure(outcome: { readonly ok: true } | { readonly ok: false; readonly code: string }, code: string): void {
   if (outcome.ok) assert.fail(`expected failure ${code}, got success`);
   assert.equal(outcome.code, code);
 }
@@ -226,6 +226,112 @@ before(async () => {
 
 after(async () => {
   await rm(base, { recursive: true, force: true });
+});
+
+test('snapshot reads bounded tree and text without bundle or workspace and rejects unsafe inputs', async () => {
+  const work = join(base, 'snapshot-work');
+  const serveRoot = join(base, 'snapshot-serve');
+  const repo = join(serveRoot, 'org', 'repo.git');
+  await mkdir(work);
+  await mkdir(join(serveRoot, 'org'), { recursive: true });
+  git(work, 'init', '--quiet', '--initial-branch=main');
+  await mkdir(join(work, 'dir'));
+  await writeFile(join(work, 'README.md'), 'safe sibling\n');
+  await writeFile(join(work, '.gitmodules'), '[submodule "module"]\n\tpath = module\n');
+  await writeFile(join(work, 'dir', 'hello.txt'), '你好\n');
+  await writeFile(join(work, 'binary'), Buffer.from([1, 0, 2]));
+  await writeFile(join(work, 'invalid'), Buffer.from([0xff]));
+  await writeFile(join(work, 'large'), Buffer.alloc(65537, 65));
+  await symlink('/etc/passwd', join(work, 'link'));
+  git(work, 'add', '.');
+  git(work, 'commit', '--quiet', '-m', 'snapshot');
+  const submoduleTip = git(work, 'rev-parse', 'HEAD');
+  git(work, 'update-index', '--add', '--cacheinfo', `160000,${submoduleTip},module`);
+  git(work, 'commit', '--quiet', '-m', 'gitlink');
+  git(base, 'init', '--bare', '--quiet', repo);
+  git(work, 'push', '--quiet', repo, 'main');
+  const tip = git(work, 'rev-parse', 'HEAD');
+  const blob = git(work, 'rev-parse', 'HEAD:README.md');
+  const manyOmittedTree = execFileSync('git', ['mktree'], {
+    cwd: work,
+    input: Array.from({ length: 1001 }, (_, i) => `100644 blob ${blob}\t:skip${String(i).padStart(4, '0')}\n`).join(''),
+    encoding: 'utf8'
+  }).trim();
+  const manyOmittedTip = git(work, 'commit-tree', manyOmittedTree, '-m', 'many omitted entries');
+  git(work, 'update-ref', 'refs/heads/many-omitted', manyOmittedTip);
+  git(work, 'push', '--quiet', repo, 'many-omitted');
+  const scratchRoot = join(base, 'snapshot-scratch');
+  const commands: string[][] = [];
+  const reader = createProjectGitSnapshotReader({
+    allowedOrigins: ['https://git.example.com'], scratchRoot,
+    fetchImpl: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input instanceof URL ? input.href : input);
+      const cgi = await runCgi({ root: serveRoot, method: init?.method ?? 'GET', pathInfo: url.pathname,
+        query: url.search.slice(1), contentType: new Headers(init?.headers).get('content-type') ?? '',
+        body: init?.body == null ? Buffer.alloc(0) : Buffer.from(init.body as Uint8Array) });
+      return new Response(cgi.body, { status: cgi.status, headers: cgi.headers });
+    },
+    testOnlyOnGitSpawn: ({ args }) => commands.push([...args])
+  });
+  const input = { repoUrl: REPO_URL, branch: 'main', authorization: AUTHORIZATION, path: null, expectedTip: null };
+  try {
+    const root = await reader.read(input);
+    assert.equal(root.ok, true);
+    if (!root.ok) return;
+    assert.equal(root.result.tip, tip);
+    assert.equal(root.result.path, '');
+    assert.equal(root.result.entries?.some((entry) => entry.name === '.gitmodules'), false);
+    assert.deepEqual(root.result.entries?.find((entry) => entry.name === 'README.md'), { name: 'README.md', kind: 'file' });
+    const readme = await reader.read({ ...input, path: 'README.md' });
+    assert.equal(readme.ok, true);
+    if (readme.ok) assert.equal(readme.result.content, 'safe sibling\n');
+    assert.deepEqual(root.result.entries?.find((entry) => entry.name === 'link'), { name: 'link', kind: 'symlink' });
+    assert.deepEqual(root.result.entries?.find((entry) => entry.name === 'module'), { name: 'module', kind: 'submodule' });
+    const file = await reader.read({ ...input, path: 'dir/hello.txt', expectedTip: tip });
+    assert.equal(file.ok, true);
+    if (file.ok) assert.deepEqual(file.result, { branch: 'main', tip, path: 'dir/hello.txt', kind: 'text', content: '你好\n' });
+    for (const [path, code] of [['../a', 'bad_path'], ['.git/config', 'bad_path'], ['.gitmodules', 'bad_path'], [':magic', 'bad_path'],
+      ['link', 'unsupported'], ['link/file', 'unsupported'], ['module', 'unsupported'], ['module/file', 'unsupported'], ['binary', 'binary'], ['invalid', 'binary'],
+      ['large', 'too_large'], ['missing', 'not_found']] as const) {
+      expectFailure(await reader.read({ ...input, path }), code);
+    }
+    expectFailure(await reader.read({ ...input, expectedTip: '0'.repeat(40) }), 'tip_mismatch');
+    expectFailure(await reader.read({ ...input, expectedTip: 'HEAD' }), 'bad_tip');
+    expectFailure(await reader.read({ ...input, branch: 'refs/tags/v1' }), 'bad_branch');
+    expectFailure(await reader.read({ ...input, branch: 'many-omitted' }), 'too_large');
+    assert.equal(commands.some((args) => args.includes('bundle') || args.includes('checkout')), false);
+    assert.deepEqual(await readdir(scratchRoot), []);
+  } finally {
+    await reader.close();
+  }
+});
+
+test('snapshot rechecks authorization before each upstream request and fails closed on revocation', async () => {
+  const scratchRoot = join(base, 'snapshot-revocation-scratch');
+  const calls: string[] = [];
+  let checks = 0;
+  const reader = createProjectGitSnapshotReader({
+    allowedOrigins: ['https://git.example.com'], scratchRoot,
+    fetchImpl: async (input, init) => {
+      calls.push(init?.method ?? 'GET');
+      return fixture.fetchImpl(input, init);
+    }
+  });
+  const input = { repoUrl: REPO_URL, branch: 'main', authorization: AUTHORIZATION, path: null, expectedTip: null };
+  try {
+    const result = await reader.read({ ...input, authorizeUpstream: async () => ++checks === 1 });
+    expectFailure(result, 'blocked');
+    assert.equal(checks, 2);
+    assert.deepEqual(calls, ['GET']);
+    assert.deepEqual(await readdir(scratchRoot), []);
+
+    calls.length = 0;
+    expectFailure(await reader.read({ ...input, authorizeUpstream: async () => { throw new Error('sensitive'); } }), 'blocked');
+    assert.deepEqual(calls, []);
+    assert.deepEqual(await readdir(scratchRoot), []);
+  } finally {
+    await reader.close();
+  }
 });
 
 test('fetches only the exact branch with full history and produces a verified bundle', async () => {

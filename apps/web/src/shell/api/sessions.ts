@@ -68,7 +68,8 @@ export type ProjectToolScope =
   | 'asset:write'
   | 'worktree:open'
   | 'message:send'
-  | 'candidate:import';
+  | 'candidate:import'
+  | 'repo:read';
 
 export const PROJECT_TOOL_SCOPES: readonly ProjectToolScope[] = [
   'project:read',
@@ -76,11 +77,12 @@ export const PROJECT_TOOL_SCOPES: readonly ProjectToolScope[] = [
   'worktree:open',
   'message:send',
   'candidate:import',
-  'asset:write'
+  'asset:write',
+  'repo:read'
 ];
 
 /**
- * 面板这一版开放六项：查看、建任务、开 worktree、发交接、导入候选、改项目资产。它们互相独立，默认全关。
+ * 仓库读取按服务端可用性单独展示；各能力互相独立，默认全关。
  * 服务端仍认全部 scope；后续新增能力时在这里显式加入，避免开关先于工具出现。
  */
 export const PROJECT_TOOL_GRANT_SCOPES = [
@@ -89,7 +91,8 @@ export const PROJECT_TOOL_GRANT_SCOPES = [
   'worktree:open',
   'message:send',
   'candidate:import',
-  'asset:write'
+  'asset:write',
+  'repo:read'
 ] as const satisfies readonly ProjectToolScope[];
 
 export interface ProjectToolGrantView {
@@ -97,6 +100,8 @@ export interface ProjectToolGrantView {
   readonly projectId: string | null;
   /** 当前**有效**的授权项；空数组就是默认全关。 */
   readonly scopes: readonly ProjectToolScope[];
+  /** 仅 GET 明确表示当前项目支持时才开放仓库读取开关。 */
+  readonly repositoryReadAvailable?: boolean;
 }
 
 /** 后端在迁移期可能返回单条 grant、grant 列表、`{revoked:n}`，这里统一归一成「当前有效项」。 */
@@ -119,7 +124,8 @@ function normalizeProjectGrant(payload: unknown): ProjectToolGrantView {
       }
     }
   }
-  return { projectId, scopes: PROJECT_TOOL_SCOPES.filter((scope) => enabled.has(scope)) };
+  const availability = (payload as { repositoryReadAvailable?: unknown } | null | undefined)?.repositoryReadAvailable;
+  return { projectId, scopes: PROJECT_TOOL_SCOPES.filter((scope) => enabled.has(scope)), ...(typeof availability === 'boolean' ? { repositoryReadAvailable: availability } : {}) };
 }
 
 const projectGrantResponse = (payload: { readonly grant?: unknown }): ProjectToolGrantView =>

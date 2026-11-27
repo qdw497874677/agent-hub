@@ -28,6 +28,7 @@ import {
   type ReposCheck
 } from './project-repos.ts';
 import { RepoProbeHint, RepoProbeMachine, RepoProbeStatus, useRepoProbes } from './repo-probe.tsx';
+import { HubRepoCredential } from './hub-repo-credential.tsx';
 
 /**
  * 项目设置 · 代码与工作目录 · 「仓库」（docs/design/multi-repo.md §7）。
@@ -212,6 +213,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
               const rowProblem = repoRowProblem(row, rows);
               const probe = probes.get(index);
               const rowChecking = probe?.state === 'checking';
+              const savedRepo = row.id === '' ? undefined : repoRowsFrom(project).find((saved) => saved.id === row.id);
               return (
                 <div
                   key={row.id === '' ? `new-${index}` : row.id}
@@ -307,7 +309,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
                   <div className="mt-2 flex flex-wrap items-end gap-2">
                     <label className="block min-w-0 flex-1 text-meta text-secondary">
                       <span className="flex flex-wrap items-baseline gap-x-2">
-                        访问令牌
+                        兼容流程访问令牌
                         <span className="text-tertiary">可选</span>
                       </span>
                       <input
@@ -341,6 +343,14 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
                   ) : null}
                   {rowProblem !== null ? <p className="mt-1 text-meta text-rust">{rowProblem}</p> : null}
                   <RepoProbeStatus probe={probe} testId="repo-check-result" />
+                  {savedRepo ? (
+                    <HubRepoCredential
+                      key={`${project.id}:${row.id}:${savedRepo.url}:${savedRepo.defaultBranch}`}
+                      projectId={project.id}
+                      repoId={row.id}
+                      targetChanged={savedRepo.url !== row.url || savedRepo.defaultBranch !== row.defaultBranch}
+                    />
+                  ) : null}
                 </div>
               );
             })}

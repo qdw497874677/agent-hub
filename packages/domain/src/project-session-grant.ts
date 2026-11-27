@@ -6,6 +6,7 @@ import {
   PROJECT_CANDIDATE_IMPORT_TOOL_SCOPE,
   PROJECT_MESSAGE_SEND_TOOL_SCOPE,
   PROJECT_READ_TOOL_SCOPE,
+  PROJECT_REPO_READ_TOOL_SCOPE,
   PROJECT_TASK_WRITE_TOOL_SCOPE,
   PROJECT_WORKTREE_OPEN_TOOL_SCOPE,
   type GrantActor,
@@ -22,7 +23,7 @@ import { newId } from './ids.ts';
  * 必须由**会话归属人**在网页上逐项勾选。默认全关；提示词、资产文本、工具输出都不能打开权限。
  * 授权按 (账号, 会话, 项目) 持久化，每次动作都重新核对当前会话绑定与撤销状态。
  */
-export type ProjectSessionGrantScope = 'project:read' | 'task:write' | 'asset:write' | 'worktree:open' | 'message:send' | 'candidate:import';
+export type ProjectSessionGrantScope = 'project:read' | 'task:write' | 'asset:write' | 'worktree:open' | 'message:send' | 'candidate:import' | 'repo:read';
 
 export const PROJECT_SESSION_GRANT_SCOPES: readonly ProjectSessionGrantScope[] = [
   'project:read',
@@ -30,7 +31,8 @@ export const PROJECT_SESSION_GRANT_SCOPES: readonly ProjectSessionGrantScope[] =
   'asset:write',
   'worktree:open',
   'message:send',
-  'candidate:import'
+  'candidate:import',
+  'repo:read'
 ];
 
 const TOOL_SCOPE_BY_GRANT_SCOPE: Readonly<Record<ProjectSessionGrantScope, ToolScope>> = {
@@ -39,7 +41,8 @@ const TOOL_SCOPE_BY_GRANT_SCOPE: Readonly<Record<ProjectSessionGrantScope, ToolS
   'asset:write': PROJECT_ASSET_WRITE_TOOL_SCOPE,
   'worktree:open': PROJECT_WORKTREE_OPEN_TOOL_SCOPE,
   'message:send': PROJECT_MESSAGE_SEND_TOOL_SCOPE,
-  'candidate:import': PROJECT_CANDIDATE_IMPORT_TOOL_SCOPE
+  'candidate:import': PROJECT_CANDIDATE_IMPORT_TOOL_SCOPE,
+  'repo:read': PROJECT_REPO_READ_TOOL_SCOPE
 };
 
 /** 项目授权项 → 对应工具 scope（父层注入 provider 时用同一份映射，避免两处漂移）。 */

@@ -1,15 +1,14 @@
 import type { Context, Hono } from 'hono';
-import { asSessionId, authorizeProject, err, invalid, notFound, ok, projectSessionGrantActive, type Deps, type DomainError, type Principal, type Result, type SessionId } from '@agent-hub/domain';
+import { PROJECT_SESSION_GRANT_SCOPES, asSessionId, authorizeProject, err, invalid, notFound, ok, projectSessionGrantActive, type Deps, type DomainError, type Principal, type ProjectSessionGrantScope, type Result, type SessionId } from '@agent-hub/domain';
 import { fail } from './http-error.ts';
 import type { ProjectSessionGrantService } from './project-session-grant.ts';
 
-const AVAILABLE_SCOPES = ['task:write', 'worktree:open', 'project:read', 'candidate:import', 'message:send', 'asset:write'] as const;
-type AvailableScope = (typeof AVAILABLE_SCOPES)[number];
-const isAvailableScope = (scope: string): scope is AvailableScope => AVAILABLE_SCOPES.some((candidate) => candidate === scope);
+const isAvailableScope = (scope: string): scope is ProjectSessionGrantScope => PROJECT_SESSION_GRANT_SCOPES.some((candidate) => candidate === scope);
 
 export function createProjectSessionGrantRoutes(
   deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access' | 'now'>,
-  service: ProjectSessionGrantService
+  service: ProjectSessionGrantService,
+  repositoryReadAvailable?: (projectId: string) => boolean
 ): ProjectSessionGrantRoutes {
   const current = async (actor: Principal, sessionId: SessionId) => {
     const session = await deps.sessions.byId(sessionId);
@@ -27,12 +26,14 @@ export function createProjectSessionGrantRoutes(
       const grants = await service.list({ accountId: actor.user.id, sessionId });
       if (!grants.ok) return grants;
       const active = grants.value.find((grant) => grant.projectId === project.value.id && projectSessionGrantActive(grant, deps.now()));
-      return ok(active ? { scopes: active.scopes } : null);
+      return ok({ grant: active ? { scopes: active.scopes } : null,
+        ...(repositoryReadAvailable?.(project.value.id) ? { repositoryReadAvailable: true } : {}) });
     },
     async set(actor, sessionId, scopes) {
       const project = await current(actor, sessionId);
       if (!project.ok) return project;
       if (!scopes.every(isAvailableScope)) return err(invalid('不支持的项目工具授权范围'));
+      if (scopes.includes('repo:read') && !repositoryReadAvailable?.(project.value.id)) return err(invalid('此项目未启用 Hub 仓库读取'));
       const grant = await service.grant({ accountId: actor.user.id, sessionId, projectId: project.value.id, scopes });
       return grant.ok ? ok({ scopes: grant.value.scopes }) : grant;
     },
@@ -46,7 +47,7 @@ export function createProjectSessionGrantRoutes(
 }
 
 export interface ProjectSessionGrantRoutes {
-  readonly get: (actor: Principal, sessionId: SessionId) => Promise<Result<unknown, DomainError>>;
+  readonly get: (actor: Principal, sessionId: SessionId) => Promise<Result<{ grant: unknown; repositoryReadAvailable?: boolean }, DomainError>>;
   readonly set: (actor: Principal, sessionId: SessionId, scopes: readonly string[]) => Promise<Result<unknown, DomainError>>;
   readonly revoke: (actor: Principal, sessionId: SessionId) => Promise<Result<unknown, DomainError>>;
 }
@@ -67,7 +68,9 @@ export function installProjectSessionGrantRoutes(
     : fail(c, result.error);
   app.get(path, async (c) => {
     const actor = human(c);
-    return actor ? respond(c, await routes.get(actor, asSessionId(c.req.param('sessionId')))) : denied(c);
+    if (!actor) return denied(c);
+    const result = await routes.get(actor, asSessionId(c.req.param('sessionId')));
+    return result.ok ? c.json(result.value) : fail(c, result.error);
   });
   app.put(path, async (c) => {
     const actor = human(c);

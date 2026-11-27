@@ -101,6 +101,60 @@ function recordWrites(page: Page, url: string) {
   return writes;
 }
 
+test('仓库读取授权：仅可用时开放，能力消失后仍可关闭已有授权', async ({ page, baseURL }) => {
+  test.setTimeout(150_000);
+  const { project, session } = await seed(page, baseURL!);
+  let available: boolean | undefined;
+  let scopes: string[] = [];
+  let reads = 0;
+  const writes: Array<{ method: string; scopes?: string[] }> = [];
+  await page.route(`**/api/sessions/${session.id}/project-tool-grant`, async (route) => {
+    const request = route.request();
+    if (request.method() === 'GET') reads++;
+    else if (request.method() === 'PUT') {
+      scopes = (request.postDataJSON() as { scopes: string[] }).scopes;
+      writes.push({ method: 'PUT', scopes: [...scopes] });
+    } else if (request.method() === 'DELETE') {
+      scopes = [];
+      writes.push({ method: 'DELETE' });
+    }
+    const grant = scopes.length ? { projectId: project.id, scopes } : null;
+    // Only GET includes the availability flag, as in the server contract.
+    return route.fulfill({ json: { grant, ...(request.method() === 'GET' && available !== undefined ? { repositoryReadAvailable: available } : {}) } });
+  });
+  await gotoSession(page, project.id, session.id);
+  let panel = await openDetails(page);
+  let section = panel.getByTestId('project-grant');
+  const row = () => section.locator('[data-testid="project-grant-row"][data-scope="repo:read"]');
+  await expect(section).toBeVisible();
+  await expect(row()).toHaveCount(0); // Missing flag fails closed.
+
+  available = true;
+  await gotoSession(page, project.id, session.id);
+  panel = await openDetails(page);
+  section = panel.getByTestId('project-grant');
+  await expect(row()).toBeVisible();
+  const readsBeforeWrite = reads;
+  await row().getByTestId('project-grant-toggle').check();
+  await expect(row().getByTestId('project-grant-toggle')).toBeChecked();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0]).toEqual({ method: 'PUT', scopes: ['repo:read'] });
+  await expect.poll(() => reads).toBeGreaterThan(readsBeforeWrite);
+
+  available = false;
+  await gotoSession(page, project.id, session.id);
+  panel = await openDetails(page);
+  section = panel.getByTestId('project-grant');
+  await expect(section).toContainText('当前仓库读取能力不可用，可关闭已有授权');
+  await expect(row().getByTestId('project-grant-toggle')).toBeEnabled();
+  await expect(row().getByTestId('project-grant-toggle')).toBeChecked();
+  // 撤销后整行会消失，不能让 uncheck 在点击之后再等待这个复选框。
+  await row().getByTestId('project-grant-toggle').click();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1]).toEqual({ method: 'DELETE' });
+  await expect(row()).toHaveCount(0);
+});
+
 test('项目能力：默认全关、六项独立开启、单关是减法、最后一项走撤销、撤销对旧令牌生效', async ({ page, baseURL }) => {
   test.setTimeout(150_000);
   const { project, session } = await seed(page, baseURL!);

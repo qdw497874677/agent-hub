@@ -58,9 +58,11 @@ import { authenticateWorker, withToolAccess,
   asSessionId,
   asTaskId,
   asWorkspaceId,
+  asUserId,
   authorizeProject,
   authorizeSession,
   authorizeWorker,
+  grantActive,
   handoffRecord,
   handoffFirstEnded,
   optionValues,
@@ -125,6 +127,9 @@ import { createProjectAssetToolProvider } from './project-session-asset-tools.ts
 import { createProjectSessionAssetActions } from './project-session-assets.ts';
 import { importProjectCandidate } from './project-session-candidate.ts';
 import { createProjectSessionHandoffActions } from './project-session-handoff.ts';
+import { managedCredentialAdminTransport, setupHubCredentialBroker } from './hub-credential-activation.ts';
+import { createProjectRepoReadTool } from './project-repo-read-tool.ts';
+import { createManagedCredentialLogin } from './auth.ts';
 import { createAgentHandoffService } from './agent-handoff.ts';
 import { createAgentHandoffStartup } from './agent-handoff-startup.ts';
 import { gitForWorker } from './workspace-delegation.ts';
@@ -742,6 +747,24 @@ const workspaceDelegateScopes = createWorkspaceDelegateScopeResolverFromDelegati
   loadActor: (userId) => loadActor(store.users, store.access, userId, 'tool-workspace-delegate')
 });
 const projectToolActor = (accountId: string) => loadActor(store.users, store.access, accountId, 'tool-project-session');
+const hubCredentials = await setupHubCredentialBroker({
+  readEnv, spawnWorker, host, dataDir, db: store.db, projects: store.projects, warn: log,
+  audit(event) {
+    if (!event.context) return;
+    const actorId = asUserId(event.context.actorId);
+    void store.users.byId(actorId).then((user) => store.audit.append({
+      id: randomBytes(16).toString('hex'), actorId, actorEmail: user?.email ?? '',
+      action: 'project.hub_credential', target: event.projectId, at: deps.now(), ip: null,
+      teamId: user?.teamId ?? null, detail: JSON.stringify({
+        operation: event.operation, repoId: event.repoId, credentialId: event.credentialId,
+        version: event.version, status: event.status, sessionId: event.context?.sessionId ?? null
+      })
+    })).catch(() => log('Hub 托管凭证审计写入失败'));
+  }
+});
+const credentialAdmin = hubCredentials ? createManagedCredentialLogin({
+  allows: (c) => managedCredentialAdminTransport(c, hubCredentials.adminOrigin), now: accounts.now
+}) : undefined;
 const workspaceReport = createWorkspaceReportToolProvider({
   sessions: deps.sessions,
   tasks: deps.tasks,
@@ -783,6 +806,7 @@ const projectSessionGrant = createProjectSessionGrantService({
         case 'task:write': return 'task.create';
         case 'worktree:open': return 'project.update';
         case 'project:read': return 'project.read';
+        case 'repo:read': return hubCredentials?.allowsProject(projectId) ? 'workspace.files.read' : null;
         case 'candidate:import': return 'workspace.files.read';
         case 'message:send': return 'agent.message.send';
         case 'asset:write': return 'project.update';
@@ -818,6 +842,15 @@ toolGateway = wireTools({
   deps, store, readEnv, messageBus, groupChat, botOfSession, contextService, filesService, gitService, memoryService,
   providerWiring, githubClient, teamTokenOf, githubReposFor, subjectOf, enqueueDispatch,
   workspaceReportTools: workspaceReport.provider,
+  ...(hubCredentials ? { projectRepositoryTools: createProjectRepoReadTool({
+    deps, grants: projectSessionGrant, broker: hubCredentials.broker, now: deps.now, allowsProject: hubCredentials.allowsProject,
+    async toolGrantStillActive(grant) {
+      const current = await store.toolGrants.byTokenHash(grant.tokenHash);
+      return !!current && current.id === grant.id && current.sessionId === grant.sessionId
+        && current.actor?.via === 'web' && current.actor.userId === grant.actor?.userId
+        && current.scopes.includes(projectToolScope('repo:read')) && grantActive(current, deps.now());
+    }
+  }) } : {}),
   projectSessionTools: createProjectSessionToolProvider({
     ...createProjectSessionActions({
       grants: projectSessionGrant,
@@ -1353,6 +1386,18 @@ const projectGitProbe = await setupProjectGitProbe({
   secretKey
 });
 const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, optionConfirmations: optionWaiters, guard,
+  ...(hubCredentials && credentialAdmin ? { hubCredentials: {
+    broker: hubCredentials.broker,
+    async authorize(c, projectId) {
+      if (!hubCredentials.allowsProject(projectId)) return false;
+      const principal = await withAccess(store.access, await authenticate(accounts, credentialAdmin.token(c)), accounts.now());
+      if (!principal || principal.via || principal.user.emailVerifiedAt === null
+        || (principal.user.role !== 'owner' && principal.user.role !== 'admin')) return false;
+      const project = await store.projects.byId(asProjectId(projectId));
+      if (!project?.teamId || principal.user.teamId !== project.teamId) return false;
+      return (await authorizeProject(deps.access, principal, project, 'project.update')).ok;
+    }
+  } } : {}),
   agentHandoff,
   ...(projectGitProbe ? { projectGitProbe: {
     projects: deps.projects, secrets: projectGitProbe.vault, access: deps.access, probe: projectGitProbe.probe, now: deps.now,
@@ -1383,7 +1428,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
       })] : [])
     ] : []
   },
-  auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles, agentDefaults: store.agentDefaults }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
+  auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles, agentDefaults: store.agentDefaults }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log', ...(credentialAdmin ? { credentialAdmin } : {}) },
   workdirTerminals,
   admin: {
     deps: {
@@ -1501,7 +1546,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   rewind: rewindService,
   coordinators: { coordinators: store.workspaceCoordinators },
   workspaceDelegation: { coordinators: store.workspaceCoordinators, delegations: store.workspaceDelegations },
-  projectSessionGrants: createProjectSessionGrantRoutes(deps, projectSessionGrant),
+  projectSessionGrants: createProjectSessionGrantRoutes(deps, projectSessionGrant, hubCredentials?.allowsProject),
   delegationPublish: {
     publisher: createDelegationPublisher({ ...deps, gitHost, gitHostTokens }, store.workspaceDelegations, store.delegationPublishAttempts),
     resolveHead: createDelegationHeadResolver(deps),

@@ -1,6 +1,6 @@
 # 项目 Git 授权：空白 Worker 上的会话 Git 操作
 
-状态：按阶段本地实施。Hub 侧登记仓库的 HTTPS 只读检查已接入独立、默认关闭的接口；抓取和无凭证导入已做成独立机制，尚未接入会话工具或部署。现有 Git 工具见 [agent-git-tools.md](agent-git-tools.md)，精确提交审批见 [workspace-delegation.md](workspace-delegation.md)。
+状态：按阶段本地实施。Hub 侧登记仓库的 HTTPS 只读检查已接入独立、默认关闭的接口；本页的抓取与无凭证对象导入尚未接入会话工具或部署。另有 [Hub 托管凭证](hub-credential-broker.md) 首版，满足条件时默认开启，可直接读取远端快照，不走对象导入路径。现有 Git 工具见 [agent-git-tools.md](agent-git-tools.md)，精确提交审批见 [workspace-delegation.md](workspace-delegation.md)。
 
 ## 目标与边界
 
