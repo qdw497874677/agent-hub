@@ -4,7 +4,7 @@ import type { Session } from '../session.ts';
 import { findOption, optionValues, type RuntimeOption } from '../option.ts';
 import type { Seq, SessionId, TaskId, WorkspaceGroupId } from '../ids.ts';
 import { asAgentId, asProjectId, asSessionId, asTaskId, asWorkspaceGroupId, asWorkspaceId } from '../ids.ts';
-import { groupReady } from '../workspace-group.ts';
+import { groupReady, primaryMember } from '../workspace-group.ts';
 import { isUsable, setupNotReady } from '../workspace.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
@@ -12,7 +12,7 @@ import { err, ok, type Result } from '../result.ts';
 import { createArtifact } from '../artifact.ts';
 import type { SessionEvent } from '../event.ts';
 import type { Deps } from './deps.ts';
-import { ensureHosted } from './hosting.ts';
+import { admitPlannedPlacement, ensureHosted } from './hosting.ts';
 import { startSessionUseCase } from './start-session.ts';
 import { parseHubModel, type ProviderProtocol } from '../provider.ts';
 import type { DeliveryQueue } from '../ports/delivery-queue.ts';
@@ -28,6 +28,8 @@ import { withActiveTask } from './task-admission.ts';
 import { readInFlightTurn, readJournalTail, readRecentTurnDeliveries, turnVerdictInTail } from './turn-evidence.ts';
 
 export interface DeriveCommand {
+  /** Strict external placement: never substitute a workspace, worker, runtime or model. */
+  readonly boundedPlacement?: true;
   /** 归属任务。容器会话（群角色 / bot P2P，#221 步骤 7）不传，改用 `projectId` 定位项目。 */
   readonly taskId?: string;
   /** 容器会话用的项目归属：没有任务时靠它决定工作空间 / 落点规则。 */
@@ -73,7 +75,7 @@ export interface DeriveCommand {
  * 派生会话：唯一入口。
  * 常规会话必须落到一个真实任务上；容器会话（群角色 / bot P2P）没有任务，靠 `projectId` 落项目。
  */
-type DeriveSessionDeps = Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'taskGate' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles' | 'workspaceGroups' | 'agentDefaults'>;
+type DeriveSessionDeps = Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'taskGate' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles' | 'workspaceGroups' | 'agentDefaults' | 'plannedWorktreeGuard'>;
 
 export async function deriveSessionUseCase(
   deps: DeriveSessionDeps,
@@ -84,9 +86,15 @@ export async function deriveSessionUseCase(
 }
 
 async function deriveSessionAdmitted(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles' | 'workspaceGroups' | 'agentDefaults'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles' | 'workspaceGroups' | 'agentDefaults' | 'plannedWorktreeGuard'>,
   command: DeriveCommand
 ): Promise<Result<Session, DomainError>> {
+  if (command.boundedPlacement && (!command.taskId || !command.workerId || !command.workspaceId ||
+      !command.agentId || !command.model?.trim() || command.projectId || command.groupId || command.kind ||
+      command.parentSessionId || command.profileId || command.ref || command.options || command.sessionId ||
+      command.requires || command.assetIds || command.assetSetIds || command.createdBy || command.botId)) {
+    return err(invalid('有界启动参数不合法'));
+  }
   const task = command.taskId ? await deps.tasks.byId(asTaskId(command.taskId)) : null;
   if (command.taskId && !task) return err(notFound('任务不存在'));
   let projectId = task ? task.projectId : command.projectId ? asProjectId(command.projectId) : null;
@@ -155,7 +163,25 @@ async function deriveSessionAdmitted(
     const group = deps.workspaceGroups ? await deps.workspaceGroups.byId(asWorkspaceGroupId(command.groupId)) : null;
     if (!group || group.projectId !== project.id) return err(notFound('组合工作空间不存在'));
     if (!groupReady(group)) return err(conflict('这组工作空间还没准备好'));
-    const primary = group.members[0];
+    if (group.ownerTaskId && (!task || group.ownerTaskId !== task.id)) return err(conflict('这组工作空间属于别的任务'));
+    const plannedGroup = !!group.primaryWorkspaceId || !!deps.plannedWorktreeGuard?.isGroupProtected(group.id) ||
+      group.members.some((member) => !!deps.plannedWorktreeGuard?.forOutput(member.workspaceId));
+    for (const member of group.members) {
+      const plan = deps.plannedWorktreeGuard?.forOutput(member.workspaceId);
+      if (plannedGroup && !plan) return err(conflict('无法验证组合计划成员来源'));
+      if (plan && (plan.groupId !== group.id || (plan.state !== 'ready-unused' && plan.state !== 'closed'))) {
+        return err(conflict('组合工作空间计划尚未就绪，请先完成或核对计划'));
+      }
+      if (plan) {
+        const output = await deps.workspaces.byId(member.workspaceId);
+        if (!task || !output || output.ownerTaskId !== task.id || output.groupId !== group.id || !isUsable(output)) {
+          return err(conflict('组合计划成员不属于当前任务或尚未就绪'));
+        }
+        const blocked = setupNotReady(output, project.worktree?.setup?.waitForSetup ?? true);
+        if (blocked) return err(conflict(blocked));
+      }
+    }
+    const primary = primaryMember(group);
     if (!primary) return err(conflict('这组工作空间还没有成员仓库'));
     groupId = group.id;
     command = { ...command, workspaceId: primary.workspaceId };
@@ -173,9 +199,29 @@ async function deriveSessionAdmitted(
   // 机器跟着工作空间走（null = Server 本机）；没选就用项目的默认工作空间
   const workspace = chosen ?? (await defaultWorkspaceFor(deps, project.id));
   if (!workspace) return err(conflict('这个项目还没有工作空间：先选在哪台机器、哪个工作空间干活'));
+  const planned = deps.plannedWorktreeGuard?.forOutput(workspace.id);
+  if (planned) {
+    if (!task || workspace.ownerTaskId !== task.id) return err(conflict('这个计划工作空间属于别的任务'));
+    if (planned.groupId && planned.groupId !== groupId) return err(conflict('请通过整组启动，不能直接使用计划中的成员'));
+    if (!planned.groupId && groupId) return err(conflict('计划工作空间不属于这个组合'));
+    if (planned.state !== 'ready-unused' && planned.state !== 'closed') return err(conflict('工作空间计划尚未就绪，请先完成或核对计划'));
+  }
+  if (command.boundedPlacement && (
+    workspace.id !== command.workspaceId || workspace.workerId !== command.workerId || workspace.groupId ||
+    workspace.state !== 'ready' || (workspace.setup && !['none', 'ready'].includes(workspace.setup.state)) ||
+    ref.runtime !== command.agentId || ref.model !== command.model
+  )) return err(conflict('有界落点不满足指定的任务、工作空间、运行时或模型'));
   const notReady = setupNotReady(workspace, waitForSetup);
   if (notReady) return err(conflict(notReady));
   const workers = await deps.gateway.status();
+  if (command.boundedPlacement) {
+    const worker = workers.find((item) => item.workerId === command.workerId);
+    if (!worker || worker.origin !== 'remote' || worker.state !== 'online' ||
+        !worker.agentIds?.includes(command.agentId!) ||
+        worker.agentModels?.find((item) => item.agentId === command.agentId)?.readiness?.state !== 'ready') {
+      return err(conflict('指定的远程机器或运行时没有明确就绪证据'));
+    }
+  }
   // 令牌永远不能用本机。先于就绪检查拒绝，避免「未配置模型」把本机拒绝盖成 503。
   const homeWorker = workspace.workerId ?? workers.find((worker) => worker.origin === 'local')?.workerId ?? null;
   if (homeWorker !== null) {
@@ -194,6 +240,9 @@ async function deriveSessionAdmitted(
   if (!allowed.ok) return allowed;
   const model = checkModelOn(workers, placed.value, agentId, ref.model, command.hubProtocol);
   if (!model.ok) return model;
+  if (command.boundedPlacement && (placed.value !== command.workerId || model.value !== command.model || !model.value.trim())) {
+    return err(conflict('实际落点或模型与指定值不一致'));
+  }
   const reservedId = command.sessionId?.trim() || null;
   const reserved = reservedId ? await deps.sessions.byId(asSessionId(reservedId)) : null;
   const created = deriveSession({
@@ -218,11 +267,14 @@ async function deriveSessionAdmitted(
   if (!created.ok) return created;
 
   const session = { ...created.value, workerId: placed.value };
+  const admission = await admitPlannedPlacement(deps, session);
+  if (!admission.ok) return admission;
   await deps.sessions.save(session);
   // 组合会话的 cwd 是主仓库目录（locationOf；老组是容器根）；单仓仍是 workspace.path。
   const { root } = await locationOf(deps, project, session);
   const started = await startSessionUseCase(deps, { session, workspaceRoot: root, resume: null });
   if (!started.ok) return started;
+  if (planned) deps.plannedWorktreeGuard?.noteStarted(workspace.id);
   await noteSessionStarted(deps, session, `开了 ${session.agentId} 会话${session.model ? `（${session.model}）` : ''}`);
   return ok(session);
 }
@@ -257,7 +309,7 @@ export interface ForkCommand {
 }
 
 export async function forkSessionUseCase(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'taskGate' | 'workLog' | 'workspaces' | 'access'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'taskGate' | 'workLog' | 'workspaces' | 'access'> & Partial<Pick<Deps, 'workspaceGroups' | 'plannedWorktreeGuard'>>,
   command: ForkCommand
 ): Promise<Result<Session, DomainError>> {
   const source = await deps.sessions.byId(asSessionId(command.sessionId));
@@ -309,6 +361,8 @@ export async function forkSessionUseCase(
     if (!placed.ok) return placed;
     const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
     if (!allowed.ok) return allowed;
+    const admission = await admitPlannedPlacement(deps, source);
+    if (!admission.ok) return admission;
     const model = checkModelOn(workers, placed.value, agentId, command.model);
     if (!model.ok) return model;
 
@@ -335,6 +389,7 @@ export async function forkSessionUseCase(
       inheritedOptions: source.options
     });
     if (!started.ok) return started;
+    if (session.workspaceId && deps.plannedWorktreeGuard?.forOutput(session.workspaceId)) deps.plannedWorktreeGuard.noteStarted(session.workspaceId);
     await noteSessionStarted(deps, session, `从会话 ${source.id.slice(0, 8)} 的最新处（第 ${atSeq} 步）分叉出 ${session.agentId} 会话`);
     return ok(session);
   });

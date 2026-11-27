@@ -20,6 +20,7 @@ import { useNarrow } from '../../shell/device.ts';
  */
 export type WorkspaceChoice =
   | { readonly type: 'existing'; readonly workspaceId: string }
+  | { readonly type: 'existing_group'; readonly groupId: string }
   | { readonly type: 'new_long_lived'; readonly mode: 'create' | 'link' | 'empty'; readonly path: string | null }
   | { readonly type: 'new_temporary' }
   /** 只聊天：开一个空的临时目录，不下载仓库、不跑准备命令。 */
@@ -90,6 +91,7 @@ export function WorkspaceChooser({
   downloadRepo,
   onDownloadRepo,
   preparedWorkspaceId,
+  explicitWorktree = false,
   onSwitchAgent
 }: {
   canvas: CanvasDto;
@@ -122,6 +124,8 @@ export function WorkspaceChooser({
   downloadRepo?: boolean;
   onDownloadRepo?: (download: boolean) => void;
   preparedWorkspaceId?: string | null;
+  /** New task flow uses the explicit plan instead of legacy implicit isolation. */
+  explicitWorktree?: boolean;
   /**
    * 有在线机器、但没有一台能跑当前 agent 时的出口：展开并聚焦原来的 agent 选择器。
    * 只有派生对话框有这个选择器；「换个地方继续」是固定 agent，不传。
@@ -244,7 +248,7 @@ export function WorkspaceChooser({
         : harnessReason(chosenWorker, agentId)?.trim() || null;
   const groupSelected = choice?.type === 'new_group';
   const groupNode =
-    groups && !longLivedOnly && Boolean(canvas.project.primaryRepoId) && canvas.project.repos.length > 1 ? (
+    groups && !explicitWorktree && !longLivedOnly && Boolean(canvas.project.primaryRepoId) && canvas.project.repos.length > 1 ? (
       <NewGroup canvas={canvas} machineName={machineName} choice={choice} onChoice={onChoice} />
     ) : null;
   const linkNode = (
@@ -457,7 +461,7 @@ export function WorkspaceChooser({
               onSelect={() => onChoice({ type: 'new_temporary' })}
             />
             )}
-            {longLivedOnly || downloadRepo === false ? null : (
+            {longLivedOnly || downloadRepo === false || explicitWorktree ? null : (
             <NewWorktree
               canvas={canvas}
               taskId={taskId}

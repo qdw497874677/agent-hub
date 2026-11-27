@@ -29,6 +29,8 @@ export interface ProjectContext {
   readonly name: string;
   readonly repoUrl: string | null;
   readonly description: string | null;
+  /** 已确认的本地单仓工作目录；只描述当前输出，不推测来源或远端。 */
+  readonly localWorkspace?: boolean;
   /** 会话 cwd（amp 布局是主仓库目录，老组是容器根）；单仓会话不传。 */
   readonly workspaceRoot?: string | null;
   /** 组合工作目录的成员清单；单仓或没有组时省略。 */
@@ -42,7 +44,7 @@ const PROJECT_MAX_BYTES = 1500;
 
 function projectPart(project: ProjectContext | null | undefined): string | null {
   const repos = project?.repos ?? [];
-  if (!project || (!project.description && !project.repoUrl && repos.length === 0)) return null;
+  if (!project || (!project.description && !project.repoUrl && !project.localWorkspace && repos.length === 0)) return null;
   const lines = [`项目：${project.name}`];
   if (repos.length > 0) {
     if (project.workspaceRoot) lines.push(`组合工作目录：${project.workspaceRoot}`);
@@ -59,6 +61,8 @@ function projectPart(project: ProjectContext | null | undefined): string | null 
         ? '工作目录是主仓库（.），其他仓库在 ../repos/<name>；每个子目录是独立的 git 仓库；提交和推送请按仓库分别进行。'
         : '工作目录是容器根，每个子目录是独立的 git 仓库；提交和推送请按仓库分别进行。'
     );
+  } else if (project.localWorkspace) {
+    lines.push('当前工作目录（.）是本地仓库的工作目录；请在此目录检查实际 Git 信息。');
   } else if (project.repoUrl) {
     lines.push(`仓库：${project.repoUrl}`);
   }

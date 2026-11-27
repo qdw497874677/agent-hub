@@ -14,7 +14,18 @@ import { gitFor } from './machine-dirs.ts';
 import { groupMemberRoot } from '../workspace-group.ts';
 import { fenceWorkspace, finishFence, finishSettledFailure, workdirTarget } from './workdir-safety.ts';
 
-type CleanupDeps = Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces'> & Partial<Pick<Deps, 'projects' | 'cleanup' | 'workspaceGroups' | 'workdirSafety'>>;
+type CleanupDeps = Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces'> & Partial<Pick<Deps, 'projects' | 'cleanup' | 'workspaceGroups' | 'workdirSafety' | 'plannedWorktreeGuard'>>;
+
+// Planned outputs have durable provenance, but legacy restore cannot reconstruct them safely.
+const autoProtected = (deps: CleanupDeps, workspace: Workspace): boolean => !!(
+  deps.plannedWorktreeGuard?.forOutput(workspace.id) || deps.plannedWorktreeGuard?.isWorkspaceProtected(workspace.id) ||
+  (workspace.groupId && deps.plannedWorktreeGuard?.isGroupProtected(workspace.groupId))
+);
+const manualProtected = (deps: CleanupDeps, workspace: Workspace): boolean => {
+  const guard = deps.plannedWorktreeGuard;
+  return !!(guard?.forOutput(workspace.id) || guard?.isWorkspaceProtected(workspace.id) ||
+    (workspace.groupId && guard?.isGroupProtected(workspace.groupId)));
+};
 
 /** 删了会丢什么，说人话；都没有返回 null（§5 第 3 条）。 */
 export function unsavedReason(status: GitStatus): string | null {
@@ -238,6 +249,7 @@ async function triggersOf(
 }
 
 async function sweepSolo(deps: CleanupDeps, workspace: Workspace, sink: SweepSink): Promise<void> {
+  if (autoProtected(deps, workspace)) { sink.skipped.push(workspace.id); return; }
   const policy = await sink.policyOf(workspace);
   const sessions = await workspaceSessions(deps, workspace);
   const merged = policy.prMerged ? await mergedPullRequest(deps, workspace) : null;
@@ -267,7 +279,7 @@ async function sweepSolo(deps: CleanupDeps, workspace: Workspace, sink: SweepSin
   }
   const squashed = mergedHead !== null && status.value.head === mergedHead && status.value.unpushed > 0;
   let fence: string | null;
-  try { fence = await fenceWorkspace(deps, workspace); } catch { sink.skipped.push(workspace.id); return; }
+  try { fence = await fenceWorkspace(deps, workspace, async (current) => !autoProtected(deps, current)); } catch { sink.skipped.push(workspace.id); return; }
   if (deps.cleanup?.dropCheckpoints) {
     for (const session of await deps.sessions.listByWorkspace(workspace.id)) await deps.cleanup.dropCheckpoints(session.id).catch(() => undefined);
   }
@@ -305,6 +317,11 @@ async function sweepGroup(deps: CleanupDeps, groupId: string, sink: SweepSink): 
     if (workspace && (workspace.state === 'ready' || workspace.state === 'kept')) members.push(workspace);
   }
   if (members.length === 0) return;
+  const groupProtected = () => !!deps.plannedWorktreeGuard?.isGroupProtected(groupId) || group.members.some((member) => !!deps.plannedWorktreeGuard?.forOutput(member.workspaceId) || !!deps.plannedWorktreeGuard?.isWorkspaceProtected(member.workspaceId));
+  if (groupProtected() || members.some((workspace) => autoProtected(deps, workspace))) {
+    for (const workspace of members) sink.skipped.push(workspace.id);
+    return;
+  }
 
   const policy = await sink.policyOf(members[0]!);
   const sessions = await groupSessions(deps, group);
@@ -364,7 +381,7 @@ async function sweepGroup(deps: CleanupDeps, groupId: string, sink: SweepSink): 
     const squashed = mergedHead !== null && row.status.head === mergedHead && row.status.unpushed > 0;
     const git = await gitFor(deps, row.workspace.workerId);
     let fence: string | null;
-    try { fence = await fenceWorkspace(deps, row.workspace); } catch { sink.skipped.push(row.workspace.id); return; }
+    try { fence = await fenceWorkspace(deps, row.workspace, async (current) => !groupProtected() && !members.some((member) => autoProtected(deps, member)) && !autoProtected(deps, current)); } catch { sink.skipped.push(row.workspace.id); return; }
     if (deps.cleanup?.dropCheckpoints) {
       for (const session of await deps.sessions.listByWorkspace(row.workspace.id)) {
         await deps.cleanup.dropCheckpoints(session.id).catch(() => undefined);
@@ -412,6 +429,7 @@ async function sweepGroup(deps: CleanupDeps, groupId: string, sink: SweepSink): 
         fence = await deps.workdirSafety.runExclusive(async () => {
           const current = await deps.workspaceGroups!.byId(group.id);
           if (!current || current.root !== group.root || current.workerId !== group.workerId || JSON.stringify(current.members) !== JSON.stringify(group.members)) throw new Error('group changed');
+          if (groupProtected() || members.some((member) => autoProtected(deps, member))) throw new Error('group protected');
           return deps.workdirSafety!.beginRemoval({ workspaceId: group.id, workerId: group.workerId, cwd: group.root });
         });
       } catch { return; }
@@ -476,6 +494,7 @@ export async function removeWorkspaceUseCase(
   if (deps.workdirSafety && !command.deleteDirectory) {
     const initial = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
     if (!initial || initial.state === 'removed') return err(notFound('工作空间不存在'));
+    if (manualProtected(deps, initial)) return err(conflict('计划工作空间不能通过旧移除方式处理'));
     if (await busy(deps, initial)) return err(conflict('有会话正在这个工作空间里运行，先停掉它'));
     const result = await deps.workdirSafety.runExclusive(async () => {
       const current = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
@@ -491,6 +510,9 @@ export async function removeWorkspaceUseCase(
   }
   const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
   if (!workspace || workspace.state === 'removed') return err(notFound('工作空间不存在'));
+  if (manualProtected(deps, workspace)) {
+    return err(conflict('工作空间被未完成或待核对的计划保护，不能移除'));
+  }
   if (await busy(deps, workspace)) return err(conflict('有会话正在这个工作空间里运行，先停掉它'));
   if (command.deleteDirectory) {
     if (!platformOwnsDirectory(workspace)) return err(invalid('这是你自己选的目录，平台不会删它；只能移除登记'));
@@ -509,7 +531,7 @@ export async function removeWorkspaceUseCase(
       }
     }
     let fence: string | null;
-    try { fence = await fenceWorkspace(deps, workspace, validateOwner); } catch { return err(conflict('工作目录有终端、待确认的删除或归属已变')); }
+    try { fence = await fenceWorkspace(deps, workspace, async (current) => !manualProtected(deps, current) && (!validateOwner || await validateOwner(current))); } catch { return err(conflict('工作目录有终端、待确认的删除、计划保护或归属已变')); }
     await dropCheckpoints(deps, workspace);
     const outcome = await git.remove(workspace.path, removeKind(workspace), { force: command.force === true });
     if (!outcome.ok) { await finishSettledFailure(deps, fence, outcome.error); return outcome; }

@@ -89,6 +89,20 @@ test('恢复：settledAt 写成 null，无条件允许，审计记「恢复」',
   assert.equal(audit.entries[0]?.detail, '恢复');
 });
 
+test('planned missing or removed output prevents unsetting settledAt', async () => {
+  const w = await world({ status: 'done' });
+  const made = newWorkspace({ projectId: w.project.id, ownerTaskId: w.task.id, workerId: null, path: '/tmp/planned', kind: 'temporary', source: 'worktree', now: 1 });
+  assert.ok(made.ok);
+  await w.deps.workspaces.save({ ...made.value, state: 'removed' });
+  await w.deps.sessions.save({ ...w.session, status: 'done', workspaceId: made.value.id, settledAt: 500 });
+  const plannedWorktreeGuard = { isWorkspaceProtected: () => false, isGroupProtected: () => false,
+    forOutput: (id: string) => id === made.value.id ? { source: 'local' as const, state: 'closed' as const, groupId: null } : null,
+    noteStarted: () => {} };
+  const result = await settleSessionUseCase({ ...w.deps, plannedWorktreeGuard }, { sessionId: w.session.id, settled: false, actor, now: 2000 });
+  assert.ok(!result.ok && result.error.code === 'conflict');
+  assert.equal((await w.deps.sessions.byId(w.session.id))?.settledAt, 500);
+});
+
 test('还在跑的会话拒绝收起（conflict），库不变', async () => {
   const w = await world({ status: 'running' });
   const result = await settleSessionUseCase(

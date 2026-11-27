@@ -102,6 +102,30 @@ export const wsAddWorktree = method(
   z.object({ path: z.string(), branch: z.string() })
 );
 
+const plannedInspection = z.object({ sourcePath: z.string().min(1), startRef: z.string().nullable(), expectedOriginUrl: z.string().min(1).optional() });
+export const wsInspectPlannedWorktree = method(
+  'ws.inspect_planned_worktree', 'git', plannedInspection,
+  z.object({ topLevel: z.string(), commonDir: z.string(), identity: z.string().regex(/^[0-9a-f]{64}$/), oid: z.string().regex(/^[0-9a-f]{40}$/), managedRoot: z.string() })
+);
+const plannedCreateInput = plannedInspection.extend({
+    expectedTopLevel: z.string().min(1), expectedCommonDir: z.string().min(1), expectedIdentity: z.string().regex(/^[0-9a-f]{64}$/),
+    expectedOid: z.string().regex(/^[0-9a-f]{40}$/), targetPath: z.string().min(1),
+    branch: z.string().min(1), operationId: z.string().min(1).max(200), reconcileOnly: z.boolean().optional()
+  });
+const plannedOutcome = z.object({ path: z.string(), branch: z.string(), oid: z.string().regex(/^[0-9a-f]{40}$/), alreadyCreated: z.boolean() });
+export const wsCreatePlannedWorktree = method('ws.create_planned_worktree', 'git', plannedCreateInput, plannedOutcome);
+export const wsVerifyPlannedWorktree = method('ws.verify_planned_worktree', 'git', plannedCreateInput, plannedOutcome);
+export const wsResolvePlannedBase = method(
+  'ws.resolve_planned_base', 'git.remote',
+  z.object({ repoUrl: z.string().min(1).max(2000), startRef: z.string().nullable(), auth: gitAuth }),
+  z.object({ managedRoot: z.string(), startRef: z.string(), oid: z.string().regex(/^[0-9a-f]{40}$/) })
+);
+export const wsPreparePlannedBase = method(
+  'ws.prepare_planned_base', 'git.remote',
+  z.object({ repoUrl: z.string().min(1).max(2000), startRef: z.string().min(1), auth: gitAuth, operationId: z.string().min(1).max(200), targetPath: z.string().min(1), expectedOid: z.string().regex(/^[0-9a-f]{40}$/), reconcileOnly: z.boolean().optional() }),
+  z.object({ topLevel: z.string(), commonDir: z.string(), identity: z.string().regex(/^[0-9a-f]{64}$/), oid: z.string().regex(/^[0-9a-f]{40}$/), managedRoot: z.string() })
+);
+
 /* ── 组合工作空间（docs/design/multi-repo.md §11.3 / §12.1 / §12.5）：容器目录 + 成员 worktree。 ── */
 
 const groupRoot = z.string().min(1).max(4096);

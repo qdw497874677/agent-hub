@@ -79,6 +79,8 @@ export type { CapacityPolicy, AdmissionRequest } from './ports/capacity-policy.t
 export type { DirectoryEntry, WorkspaceFS } from './ports/workspace-fs.ts';
 export type { CommitInput, CommitOutcome, CommitPreview, GhOutcome, GhRequest, PushOutcome, RemotePullRequest, PublishRefInput, PublishRefOutcome, PrepareDelegationWorktreeInput, PrepareDelegationWorktreeOutcome, CloneInput, GitAuth, GitInspection, GitStatus, PreviewOptions, RemoveKind, RemoveOptions, RemoveOutcome, RepoProbe, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
 export type { ImportCommitInput, ImportCommitOutcome } from './ports/workspace-git.ts';
+export type { PlannedWorktreeInspectInput, PlannedWorktreeInspection, PlannedWorktreeCreateInput, PlannedWorktreeOutcome } from './ports/workspace-git.ts';
+export type { ResolvePlannedBaseInput, ResolvePlannedBaseOutcome, PreparePlannedBaseInput } from './ports/workspace-git.ts';
 export type { SearchGateway, SearchHit, SearchQuery } from './ports/search-gateway.ts';
 export {
   METADATA_SEARCH_GROUP_LIMIT,
@@ -276,3 +278,4 @@ export * from './use-cases/workspace-delegation.ts';
 export * from './use-cases/workspace-delegation-publish.ts';
 export * from './workspace-coordinator.ts';
 export * from './workdir-safety.ts';
+export * from './planned-worktree.ts';

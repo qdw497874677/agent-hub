@@ -101,7 +101,7 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
   const [workdirSession, setWorkdirSession] = useState<string | null>(null);
   const [workdirOpenSession, setWorkdirOpenSession] = useState<string | null>(null);
-  const [workdirDerive, setWorkdirDerive] = useState<{ id: string; workerId: string } | null>(null);
+  const [workdirDerive, setWorkdirDerive] = useState<{ id: string; workerId: string; createWorktree?: boolean } | null>(null);
   const [workdirTaskPicker, setWorkdirTaskPicker] = useState(false);
   const selectWorkdirSession = useCallback((id: string | null) => { setWorkdirSession(id); if (id) setWorkdirOpenSession((current) => current === id ? null : current); }, []);
   const [newModelSession, setNewModelSession] = useState<{ projectId: string; source: SessionDto; model: string } | null>(null);
@@ -118,6 +118,7 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
   const queryClient = useQueryClient();
 
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
+  const home = useQuery({ queryKey: ['home'], queryFn: api.home, refetchInterval: 10_000 });
   const projectRoute = route?.page === 'project' ? route : null;
   // Workspace 在首页和项目之间复用；离开项目或切换项目时不要把旧抽屉带回来。
   useEffect(() => { setSidebarOpen(false); }, [projectRoute?.projectId]);
@@ -652,9 +653,9 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
         </div>
 
       {view === 'workdir' ? canvas.data && account && workdirWorkspace ? (
-        <WorkdirTabs key={`${account.id}:${project.id}:${workdirWorkspace.id}`} accountId={account.id} projectId={project.id} workspace={workdirWorkspace} canvas={canvas.data} openSessionId={workdirOpenSession} onSession={selectWorkdirSession}
+        <WorkdirTabs key={`${account.id}:${project.id}:${workdirWorkspace.id}`} accountId={account.id} projectId={project.id} workspace={workdirWorkspace} canvas={canvas.data} worktreePlansAvailable={home.data?.worktreePlansAvailable === true} openSessionId={workdirOpenSession} onSession={selectWorkdirSession}
           onBack={() => navigate({ page: 'project', projectId: project.id, view: 'list', sessionId: null })}
-          onNewSession={(workspace, workerId) => { setWorkdirDerive({ id: workspace.id, workerId }); setWorkdirTaskPicker(true); }}
+          onNewSession={(workspace, workerId, createWorktree) => { setWorkdirDerive({ id: workspace.id, workerId, createWorktree }); setWorkdirTaskPicker(true); }}
           renderSession={(id) => selectedSession?.id === id && selectedSession.workspaceId === workdirWorkspace.id && !selectedSession.groupId ? <FocusView key={id} independentWorkdir canvas={canvas.data!} session={selectedSession} live={resolveLive(selectedSession, canvas.data!.previews[id] ?? [], live[id])} historyState={history[id] ?? 'loading'} onRetryHistory={() => void loadHistory(selectedSession)} syncState={sync[id]} onRetrySync={() => retrySync(id)} draft={drafts[id] ?? ''} onDraftChange={(text) => setDrafts((current) => ({ ...current, [id]: text }))} onBack={() => navigate({ page: 'project', projectId: project.id, view: 'list', sessionId: null })} onProjectNavigation={() => setSidebarOpen(true)} onSearch={() => setSearch(true)} onChanged={refresh} onOpenSession={openSession} onSeedDraft={(sessionId, text) => setDrafts((current) => ({ ...current, [sessionId]: text }))} artifacts={canvas.data!.artifacts.filter((artifact) => artifact.sessionId === id)} onChangeOption={(optionId, value) => changeOption(id, optionId, value)} /> : <div className="p-6 text-tertiary">{sideSession.isError || selectedSession ? '会话不可用或不属于此目录' : '正在读取会话…'}</div>}
         />
       ) : <div data-testid="workdir-state" role="status" className="p-6 text-sub text-tertiary">{workdirViews.isPending || canvas.isPending ? '正在读取工作目录…' : workdirViews.isError ? '工作目录读取失败' : '工作目录不可用或无权访问'}</div> : view === 'focus' ? canvas.data && selectedSession ? (
@@ -813,16 +814,18 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
         <DeriveDialog
           canvas={canvas.data}
           taskId={deriveFor}
+          worktreePlansAvailable={home.data?.worktreePlansAvailable === true}
           initialWorkspace={workdirDerive ?? undefined}
+          initialWorktree={workdirDerive?.createWorktree}
           onDone={() => { setDeriveFor(null); setWorkdirDerive(null); }}
           onDerived={(session) => {
             // 刚开的会话直接进对话：开它就是为了说话。
             setDeriveFor(null);
-            if (workdirDerive && view === 'workdir') { setWorkdirOpenSession(session.id); setWorkdirDerive(null); } else openSession(session.id);
+            if (workdirDerive && view === 'workdir' && session.workspaceId === workdirDerive.id && !session.groupId) { setWorkdirOpenSession(session.id); setWorkdirDerive(null); } else { setWorkdirDerive(null); openSession(session.id); }
           }}
         />
       ) : null}
-      {workdirTaskPicker && canvas.data ? <Sheet title="选择任务" testId="workdir-task-picker" onClose={() => { setWorkdirTaskPicker(false); setWorkdirDerive(null); }}><div className="p-4"><p className="mb-2 text-sub text-tertiary">选择要开始会话的任务</p>{canvas.data.tasks.filter((task) => task.archivedAt == null).map((task) => <button key={task.id} type="button" className="block min-h-11 w-full border-b border-hair px-2 text-left text-body" onClick={() => { setWorkdirTaskPicker(false); setDeriveFor(task.id); }}>{task.title}</button>)}{canvas.data.tasks.length === 0 ? <p className="text-sub text-tertiary">还没有任务，请先新建任务。</p> : null}</div></Sheet> : null}
+      {workdirTaskPicker && canvas.data ? <Sheet title="选择任务" testId="workdir-task-picker" onClose={() => { setWorkdirTaskPicker(false); setWorkdirDerive(null); }}><div className="p-4"><p className="mb-2 text-sub text-tertiary">{workdirDerive?.createWorktree ? '选择 Worktree 所属任务' : '选择要开始会话的任务'}</p>{canvas.data.tasks.filter((task) => task.archivedAt == null).map((task) => <button key={task.id} type="button" className="block min-h-11 w-full border-b border-hair px-2 text-left text-body" onClick={() => { setWorkdirTaskPicker(false); setDeriveFor(task.id); }}>{task.title}</button>)}{canvas.data.tasks.every((task) => task.archivedAt != null) ? <p className="text-sub text-tertiary">没有可选任务，请先新建任务。</p> : null}</div></Sheet> : null}
       {newModelSession?.projectId === project.id && canvas.data ? (
         <NewModelSessionDialog
           key={`${newModelSession.source.id}:${newModelSession.model}`}

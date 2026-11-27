@@ -116,6 +116,21 @@ test('independent workdir blocks force removal and sweep without claiming remova
   assert.equal(guard.fenced, false);
 });
 
+test('plan protection acquired during status is rechecked under lease before solo sweep or manual fence', async () => {
+  for (const route of ['sweep', 'manual'] as const) {
+    const w = await world('https://example.com/demo.git');
+    await w.finish();
+    const safety = testSafety(); let protectedNow = false; let removes = 0;
+    const plannedWorktreeGuard = { isWorkspaceProtected: (id: string) => protectedNow && id === w.temp.id, isGroupProtected: () => false, forOutput: () => null, noteStarted: () => {} };
+    const original = w.deps.git;
+    const git = { ...original, status: async (path: string) => { const result = await original.status(path); await safety.safety.runExclusive(() => { protectedNow = true; }); return result; }, remove: async () => { removes++; return ok({ removed: true as const }); } };
+    const deps = { ...w.deps, git, gateway: { ...w.deps.gateway, git: () => git }, workdirSafety: safety.safety, plannedWorktreeGuard };
+    if (route === 'sweep') assert.ok((await sweepTemporaryWorkspacesUseCase(deps)).skipped.includes(w.temp.id));
+    else assert.equal((await removeWorkspaceUseCase(deps, { workspaceId: w.temp.id, deleteDirectory: true })).ok, false);
+    assert.equal(removes, 0); assert.equal(safety.fenced, false);
+  }
+});
+
 test('ambiguous worker failure retains fence but definitive no-remove releases it', async () => {
   for (const ambiguous of [true, false]) {
     const w = await world('https://example.com/demo.git');
@@ -535,6 +550,19 @@ test('group sweep member failure distinguishes settled and unknown removal', asy
     assert.ok(report.failed?.length);
     assert.equal(guard.fenced, !settled);
   }
+});
+
+test('group sweep rechecks every member protection under lease before fencing', async () => {
+  const w = await comboWorld();
+  await w.deps.sessions.save({ ...w.session, status: 'stopped', settledAt: 10 });
+  const safety = testSafety(); let protectedNow = false; let removes = 0;
+  const protectedId = w.group.members[1]!.workspaceId;
+  const plannedWorktreeGuard = { isWorkspaceProtected: (id: string) => protectedNow && id === protectedId, isGroupProtected: () => false, forOutput: () => null, noteStarted: () => {} };
+  const original = w.deps.git;
+  const git = { ...original, status: async (path: string) => { const result = await original.status(path); await safety.safety.runExclusive(() => { protectedNow = true; }); return result; }, remove: async () => { removes++; return ok({ removed: true as const }); } };
+  const deps = { ...w.deps, git, gateway: { ...w.deps.gateway, git: () => git }, workdirSafety: safety.safety, plannedWorktreeGuard };
+  await sweepTemporaryWorkspacesUseCase(deps, { projectId: w.project.id });
+  assert.equal(removes, 0); assert.equal(safety.fenced, false);
 });
 
 test('group sweep container errors retain unknown fence and release settled fence', async () => {

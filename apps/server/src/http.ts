@@ -210,9 +210,12 @@ import { installOpenApi } from './openapi/app.ts';
 import type { OpenApiOptions } from './openapi/app.ts';
 import type { ApiTokenDeps } from '@agent-hub/domain';
 import type { createWorkdirTerminalService } from './workdir-terminal-service.ts';
+import { installDisabledWorktreePlanRoutes, installWorktreePlanRoutes } from './worktree-plan-routes.ts';
+import type { createWorktreePlans } from './worktree-plans.ts';
 
 export interface AppOptions {
   readonly workdirTerminals?: ReturnType<typeof createWorkdirTerminalService>;
+  readonly worktreePlans?: ReturnType<typeof createWorktreePlans>;
   readonly agentHandoff?: AgentHandoffService;
   readonly taskArchiveBlockers?: TaskArchiveBlockers;
   readonly projectGitProbe?: ProjectGitProbeRouteOptions;
@@ -389,6 +392,7 @@ export function createApp(options: AppOptions): Hono {
     // 授权中间件要先于下面所有路由注册（Hono 按注册顺序走）。
     installAccess(app, deps, subjectOf);
     installHandoffMutationGate(app, deps, '/api', subjectOf);
+    if (options.worktreePlans) installWorktreePlanRoutes(app, options.worktreePlans, subjectOf);
     if (options.agentHandoff) installAgentHandoffRoutes(app, options.agentHandoff, principalOf);
     if (options.projectGitProbe) installProjectGitProbeRoutes(app, options.projectGitProbe, subjectOf);
     if (options.hubCredentials) installHubCredentialRoutes(app, options.hubCredentials.broker, subjectOf, options.hubCredentials.authorize);
@@ -464,6 +468,7 @@ export function createApp(options: AppOptions): Hono {
   });
   if (!options.auth) installHandoffMutationGate(app, deps, '/api', subjectOf);
   if (!options.auth || !options.hubCredentials) installDisabledHubCredentialRoutes(app);
+  if (!options.auth || !options.worktreePlans) installDisabledWorktreePlanRoutes(app);
 
   if (options.services) {
     installServiceRoutes(
@@ -501,7 +506,8 @@ export function createApp(options: AppOptions): Hono {
           return listed.ok ? listed.value : [];
         }
       : undefined;
-    return c.json(homeSchema.parse(await loadHome(deps, undefined, await projectReader(deps.access, subject), registered)));
+    const home = await loadHome(deps, undefined, await projectReader(deps.access, subject), registered);
+    return c.json(homeSchema.parse({ ...home, ...(options.auth && options.worktreePlans ? { worktreePlansAvailable: true } : {}) }));
   });
 
   // 目录选择器（S2.1）：让人从真实目录里挑，而不是手打一个可能会错的路径。

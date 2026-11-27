@@ -159,7 +159,9 @@ export function installTransport(ctx: LinkCtx): Transport {
   });
   serveWorkerFiles(channel, options.files, options.roots ?? [], {
     ...(options.worktreesDir ? { worktreesDir: options.worktreesDir } : {}),
-    ...(options.groupsDir ? { groupsDir: options.groupsDir } : {})
+    ...(options.groupsDir ? { groupsDir: options.groupsDir } : {}),
+    ...(options.plannedProofDir ? { plannedProofDir: options.plannedProofDir } : {}),
+    ...(options.plannedBaseAllowedOrigins ? { plannedBaseAllowedOrigins: options.plannedBaseAllowedOrigins } : {})
   });
   // opt-in 的项目 Git 对象导入：不注入导入器就不注册 handler，也不在 hello 里声明能力。
   if (options.gitBundleImport) serveProjectGitBundleImport(channel, options.gitBundleImport);

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { consumeWorkerCredentials, rewriteCredentialEnv } from './credential-env.ts';
 import { workdirTerminalEnabled } from './workdir-terminal-config.ts';
@@ -175,6 +175,21 @@ const componentsEnabled = env['WORKER_COMPONENTS'] !== '0';
 
 /** 自更新标记所在目录（和 worker-id 同一处）；hub 下发的 agents.json 也放这里。 */
 const stateDir = env['WORKER_STATE_DIR'] ?? join(homedir(), '.config', 'agent-hub');
+function preparePlannedWorktreeDirs(): string | undefined {
+  try {
+    mkdirSync(join(groupsDir, 'planned-worktrees'), { recursive: true, mode: 0o700 });
+    const proof = join(stateDir, 'planned-worktree-proofs');
+    mkdirSync(proof, { recursive: true, mode: 0o700 });
+    if (realpathSync(proof) !== resolve(proof)) throw new Error('noncanonical proof directory');
+    return resolve(proof);
+  } catch {
+    log('Worktree 计划未启用：无法准备安全目录；旧会话功能不受影响');
+    return undefined;
+  }
+}
+const plannedProofDir = preparePlannedWorktreeDirs();
+// No destination is permitted by default; only the Worker operator can opt in.
+const plannedBaseAllowedOrigins = (env['WORKER_PLANNED_BASE_ALLOWED_ORIGINS'] ?? '').split(',').map((origin) => origin.trim()).filter(Boolean);
 /** hub 存过的自定义运行时别名（CAP-1）：文件不存在 = 从没配过，走 ACP_AGENTS。 */
 const agentsFile = join(stateDir, 'agents.json');
 const storedAliases = readAgentAliases(agentsFile, log);
@@ -456,6 +471,8 @@ const link = connectWorkerLink({
   files,
   ...(worktreesDir ? { worktreesDir } : {}),
   groupsDir,
+  ...(plannedProofDir ? { plannedProofDir } : {}),
+  plannedBaseAllowedOrigins,
   assets,
   ...(terminal ? { terminal } : {}),
   ...(workdirTerminal ? { workdirTerminal } : {}),

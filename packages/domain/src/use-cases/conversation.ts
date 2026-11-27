@@ -159,7 +159,7 @@ async function peerBriefingFor(
 type PromptSessionDeps = Pick<
   Deps,
   'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaces' | 'workspaceGroups' | 'bots'
-> & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links' | 'peerBriefing' | 'branchAttempts' | 'agentHandoffs'>>;
+> & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links' | 'peerBriefing' | 'branchAttempts' | 'agentHandoffs' | 'plannedWorktreeGuard'>>;
 
 export async function promptSessionUseCase(
   deps: PromptSessionDeps,
@@ -323,18 +323,20 @@ async function failTurn(
 }
 
 async function briefingFor(
-  deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workLog' | 'projects' | 'workspaces' | 'workspaceGroups'>>,
+  deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workLog' | 'projects' | 'workspaces' | 'workspaceGroups' | 'plannedWorktreeGuard'>>,
   session: Session
 ): Promise<string | null> {
   if (!session.taskId || !deps.workLog) return null;
   const task = await deps.tasks.byId(session.taskId);
   if (!task) return null;
   const project = deps.projects ? await deps.projects.byId(task.projectId) : null;
+  const localSingle = !session.groupId && !!session.workspaceId && deps.plannedWorktreeGuard?.forOutput(session.workspaceId)?.source === 'local';
   const context = project
     ? {
         name: project.name,
-        repoUrl: project.repo?.url ?? null,
+        repoUrl: localSingle ? null : project.repo?.url ?? null,
         description: project.description,
+        ...(localSingle ? { localWorkspace: true } : {}),
         ...(await comboBriefing(deps, session))
       }
     : null;

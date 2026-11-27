@@ -241,6 +241,63 @@ test('workspace mutation safety needs a uniquely authenticated live capable conn
   } finally { await h.stop(shared, old, ...(capable ? [capable] : []), ...(replacement ? [replacement] : [])); }
 });
 
+test('planned requests require authenticated connection and preserve explicit settlement', async () => {
+  let mode = 'operation_settled_conflict';
+  const h = await harness({ gateway: { echoMs: 0 }, authenticate: async ({ workerId, credential }) => credential === 'bound'
+    ? { ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'test', createdAt: 1 } }
+    : { ok: true, via: 'shared' }, reply: () => ({ error: { code: mode, message: 'settled' } }) });
+  const shared = await h.connect('shared');
+  const bound = await h.connect('bound', { credential: 'bound' });
+  try {
+    const input = { sourcePath: '/repo', startRef: null, expectedTopLevel: '/repo', expectedCommonDir: '/repo/.git', expectedIdentity: 'b'.repeat(64), expectedOid: 'a'.repeat(40), targetPath: '/managed/a', branch: 'branch', operationId: 'op' };
+    const sharedResult = await h.gateway.gateway.git('shared').createPlannedWorktree!(input);
+    assert.equal(!sharedResult.ok && sharedResult.error.operationSettled, true);
+    assert.equal(shared.calls.some((call) => call.method === 'ws.create_planned_worktree'), false);
+    const git = h.gateway.gateway.git('bound');
+    const settled = await git.createPlannedWorktree!(input);
+    assert.equal(!settled.ok && settled.error.operationSettled, true);
+    const reconciliation = await git.createPlannedWorktree!({ ...input, reconcileOnly: true });
+    assert.equal(!reconciliation.ok && reconciliation.error.operationSettled, undefined);
+    mode = 'failed';
+    const uncertain = await git.createPlannedWorktree!(input);
+    assert.equal(!uncertain.ok && uncertain.error.operationSettled, undefined);
+  } finally { await h.stop(shared, bound); }
+});
+
+test('planned probes and mutations discard results from replaced connections', async () => {
+  const h = await harness({ gateway: { echoMs: 0, requestTimeoutMs: 30 }, authenticate: async ({ workerId }) =>
+    ({ ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'test', createdAt: 1 } }), drop: () => true });
+  const first = await h.connect('w'); let second: Wire | undefined; let third: Wire | undefined;
+  try {
+    const probe = h.gateway.gateway.git('w').inspectPlannedWorktree!({ sourcePath: '/repo', startRef: null });
+    await until(() => first.calls.some((call) => call.method === 'ws.inspect_planned_worktree'));
+    second = await h.connect('w');
+    const observed = await probe;
+    assert.equal(!observed.ok && observed.error.operationSettled, undefined);
+    const mutation = h.gateway.gateway.git('w').createPlannedWorktree!({ sourcePath: '/repo', startRef: null, expectedTopLevel: '/repo', expectedCommonDir: '/repo/.git', expectedIdentity: 'b'.repeat(64), expectedOid: 'a'.repeat(40), targetPath: '/managed/a', branch: 'branch', operationId: 'op' });
+    await until(() => second!.calls.some((call) => call.method === 'ws.create_planned_worktree'));
+    third = await h.connect('w');
+    const outcome = await mutation;
+    assert.equal(!outcome.ok && outcome.error.operationSettled, undefined);
+  } finally { await h.stop(first, ...(second ? [second] : []), ...(third ? [third] : [])); }
+});
+
+test('planned verify uses authenticated read request and forwards receipt attribution', async () => {
+  const input = { sourcePath: '/repo', startRef: null, expectedTopLevel: '/repo', expectedCommonDir: '/repo/.git', expectedIdentity: 'b'.repeat(64), expectedOid: 'a'.repeat(40), targetPath: '/managed/a', branch: 'branch', operationId: 'op' };
+  const outcome = { path: input.targetPath, branch: input.branch, oid: input.expectedOid, alreadyCreated: true };
+  const h = await harness({ gateway: { echoMs: 0 }, authenticate: async ({ workerId, credential }) => credential === 'bound'
+    ? { ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'test', createdAt: 1 } }
+    : { ok: true, via: 'shared' }, reply: () => outcome });
+  const shared = await h.connect('shared'); const bound = await h.connect('bound', { credential: 'bound' });
+  try {
+    assert.equal((await h.gateway.gateway.git('shared').verifyPlannedWorktree!(input)).ok, false);
+    assert.equal(shared.calls.some(call => call.method === 'ws.verify_planned_worktree'), false);
+    const result = await h.gateway.gateway.git('bound').verifyPlannedWorktree!(input);
+    assert.equal(result.ok, true); if (result.ok) assert.deepEqual(result.value, outcome);
+    assert.deepEqual(bound.calls.find(call => call.method === 'ws.verify_planned_worktree')?.params, input);
+  } finally { await h.stop(shared, bound); }
+});
+
 test('required mutation safety checks current identity and capability at every dispatch; default remains compatible', async () => {
   const h = await harness({ gateway: { echoMs: 0, workspaceMutationSafetyRequired: true }, authenticate: async ({ workerId, credential }) => credential === 'bound'
     ? { ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'test', createdAt: 1 } }

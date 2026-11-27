@@ -133,6 +133,23 @@ test('occupied workdir blocks transfer and unlink before ownership changes', asy
   assert.equal((await w.deps.workspaces.linksOf(made.value.id))[0]?.projectId, w.a.id);
 });
 
+test('plan protection acquired under lease blocks team transfer, unlink, and both removal forms', async () => {
+  const w = await world();
+  const made = newWorkspace({ projectId: w.a.id, teamId: 't1', workerId: 'remote-1', path: '/srv/work/protected', kind: 'long_lived', source: 'cloned', isGit: true, now: 1 });
+  assert.ok(made.ok); await w.deps.workspaces.save(made.value);
+  await w.deps.workspaces.claim({ projectId: w.a.id, workspaceId: made.value.id, linkedBy: null, linkedAt: 1 });
+  const safety = serialSafety();
+  let protectedNow = false;
+  const guard = { isWorkspaceProtected: (id: string) => protectedNow && id === made.value.id, isGroupProtected: () => false, forOutput: () => null, noteStarted: () => {} };
+  const deps = { ...w.deps, workdirSafety: safety, plannedWorktreeGuard: guard };
+  await safety.runExclusive(() => { protectedNow = true; });
+  assert.equal((await transferWorkspaceUseCase(deps, { actor: owner, projectId: w.b.id, workspaceId: made.value.id })).ok, false);
+  assert.equal((await unlinkWorkspaceUseCase(deps, { actor: owner, projectId: w.a.id, workspaceId: made.value.id })).ok, false);
+  for (const deleteDirectory of [false, true]) assert.equal((await deleteWorkspaceUseCase(deps, { actor: owner, workspaceId: made.value.id, deleteDirectory, force: true })).ok, false);
+  assert.equal((await w.deps.workspaces.linksOf(made.value.id))[0]?.projectId, w.a.id);
+  assert.equal((await w.deps.workspaces.byId(made.value.id))?.state, 'ready');
+});
+
 test('团队页：owner 新建（不关联），成员看不见没关联的；为项目新建会关联、成员只看见自己项目关联的', async () => {
   const w = await world();
   const denied = await createTeamWorkspaceUseCase(w.deps, { actor: alice, workerId: 'remote-1', plan: { mode: 'link', path: '/srv/work/x' }, home: '/h' });

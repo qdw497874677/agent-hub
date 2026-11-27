@@ -67,6 +67,41 @@ export interface WorktreeInput {
   readonly recurseSubmodules?: boolean;
 }
 
+/** Strict planned checkout: refs are either HEAD (null) or fully qualified refs. */
+export interface PlannedWorktreeInspectInput {
+  readonly sourcePath: string;
+  readonly startRef: string | null;
+  /** When supplied, identity must be checked without returning the origin URL. */
+  readonly expectedOriginUrl?: string;
+}
+export interface PlannedWorktreeInspection {
+  readonly topLevel: string;
+  readonly commonDir: string;
+  readonly identity: string;
+  readonly oid: string;
+  readonly managedRoot: string;
+}
+export interface PlannedWorktreeCreateInput extends PlannedWorktreeInspectInput {
+  readonly expectedTopLevel: string;
+  readonly expectedCommonDir: string;
+  readonly expectedIdentity: string;
+  readonly expectedOid: string;
+  readonly targetPath: string;
+  readonly branch: string;
+  readonly operationId: string;
+  /** Only reconcile an existing durable proof; never create a checkout. */
+  readonly reconcileOnly?: boolean;
+}
+export interface PlannedWorktreeOutcome {
+  readonly path: string;
+  readonly branch: string;
+  readonly oid: string;
+  readonly alreadyCreated: boolean;
+}
+export interface ResolvePlannedBaseInput { readonly repoUrl: string; readonly startRef: string | null; readonly auth?: GitAuth }
+export interface ResolvePlannedBaseOutcome { readonly managedRoot: string; readonly startRef: string; readonly oid: string }
+export interface PreparePlannedBaseInput { readonly repoUrl: string; readonly startRef: string; readonly auth?: GitAuth; readonly operationId: string; readonly targetPath: string; readonly expectedOid: string; readonly reconcileOnly?: boolean }
+
 /** 「先提交 WIP 并推送分支」的结果。没推上去不是错误：reason 说明为什么（没有 origin、推送被拒…）。 */
 export interface SaveWipOutcome {
   readonly committed: boolean;
@@ -315,6 +350,12 @@ export interface PreviewOptions {
  * 私有 HTTPS 仓库可以选择带 `auth`（hub 从密钥箱解出来的头），不传就走机器本机凭据。
  */
 export interface WorkspaceGit {
+  resolvePlannedBase?(input: ResolvePlannedBaseInput): Promise<Result<ResolvePlannedBaseOutcome, DomainError>>;
+  preparePlannedBase?(input: PreparePlannedBaseInput): Promise<Result<PlannedWorktreeInspection, DomainError>>;
+  inspectPlannedWorktree?(input: PlannedWorktreeInspectInput): Promise<Result<PlannedWorktreeInspection, DomainError>>;
+  createPlannedWorktree?(input: PlannedWorktreeCreateInput): Promise<Result<PlannedWorktreeOutcome, DomainError>>;
+  /** Read-only ownership proof after use; current branch and HEAD may have changed. */
+  verifyPlannedWorktree?(input: PlannedWorktreeCreateInput): Promise<Result<PlannedWorktreeOutcome, DomainError>>;
   inspect(path: string): Promise<Result<GitInspection, DomainError>>;
   /** 只读地问远端：不 clone、不碰本地目录。连不上不是错误：reachable=false + message。 */
   checkRepo(repoUrl: string, branch: string | null, auth?: GitAuth): Promise<Result<RepoProbe, DomainError>>;

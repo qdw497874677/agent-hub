@@ -16,6 +16,7 @@ export * from './api/messages.ts';
 export * from './api/tasks.ts';
 export * from './api/projects.ts';
 export * from './api/workspaces.ts';
+export * from './api/worktree-plans.ts';
 export * from './api/assets.ts';
 export * from './api/providers.ts';
 export * from './api/workers.ts';

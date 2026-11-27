@@ -82,6 +82,10 @@ export function installAccess(app: Hono<any>, deps: AccessDeps, subjectOf: Subje
     // Review performs its own source file-access and target prompt/worker checks.
     if (prefix === '/api' && /^\/api\/sessions\/[^/]+\/git\/review(?:\/|$)/.test(path)) return next();
 
+    // These routes authorize the actual task, Worker, source read and, only
+    // for remote preparation or setup, the stronger project update permission.
+    if (prefix === '/api' && /^\/api\/projects\/[^/]+\/tasks\/[^/]+\/worktree-plans(?:\/[^/]+(?:\/execute)?)?$/.test(path)) return next();
+
     // 授权撤销只需仍是会话归属人；不能因项目权限变更而留下无法撤销的旧授权。
     if (prefix === '/api' && method === 'DELETE' && /^\/api\/sessions\/[^/]+\/project-tool-grant$/.test(path)) return next();
 

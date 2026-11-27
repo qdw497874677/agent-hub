@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inMemoryDeps } from '../testing/in-memory.ts';
-import { asAgentId } from '../ids.ts';
+import { asAgentId, asWorkspaceId } from '../ids.ts';
 import { invalid } from '../errors.ts';
 import { ok, err } from '../result.ts';
 import { deriveSession } from '../session.ts';
 import { newWorkspace, type Workspace } from '../workspace.ts';
-import { groupMemberRoot, groupReady, type WorkspaceGroup } from '../workspace-group.ts';
+import { groupMemberRoot, groupReady, groupSessionRoot, memberBriefingPath, type WorkspaceGroup } from '../workspace-group.ts';
 import type { WorkspaceGroupGit } from '../ports/workspace-group-git.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { Deps } from './deps.ts';
@@ -124,6 +124,104 @@ async function world() {
     });
   return { deps, groups, groupGit, memory, project: designated.value, task: task.value, build };
 }
+
+test('planned groups identify primary by output workspace ID and reject legacy retry, append and clone', async () => {
+  const w = await world();
+  const built = await w.build();
+  assert.ok(built.ok);
+  const members = built.value.members.map((member) => ({ ...member, repoId: null, sourceWorkspaceId: asWorkspaceId(`source-${member.name}`) }));
+  const planned: WorkspaceGroup = { ...built.value, state: 'failed', members, primaryWorkspaceId: members[1]!.workspaceId };
+  await w.groups.save(planned);
+  assert.equal(groupSessionRoot(planned), `${planned.root}/api`);
+  assert.equal(groupMemberRoot(planned, members[0]!.workspaceId), `${planned.root}/repos/web`);
+  assert.equal(memberBriefingPath(planned, members[1]!), '.');
+  const before = w.groupGit.calls.length;
+  const retry = await retryWorkspaceGroupUseCase(w.deps, { groupId: planned.id, home: '/home/me' });
+  const append = await addWorkspaceGroupMemberUseCase(w.deps, { groupId: planned.id, repoId: w.project.repos[0]!.id, home: '/home/me' });
+  const clone = await buildWorkspaceGroupUseCase(w.deps, { projectId: w.project.id, taskId: w.task.id, workerId: 'remote-1', home: '/home/me', fromGroupId: planned.id });
+  assert.equal(retry.ok, false);
+  assert.equal(append.ok, false);
+  assert.equal(clone.ok, false);
+  assert.equal(w.groupGit.calls.length, before);
+});
+
+test('legacy group reference must belong to same project and owning task', async () => {
+  const w = await world();
+  const built = await w.build();
+  assert.ok(built.ok);
+  const task = await createTaskUseCase(w.deps, { projectId: w.project.id, title: 'Other task' });
+  assert.ok(task.ok);
+  const before = w.groupGit.calls.length;
+  const clone = await buildWorkspaceGroupUseCase(w.deps, { projectId: w.project.id, taskId: task.value.id, workerId: 'remote-1', home: '/home/me', fromGroupId: built.value.id });
+  assert.equal(clone.ok, false);
+  if (!clone.ok) assert.equal(clone.error.code, 'not_found');
+  assert.equal(w.groupGit.calls.length, before);
+});
+
+test('protected groups and source members reject legacy mutations and manual removal, including ready-unused', async () => {
+  const w = await world();
+  const built = await w.build();
+  assert.ok(built.ok);
+  const group = { ...built.value, state: 'failed' as const };
+  await w.groups.save(group);
+  for (const protectedBy of ['group', 'member'] as const) {
+    for (const state of ['pending', 'unknown', 'ready-unused'] as const) {
+      const guard: NonNullable<Deps['plannedWorktreeGuard']> = {
+        isGroupProtected: (id) => protectedBy === 'group' && id === group.id,
+        isWorkspaceProtected: (id) => protectedBy === 'member' && id === group.members[0]!.workspaceId,
+        forOutput: () => ({ source: 'local', state, groupId: group.id }), noteStarted() {}
+      };
+      const deps = { ...w.deps, plannedWorktreeGuard: guard };
+      const before = w.groupGit.calls.length;
+      assert.equal((await retryWorkspaceGroupUseCase(deps, { groupId: group.id, home: '/home/me' })).ok, false);
+      assert.equal((await addWorkspaceGroupMemberUseCase(deps, { groupId: group.id, repoId: 'new', home: '/home/me' })).ok, false);
+      assert.equal((await removeWorkspaceGroupUseCase(deps, { groupId: group.id })).ok, false);
+      assert.equal(w.groupGit.calls.length, before);
+      assert.ok(w.groups.rows.has(group.id));
+    }
+  }
+});
+
+test('closed unprotected planned groups cannot use legacy recursive removal', async () => {
+  const w = await world();
+  const built = await w.build();
+  assert.ok(built.ok);
+  const planned: WorkspaceGroup = { ...built.value, primaryWorkspaceId: built.value.members[0]!.workspaceId };
+  await w.groups.save(planned);
+  const guard: NonNullable<Deps['plannedWorktreeGuard']> = {
+    isGroupProtected: () => false, isWorkspaceProtected: () => false,
+    forOutput: () => ({ source: 'local', state: 'closed', groupId: planned.id }), noteStarted() {}
+  };
+  const before = w.groupGit.calls.length;
+  const result = await removeWorkspaceGroupUseCase({ ...w.deps, plannedWorktreeGuard: guard }, { groupId: planned.id });
+  assert.equal(result.ok, false);
+  assert.equal(w.groupGit.calls.length, before);
+  assert.equal(w.groupGit.removed.length, 0);
+  assert.ok(w.groups.rows.has(planned.id));
+});
+
+test('group deletion rechecks plan protection inside the removal admission lock', async () => {
+  const w = await world();
+  const built = await w.build();
+  assert.ok(built.ok);
+  let protectedNow = false;
+  let began = false;
+  const guard: NonNullable<Deps['plannedWorktreeGuard']> = {
+    isGroupProtected: () => protectedNow, isWorkspaceProtected: () => false, forOutput: () => null, noteStarted() {}
+  };
+  const safety: WorkdirSafety = {
+    hasOutstanding: () => false,
+    runExclusive: async (fn) => { protectedNow = true; return fn(); },
+    assertNoRemoval() {}, assertUnoccupied() {}, assertProjectUnoccupied() {},
+    beginRemoval() { began = true; return 'fence'; }, finishRemoval() {}
+  };
+  const before = w.groupGit.removed.length;
+  const result = await removeWorkspaceGroupUseCase({ ...w.deps, plannedWorktreeGuard: guard, workdirSafety: safety }, { groupId: built.value.id });
+  assert.equal(result.ok, false);
+  assert.equal(began, false);
+  assert.equal(w.groupGit.removed.length, before);
+  assert.ok(w.groups.rows.has(built.value.id));
+});
 
 test('recursive group worktree rollback is admitted before Worker RPC', async () => {
   const w = await world();

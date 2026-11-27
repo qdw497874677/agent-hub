@@ -58,11 +58,13 @@ import { createSqliteAssetSets } from './asset-sets.ts';
 import { claimWorkspaceInTransaction, createWorkspaceRepository, ensureSingleWorkspaceOwner, migrateSharedWorkspaces } from './workspaces.ts';
 import { createSqliteWorkspaceGroups } from './workspace-groups.ts';
 import { createWorkdirSafety } from './workdir-safety.ts';
+import { createSqlitePlannedWorktrees } from './planned-worktrees.ts';
 import { toArtifact, toJournalEntry, toProject, toSession } from './mappers.ts';
 import { toTaskWithParent as toTask } from './task-mappers.ts';
 import type { RepositorySet } from './mappers.ts';
 
 export interface SqliteStore extends RepositorySet {
+  readonly plannedWorktrees: import('@agent-hub/domain').PlannedWorktreeStore;
   readonly workdirTerminals: import('@agent-hub/domain').WorkdirTerminalStore;
   readonly workdirSafety: import('@agent-hub/domain').WorkdirSafety;
   readonly listTasklessSessionsByOriginProject: (projectId: ProjectId) => Promise<readonly Session[]>;
@@ -152,6 +154,7 @@ export function openSqliteStore(file: string): SqliteStore {
   const { taskCreations, operationReceipts } = runStartupMigrations(db);
   ensureBranchAttemptTable(db);
   const workdir = createWorkdirSafety(db);
+  const plannedWorktrees = createSqlitePlannedWorktrees(db);
 
   const insertProject = db.prepare(
     'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, primary_repo_id, description, worktree_config, preview_port, checks, asset_set_ids, default_agent, submodules, created_at, team_id, created_by, members, deleted_at) ' +
@@ -628,6 +631,7 @@ export function openSqliteStore(file: string): SqliteStore {
   ensureAgentHandoffTable(db);
   return {
     workdirTerminals: workdir.terminals,
+    plannedWorktrees,
     workdirSafety: workdir.safety,
     projects,
     tasks,

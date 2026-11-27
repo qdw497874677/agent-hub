@@ -87,6 +87,8 @@ export interface WorkerLinkOptions {
   readonly worktreesDir?: string;
   /** 组合工作空间（docs/design/multi-repo.md §12.5）：容器与成员只能落在这下面（WORKER_GROUPS_DIR）。省略 = 不支持。 */
   readonly groupsDir?: string;
+  readonly plannedProofDir?: string;
+  readonly plannedBaseAllowedOrigins?: readonly string[];
   /** hub 下发的技能与指令落在这里（专属目录）。不给就回「这台不支持」，会话也不带资产。 */
   readonly assets?: WorkerAssets;
   /**

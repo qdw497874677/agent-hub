@@ -12,7 +12,7 @@ export const PROJECT_REPO_READ_TOOL = 'project.repo.read';
 const SCOPE = 'repo:read';
 const ARGUMENTS = ['repo_id', 'branch', 'path', 'expected_tip'] as const;
 
-type RepoContext = Pick<Deps, 'workspaces' | 'workspaceGroups'>;
+type RepoContext = Pick<Deps, 'workspaces' | 'workspaceGroups' | 'plannedWorktreeGuard'>;
 
 function choices(project: Project): DomainError {
   if (!project.repos.length) return notFound('当前项目没有已登记的仓库');
@@ -27,6 +27,7 @@ async function resolveRepository(deps: RepoContext, project: Project, session: S
     const repo = project.repos.find(({ id }) => id === requested);
     return repo ? ok(repo) : err(notFound('当前项目没有此仓库'));
   }
+  if (session.workspaceId && deps.plannedWorktreeGuard?.forOutput(session.workspaceId)?.source === 'local') return err(choices(project));
   if (!project.repos.length) return err(choices(project));
   if (session.groupId) {
     const group = await deps.workspaceGroups?.byId(session.groupId);
@@ -71,7 +72,7 @@ function snapshotError(code: ProjectGitFetchFailureCode): DomainError {
 }
 
 export function createProjectRepoReadTool(input: {
-  deps: Pick<Deps, 'projects' | 'sessions' | 'workspaces' | 'workspaceGroups'>;
+  deps: Pick<Deps, 'projects' | 'sessions' | 'workspaces' | 'workspaceGroups' | 'plannedWorktreeGuard'>;
   grants: Pick<ProjectSessionGrantService, 'authorize'>;
   broker: Pick<HubCredentialBroker, 'readRepo'>;
   toolGrantStillActive(grant: ToolGrant): Promise<boolean>;

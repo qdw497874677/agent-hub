@@ -19,6 +19,7 @@ export type { BranchAttempt, BranchAttemptStore, BranchOutcome, BranchReceipt, B
 import { locationsOf, projectOfSession } from './workspaces.ts';
 import { withActiveTask } from './task-admission.ts';
 import { findDeliveryEnded } from './delivery.ts';
+import { admitPlannedPlacement } from './hosting.ts';
 
 /**
  * 回滚到某条消息（ADR 0027 阶段 4）：「⋯ → 从这里重来」。
@@ -36,7 +37,7 @@ export interface RewindFiles {
 export type RewindDeps = Pick<
   Deps,
   'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaces' | 'workLog' | 'access' | 'deliveries' | 'workspaceGroups' | 'bots'
-> & { readonly files: RewindFiles; readonly turnRefs: TurnRefStore; readonly branchAttemptWriter?: BranchAttemptStore; readonly supportsNativeBranch?: (workerId: string, agentId: string) => boolean; readonly onBranchBriefReady?: () => void | Promise<void> };
+> & { readonly files: RewindFiles; readonly turnRefs: TurnRefStore; readonly branchAttemptWriter?: BranchAttemptStore; readonly supportsNativeBranch?: (workerId: string, agentId: string) => boolean; readonly onBranchBriefReady?: () => void | Promise<void>; readonly plannedWorktreeGuard?: Deps['plannedWorktreeGuard'] };
 
 /** 对话怎么接上（ADR 0028）：native = 原生从这条消息分叉；summary = 新开会话 + 摘要交接；none = 第一条消息，不用交接。 */
 export type RewindMode = 'native' | 'summary' | 'none';
@@ -158,6 +159,8 @@ export function createRewindService(deps: RewindDeps) {
         if (!placed.ok) return placed;
         const allowed = await authorizeWorker(deps.access, actor, placed.value);
         if (!allowed.ok) return allowed;
+        const admission = await admitPlannedPlacement(deps, source);
+        if (!admission.ok) return admission;
 
         // 原会话还在跑就先停下：不然它会接着改文件 / 接着说
         if (source.status === 'running') await interruptSessionUseCase(deps, source.id);
@@ -202,6 +205,7 @@ export function createRewindService(deps: RewindDeps) {
           inheritedOptions: source.options
         });
         if (!started.ok) return started;
+        if (session.workspaceId && deps.plannedWorktreeGuard?.forOutput(session.workspaceId)) deps.plannedWorktreeGuard.noteStarted(session.workspaceId);
 
         if (planned.mode === 'summary' && brief) {
             await deps.queue.run(session.id, () => recordEvent(deps, {

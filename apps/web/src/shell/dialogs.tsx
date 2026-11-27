@@ -32,6 +32,7 @@ import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
 import { cloneErrorHint } from '../surfaces/workbench/project-repos.ts';
 import { groupStateNote, memberStateLabel, failedGroupIdFromWorkspaces, type WorkspaceGroupView } from '../surfaces/workbench/workspace-group.ts';
 import { defaultAgent, verifiedAgent } from './derive-default-agent.ts';
+import { WorktreeCreation } from '../surfaces/workbench/worktree-creation.tsx';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
 export function NewTaskDialog({
@@ -126,12 +127,16 @@ export function DeriveDialog({
   canvas,
   taskId,
   initialWorkspace,
+  initialWorktree = false,
+  worktreePlansAvailable,
   onDone,
   onDerived
 }: {
   canvas: CanvasDto;
   taskId: string;
   initialWorkspace?: { id: string; workerId: string };
+  initialWorktree?: boolean;
+  worktreePlansAvailable: boolean;
   onDone: () => void;
   /** 派生成功后调用；不传就和取消一样只关掉。 */
   onDerived?: (session: SessionDto) => void;
@@ -213,6 +218,7 @@ export function DeriveDialog({
   const [choice, setChoice] = useState<WorkspaceChoice | null>(initialWorkspace ? { type: 'existing', workspaceId: initialWorkspace.id } : null);
   // 下载是独立的明确选择，默认不下载；工作目录的选择不会隐式开启它。
   const [downloadRepo, setDownloadRepo] = useState(false);
+  const [worktreeOpen, setWorktreeOpen] = useState(initialWorktree);
   const [preparedWorkspace, setPreparedWorkspace] = useState<{ id: string; machine: string } | null>(null);
   const preparedWorkspaceId = preparedWorkspace?.machine === machine ? preparedWorkspace.id : null;
   const noDownloadChoice = useRef<WorkspaceChoice | null>(null);
@@ -260,6 +266,7 @@ export function DeriveDialog({
   const workspaceSummary = (() => {
     if (choice === null) return '还没选工作目录';
     if (choice.type === 'existing') return chosenWorkspace === null ? (choice.workspaceId === preparedWorkspaceId ? '已准备的工作目录' : '已有的工作目录') : workspaceName(chosenWorkspace);
+    if (choice.type === 'existing_group') return '已创建的组合 Worktree';
     if (choice.type === 'new_empty') return '新建空的临时目录';
     if (choice.type === 'new_temporary') return '新建临时工作目录';
     if (choice.type === 'new_worktree') return '新建隔离目录（新分支）';
@@ -310,6 +317,7 @@ export function DeriveDialog({
         workspaceId = null;
         setBusy({ title: '正在准备隔离目录…', scope: place });
       } else if (choice.type === 'existing') workspaceId = choice.workspaceId;
+      else if (choice.type === 'existing_group') { /* Use the already-created group below. */ }
       else if (!groupNew) {
         setPhase('preparing');
         // 进度只说这一趟真正在做的事（下载仓库 / 建目录 / 登记），别拿「下载」概括所有准备。
@@ -338,7 +346,7 @@ export function DeriveDialog({
       }
       // 组合工作目录（docs/design/multi-repo.md §11.5）：先把每个仓库的 worktree 备好，再派生会话；
       // 只把 groupId 交给 derive，整组跟随。失败留在这页：原因 + 重试准备，不静默吞掉。
-      let groupId: string | null = null;
+      let groupId: string | null = choice.type === 'existing_group' ? choice.groupId : null;
       if (groupNew) {
         if (group !== null && group.state === 'ready') {
           groupId = group.id;
@@ -478,7 +486,7 @@ export function DeriveDialog({
             <button type="button" className={SECONDARY_BUTTON} onClick={onDone}>
               取消
             </button>
-            <button type="button" className={PRIMARY_BUTTON} disabled={hint !== null || profileModelUnavailable || derive.isPending || groupFailed} onClick={() => derive.mutate()}>
+            <button type="button" className={PRIMARY_BUTTON} disabled={hint !== null || profileModelUnavailable || derive.isPending || groupFailed || worktreeOpen} onClick={() => derive.mutate()}>
               {derive.isPending ? (phase === 'starting' ? '启动中…' : '准备中…') : derive.error ? '重试' : '开始'}
             </button>
           </div>
@@ -538,6 +546,7 @@ export function DeriveDialog({
             }}
             hubProtocols={hubProtocols}
             groups
+            explicitWorktree={worktreePlansAvailable}
             chatOnly
             downloadRepo={downloadRepo}
             preparedWorkspaceId={preparedWorkspaceId}
@@ -558,6 +567,16 @@ export function DeriveDialog({
             }}
             onSwitchAgent={switchAgent}
           /></fieldset>}
+          {machine !== null ? <>
+            {choice?.type === 'existing_group' ? <p data-testid="worktree-selected-group" className="mb-2 rounded-sm border border-hair p-3 text-sub text-primary">已选择创建好的组合 Worktree · 可直接开始会话</p> : null}
+            {!worktreeOpen ? worktreePlansAvailable ? <button type="button" data-testid="worktree-open" className="mb-3 min-h-[44px] w-full rounded-sm border border-hair px-3 text-left text-sub text-primary hover:border-strong" onClick={() => setWorktreeOpen(true)}>创建 Worktree <span className="text-tertiary">· 从项目仓库或已有目录</span></button> : null :
+              <WorktreeCreation key={`${taskId}:${machine}`} canvas={canvas} taskId={taskId} workerId={machine} localWorkerId={workers.list.find((worker) => worker.origin === 'local')?.workerId} views={workspaceViews.data ?? []} initialWorkspaceId={choice?.type === 'existing' ? choice.workspaceId : initialWorkspace?.workerId === machine ? initialWorkspace.id : undefined} onClose={() => setWorktreeOpen(false)} onUse={(plan) => {
+                setDownloadRepo(false); noDownloadChoice.current = null;
+                setChoice(plan.groupId ? { type: 'existing_group', groupId: plan.groupId } : { type: 'existing', workspaceId: plan.workspaceId! });
+                setPreparedWorkspace(plan.workspaceId ? { id: plan.workspaceId, machine } : null);
+                setWorktreeOpen(false); derive.reset();
+              }} />}
+          </> : null}
         </div>
         <div className="mb-3 max-md:order-6">
           <div className="mb-1 flex items-center justify-between gap-2">

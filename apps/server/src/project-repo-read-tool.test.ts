@@ -48,6 +48,7 @@ function world() {
   let toolGrantActive = true;
   const workspaces = new Map<string, Workspace>();
   const linked = new Set<string>();
+  let localPlannedOutput: string | null = null;
   const grantRepo: ProjectSessionGrantRepository = {
     save: async (grant) => (row = grant),
     byKey: async (account, sid, pid) => row && row.accountId === account && row.sessionId === sid && row.projectId === pid ? row : null,
@@ -68,7 +69,8 @@ function world() {
     sessions: { byId: async (id: string) => id === sessionId ? session : null },
     workspaces: { byId: async (id: string) => workspaces.get(id) ?? null,
       linksOf: async (id: string) => linked.has(id) ? [{ projectId, workspaceId: asWorkspaceId(id), linkedBy: 'user', linkedAt: 1 }] : [] },
-    workspaceGroups: { byId: async () => null }
+    workspaceGroups: { byId: async () => null },
+    plannedWorktreeGuard: { forOutput: (id: string) => id === localPlannedOutput ? { source: 'local', state: 'closed', groupId: null } : null }
   } as unknown as Pick<Deps, 'projects' | 'sessions' | 'workspaces' | 'workspaceGroups'>;
   const calls: Parameters<HubCredentialBroker['readRepo']>[0][] = [];
   let outcome: ProjectGitSnapshotOutcome = { ok: true, result: { branch: 'main', tip: sha, path: 'README.md', kind: 'text', content: 'hello' } };
@@ -99,9 +101,20 @@ function world() {
     setPermission: (v: boolean) => { permission = v; }, setChild: (v: boolean) => { child = v; },
     setFeature: (v: boolean) => { feature = v; }, setOutcome: (v: ProjectGitSnapshotOutcome) => { outcome = v; },
     setToolGrantActive: (v: boolean) => { toolGrantActive = v; },
+    setLocalPlannedOutput: (id: string) => { localPlannedOutput = id; },
     before: (f: () => void) => { beforeCheck = f; }, between: (f: () => void) => { betweenChecks = f; }
   };
 }
+
+test('local planned output requires explicit project repo selection even with one registered repo', async () => {
+  const w = world();
+  w.setSession({ workspaceId: asWorkspaceId('local-output') });
+  w.setLocalPlannedOutput('local-output');
+  assert.equal(failure(await w.call()).code, 'invalid');
+  assert.equal(w.calls.length, 0);
+  assert.equal((await w.call({ repo_id: 'api' })).ok, true);
+  assert.equal(w.calls[0]?.repoId, 'api');
+});
 
 test('authorized snapshot exposes only safe DTO and delegates no local mutation', async () => {
   const w = world();

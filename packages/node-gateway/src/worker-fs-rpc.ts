@@ -5,6 +5,11 @@ import {
   fsMakeDirectory,
   fsReadFile,
   wsAddWorktree,
+  wsInspectPlannedWorktree,
+  wsCreatePlannedWorktree,
+  wsVerifyPlannedWorktree,
+  wsResolvePlannedBase,
+  wsPreparePlannedBase,
   wsGroupInit,
   wsGroupRemove,
   wsNewWorktree,
@@ -97,6 +102,31 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined, gitOpt
     throw new RpcFailure(result.error.code === 'invalid' || result.error.code === 'conflict' ? result.error.code : 'failed', result.error.message);
   };
   port.handle(wsInspect, async ({ path }) => unwrap(await need().inspect(path)));
+  port.handle(wsInspectPlannedWorktree, async (input) => {
+    const method = need().inspectPlannedWorktree;
+    if (!method) throw new RpcFailure('unsupported', '不支持计划来源检查');
+    return unwrap(await method(input));
+  });
+  port.handle(wsCreatePlannedWorktree, async (input) => {
+    const method = need().createPlannedWorktree;
+    if (!method) throw new RpcFailure('unsupported', '不支持计划检出');
+    return unwrapSettled(await method(input));
+  });
+  port.handle(wsVerifyPlannedWorktree, async (input) => {
+    const method = need().verifyPlannedWorktree;
+    if (!method) throw new RpcFailure('unsupported', '不支持计划检出证明');
+    return unwrap(await method(input));
+  });
+  port.handle(wsResolvePlannedBase, async (input) => {
+    const method = need().resolvePlannedBase;
+    if (!method) throw new RpcFailure('unsupported', '不支持计划底座探测');
+    return unwrap(await method(input));
+  });
+  port.handle(wsPreparePlannedBase, async (input) => {
+    const method = need().preparePlannedBase;
+    if (!method) throw new RpcFailure('unsupported', '不支持计划底座准备');
+    return unwrapSettled(await method(input));
+  });
   port.handle(wsCheckRepo, async ({ repoUrl, branch, auth }) => unwrap(await need().checkRepo(repoUrl, branch ?? null, auth)));
   port.handle(wsClone, async (input) => unwrapSettled(await need().clone(input)));
   port.handle(wsAddWorktree, async (input) => unwrapSettled(await need().addWorktree(input)));

@@ -14,7 +14,7 @@ import { releaseSessionWorktrees, restoreSessionWorktrees, type SessionWorktreeD
 export interface SettleSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'>,
   // 容器会话没有任务：按组合工作空间 / bot 找回项目（#221 步骤 7）。
   Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'>,
-  Partial<Pick<SessionWorktreeDeps, 'gateway' | 'git' | 'now' | 'workdirSafety'>> {
+  Partial<Pick<SessionWorktreeDeps, 'gateway' | 'git' | 'now' | 'workdirSafety' | 'plannedWorktreeGuard'>> {
   /** 没登录态（或测试里没接审计）就不记。 */
   readonly audit?: AuditLog;
 }
@@ -66,7 +66,14 @@ export async function settleSessionUseCase(
       items = [{ workspaceId: current.groupId, action: 'deferred', reason: '本机未接 Git，留给 workspace_sweep' }];
     }
   } else if (deps.gateway || deps.git) {
-    await restoreSessionWorktrees(deps as SessionWorktreeDeps, next);
+    const restored = await restoreSessionWorktrees(deps as SessionWorktreeDeps, next);
+    if (restored && !restored.ok) {
+      const group = current.groupId ? await deps.workspaceGroups.byId(current.groupId) : null;
+      if ((current.workspaceId && deps.plannedWorktreeGuard?.forOutput(current.workspaceId)) ||
+          group?.members.some((member) => deps.plannedWorktreeGuard?.forOutput(member.workspaceId))) return restored;
+    }
+  } else if (current.workspaceId && deps.plannedWorktreeGuard?.forOutput(current.workspaceId)) {
+    return err(conflict('无法验证计划工作空间的恢复状态'));
   }
   await deps.sessions.save(next);
   if (deps.audit) {

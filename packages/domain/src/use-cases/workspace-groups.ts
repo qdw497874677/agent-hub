@@ -16,7 +16,7 @@ import {
   type WorkspaceGroup,
   type WorkspaceGroupMember
 } from '../workspace-group.ts';
-import { authorizeWorker, canManageTeamWorkspaces } from './authorization.ts';
+import { authorizeProject, authorizeWorker, canManageTeamWorkspaces } from './authorization.ts';
 import type { Deps } from './deps.ts';
 import { gitOn, resolveMachine, type Machine } from './machine-dirs.ts';
 import { branchSlug, originBranchRef, runWorkspaceSetup, sessionBranchSuffix, shortId } from './temporary-workspaces.ts';
@@ -46,6 +46,7 @@ export type WorkspaceGroupDeps = Pick<
   /** 删组前要先丢 checkpoint（同 removeWorkspaceUseCase）。 */
   readonly cleanup?: NonNullable<Deps['cleanup']>;
   readonly workdirSafety?: Deps['workdirSafety'];
+  readonly plannedWorktreeGuard?: Deps['plannedWorktreeGuard'];
 };
 
 export interface BuildWorkspaceGroupCommand {
@@ -98,6 +99,12 @@ export interface RemoveWorkspaceGroupCommand {
 }
 
 const MAX = WORKSPACE_GROUP_MEMBERS_MAX;
+
+/** Sources can be protected by member ID even when the source group itself is not indexed. */
+function groupProtected(deps: WorkspaceGroupDeps, group: WorkspaceGroup): boolean {
+  const guard = deps.plannedWorktreeGuard;
+  return !!guard && (guard.isGroupProtected(group.id) || group.members.some((member) => guard.isWorkspaceProtected(member.workspaceId)));
+}
 
 /** amp 布局的成员目录：主仓库在容器根下，附加仓在 repos/ 下。 */
 export function memberWorktreePath(root: string, repo: Pick<ProjectRepo, 'id' | 'name'>, primaryRepoId: string): string {
@@ -219,11 +226,14 @@ async function resolveMemberBranches(
   const map = new Map<string, string>();
   if (command.fromGroupId) {
     const source = await deps.workspaceGroups?.byId(asWorkspaceGroupId(command.fromGroupId));
-    if (!source) return err(notFound('源组合工作空间不存在'));
+    if (!source || source.projectId !== command.projectId || (source.ownerTaskId !== null && source.ownerTaskId !== command.taskId)) return err(notFound('源组合工作空间不存在'));
+    const allowed = await authorizeProject(deps.access, command.actor ?? null, await deps.projects.byId(source.projectId), 'project.read');
+    if (!allowed.ok) return allowed;
+    if (source.primaryWorkspaceId) return err(conflict('计划创建的组合不能通过旧入口复制'));
     for (const member of source.members) {
       const workspace = await deps.workspaces.byId(member.workspaceId);
       const branch = workspace?.branch?.trim();
-      if (branch) map.set(member.repoId, branch);
+      if (branch && member.repoId) map.set(member.repoId, branch);
     }
   }
   for (const item of command.branches ?? []) {
@@ -244,6 +254,8 @@ export async function buildWorkspaceGroupUseCase(
 ): Promise<Result<WorkspaceGroup, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
   if (!project || project.deletedAt !== null) return err(notFound('项目不存在'));
+  const projectAllowed = await authorizeProject(deps.access, command.actor ?? null, project, 'session.create');
+  if (!projectAllowed.ok) return projectAllowed;
   const task = await deps.tasks.byId(asTaskId(command.taskId));
   if (!task || task.projectId !== project.id) return err(notFound('任务不存在'));
   const picked = selectedGroupRepos(project, command.repoIds);
@@ -398,10 +410,13 @@ export async function retryWorkspaceGroupUseCase(
   const groupId = asWorkspaceGroupId(command.groupId);
   const existing = await store.byId(groupId);
   if (!existing) return err(notFound('组合工作空间不存在'));
-  if (existing.state !== 'failed') return err(conflict('这组已经准备好了'));
   const project = await deps.projects.byId(existing.projectId);
   if (!project || project.deletedAt !== null) return err(notFound('项目不存在'));
   const actor = command.actor ?? null;
+  const projectAllowed = await authorizeProject(deps.access, actor, project, 'session.create');
+  if (!projectAllowed.ok) return projectAllowed;
+  if (existing.primaryWorkspaceId || groupProtected(deps, existing)) return err(conflict('计划创建或受计划保护的组合不能通过旧入口重试'));
+  if (existing.state !== 'failed') return err(conflict('这组已经准备好了'));
   const resolved = await resolveMachine(deps, existing.workerId);
   if (!resolved.ok) return resolved;
   const machine = resolved.value;
@@ -487,7 +502,12 @@ export async function removeWorkspaceGroupUseCase(
   if (!group) return err(notFound('组合工作空间不存在'));
   const actor = command.actor ?? null;
   const project = await deps.projects.byId(group.projectId);
+  const projectAllowed = await authorizeProject(deps.access, actor, project, 'project.read');
+  if (!projectAllowed.ok) return projectAllowed;
   if (!(await canManageTeamWorkspaces(deps.access, actor, project?.teamId ?? null))) return err(forbidden('没有删除工作空间的权限'));
+  if (group.primaryWorkspaceId) return err(conflict('计划创建的组合不能通过旧入口删除'));
+  // Fail closed even for ready-unused: another plan may also protect an output as its source.
+  if (groupProtected(deps, group)) return err(conflict('组合或其成员受 Worktree 计划保护，暂不能删除'));
 
   const sessions = await deps.sessions.listByProject(group.projectId);
   if (sessions.some((session) => session.groupId === group.id && session.status === 'running')) {
@@ -512,6 +532,7 @@ export async function removeWorkspaceGroupUseCase(
       fence = await deps.workdirSafety.runExclusive(async () => {
         const current = await store.byId(group.id);
         if (!current || current.root !== group.root || current.workerId !== group.workerId || JSON.stringify(current.members) !== JSON.stringify(group.members)) throw new Error('group changed');
+        if (groupProtected(deps, current)) throw new Error('group protected');
         return deps.workdirSafety!.beginRemoval({ workspaceId: group.id, workerId: group.workerId, cwd: group.root });
       });
     } catch { return err(conflict('Hub 上有终端或待确认的目录删除，暂不删除组合目录')); }
@@ -549,13 +570,16 @@ export async function addWorkspaceGroupMemberUseCase(
   const groupId = asWorkspaceGroupId(command.groupId);
   const group = await store.byId(groupId);
   if (!group) return err(notFound('组合工作空间不存在'));
-  if (group.members.some((member) => member.repoId === command.repoId)) return err(conflict('这个仓库已经在组里了'));
-  if (group.members.length >= MAX) return err(invalid(`一个组最多 ${MAX} 个仓库`));
   const project = await deps.projects.byId(group.projectId);
   if (!project || project.deletedAt !== null) return err(notFound('项目不存在'));
+  const actor = command.actor ?? null;
+  const projectAllowed = await authorizeProject(deps.access, actor, project, 'session.create');
+  if (!projectAllowed.ok) return projectAllowed;
+  if (group.primaryWorkspaceId || groupProtected(deps, group)) return err(conflict('计划创建或受计划保护的组合不能通过旧入口添加仓库'));
+  if (group.members.some((member) => member.repoId === command.repoId)) return err(conflict('这个仓库已经在组里了'));
+  if (group.members.length >= MAX) return err(invalid(`一个组最多 ${MAX} 个仓库`));
   const repo = project.repos.find((candidate) => candidate.id === command.repoId);
   if (!repo) return err(invalid('仓库不在这个项目里'));
-  const actor = command.actor ?? null;
   const resolved = await resolveMachine(deps, group.workerId);
   if (!resolved.ok) return resolved;
   const machine = resolved.value;

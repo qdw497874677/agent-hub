@@ -23,3 +23,4 @@ export { createSqliteWorkspaceCoordinators } from './workspace-coordinator.ts';
 export { createSqliteTaskCreations, migrateTaskCreationSchema } from './task-creations.ts';
 export { createSqliteProjectSessionGrants } from './project-session-grant.ts';
 export { createTaskArchiveBlockers } from './task-archive-blockers.ts';
+export { createSqlitePlannedWorktrees } from './planned-worktrees.ts';

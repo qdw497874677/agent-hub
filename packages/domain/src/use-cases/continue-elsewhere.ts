@@ -51,7 +51,7 @@ export type GuardedSaveWip = (
 type ContinueElsewhereDeps = Pick<
   Deps,
   'agents' | 'artifacts' | 'bots' | 'fs' | 'gateway' | 'git' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'taskGate' | 'workspaceGroups' | 'workspaces' | 'workLog' | 'access' | 'repoAuth'
-> & { readonly guardedSaveWip?: GuardedSaveWip; readonly workdirSafety?: Deps['workdirSafety'] };
+> & { readonly guardedSaveWip?: GuardedSaveWip; readonly workdirSafety?: Deps['workdirSafety']; readonly plannedWorktreeGuard?: Deps['plannedWorktreeGuard'] };
 
 export async function continueElsewhereUseCase(
   deps: ContinueElsewhereDeps,
@@ -85,6 +85,7 @@ async function continueElsewhereAdmitted(
   if (command.target.kind === 'workspace') {
     chosen = await deps.workspaces.byId(command.target.workspaceId as never);
     if (!chosen || !(await usableByProject(deps, chosen, project.id)) || !isUsable(chosen)) return err(notFound('目标工作空间不存在或已不可用'));
+    if (deps.plannedWorktreeGuard?.forOutput(chosen.id)) return err(conflict('计划工作空间不能通过旧的迁移流程启动，请使用计划启动'));
     if (chosen.id === source.workspaceId) return err(conflict('会话已经在这个工作空间里了'));
   }
   const targetWorker = chosen ? chosen.workerId : command.target.kind === 'temporary' ? command.target.workerId : null;

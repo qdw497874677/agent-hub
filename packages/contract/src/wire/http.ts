@@ -536,6 +536,7 @@ export const recentSessionSchema = z.object({
 });
 
 export const homeSchema = z.object({
+  worktreePlansAvailable: z.boolean().optional(),
   projects: z.array(projectSummarySchema),
   recentSessions: z.array(recentSessionSchema)
 });

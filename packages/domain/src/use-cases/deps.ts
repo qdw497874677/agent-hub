@@ -1,4 +1,6 @@
 import type { DeliveryQueue } from '../ports/delivery-queue.ts';
+import type { DomainError } from '../errors.ts';
+import type { Result } from '../result.ts';
 import type { TaskGate } from '../ports/task-gate.ts';
 import type { WorkspaceSweepStore } from '../ports/workspace-sweeps.ts';
 import type { PullRequestRepository } from '../ports/pull-requests.ts';
@@ -65,6 +67,7 @@ export interface AgentCatalog {
  * 所以不进 Deps——等调度/下发真的落地时再接进来，不提前养空实现。
  */
 export interface Deps {
+  readonly plannedWorktreeGuard?: PlannedWorktreeGuard;
   readonly workdirSafety?: WorkdirSafety;
   /** 交接简报的 token 上限（HUB_HANDOFF_TOKEN_CAP，默认 16k）。 */
   readonly handoffTokenCap?: number;
@@ -135,6 +138,15 @@ export interface Deps {
   sessionInstructions?: (sessionId: string) => Promise<string | null>;
   /** 清理增强（ADR 0027 §3）：规则 / 记录 / PR 状态 / 删检查点。不给 = 只按原规则（任务结束且干净）。 */
   cleanup?: CleanupExtras;
+}
+
+/** Durable plan provenance and first-use protection, supplied by the composition root. */
+export interface PlannedWorktreeGuard {
+  isWorkspaceProtected(id: string): boolean;
+  isGroupProtected(id: string): boolean;
+  forOutput(id: string): { source: 'local' | 'project'; state: 'draft' | 'pending' | 'unknown' | 'ready-unused' | 'closed'; groupId: string | null } | null;
+  verifyOutput?(workspaceId: string): Promise<Result<void, DomainError>>;
+  noteStarted(id: string): void;
 }
 
 export interface CleanupExtras {

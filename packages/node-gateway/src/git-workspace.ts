@@ -7,6 +7,8 @@ import type { CommitPreview, DomainError, GitAuth, GitStatus, ImportCommitInput,
 import { conflict, folderNameProblem, invalid, isSensitivePath, nonGitReason, unavailable, unsavedReason } from '@agent-hub/domain';
 import { insideGroups } from './group-dir.ts';
 import { runSetupScript } from './setup-script.ts';
+import { createPlannedWorktrees } from './planned-worktree.ts';
+import { createPlannedBases } from './planned-worktree-base.ts';
 
 /**
  * WorkspaceGit 的 git 实现（simple-git，跑这台机器上的 git 和它自己的凭据）。
@@ -15,6 +17,10 @@ import { runSetupScript } from './setup-script.ts';
  * 私有 HTTPS 仓库的令牌由 hub 解出、以 `auth` 逐次传来：只进进程环境变量，不进命令行 / 日志。
  */
 export interface GitWorkspaceOptions {
+  /** Private Worker-owned directory for durable planned-operation proofs. */
+  readonly plannedProofDir?: string;
+  /** Explicit trusted HTTPS origins for planned base probes and clones. */
+  readonly plannedBaseAllowedOrigins?: readonly string[];
   /**
    * ADR 0027 D10：新建 worktree 放哪。省略 = hub 给的默认位置（仓库旁 `.worktrees/<仓库名>/<目录名>`）；
    * 配了（Worker 的 WORKER_WORKTREES_DIR）= `<worktreesDir>/<仓库名>/<目录名>`。只影响新建：
@@ -73,6 +79,16 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
   });
 
   const implementation: WorkspaceGit = {
+    ...createPlannedBases(check, options),
+    ...createPlannedWorktrees(check, options, async (path, expected) => {
+      const https = authScopeUrl(expected);
+      const ssh = sshScopeUrl(expected);
+      const origin = await readOriginDestination(path, { allowSsh: true });
+      if (!origin.ok) return false;
+      const matches = (url: string, canonical: string | null, sshCanonical: string | null) =>
+        https !== null ? canonical === https : ssh !== null ? sshCanonical === ssh : isLocalGitUrl(expected) && url === expected;
+      return matches(origin.value.fetchUrl, origin.value.canonicalFetch, origin.value.sshFetch) && matches(origin.value.pushUrl, origin.value.canonicalPush, origin.value.sshPush);
+    }),
     async inspect(path) {
       const blocked = await guard(path);
       if (blocked) return { ok: false, error: blocked };

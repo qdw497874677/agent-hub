@@ -135,7 +135,7 @@ export async function locationsOf(
         group,
         members: group.members.flatMap((member) => {
           const root = groupMemberRoot(group, member.workspaceId);
-          return root === null ? [] : [{ workspaceId: member.workspaceId, name: member.name, repoId: member.repoId, root, state: member.state }];
+          return root === null ? [] : [{ workspaceId: member.workspaceId, name: member.name, ...(member.repoId === null ? {} : { repoId: member.repoId }), root, state: member.state }];
         })
       };
     }

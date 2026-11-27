@@ -53,6 +53,11 @@ import {
   wsPush,
   wsPublishRef,
   wsPrepareDelegationWorktree,
+  wsInspectPlannedWorktree,
+  wsCreatePlannedWorktree,
+  wsVerifyPlannedWorktree,
+  wsResolvePlannedBase,
+  wsPreparePlannedBase,
   wsImportCommit,
   wsImportProjectGitBundle,
   wsGh,
@@ -1595,6 +1600,32 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     return toDomain(outcome, what, workerId);
   }
 
+  /** Planned operations and probes require an authenticated, unchanged worker connection. */
+  async function plannedRequest<T>(workerId: string, run: (channel: RpcChannel) => Promise<RpcOutcome<T>>, what: string, reconcileOnly = false, readOnly = false): Promise<Result<T, DomainError>> {
+    const entry = online(workerId);
+    if (!entry?.channel || !entry.socket || !entry.observationIdentity) {
+      const error = unavailable(`Worker「${labelOf(workerId)}」未通过身份验证或不在线，${what}未发送`);
+      return { ok: false, error: reconcileOnly ? error : { ...error, operationSettled: true } };
+    }
+    const { channel, socket, observationIdentity } = entry;
+    const outcome = await run(channel);
+    if (registry.get(workerId) !== entry || entry.channel !== channel || entry.socket !== socket || entry.observationIdentity !== observationIdentity || socket.readyState !== WebSocket.OPEN)
+      return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」连接已改变，${what}结果未知`) };
+    if (outcome.ok) return outcome;
+    if (readOnly) {
+      const mapped = toDomain<T>(outcome, what, workerId);
+      return mapped.ok ? mapped : { ok: false, error: { code: mapped.error.code, message: `${what}失败` } };
+    }
+    const codes = ['invalid', 'conflict', 'not_found', 'forbidden', 'unavailable', 'not_implemented'] as const;
+    const explicit = codes.find((item) => outcome.error.code === `operation_settled_${item}`);
+    if (explicit && !reconcileOnly) return { ok: false, error: { code: explicit, message: `${what}失败`, operationSettled: true } };
+    if (!reconcileOnly && ['unknown_method', 'unsupported', 'bad_params', 'forbidden'].includes(outcome.error.code)) {
+      const mapped = toDomain<T>(outcome, what, workerId);
+      return mapped.ok ? mapped : { ok: false, error: { code: mapped.error.code, message: `${what}未执行`, operationSettled: true } };
+    }
+    return { ok: false, error: unavailable(`${what}结果未知`) };
+  }
+
   function requestProbe(workerId: string): boolean {
     const entry = online(workerId);
     if (!entry?.socket) return false;
@@ -1674,6 +1705,11 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       const slow = { timeoutMs: 10 * 60_000 };
       return {
         inspect: (path) => call((c) => c.request(wsInspect, { path }), '目录探测'),
+        inspectPlannedWorktree: (input) => plannedRequest(workerId, (c) => c.request(wsInspectPlannedWorktree, input), '检查计划来源', false, true),
+        createPlannedWorktree: (input) => plannedRequest(workerId, (c) => c.request(wsCreatePlannedWorktree, input, slow), '执行计划检出', input.reconcileOnly),
+        verifyPlannedWorktree: (input) => plannedRequest(workerId, (c) => c.request(wsVerifyPlannedWorktree, input, slow), '验证计划检出', false, true),
+        resolvePlannedBase: (input) => plannedRequest(workerId, (c) => c.request(wsResolvePlannedBase, input, slow), '探测计划底座', false, true),
+        preparePlannedBase: (input) => plannedRequest(workerId, (c) => c.request(wsPreparePlannedBase, input, slow), '准备计划底座', input.reconcileOnly),
         checkRepo: (repoUrl, branch, auth) => call((c) => c.request(wsCheckRepo, { repoUrl, branch, ...(auth ? { auth } : {}) }, { timeoutMs: 30_000 }), '检查仓库'),
         clone: (input) => settledMutation(workerId, (c) => c.request(wsClone, { ...input, branch: input.branch ?? null, ...(input.auth ? { auth: input.auth } : {}) }, slow), '下载仓库'),
         addWorktree: (input) => settledMutation(workerId, (c) => c.request(wsAddWorktree, { ...input, base: input.base ?? null, ...(input.auth ? { auth: input.auth } : {}) }, slow), '新开分支'),

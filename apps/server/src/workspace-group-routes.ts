@@ -4,13 +4,15 @@ import { z } from 'zod';
 import {
   asProjectId,
   asWorkspaceGroupId,
+  authorizeProject,
   addWorkspaceGroupMemberUseCase,
   buildWorkspaceGroupUseCase,
   removeWorkspaceGroupUseCase,
   retryWorkspaceGroupUseCase,
   type AuditAction,
   type Subject,
-  type WorkspaceGroupDeps
+  type WorkspaceGroupDeps,
+  type WorkspaceGroup
 } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
@@ -38,6 +40,22 @@ const addMemberBody = z.object({
   repoId: z.string().min(1).max(80),
   home: z.string().min(1).max(2000).optional()
 });
+
+/** 不直接序列化存储对象；新存储字段须明确决定是否公开。 */
+function groupDto(group: WorkspaceGroup) {
+  return {
+    id: group.id, projectId: group.projectId, workerId: group.workerId, root: group.root,
+    members: group.members.map((member) => ({
+      workspaceId: member.workspaceId, repoId: member.repoId, name: member.name,
+      state: member.state, error: member.error,
+      ...(member.projectRepoId !== undefined ? { projectRepoId: member.projectRepoId } : {}),
+      ...(member.sourceWorkspaceId !== undefined ? { sourceWorkspaceId: member.sourceWorkspaceId } : {})
+    })),
+    state: group.state, layout: group.layout, primaryRepoId: group.primaryRepoId,
+    primaryWorkspaceId: group.primaryWorkspaceId, pendingBriefing: group.pendingBriefing,
+    ownerTaskId: group.ownerTaskId, sessionId: group.sessionId, createdAt: group.createdAt, error: group.error
+  };
+}
 
 export interface WorkspaceGroupRouteDeps {
   readonly deps: WorkspaceGroupDeps;
@@ -71,14 +89,17 @@ export function installWorkspaceGroupRoutes(app: Hono<any>, options: WorkspaceGr
     });
     if (!built.ok) return fail(c, built.error);
     await audit?.(c, subject, 'workspace.group.create', built.value.id, `项目 ${projectId} · ${built.value.members.length} 个仓库`);
-    return c.json(built.value, 201);
+    return c.json(groupDto(built.value), 201);
   });
 
   app.get('/api/workspace-groups/:groupId', async (c) => {
     const subject = subjectOf(c);
     if (!subject) return fail(c, needUser);
     const group = await deps.workspaceGroups?.byId(asWorkspaceGroupId(c.req.param('groupId')));
-    return group ? c.json(group) : fail(c, { code: 'not_found', message: '组合工作空间不存在' });
+    if (!group) return fail(c, { code: 'not_found', message: '组合工作空间不存在' });
+    const allowed = await authorizeProject(deps.access, subject, await deps.projects.byId(group.projectId), 'project.read');
+    if (!allowed.ok) return fail(c, allowed.error);
+    return c.json(groupDto(group));
   });
 
   app.post('/api/workspace-groups/:groupId/retry', async (c) => {
@@ -96,7 +117,7 @@ export function installWorkspaceGroupRoutes(app: Hono<any>, options: WorkspaceGr
     });
     if (!retried.ok) return fail(c, retried.error);
     await audit?.(c, subject, 'workspace.group.retry', groupId, `重试后 ${retried.value.state}`);
-    return c.json(retried.value);
+    return c.json(groupDto(retried.value));
   });
 
   app.post('/api/workspace-groups/:groupId/members', async (c) => {
@@ -115,7 +136,7 @@ export function installWorkspaceGroupRoutes(app: Hono<any>, options: WorkspaceGr
     });
     if (!added.ok) return fail(c, added.error);
     await audit?.(c, subject, 'workspace.group.create', groupId, `添加仓库 ${parsed.data.repoId}`);
-    return c.json(added.value, 201);
+    return c.json(groupDto(added.value), 201);
   });
 
   app.delete('/api/workspace-groups/:groupId', async (c) => {
@@ -130,4 +151,3 @@ export function installWorkspaceGroupRoutes(app: Hono<any>, options: WorkspaceGr
     return c.json(removed.value);
   });
 }
-

@@ -11,7 +11,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { createAssetReader } from '@agent-hub/adapter-assets';
-import { createSecretVault, createSqliteAgentObserve, createSqliteApiTokens, createSqliteComponents, createSqliteMachineObserve, createSqliteMessageObserve, createSqliteProviders, createSqliteWorkObserve, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createSecretVault, createSqliteAgentObserve, createSqliteApiTokens, createSqliteComponents, createSqliteMachineObserve, createSqliteMessageObserve, createSqlitePlannedWorktrees, createSqliteProviders, createSqliteWorkObserve, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, ServiceGateway, SessionId, SessionStartReadiness, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
 import { authenticateWorker, withToolAccess,
   createBotUseCase,
@@ -91,6 +91,7 @@ import {
   workerNeedsBrowser,
   withAssetNeeds,
   unavailable,
+  loginUsable,
   workerAttached,
   workerGone,
   withAccess
@@ -154,6 +155,9 @@ import { createOptionWaiters, ingestOptionReceipt } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createTerminalBridge, type TerminalBridge } from './terminal-bridge.ts';
 import { createWorkdirTerminalService } from './workdir-terminal-service.ts';
+import { createWorktreePlans, plannedWorktreeGuard, type WorktreePlanProgress, type WorktreePlanSpec } from './worktree-plans.ts';
+import { authHeaderFor } from './repo-auth.ts';
+import { repoTokenKey } from '@agent-hub/domain';
 import { seedTestAccount } from './account-setup.ts';
 
 
@@ -237,7 +241,10 @@ const secretsVault = createSecretVault(store.db, secretKey);
 // safety guards active even if rollout was subsequently disabled. Storage errors
 // intentionally abort startup rather than permit unsafe mutations.
 const workdirTerminalsEnabled = readEnv('HUB_WORKDIR_TERMINALS') === '1';
-const workdirSafetyRequired = workdirTerminalsEnabled || store.workdirSafety.hasOutstanding();
+const worktreePlansEnabled = readEnv('HUB_WORKTREE_PLANS') === '1';
+const plannedWorktrees = createSqlitePlannedWorktrees<WorktreePlanSpec, WorktreePlanProgress>(store.db);
+const hasUsedPlans = store.db.prepare("SELECT 1 FROM planned_worktrees WHERE state NOT IN ('draft','failed') LIMIT 1").get() !== undefined;
+const workdirSafetyRequired = workdirTerminalsEnabled || worktreePlansEnabled || hasUsedPlans || store.workdirSafety.hasOutstanding();
 // A restart loses in-memory capability history. Preserve the legacy-open gate
 // for machines with durable shells at boot even after those shells are drained.
 const workdirHeldWorkersAtBoot = new Set(store.workdirTerminals.listNonEnded().map((row) => row.workerId));
@@ -250,6 +257,7 @@ const deps: Deps = {
   workLog: store.workLog,
   sessions: store.sessions,
   workspaces: store.workspaces,
+  plannedWorktreeGuard: plannedWorktreeGuard(plannedWorktrees, (workerId) => deps.gateway.git(workerId)),
   ...(workdirSafetyRequired ? { workdirSafety: store.workdirSafety } : {}),
   // 组合工作空间的组行（docs/design/multi-repo.md §11.2）。
   workspaceGroups: store.workspaceGroups,
@@ -1430,6 +1438,24 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   },
   auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles, agentDefaults: store.agentDefaults }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log', ...(credentialAdmin ? { credentialAdmin } : {}) },
   workdirTerminals,
+  ...(worktreePlansEnabled ? { worktreePlans: createWorktreePlans({ deps, store: plannedWorktrees,
+    // Keep missing-base clone unavailable until cross-process recovery and the TLS path are proven.
+    async refreshActor(actor) {
+      const user = await store.users.byId(actor.user.id);
+      const login = (await store.logins.forUser(actor.user.id)).find((entry) => entry.id === actor.loginId);
+      const now = accounts.now();
+      return login && loginUsable(login, user, now) && user.emailVerifiedAt !== null
+        ? withAccess(store.access, { user, loginId: login.id }, now) : null;
+    },
+    async authForRepo(project, repo) {
+      if (!repo.url.startsWith('https://')) return err(forbidden('缺少底座时只支持获机器允许的 HTTPS 仓库'));
+      if (!repo.tokenSecret) return { ok: true, value: null };
+      const key = repoTokenKey(project.id, repo.id);
+      if (repo.tokenSecret !== key) return err(forbidden('仓库凭证与当前登记不匹配，未访问远端'));
+      const secret = (await secretsVault.reveal([key]))[key];
+      return secret ? { ok: true, value: authHeaderFor(secret, repo.url) } : err(forbidden('仓库已配置凭证但当前不可用，未访问远端'));
+    }
+  }) } : {}),
   admin: {
     deps: {
       users: store.users,

@@ -1,13 +1,15 @@
 import type { Session } from '../session.ts';
 import { isUsable, markKept, markRemoved, type Workspace } from '../workspace.ts';
 import type { DomainError } from '../errors.ts';
+import { conflict } from '../errors.ts';
 import type { Result } from '../result.ts';
+import { err } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { gitFor } from './machine-dirs.ts';
 import { fenceWorkspace, finishFence, finishSettledFailure } from './workdir-safety.ts';
 
 export type SessionWorktreeDeps = Pick<Deps, 'gateway' | 'git' | 'now' | 'sessions' | 'workspaces'> &
-  Partial<Pick<Deps, 'workspaceGroups' | 'workdirSafety'>>;
+  Partial<Pick<Deps, 'workspaceGroups' | 'workdirSafety' | 'plannedWorktreeGuard'>>;
 
 const active = (session: Session): boolean => session.settledAt == null;
 
@@ -35,6 +37,13 @@ async function detachOne(
   member?: string
 ): Promise<WorktreeCleanupItem> {
   const base = { workspaceId: workspace.id, ...(member ? { member } : {}) };
+  // Planned outputs cannot yet be reconstructed by the legacy restore path, even after first use.
+  if (deps.plannedWorktreeGuard?.forOutput(workspace.id)) {
+    return { ...base, action: 'deferred', reason: '计划工作空间暂不自动拆除：旧恢复流程无法验证来源' };
+  }
+  if (deps.plannedWorktreeGuard?.isWorkspaceProtected(workspace.id) || (workspace.groupId && deps.plannedWorktreeGuard?.isGroupProtected(workspace.groupId))) {
+    return { ...base, action: 'deferred', reason: '工作空间受未完成或首次使用前的计划保护' };
+  }
   if (workspace.source !== 'worktree') {
     return { ...base, action: 'deferred', reason: '不是可拆除的 worktree，留给 workspace_sweep' };
   }
@@ -43,7 +52,7 @@ async function detachOne(
   }
   const git = await gitFor(deps, workspace.workerId);
   let fence: string | null;
-  try { fence = await fenceWorkspace(deps, workspace); } catch { return { ...base, action: 'deferred', reason: '工作目录有终端或待确认的删除' }; }
+  try { fence = await fenceWorkspace(deps, workspace, async (current) => !deps.plannedWorktreeGuard?.forOutput(current.id) && !deps.plannedWorktreeGuard?.isWorkspaceProtected(current.id) && !(current.groupId && deps.plannedWorktreeGuard?.isGroupProtected(current.groupId))); } catch { return { ...base, action: 'deferred', reason: '工作目录受计划保护、有终端或待确认的删除' }; }
   const outcome = await git.remove(workspace.path, 'worktree', { force });
   if (!outcome.ok) {
     await finishSettledFailure(deps, fence, outcome.error);
@@ -118,18 +127,24 @@ export async function releaseSessionWorktrees(
  */
 export async function restoreSessionWorktrees(deps: SessionWorktreeDeps, session: Session): Promise<Result<void, DomainError> | null> {
   const targets: Workspace[] = [];
+  const plannedSession = !!(session.workspaceId && deps.plannedWorktreeGuard?.forOutput(session.workspaceId));
   if (session.groupId && deps.workspaceGroups) {
     const group = await deps.workspaceGroups.byId(session.groupId);
-    if (!group) return null;
+    if (!group) return plannedSession ? err(conflict('计划组合不存在，无法验证恢复状态')) : null;
     for (const member of group.members) {
       const workspace = await deps.workspaces.byId(member.workspaceId);
+      if (!workspace && (plannedSession || deps.plannedWorktreeGuard?.forOutput(member.workspaceId))) return err(conflict('计划组合成员不存在，无法验证恢复状态'));
       if (workspace) targets.push(workspace);
     }
   } else if (session.workspaceId) {
     const workspace = await deps.workspaces.byId(session.workspaceId);
+    if (!workspace && plannedSession) return err(conflict('计划工作空间不存在，无法验证恢复状态'));
     if (workspace) targets.push(workspace);
   }
   for (const workspace of targets) {
+    if (deps.plannedWorktreeGuard?.forOutput(workspace.id) && !isUsable(workspace)) {
+      return err(conflict('计划工作空间无法通过旧恢复流程验证，请通过计划恢复'));
+    }
     if (workspace.source !== 'worktree' || isUsable(workspace) || !workspace.branch || !workspace.baseWorkspaceId) continue;
     const base = await deps.workspaces.byId(workspace.baseWorkspaceId);
     if (!base) continue;

@@ -172,7 +172,7 @@ export async function linkWorkspaceUseCase(deps: Pick<Deps, 'projects' | 'worksp
  * - 源项目还有会话在这个目录里跑 → 先停掉再转移。
  */
 export async function transferWorkspaceUseCase(
-  deps: Pick<Deps, 'projects' | 'workspaces' | 'access' | 'now' | 'sessions' | 'tasks' | 'workspaceGroups' | 'bots'> & Partial<Pick<Deps, 'workdirSafety'>>,
+  deps: Pick<Deps, 'projects' | 'workspaces' | 'access' | 'now' | 'sessions' | 'tasks' | 'workspaceGroups' | 'bots'> & Partial<Pick<Deps, 'workdirSafety' | 'plannedWorktreeGuard'>>,
   command: LinkCommand
 ): Promise<Result<Workspace, DomainError>> {
   if (deps.workdirSafety) return deps.workdirSafety.runExclusive(async () => {
@@ -184,6 +184,7 @@ export async function transferWorkspaceUseCase(
   if (!project.ok) return project;
   const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
   if (!workspace || workspace.state === 'removed') return err(notFound('工作空间不存在'));
+  if (deps.plannedWorktreeGuard?.isWorkspaceProtected(workspace.id) || (workspace.groupId && deps.plannedWorktreeGuard?.isGroupProtected(workspace.groupId))) return err(conflict('工作空间受计划保护，不能转移'));
   if (workspace.kind !== 'long_lived') return err(invalid('临时工作空间只属于一个任务，不能转移'));
   if (!(await sameTeam(deps, workspace.teamId, project.value.teamId))) return err(notFound('工作空间不存在'));
   const links = await deps.workspaces.linksOf(workspace.id);
@@ -239,7 +240,7 @@ export async function transferWorkspaceUseCase(
 }
 
 export async function unlinkWorkspaceUseCase(
-  deps: Pick<Deps, 'projects' | 'workspaces' | 'sessions' | 'tasks' | 'access' | 'workspaceGroups' | 'bots'> & Partial<Pick<Deps, 'workdirSafety'>>,
+  deps: Pick<Deps, 'projects' | 'workspaces' | 'sessions' | 'tasks' | 'access' | 'workspaceGroups' | 'bots'> & Partial<Pick<Deps, 'workdirSafety' | 'plannedWorktreeGuard'>>,
   command: LinkCommand
 ): Promise<Result<Workspace, DomainError>> {
   if (deps.workdirSafety) return deps.workdirSafety.runExclusive(async () => {
@@ -252,6 +253,7 @@ export async function unlinkWorkspaceUseCase(
   const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
   const links = workspace ? await deps.workspaces.linksOf(workspace.id) : [];
   if (!workspace || !links.some((l) => l.projectId === project.value.id)) return err(notFound('这个项目没有关联这个工作空间'));
+  if (deps.plannedWorktreeGuard?.isWorkspaceProtected(workspace.id) || (workspace.groupId && deps.plannedWorktreeGuard?.isGroupProtected(workspace.groupId))) return err(conflict('工作空间受计划保护，不能取消关联'));
   const running = await runningOwners(deps, workspace.id);
   if (running.unknown > 0) return err(conflict('这个工作空间还有来源不明的运行中会话，先停掉再取消关联'));
   if (running.projectIds.has(project.value.id)) return err(conflict('本项目还有会话在这个工作空间里运行，先停掉它'));
@@ -265,7 +267,7 @@ export async function unlinkWorkspaceUseCase(
  * `linksOf(...).length > 1` 只可能是迁移留下 / 手改的历史数据：那种仍要求团队 workspace.manage。
  */
 export async function deleteWorkspaceUseCase(
-  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces' | 'projects' | 'access'> & Partial<Pick<Deps, 'workdirSafety'>>,
+  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces' | 'projects' | 'access'> & Partial<Pick<Deps, 'workdirSafety' | 'plannedWorktreeGuard'>>,
   command: RemoveWorkspaceCommand & { readonly actor: Subject | null }
 ): Promise<Result<Workspace, DomainError>> {
   const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));

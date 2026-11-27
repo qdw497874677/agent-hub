@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inMemoryDeps } from './testing/in-memory.ts';
-import { asAgentId } from './ids.ts';
+import { asAgentId, asWorkspaceId } from './ids.ts';
 import { taskBriefing, BRIEFING_MAX_BYTES } from './task-briefing.ts';
 import { createProjectUseCase } from './use-cases/projects.ts';
 import { createTaskUseCase } from './use-cases/tasks.ts';
@@ -10,6 +10,8 @@ import { promptSessionUseCase } from './use-cases/conversation.ts';
 import { appendWorkLogUseCase } from './use-cases/work-log.ts';
 import type { AgentDescriptor } from './agent.ts';
 import type { Task } from './task.ts';
+import { inMemoryDeliveries } from './testing/in-memory.ts';
+import { ok } from './result.ts';
 
 const task = (over: Partial<Task> = {}) => ({ id: 't', title: '接 MCP', goal: null, summary: null, ...over }) as Task;
 
@@ -58,6 +60,49 @@ test('taskBriefing：项目说明和仓库原样交给 agent（没 git 仓库也
   const withRepo = taskBriefing(task(), [], { name: 'Demo', repoUrl: 'https://x/y.git', description: null }) ?? '';
   assert.match(withRepo, /仓库：https:\/\/x\/y\.git/);
   assert.equal(taskBriefing(task(), [], { name: 'Demo', repoUrl: null, description: null }), null);
+});
+
+test('planned local single briefing describes the output cwd, not the project repo or source metadata', async () => {
+  const w = inMemoryDeps({ deliveries: inMemoryDeliveries() });
+  w.agents.push({ id: asAgentId('fake'), label: 'F', capabilities: Object.fromEntries(['prompt','interrupt','fork','resume','tool_calls','artifacts','structured_events','attachments'].map((k) => [k, { state: 'available' }])), models: ['m'], defaultModel: 'm', options: [] } as unknown as AgentDescriptor);
+  const project = await createProjectUseCase(w.deps, { name: 'p', rootPath: '/tmp/p', repoUrl: 'https://example.com/project-a.git', description: 'Keep this project description.' });
+  assert.ok(project.ok);
+  const t = await createTaskUseCase(w.deps, { projectId: project.value.id, title: 'task' });
+  assert.ok(t.ok);
+  const s = await deriveSessionUseCase(w.deps, { taskId: t.value.id, agentId: 'fake', model: 'm' });
+  assert.ok(s.ok);
+  const sessionId = s.value.id;
+  const outputId = asWorkspaceId('local-output');
+  let source: 'local' | 'project' | null = 'local';
+  const deps = {
+    ...w.deps,
+    sessions: { ...w.deps.sessions, byId: async (id: typeof sessionId) => {
+      const session = await w.deps.sessions.byId(id);
+      return session ? { ...session, workspaceId: outputId } : null;
+    } },
+    plannedWorktreeGuard: {
+      isWorkspaceProtected: () => false, isGroupProtected: () => false, noteStarted: () => {},
+      forOutput: (id: string) => id === outputId && source ? { source, state: 'closed' as const, groupId: null } : null
+    }
+  };
+  async function briefing(): Promise<string> {
+    let text = '';
+    const result = await promptSessionUseCase(deps, { sessionId, text: 'hello' }, async ({ payload }) => {
+      assert.ok(typeof payload === 'object' && payload !== null && 'text' in payload && typeof payload.text === 'string');
+      text = payload.text;
+      return ok({ ack: { seq: 1, deliveryId: 'd', state: 'queued', turn: 1 }, publishedSession: null });
+    });
+    assert.ok(result.ok);
+    return text;
+  }
+  const local = await briefing();
+  assert.match(local, /当前工作目录（\.）是本地仓库的工作目录/);
+  assert.match(local, /项目说明：\nKeep this project description\./);
+  assert.doesNotMatch(local, /project-a\.git|\/tmp\/p|common-dir|credentials/);
+  source = 'project';
+  assert.match(await briefing(), /仓库：https:\/\/example\.com\/project-a\.git/);
+  source = null;
+  assert.match(await briefing(), /仓库：https:\/\/example\.com\/project-a\.git/);
 });
 
 test('bot 会话：职责说明只在新会话第一句垫一次（放最前），续聊 / resume 不重复；用户看到的仍是原话', async () => {

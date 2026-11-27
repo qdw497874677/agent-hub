@@ -54,3 +54,20 @@ test('组合工作空间仓储：按项目列新→旧，remove 只删归属', a
   assert.equal(await repo.byId(asWorkspaceGroupId('group_00000002')), null);
   assert.equal(groupIdOfWorkspace(db, asWorkspaceId('ws_a')), group().id);
 });
+
+test('旧成员表迁移保留数据，新本地成员按 workspace ID 持久化且 repo_id 为 NULL', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE workspace_group_members (group_id TEXT NOT NULL, workspace_id TEXT NOT NULL, repo_id TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL, error TEXT, position INTEGER NOT NULL, PRIMARY KEY(group_id, workspace_id));
+    INSERT INTO workspace_group_members VALUES ('group_00000001', 'old', 'repo_old', 'old', 'ready', NULL, 0)`);
+  const repo = createSqliteWorkspaceGroups(db);
+  assert.equal((db.prepare('SELECT repo_id FROM workspace_group_members WHERE workspace_id = ?').get('old') as { repo_id: string }).repo_id, 'repo_old');
+  const input = group({ layout: 'amp', primaryWorkspaceId: asWorkspaceId('ws_b'), members: [
+    { workspaceId: asWorkspaceId('ws_a'), repoId: null, sourceWorkspaceId: asWorkspaceId('source_a'), name: 'web', state: 'ready', error: null },
+    { workspaceId: asWorkspaceId('ws_b'), repoId: null, sourceWorkspaceId: asWorkspaceId('source_b'), projectRepoId: 'registered', name: 'api', state: 'ready', error: null }
+  ] });
+  await repo.save(input);
+  assert.deepEqual(await repo.byId(input.id), input);
+  assert.equal((db.prepare('SELECT repo_id FROM workspace_group_members WHERE workspace_id = ?').get('ws_a') as { repo_id: null }).repo_id, null);
+  createSqliteWorkspaceGroups(db);
+  assert.deepEqual(await repo.byId(input.id), input);
+});

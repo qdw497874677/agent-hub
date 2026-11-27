@@ -89,7 +89,7 @@ export interface PrepareTemporaryCommand {
  * 数量不限（§10 第 5 条），提示由界面给。
  */
 export async function prepareTemporaryWorkspaceUseCase(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'tasks' | 'workspaces' | 'access' | 'repoAuth'> & Partial<Pick<Deps, 'workdirSafety'>>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'tasks' | 'workspaces' | 'access' | 'repoAuth'> & Partial<Pick<Deps, 'workdirSafety' | 'plannedWorktreeGuard'>>,
   command: PrepareTemporaryCommand
 ): Promise<Result<Workspace, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
@@ -325,12 +325,12 @@ export async function retryWorkspaceSetupUseCase(
 
 /** 这个任务在这台机器上被清理掉的 worktree（最近的那个）：按原分支检出回原路径。失败（分支被删了…）= null，调用方照常新开。 */
 async function reviveRemovedWorktree(
-  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'workspaces' | 'repoAuth' | 'projects'> & Partial<Pick<Deps, 'workdirSafety'>>,
+  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'workspaces' | 'repoAuth' | 'projects'> & Partial<Pick<Deps, 'workdirSafety' | 'plannedWorktreeGuard'>>,
   taskId: TaskId,
   machine: Machine
 ): Promise<Workspace | null> {
   const gone = (await deps.workspaces.byTask(taskId))
-    .filter((w) => w.state === 'removed' && w.source === 'worktree' && w.branch && w.baseWorkspaceId && w.workerId === machine.workerId)
+    .filter((w) => w.state === 'removed' && w.source === 'worktree' && w.branch && w.baseWorkspaceId && w.workerId === machine.workerId && !deps.plannedWorktreeGuard?.forOutput(w.id))
     .sort((a, b) => b.updatedAt - a.updatedAt)[0];
   if (!gone?.branch || !gone.baseWorkspaceId) return null;
   const base = await deps.workspaces.byId(gone.baseWorkspaceId);
