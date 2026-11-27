@@ -170,6 +170,13 @@ test('状态没变就返回同一个对象；排队的那一帧过期了不会�
   assert.equal(transitionFollow(newer, { type: 'return.run', attempt: 1 }, metrics(geometry(MAX))), newer);
 });
 
+test('主动发送或回底立即恢复跟随；随后读者仍可再次离开', () => {
+  const away = transitionFollow(createFollowState(), intent(true), metrics(geometry(MAX)));
+  const requested = transitionFollow(away, { type: 'follow.request' }, metrics(geometry(0)));
+  assert.equal(requested.type, 'following');
+  assert.equal(transitionFollow(requested, intent(true), metrics(geometry(MAX - 50))).type, 'detached');
+});
+
 test('钉住的位置只让读者自己的输入放开', () => {
   const here = metrics(geometry(320));
   const anchored = transitionFollow(createFollowState(), { anchor: 320, type: 'anchor' }, here);

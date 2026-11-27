@@ -210,6 +210,37 @@ for (const width of [1280, 390]) {
       await expect(log.getByText(missedText, { exact: true })).toHaveCount(1);
       await expect(log.getByText('实时到达的新消息', { exact: true })).toHaveCount(1);
       await expect(sync).toHaveCount(0);
+
+      // 没有新消息的重连不应挪动已有正文，也不应改变输入框位置。
+      await expect.poll(async () => {
+        const response = await page.request.get(`/api/sessions/${session.id}`);
+        return ((await response.json()) as { status: string }).status;
+      }).toBe('done');
+      await expect(log.getByTestId('msg-assistant')).toHaveCount(3);
+      await expect(log.getByTestId('msg-assistant').last()).toContainText('session/prompt,session/prompt,session/prompt');
+      const position = () => page.evaluate((text) => {
+        const history = document.querySelector('[role="log"][aria-label="会话记录"]');
+        const message = [...(history?.querySelectorAll('[data-testid="msg-user"]') ?? [])].find((node) => node.textContent?.includes(text));
+        const composer = document.querySelector('textarea[aria-label="发送消息"]');
+        return [message?.getBoundingClientRect().top ?? -1, composer?.getBoundingClientRect().top ?? -1];
+      }, oldText);
+      const beforeSync = await position();
+      expect(beforeSync[0]).toBeGreaterThanOrEqual(0);
+      expect(beforeSync[1]).toBeGreaterThan(0);
+      const quietGate = deferred(); releases.push(quietGate.release);
+      await page.route((url) => url.pathname === `/api/sessions/${session.id}/events` && url.searchParams.has('after'), async (route) => {
+        await quietGate.promise;
+        await route.continue();
+      });
+      await page.evaluate(() => window.dispatchEvent(new Event('test-stream-pause')));
+      await expect(sync).toHaveAttribute('data-state', 'stale');
+      expect(await position()).toEqual(beforeSync);
+      await page.evaluate(() => window.dispatchEvent(new Event('test-stream-resume')));
+      await expect(sync).toHaveAttribute('data-state', 'syncing');
+      expect(await position()).toEqual(beforeSync);
+      quietGate.release();
+      await expect(sync).toHaveCount(0);
+      expect(await position()).toEqual(beforeSync);
     } finally {
       for (const release of releases) release();
       worker.kill();

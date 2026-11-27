@@ -25,6 +25,13 @@ export const UNOWNED_DETACH_PX = 24;
 /** 可滚范围小于等于这个值就算没有溢出（内容不足一屏）。 */
 export const MIN_OVERFLOW = 1;
 
+/** 收起临时内容后最多留这么多尾部空间，后续新增内容会先用掉它。 */
+export const MAX_FOLLOW_RESERVE_PX = 96;
+
+export function nextFollowReserve(previousHeight: number, height: number, reserve: number): number {
+  return Math.max(0, Math.min(MAX_FOLLOW_RESERVE_PX, reserve + previousHeight - height));
+}
+
 /**
  * 「回到底部」按钮的宽松阈值：离底部不到这么多像素就收起按钮。
  *
@@ -69,6 +76,8 @@ export type FollowState =
 export type FollowAction =
   /** 挂载、换会话、重置：从跟随重新开始，并把视图按到底。 */
   | { readonly type: 'attach' }
+  /** 用户主动发送或要求回底：不依赖异步 scroll 事件恢复跟随。 */
+  | { readonly type: 'follow.request' }
   /** 贴底排到下一帧。 */
   | { readonly type: 'return.start'; readonly attempt: number }
   /** 那一帧真的到了；只有还是同一次排队才贴底。 */
@@ -100,6 +109,11 @@ export function createFollowState(): FollowState {
 
 export function maxScrollOf(geometry: ScrollGeometry): number {
   return geometry.scrollHeight - geometry.clientHeight;
+}
+
+/** 只在确实还没贴底时写滚动位置，不用按钮的宽松阈值。 */
+export function needsBottomSnap(geometry: ScrollGeometry): boolean {
+  return Math.max(0, maxScrollOf(geometry)) - geometry.scrollTop > END_EPSILON;
 }
 
 export function isFollowing(state: FollowState): boolean {
@@ -177,7 +191,7 @@ export function scrollKey(key: string): 'up' | 'down' | null {
  * 不涉及到的迁移直接忽略 metrics。
  */
 export function transitionFollow(state: FollowState, action: FollowAction, metrics: ScrollMetrics): FollowState {
-  if (action.type === 'attach') return FOLLOWING;
+  if (action.type === 'attach' || action.type === 'follow.request') return FOLLOWING;
 
   if (action.type === 'anchor')
     return state.type === 'anchored' && state.anchor === action.anchor

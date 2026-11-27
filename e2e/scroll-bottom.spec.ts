@@ -3,13 +3,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 长对话默认停在最新一条：画布卡片和专注对话都是。往上翻着看历史时，新消息不把人拽回底部。
- * 不依赖真模型：会话目录建完就删掉，每问一句都会落「问话 + 失败原因」两条，攒出一段长对话。
+ * 不依赖真模型：用隔离的假 ACP Worker 和真实消息事件攒出一段长对话。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'];
+const roots = new Set<string>();
+
+test.afterEach(() => {
+  stopFakeWorker();
+  for (const dir of roots) rmSync(dir, { recursive: true, force: true });
+  roots.clear();
+});
 
 const gap = (el: Locator) => el.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
 const scrollable = (el: Locator) => el.evaluate((node) => node.scrollHeight > node.clientHeight + 10);
@@ -18,31 +25,28 @@ async function longSession(page: Page, baseURL: string) {
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const workerId = await ensureFakeWorker(page, baseURL, FAKE_AGENT_ID);
   const dir = mkdtempSync(join(tmpdir(), 'e2e-scroll-'));
+  roots.add(dir);
   const name = `e2e 长对话 ${Date.now().toString(36)}`;
-  const project = (await (await page.request.post('/api/projects', { data: { name, rootPath: dir }, headers })).json()) as { id: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name, rootPath: dir, workerId }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '长对话' }, headers })).json()) as { id: string };
-  rmSync(dir, { recursive: true, force: true });
-  const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, workerId, agentId: FAKE_AGENT_ID, model: '' }, headers });
+  expect(derived.ok(), await derived.text()).toBe(true);
+  const { id } = (await derived.json()) as { id: string };
   const ended = async () => {
     const events = (await (await page.request.get(`/api/sessions/${id}/events`)).json()) as Array<{ kind?: string; event?: { kind?: string } }>;
     return events.filter((entry) => (entry.kind ?? entry.event?.kind) === 'ended').length;
   };
-  // 一句一句来：等上一句的失败落地再问下一句，免得连发被合并或丢掉
+  // 一句一句来：等上一轮结束后再问下一句，免得连发被合并或丢掉
   const say = async (n: number) => {
     const before = await ended();
-    await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: `第 ${n} 句：${'很长的一段话，'.repeat(12)}`, attachments: [] }, headers });
-    await expect.poll(ended, { message: `第 ${n} 句的失败落地`, timeout: 15_000 }).toBeGreaterThan(before);
+    const sent = await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: `第 ${n} 句：${'很长的一段话，'.repeat(12)} 只回 OK`, attachments: [] }, headers });
+    expect(sent.ok(), await sent.text()).toBe(true);
+    await expect.poll(ended, { message: `第 ${n} 句结束`, timeout: 15_000 }).toBeGreaterThan(before);
   };
   for (let n = 1; n <= 14; n++) await say(n);
-  return { project, say };
+  return { project, id, say };
 }
 
 // 卡片只渲染最近一段，数条数不可靠：改成盯 DOM 有没有变
@@ -201,3 +205,36 @@ test('回到底部：翻上去出现，点一下回到最新内容并收起（�
   await expect.poll(() => gap(chat), { message: '专注对话也回到底部' }).toBeLessThan(4);
   await expect(chatJump).toHaveCount(0);
 });
+
+for (const width of [1280, 390]) {
+  test.describe(`主动发送 ${width}px`, () => {
+    test.use({ viewport: { width, height: 844 }, hasTouch: width < 600, isMobile: width < 600 });
+
+    test('读历史时主动发送回到底部，后续消息继续跟随', async ({ page, baseURL }) => {
+      const { project, id, say } = await longSession(page, baseURL!);
+      await page.goto(`/#/p/${project.id}/focus/${id}`);
+      const log = page.getByRole('log', { name: '会话记录' });
+      const chat = log.locator('xpath=..');
+      const chatJump = page.getByTestId('scroll-to-end');
+      await expect(log).toContainText('第 14 句');
+      await expect.poll(() => gap(chat)).toBeLessThan(4);
+      await chat.evaluate((node) => (node.scrollTop = 0));
+      await expect(chatJump).toBeVisible();
+      await expect.poll(() => gap(chat)).toBeGreaterThan(100);
+
+      await page.getByLabel('发送消息').fill('主动回到底部检查：只回 OK');
+      const send = page.getByRole('button', { name: '发送', exact: true });
+      if (width < 600) await send.tap();
+      else await send.click();
+      await expect(log).toContainText('主动回到底部检查');
+      await expect(log.getByText('OK', { exact: true })).toHaveCount(15);
+      await expect.poll(() => gap(chat)).toBeLessThan(4);
+      await expect(chatJump).toHaveCount(0);
+
+      await say(15);
+      await expect(log).toContainText('第 15 句');
+      await expect(log.getByText('OK', { exact: true })).toHaveCount(16);
+      await expect.poll(() => gap(chat)).toBeLessThan(4);
+    });
+  });
+}

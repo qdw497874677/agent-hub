@@ -12,6 +12,8 @@ import {
   endProbeTarget,
   holdsScroll,
   maxScrollOf,
+  nextFollowReserve,
+  needsBottomSnap,
   needsEndProbe,
   reachedEnd,
   scrollKey,
@@ -25,6 +27,22 @@ import {
 const VIEW = 400;
 /** 1000 高的内容放进 400 高的容器：能滚 600。 */
 const MAX = 600;
+
+test('贴底只在离实际滚动上限超过半像素时写入，不用宽松的按钮阈值', () => {
+  assert.equal(needsBottomSnap(geometry(MAX)), false);
+  assert.equal(needsBottomSnap(geometry(MAX - 0.5)), false);
+  assert.equal(needsBottomSnap(geometry(MAX - 1)), true);
+  assert.equal(needsBottomSnap(geometry(MAX + 12)), false);
+  assert.equal(needsBottomSnap(geometry(0, VIEW - 20)), false);
+});
+
+test('跟随时尾部补偿收缩，后续增长逐步消耗补偿且最多保留 96px', () => {
+  assert.equal(nextFollowReserve(1000, 966, 0), 34);
+  assert.equal(nextFollowReserve(966, 986, 34), 14);
+  assert.equal(nextFollowReserve(986, 1100, 14), 0);
+  assert.equal(nextFollowReserve(1000, 700, 0), 96);
+  assert.equal(nextFollowReserve(700, 680, 96), 96);
+});
 
 function geometry(scrollTop: number, scrollHeight = VIEW + MAX): ScrollGeometry {
   return { clientHeight: VIEW, scrollHeight, scrollTop };

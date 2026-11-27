@@ -232,9 +232,9 @@ export function wrapMemory(text: string, trust: MemoryTrust, source: string): st
  * 静态引导：会话第一轮垫一行，告诉 agent 去用记忆工具。是政策不是记忆——不含任何条目，内容不随记忆变化。
  * 上限 80 token（测试按「英文单词 + 标点」粗算钉住）；注入和版本变化记审计。
  */
-export const MEMORY_GUIDANCE_VERSION = 1;
+export const MEMORY_GUIDANCE_VERSION = 2;
 export const MEMORY_GUIDANCE =
-  'Hub memory: before starting, call memory_search for this project\'s and your role\'s conventions and past decisions (memory_get for full text). Record durable lessons with memory_write, citing sources.';
+  'Hub memory: before starting, call memory_search for conventions and past decisions; omit scopes to search all available scopes, including your role if you have one (memory_get for full text). Record durable lessons with memory_write, citing sources.';
 export const MEMORY_GUIDANCE_TOKEN_LIMIT = 80;
 /** 粗算 token：单词、数字、每个标点各算一个，CJK 一字一个。比真实分词器偏高，够当上限用。 */
 export const estimateTokens = (text: string): number => (text.match(/[A-Za-z]+|\d+|[\u4e00-\u9fff]|[^\sA-Za-z\d]/g) ?? []).length;

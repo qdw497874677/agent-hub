@@ -627,6 +627,12 @@ export function FocusView({
       });
   // 断线后的旧输出不能证明此刻仍在运行；送达层的独立反馈则仍然显示。
   const visibleHint = syncState && hint?.stage === 'runtime' ? null : hint;
+  // 记录不完整时，隐藏运行时提示不应让气泡重新冒出被动的「发送中」。
+  // 不确定送达仍须可见；失败和需要操作的排队状态由 DeliveryNote 自己保留。
+  const lastDelivery = lastPrompt === undefined ? undefined : deliveriesBySeq.get(lastPrompt);
+  const quietLastPrompt = delivery.pending.length === 0 && (visibleHint !== null || (
+    Boolean(syncState) && !(lastDelivery && live?.uncertainDeliveryIds?.includes(lastDelivery.id))
+  ));
   // 批准卡仍然保留原有回合和停止行为；只让动画为尚未处理的批准让位。
   const currentTurn = lastPrompt === undefined ? blocks : blocks.filter((block) => block.seq > lastPrompt);
   const hasPendingApproval = currentTurn.some((block) => block.kind === 'approval' && block.resolved === null);
@@ -736,7 +742,10 @@ export function FocusView({
     setBusy(true);
     setError(null);
     try {
-      await delivery.deliver(text, attachments);
+      const pending = delivery.deliver(text, attachments);
+      // 立即恢复跟随，乐观气泡提交后由观察器贴底；之后的读者手势仍可打断。
+      scrollToEnd(false);
+      await pending;
       // 新回合已经交出去：让待办/角标尽快按新事件重算，别还挂着刚才那条「等回答」。
       void queries.invalidateQueries({ queryKey: ['attention'] });
       void queries.invalidateQueries({ queryKey: ['deliveries', session.id] });
@@ -1284,17 +1293,20 @@ export function FocusView({
                 <span className="h-px flex-1 border-t border-dashed border-sage" />
               </div>
             ) : null}
-            {historyState !== 'loaded' ? (
-              <div data-testid="session-history-state" role={historyState === 'error' ? 'alert' : 'status'} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-tertiary">
-                <span>{historyState === 'error' ? '会话记录读取失败' : '正在读取会话记录…'}</span>
-                {historyState === 'error' ? <button type="button" onClick={onRetryHistory} className="min-h-11 text-sage underline underline-offset-2">重试</button> : null}
-              </div>
-            ) : syncState ? (
-              <div data-testid="session-sync-state" data-state={syncState} role={syncState === 'stale' ? 'alert' : 'status'} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-tertiary">
-                <span>{syncState === 'syncing' ? '正在补齐会话记录…' : '会话记录未同步'}</span>
-                {syncState === 'stale' && onRetrySync ? <button type="button" onClick={onRetrySync} className="min-h-11 text-sage underline underline-offset-2">重试</button> : null}
-              </div>
-            ) : null}
+            {/* 有记录时保留状态行；空会话加载完成后不留空栏。 */}
+            {blocks.length > 0 || delivery.pending.length > 0 || historyState !== 'loaded' || syncState ? <div className="min-h-11">
+              {historyState !== 'loaded' ? (
+                <div data-testid="session-history-state" role={historyState === 'error' ? 'alert' : 'status'} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-tertiary">
+                  <span>{historyState === 'error' ? '会话记录读取失败' : '正在读取会话记录…'}</span>
+                  {historyState === 'error' ? <button type="button" onClick={onRetryHistory} className="min-h-11 text-sage underline underline-offset-2">重试</button> : null}
+                </div>
+              ) : syncState ? (
+                <div data-testid="session-sync-state" data-state={syncState} role={syncState === 'stale' ? 'alert' : 'status'} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-meta text-tertiary">
+                  <span>{syncState === 'syncing' ? '正在补齐会话记录…' : '会话记录未同步'}</span>
+                  {syncState === 'stale' && onRetrySync ? <button type="button" onClick={onRetrySync} className="min-h-11 text-sage underline underline-offset-2">重试</button> : null}
+                </div>
+              ) : null}
+            </div> : null}
             <div
               data-testid="session-startup-status"
               data-state={startupState}
@@ -1311,7 +1323,7 @@ export function FocusView({
               <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
             ) : null : (
               <FileLinksContext.Provider value={fileLinks}>
-                <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: visibleHint && delivery.pending.length === 0 ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed', uncertainDeliveryIds: live?.uncertainDeliveryIds }}>
+                <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: quietLastPrompt ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed', uncertainDeliveryIds: live?.uncertainDeliveryIds }}>
                   {timelineItems.map((item) => {
                     const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }, inWork = false) => (
                       <ChatBlock
@@ -1352,7 +1364,7 @@ export function FocusView({
                     pending={delivery.pending}
                     onRetry={(pending) => void retryPending(pending)}
                     onDiscard={delivery.discard}
-                    quiet={visibleHint !== null}
+                    quiet={visibleHint !== null || Boolean(syncState)}
                     hasDelivery={(pending) => pending.seq !== undefined && deliveriesBySeq.has(pending.seq)}
                     className={settings.compact ? 'gap-2' : 'gap-4'}
                     renderPrompt={(pending, _index, seq) => (
@@ -1372,7 +1384,8 @@ export function FocusView({
                     <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
                   ) : null}
                   {/* 两端唯一的当前进度：贴在对话末尾，不再在输入框上方重复。 */}
-                  {visibleHint ? (
+                  <div className="min-h-8">
+                    {visibleHint ? (
                     <p
                       className="flex min-h-8 min-w-0 items-center gap-2 self-start text-meta text-tertiary"
                       data-testid="turn-hint"
@@ -1392,11 +1405,13 @@ export function FocusView({
                       )}
                       <span className="min-w-0 break-words">{visibleHint.text}</span>
                     </p>
-                  ) : null}
+                    ) : null}
+                  </div>
                 </DeliveryContext.Provider>
               </FileLinksContext.Provider>
             )}
           </div>
+          <div data-follow-spacer aria-hidden="true" />
         </div>
         <ScrollToEnd visible={!nearEnd} onClick={() => scrollToEnd()} />
       </div>
