@@ -27,6 +27,10 @@ interface TabStorage {
 }
 
 const TAB_STORE = 'hub:session-tab';
+const CHANGES_STORE = 'hub:session-changes';
+
+/** Only navigation is stored here; notes and their anchors are owned by the Hub. */
+export type ChangesPosition = { base: string; file: { path: string; member: string | null } | null };
 
 function tabStorage(): TabStorage | null {
   try {
@@ -56,4 +60,28 @@ export function storeTab(sessionId: string, tab: SessionTab, storage: TabStorage
   } catch {
     // 隐私模式或配额满：记不住就算了，行为退回默认。
   }
+}
+
+export function readChangesSplit(sessionId: string): boolean {
+  try { return tabStorage()?.getItem(`${CHANGES_STORE}:${sessionId}:split`) === 'true'; } catch { return false; }
+}
+
+export function storeChangesSplit(sessionId: string, enabled: boolean): void {
+  try { tabStorage()?.setItem(`${CHANGES_STORE}:${sessionId}:split`, String(enabled)); } catch { /* storage is optional */ }
+}
+
+export function readChangesPosition(sessionId: string): ChangesPosition | null {
+  try {
+    const position = JSON.parse(tabStorage()?.getItem(`${CHANGES_STORE}:${sessionId}:position`) ?? 'null') as Partial<ChangesPosition> | null;
+    if (!position || typeof position.base !== 'string' || !/^(session|head|branch|turn(?::\d+)?)$/.test(position.base)) return null;
+    const file = position.file;
+    if (file === null || (file && typeof file.path === 'string' && (file.member === null || typeof file.member === 'string'))) {
+      return { base: position.base, file };
+    }
+  } catch { /* discard malformed or inaccessible state */ }
+  return null;
+}
+
+export function storeChangesPosition(sessionId: string, position: ChangesPosition): void {
+  try { tabStorage()?.setItem(`${CHANGES_STORE}:${sessionId}:position`, JSON.stringify(position)); } catch { /* storage is optional */ }
 }

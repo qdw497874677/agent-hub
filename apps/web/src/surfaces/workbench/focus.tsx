@@ -7,7 +7,7 @@ import { useDelegations } from '../../shell/delegations.ts';
 import { DelegationOriginBanner, DelegationPanel } from './delegation-panel.tsx';
 import { DelegateDialog } from './delegate-dialog.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
 import { api, sessionGroupId, sessionStartupApi } from '../../shell/api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, questionOf, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
@@ -32,7 +32,7 @@ import { useIsFetching, useQueries, useQuery, useQueryClient } from '@tanstack/r
 import { FILES_QUERY, shown } from '../../atoms/files-core.ts';
 import { filesInvalidationKeys, filesKeys, gitKeys, sessionKeys, taskKeys } from '../../shell/query-keys.ts';
 import { filesApi } from '../../shell/api.ts';
-import { FilesBrowser, type Reveal } from '../../atoms/files-browser.tsx';
+import { FilesBrowser, type ChangesJump, type Reveal } from '../../atoms/files-browser.tsx';
 import { appendRef } from '../../atoms/diff-selection.ts';
 import { GitDialog, PullRequestChips } from './git-dialog.tsx';
 import { RepoSwitcher, useSessionRepo } from './repo-switcher.tsx';
@@ -40,7 +40,7 @@ import { useAddRepository } from './use-add-repository.ts';
 import { WorkspaceSheet } from './workspace-sheet.tsx';
 import { gitApi } from '../../shell/api.ts';
 import { FileLinksContext, type FileLinks } from '../../atoms/file-links.tsx';
-import { SESSION_TABS, readStoredTab, sessionTabLabel, stepTab, storeTab, type SessionTab } from '../../atoms/session-tabs.ts';
+import { SESSION_TABS, readChangesSplit, readStoredTab, sessionTabLabel, stepTab, storeChangesSplit, storeTab, type SessionTab } from '../../atoms/session-tabs.ts';
 import { TerminalPanel } from '../../atoms/terminal-panel.tsx';
 import { PreviewPanel } from '../../atoms/preview-panel.tsx';
 import {
@@ -189,15 +189,32 @@ export function FocusView({
   }, [session.id]);
   const queries = useQueryClient();
   const [tab, setTab] = useState<SessionTab>(() => readStoredTab(session.id) ?? 'chat');
-  // 访问过的文件 / 改动页保持挂载（隐藏），切回时状态和内容都还在；换会话才重置
-  const [visited, setVisited] = useState<ReadonlySet<SessionTab>>(() => new Set(['chat']));
-  const [reveal, setReveal] = useState<Reveal | null>(null);
+  const [preferSplit, setPreferSplit] = useState(() => !windowChrome && readChangesSplit(session.id));
+  const [viewWidth, setViewWidth] = useState(0);
+  const splitHeadingRef = useRef<HTMLDivElement | null>(null);
+  const wasSplit = useRef(false);
   useEffect(() => {
-    const restored = readStoredTab(session.id) ?? 'chat';
-    setTab(restored);
-    setVisited(new Set(restored === 'chat' ? ['chat'] : ['chat', restored]));
-    setReveal(null);
-  }, [session.id]);
+    const node = viewRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(([entry]) => setViewWidth(entry?.contentRect.width ?? 0));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  const splitAvailable = wide && !windowChrome && viewWidth >= 1000;
+  const splitChanges = preferSplit && splitAvailable && tab === 'chat' && !details;
+  useEffect(() => {
+    if (wasSplit.current && !splitAvailable && tab === 'chat') setTab('changes');
+    wasSplit.current = splitChanges;
+  }, [splitAvailable, splitChanges, tab]);
+  // 访问过的页签保持挂载；单独记住并排偏好，窄屏暂时无法并排时也不清除它。
+  const [visited, setVisited] = useState<ReadonlySet<SessionTab>>(() => new Set(['chat', tab]));
+  const [reveal, setReveal] = useState<Reveal | null>(null);
+  const [changesJump, setChangesJump] = useState<ChangesJump | null>(null);
+  const showChanges = useCallback((jump: ChangesJump | null) => {
+    setChangesJump(jump);
+    if (preferSplit && splitAvailable) setDetails(false);
+    else setTab('changes');
+  }, [preferSplit, splitAvailable]);
   // 刷新 / 重进时回到上次那一页；记不住的存储（隐私模式）就按默认走。
   useEffect(() => {
     storeTab(session.id, tab);
@@ -251,9 +268,12 @@ export function FocusView({
       setReveal((prev) => ({ ...target, nonce: (prev?.nonce ?? 0) + 1 }));
       setTab('files');
     },
-    openChanges: () => setTab('changes')
-  }), [workspaceRoot]);
-  useEffect(() => setVisited((v) => (v.has(tab) ? v : new Set([...v, tab]))), [tab]);
+    openChanges: () => showChanges(null)
+  }), [workspaceRoot, showChanges]);
+  useEffect(() => {
+    const opened = splitChanges ? 'changes' : tab;
+    setVisited((current) => current.has(opened) ? current : new Set([...current, opened]));
+  }, [tab, splitChanges]);
   // 组合会话按当前选中的成员仓库取 git / 文件；单仓 member 为 null，行为与原来一样。
   const repo = useSessionRepo(session.id, session.workspaceId);
   const repoWorkspaceId = repo.selected ?? session.workspaceId;
@@ -291,14 +311,15 @@ export function FocusView({
   const sheetSwitcher = renderSwitcher(true);
   // 目录派生的文件 / git 状态按工作目录归一：同目录的多条会话共享缓存（见 query-keys.ts）。
   const fileKeys = filesKeys(repoWorkspaceId, session.id);
-  // 切到文件 / 改动：先显示缓存（挂载着的面板原样在），同时后台重读一遍
+  // 打开文件 / 改动：先显示缓存（挂载着的面板原样在），同时后台重读一遍
+  const fileView = tab === 'files' ? 'files' : tab === 'changes' || splitChanges ? 'changes' : null;
   useEffect(() => {
-    if (tab !== 'files' && tab !== 'changes') return;
+    if (!fileView) return;
     const keys = filesKeys(repoWorkspaceId, session.id);
     for (const prefix of filesInvalidationKeys(keys)) {
       void queries.invalidateQueries({ queryKey: prefix });
     }
-  }, [tab, session.id, repoWorkspaceId, queries]);
+  }, [fileView, session.id, repoWorkspaceId, queries]);
   const refreshing = useIsFetching({
     predicate: (q) => q.queryKey[0] === 'files' && (q.queryKey[1] === fileKeys.dir[1] || q.queryKey[1] === session.id)
   }) > 0;
@@ -614,11 +635,7 @@ export function FocusView({
    * 只留一个「工作区」入口——分支、路径、加仓库都在里面。
    */
   const showStatusRow = Boolean(live?.contextUsage || (!narrow && (gitState?.isGit || repo.isCombo)));
-  const [turnBase, setTurnBase] = useState<{ base: string; nonce: number } | null>(null);
-  const openTurn = (turn: number) => {
-    setTurnBase({ base: `turn:${turn}`, nonce: Date.now() });
-    setTab('changes');
-  };
+  const openTurn = (turn: number) => showChanges({ base: `turn:${turn}` });
   // 任务上的 PR（打开任务时服务端顺手同步状态）；主会话没有任务，就不问
   const sessionTaskId = session.taskId;
   const taskPrs = useQuery({
@@ -1090,7 +1107,8 @@ export function FocusView({
           onDone={(id, prompt) => { setRewindAt(null); onSeedDraft?.(id, prompt); onChanged(); onOpenSession(id); }} />
       ) : null}
       {/* 右侧 pr 是给绝对定位的刷新指示器留的固定位置：它永远占这么宽，指示器出现或消失都不会让页签重排 */}
-      <div role="tablist" aria-label="会话视图" className="relative hidden shrink-0 gap-1 border-b border-hair py-1.5 pl-2 pr-5 md:flex md:pl-3 md:pr-6" data-testid="session-tabs">
+      <div className="relative hidden shrink-0 items-center border-b border-hair pr-6 md:flex">
+      <div role="tablist" aria-label="会话视图" className="flex gap-1 py-1.5 pl-3" data-testid="session-tabs">
         {tabs.map((t) => (
           <button
             key={t}
@@ -1114,6 +1132,17 @@ export function FocusView({
             {sessionTabLabel(t, t === 'changes' ? changeCount : undefined)}
           </button>
         ))}
+      </div>
+        {splitAvailable ? <button type="button" data-testid="changes-split-toggle" className={`ml-2 rounded-sm px-2 py-1.5 text-meta ${splitChanges ? 'bg-card-raised text-primary' : 'text-secondary hover:bg-card-raised hover:text-primary'}`} onClick={() => {
+          const enabled = !splitChanges;
+          storeChangesSplit(session.id, enabled);
+          setPreferSplit(enabled);
+          setTab('chat');
+          if (enabled) {
+            setDetails(false);
+            requestAnimationFrame(() => splitHeadingRef.current?.focus());
+          }
+        }}>{splitChanges ? '关闭并排改动' : preferSplit && tab === 'changes' ? '返回并排' : '并排查看改动'}</button> : null}
         {tab !== 'chat' && tab !== 'terminal' && tab !== 'preview' && refreshing ? (
           <span
             role="status"
@@ -1132,13 +1161,11 @@ export function FocusView({
         ) : null}
       </div>
       {tab !== 'chat' ? <div className="flex min-h-[44px] shrink-0 items-center gap-3 border-b border-hair px-3 md:hidden"><button type="button" data-testid="session-back-to-chat" className="min-h-[44px] text-sub text-link" onClick={() => setTab('chat')}>← 返回对话</button><span className="text-sub text-secondary">{sessionTabLabel(tab, tab === 'changes' ? changeCount : undefined)}</span></div> : null}
-      {(['files', 'changes'] as const).map((t) =>
-        visited.has(t) ? (
-          <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-            <FilesBrowser tab={t} sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} onQuote={quoteToChat} switcher={switcher} members={repo.members} />
-          </div>
-        ) : null
-      )}
+      {visited.has('files') ? (
+        <div key={`${session.id}-files`} className={tab === 'files' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+          <FilesBrowser tab="files" sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} status={status} reveal={reveal} onQuote={quoteToChat} switcher={switcher} members={repo.members} />
+        </div>
+      ) : null}
       {/* 终端和文件页一样：首访后保持挂载（hidden 不卸载），切回来还是同一个 shell 画面 */}
       {terminalAvailable && visited.has('terminal') ? (
         <div key={`${session.id}-terminal`} className={tab === 'terminal' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
@@ -1218,9 +1245,11 @@ export function FocusView({
       ) : null}
 
       {/* 会话内搜索：夹在页签和对话区之间，只有对话页签用得上；命中数由它直接写在下面这个滚动容器上 */}
+      <div className={`flex min-h-0 min-w-0 flex-1 ${tab === 'chat' || tab === 'changes' ? '' : 'hidden'}`}>
+      <div className={`flex min-h-0 min-w-0 flex-1 flex-col ${tab === 'chat' ? '' : 'hidden'}`}>
       <FindInSession open={findOpen && tab === 'chat'} onOpenChange={setFindOpen} scrollerRef={scroller} resetKey={session.id} />
 
-      <div className={`relative flex min-h-0 flex-1 flex-col ${tab === 'chat' ? '' : 'hidden'}`}>
+      <div className="relative flex min-h-0 flex-1 flex-col">
         <div
           ref={scroller}
           // 程序化聚焦的落点（「查看」跳转过来）：不是 Tab 停靠站，但焦点环要看得见。
@@ -1372,7 +1401,7 @@ export function FocusView({
         <ScrollToEnd visible={!nearEnd} onClick={() => scrollToEnd()} />
       </div>
 
-      <div className={`shrink-0 border-t border-hair px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-4 ${tab === 'chat' ? '' : 'hidden'}`}>
+      <div className="shrink-0 border-t border-hair px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-4">
         <div className="mx-auto max-w-[760px]">
           {linkedSessions.length > 0 ? (
             <div
@@ -1492,6 +1521,20 @@ export function FocusView({
             quote={quote}
           /></HandoffGate>
         </div>
+      </div>
+      </div>
+      {splitChanges || tab === 'changes' || visited.has('changes') ? (
+        <section aria-label="改动" data-testid="changes-workspace" className={`${tab === 'changes' || splitChanges ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-col ${splitChanges ? 'w-1/2 shrink-0 border-l border-hair' : 'flex-1'}`}>
+          {splitChanges ? <div ref={splitHeadingRef} tabIndex={-1} className="flex min-h-9 shrink-0 items-center justify-between gap-2 border-b border-hair px-3 text-sub font-medium text-secondary outline-none focus-visible:outline-2 focus-visible:outline-ring">
+            <span>改动</span>
+            <button type="button" className="shrink-0 rounded-sm px-2 py-1 text-meta text-link hover:bg-card-raised" onClick={() => {
+              setTab('changes');
+              viewRef.current?.querySelector<HTMLButtonElement>('#session-tab-changes')?.focus();
+            }}>展开改动</button>
+          </div> : null}
+          <FilesBrowser tab="changes" sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} status={status} jump={changesJump} onQuote={quoteToChat} switcher={switcher} members={repo.members} compact={splitChanges} />
+        </section>
+      ) : null}
       </div>
     </div>
     {docked ? detailsPanel : null}

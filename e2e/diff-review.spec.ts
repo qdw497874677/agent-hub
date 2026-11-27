@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 import { loginByApi } from './login.ts';
-import { openSessionTool } from './session-tools.ts';
+import { backToChat, openSessionTool } from './session-tools.ts';
 
 test.afterAll(stopFakeWorker);
 
@@ -40,6 +40,7 @@ async function fixture(page: Page, baseURL: string, root: string) {
 }
 
 type Send = { batchId: string; targetSessionId: string; noteIds: string[] };
+const shots = process.env['E2E_SCREENSHOTS'];
 
 for (const width of [1280, 390]) {
   const phone = width < 640;
@@ -140,6 +141,265 @@ for (const width of [1280, 390]) {
         expect(prompts[0]?.event.text).toContain('检查原始第一行');
         expect(prompts[0]?.event.text).not.toContain('这条版本会变化');
         expect(await fits()).toBe(true);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+}
+
+test.describe('会话与改动并排', () => {
+  test.use({ viewport: { width: 1440, height: 960 } });
+
+  test('同一个 Diff 和对话草稿在并排与窄屏标签之间保留', async ({ page, baseURL }) => {
+    const root = mkdtempSync(join(tmpdir(), 'ah-diff-split-'));
+    try {
+      const { project, source, target } = await fixture(page, baseURL!, root);
+      await page.goto(`/#/p/${project.id}/focus/${source.id}`);
+      const chat = page.getByRole('log', { name: '会话记录' });
+      const composer = page.getByRole('textbox', { name: '发送消息' });
+      const changes = page.getByTestId('files-panel-changes');
+      const split = page.getByTestId('changes-split-toggle');
+      await expect(chat).toBeVisible();
+      await composer.fill('只回复 OK');
+      await composer.press('Control+Enter');
+      await expect(chat.getByText('OK', { exact: true })).toBeVisible();
+      await expect(chat.getByTestId('turn-hint')).toBeHidden();
+      await composer.fill('保留这段未发送的草稿');
+      await expect(changes).toBeHidden();
+
+      await openSessionTool(page, 'changes');
+      const diff = changes.getByTestId('diff-view');
+      await expect(split).toHaveAccessibleName('并排查看改动');
+      await split.click();
+      await expect(split).toHaveAccessibleName('关闭并排改动');
+      await expect(chat).toBeVisible();
+      await expect(composer).toHaveValue('保留这段未发送的草稿');
+      await expect(page.getByTestId('changes-workspace')).toBeVisible();
+      await expect(changes).toHaveCount(1);
+      await expect(changes.getByTestId('change-row')).toHaveCount(3);
+      if (shots) await page.screenshot({ path: join(shots, 'workbench-changes-list-desktop.png') });
+      const failAlpha = (url: URL) => url.pathname.endsWith(`/sessions/${source.id}/git/diff`) && url.searchParams.get('path') === 'alpha.txt';
+      await page.route(failAlpha, (route) => route.abort());
+      await changes.getByTestId('change-row').filter({ hasText: 'alpha.txt' }).click();
+      await expect(diff.getByTestId('files-error')).toBeVisible();
+      await expect(composer).toHaveValue('保留这段未发送的草稿');
+      await page.unroute(failAlpha);
+      await diff.getByTestId('files-back').click();
+      await changes.getByTestId('change-row').filter({ hasText: 'beta.txt' }).click();
+      await expect(diff).toBeVisible();
+      await expect(diff).toContainText('beta.txt');
+      await expect(diff).toContainText('after two');
+      const [chatBox, diffBox] = await Promise.all([chat.boundingBox(), diff.boundingBox()]);
+      expect(chatBox!.x + chatBox!.width).toBeLessThanOrEqual(diffBox!.x);
+      expect(chatBox!.y + chatBox!.height).toBeGreaterThan(diffBox!.y);
+
+      const line = diff.locator('[data-testid="diff-line"][data-side="new"][data-line="2"]');
+      await line.click();
+      await diff.getByTestId('review-add').click();
+      const note = diff.getByTestId('review-text');
+      await note.fill('这条批注先不提交');
+      if (shots) await page.screenshot({ path: join(shots, 'workbench-changes-split-desktop.png') });
+
+      // Make the wide layout unavailable, without creating a new tab or tearing down its editor.
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(split).toBeHidden();
+      await expect(page.getByTestId('session-back-to-chat')).toBeVisible();
+      await expect(chat).toBeHidden();
+      await expect(diff).toContainText('beta.txt');
+      await expect(note).toHaveValue('这条批注先不提交');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(391);
+      if (shots) await page.screenshot({ path: join(shots, 'workbench-changes-narrow.png') });
+
+      await backToChat(page);
+      await expect(composer).toHaveValue('保留这段未发送的草稿');
+      await openSessionTool(page, 'changes');
+      await expect(note).toHaveValue('这条批注先不提交');
+
+      await page.setViewportSize({ width: 1440, height: 960 });
+      await expect(split).toHaveAccessibleName('返回并排');
+      await split.click();
+      await expect(split).toHaveAccessibleName('关闭并排改动');
+      await expect(note).toHaveValue('这条批注先不提交');
+      await expect(chat).toBeVisible();
+      await diff.getByTestId('diff-quote').click();
+      await expect(composer).toHaveValue(/保留这段未发送的草稿[\s\S]*beta\.txt/);
+      await expect(diff).toBeVisible();
+      await split.click();
+      await expect(split).toHaveAccessibleName('并排查看改动');
+      await expect(chat).toBeVisible();
+      await expect(changes).toBeHidden();
+      await split.click();
+      await expect(changes).toHaveCount(1);
+      await expect(diff).toBeVisible();
+      await expect(diff).toContainText('beta.txt');
+
+      // The project sidebar takes space on desktop. A 1180px viewport is still a desktop UI,
+      // but the workbench is under 1000px; don't switch away from an unrelated active tab.
+      await openSessionTool(page, 'files');
+      await page.setViewportSize({ width: 1180, height: 844 });
+      await expect(split).toBeHidden();
+      await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByTestId('files-panel-files')).toBeVisible();
+
+      // Another session restoring its Changes tab must not inherit the open Diff or notes editor.
+      await page.goto(`/#/p/${project.id}/focus/${target.id}`);
+      await openSessionTool(page, 'changes');
+      await page.goto(`/#/p/${project.id}/focus/${source.id}`);
+      await openSessionTool(page, 'changes');
+      await expect(diff).toContainText('beta.txt');
+      await changes.getByTestId('change-row').filter({ hasText: 'gamma.txt' }).click();
+      await expect(diff).toContainText('gamma.txt');
+      await page.goto(`/#/p/${project.id}/focus/${target.id}`);
+      await expect(page.getByTestId('session-tab-changes')).toHaveAttribute('aria-selected', 'true');
+      await expect(changes.getByTestId('change-row').filter({ hasText: 'gamma.txt' })).toBeVisible();
+      await expect(diff).toBeHidden();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+for (const width of [1440, 390]) {
+  const phone = width < 768;
+  test.describe(`从对话继续审阅 ${width}px`, () => {
+    test.use({ viewport: { width, height: phone ? 844 : 960 }, hasTouch: phone, isMobile: phone });
+
+    test('打开指定回合、保存备注并在切回会话后恢复文件', async ({ page, baseURL }) => {
+      const root = mkdtempSync(join(tmpdir(), 'ah-diff-resume-'));
+      try {
+        const { project, source, target, headers } = await fixture(page, baseURL!, root);
+        const focus = (id: string) => page.goto(`/#/p/${project.id}/focus/${id}`);
+        const chat = page.getByRole('log', { name: '会话记录' });
+        const composer = page.getByRole('textbox', { name: '发送消息' });
+        const changes = page.getByTestId('files-panel-changes');
+        const diff = changes.getByTestId('diff-view');
+        const split = page.getByTestId('changes-split-toggle');
+        const response = await page.request.post(`/api/sessions/${source.id}/prompt`, {
+          headers, data: { text: 'please-write:gamma.txt=written-in-turn' }
+        });
+        expect(response.ok(), await response.text()).toBe(true);
+        await focus(source.id);
+        await expect(chat).toBeVisible();
+        await composer.fill('评审时保留这段对话草稿');
+        if (!phone) {
+          await split.click();
+          await expect(changes.getByTestId('change-row').filter({ hasText: 'beta.txt' })).toBeVisible();
+          await changes.getByTestId('change-row').filter({ hasText: 'beta.txt' }).click();
+          await expect(diff).toContainText('beta.txt');
+        }
+
+        const badge = chat.getByTestId('turn-badge').first();
+        await expect(badge).toContainText('改了 1 个文件');
+        await badge.click();
+        await expect(changes.getByTestId('changes-base')).toHaveValue('turn:1');
+        await expect(changes.getByTestId('change-row')).toHaveCount(1);
+        if (phone) {
+          await expect(chat).toBeHidden();
+          await expect(page.getByTestId('session-back-to-chat')).toBeVisible();
+        } else {
+          await expect(chat).toBeVisible();
+          await expect(composer).toHaveValue('评审时保留这段对话草稿');
+        }
+        await changes.getByTestId('change-row').filter({ hasText: 'gamma.txt' }).click();
+        await expect(diff).toContainText('written-in-turn');
+        await expect(diff).toContainText('第 1 轮的两个快照');
+        const headerToggle = diff.getByRole('button', { name: 'Git 头信息' });
+        await expect(headerToggle).toHaveAttribute('aria-expanded', 'false');
+        await expect(diff.getByText('diff --git a/gamma.txt b/gamma.txt', { exact: true })).toBeHidden();
+        await headerToggle.click();
+        await expect(diff.getByText('diff --git a/gamma.txt b/gamma.txt', { exact: true })).toBeVisible();
+        await headerToggle.click();
+
+        const line = diff.locator('[data-testid="diff-line"][data-side="new"][data-line="3"]');
+        await line.click();
+        await diff.getByTestId('review-add').click();
+        const note = diff.getByTestId('review-text');
+        await note.fill('确认本轮新增的这一行');
+        const save = diff.getByTestId('review-save');
+        if (!phone) {
+          await page.getByTestId('changes-workspace').getByRole('button', { name: '展开改动' }).click();
+          await expect(chat).toBeHidden();
+          await expect(note).toHaveValue('确认本轮新增的这一行');
+          await expect(save).toBeEnabled();
+          await expect(split).toHaveAccessibleName('返回并排');
+          if (shots) await page.screenshot({ path: join(shots, 'p0-review-expanded.png') });
+          await split.click();
+          await expect(chat).toBeVisible();
+          await expect(note).toHaveValue('确认本轮新增的这一行');
+        }
+        await expect(save).toBeEnabled();
+        if (shots) await page.screenshot({ path: join(shots, `p0-review-${width}.png`) });
+        await save.click();
+        await expect(note).toHaveCount(0);
+        await focus(target.id);
+        await expect(chat).toBeVisible();
+        await expect(changes).toBeHidden();
+        await focus(source.id);
+        await expect(diff).toContainText('written-in-turn');
+        await expect(diff).toContainText('第 1 轮的两个快照');
+        if (phone) await expect(chat).toBeHidden();
+        else await expect(chat).toBeVisible();
+        await page.reload();
+        await expect(diff).toContainText('written-in-turn');
+        await diff.getByTestId('files-back').click();
+        await expect(changes.getByTestId('review-note').filter({ hasText: '确认本轮新增的这一行' })).toBeVisible();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+}
+
+for (const width of [1440, 390]) {
+  const phone = width < 768;
+  test.describe(`会话显示设置 ${width}px`, () => {
+    test.use({ viewport: { width, height: 844 }, hasTouch: phone, isMobile: phone });
+
+    test('默认只展示常用项，展开详细设置后可修改且刷新保留', async ({ page, baseURL }) => {
+      const root = mkdtempSync(join(tmpdir(), 'ah-chat-display-'));
+      try {
+        const { project, source } = await fixture(page, baseURL!, root);
+        await page.goto(`/#/p/${project.id}/focus/${source.id}`);
+        async function openDisplaySettings() {
+          if (phone) {
+            await page.getByTestId('session-more-trigger').click();
+            await page.getByTestId('session-more-details').click();
+            await page.getByRole('menuitem', { name: /^显示设置/ }).click();
+          } else {
+            await page.getByRole('button', { name: '显示设置', exact: true }).click();
+          }
+        }
+        const settings = page.getByTestId('display-settings');
+        const tools = settings.getByRole('radiogroup', { name: '工具调用' });
+        const compact = settings.getByRole('switch', { name: '紧凑' });
+        const contrast = settings.getByRole('radiogroup', { name: '增强对比' });
+        const toggle = settings.getByText('详细设置', { exact: true });
+        const shell = settings.getByRole('switch', { name: '命令输出默认展开' });
+        await openDisplaySettings();
+        await expect(settings.getByRole('heading', { name: '常用' })).toBeVisible();
+        await expect(tools).toBeVisible();
+        await expect(shell).toBeHidden();
+        await compact.check();
+        await contrast.getByRole('radio', { name: '更高' }).click();
+        await expect(page.locator('html')).toHaveAttribute('data-contrast', 'more');
+        await toggle.click();
+        await shell.check();
+        await tools.getByRole('radio', { name: '隐藏' }).click();
+        await expect(shell).toBeDisabled();
+        await tools.getByRole('radio', { name: '折叠' }).click();
+        await expect(shell).toBeEnabled();
+        await expect(shell).toBeChecked();
+        if (shots) await page.screenshot({ path: join(shots, `workbench-display-settings-${width}.png`) });
+        await page.reload();
+        await expect(page.locator('html')).toHaveAttribute('data-contrast', 'more');
+        await openDisplaySettings();
+        await expect(compact).toBeChecked();
+        await expect(contrast.getByRole('radio', { name: '更高' })).toHaveAttribute('aria-checked', 'true');
+        await expect(shell).toBeHidden();
+        await toggle.click();
+        await expect(shell).toBeChecked();
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

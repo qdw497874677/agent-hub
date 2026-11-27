@@ -137,6 +137,7 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRe
     const session = byId.get(sessionId)!;
     return (
       <FocusView
+        key={sessionId}
         canvas={canvas}
         session={session}
         live={resolveLive(session, canvas.previews[session.id] ?? [], live[session.id])}

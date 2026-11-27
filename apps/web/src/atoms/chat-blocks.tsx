@@ -291,6 +291,7 @@ function Toggle({ label, hint, checked, disabled, onChange }: { label: string; h
 export function DisplaySettingsPanel({ settings, onChange }: { settings: DisplaySettings; onChange: (patch: Partial<DisplaySettings>) => void }) {
   return (
     <div className="py-1" data-testid="display-settings">
+      <h3 className="px-3 pb-1 pt-1 text-meta font-medium text-tertiary">常用</h3>
       <div className="px-3 py-1.5">
         <ThemeSwitch />
       </div>
@@ -304,8 +305,6 @@ export function DisplaySettingsPanel({ settings, onChange }: { settings: Display
         ]}
         onChange={(tools) => onChange({ tools })}
       />
-      <Toggle label="命令输出默认展开" checked={settings.shellExpanded} disabled={settings.tools !== 'collapsed'} onChange={(shellExpanded) => onChange({ shellExpanded })} />
-      <Toggle label="文件改动默认展开" checked={settings.editExpanded} disabled={settings.tools !== 'collapsed'} onChange={(editExpanded) => onChange({ editExpanded })} />
       <Segmented<ThinkingDisplay>
         label="思考过程"
         value={settings.thinking}
@@ -327,13 +326,19 @@ export function DisplaySettingsPanel({ settings, onChange }: { settings: Display
         ]}
         onChange={(contrast) => onChange({ contrast })}
       />
+      <details className="mt-2 border-t border-hair pt-1">
+        <summary className="cursor-pointer px-3 py-2 text-meta font-medium text-secondary hover:text-primary">详细设置</summary>
+        <p className="px-3 pb-1 text-meta text-tertiary">工具调用设为折叠时生效</p>
+        <Toggle label="命令输出默认展开" checked={settings.shellExpanded} disabled={settings.tools !== 'collapsed'} onChange={(shellExpanded) => onChange({ shellExpanded })} />
+        <Toggle label="文件改动默认展开" checked={settings.editExpanded} disabled={settings.tools !== 'collapsed'} onChange={(editExpanded) => onChange({ editExpanded })} />
+      </details>
     </div>
   );
 }
 
 export function DisplayMenu({ settings, onChange }: { settings: DisplaySettings; onChange: (patch: Partial<DisplaySettings>) => void }) {
   return (
-    <Dropdown label="显示设置" icon={<span aria-hidden>Aa</span>} width="w-72">
+    <Dropdown label="显示设置" icon={<span aria-hidden>Aa</span>} width="w-[min(320px,calc(100vw-24px))]">
       {() => <DisplaySettingsPanel settings={settings} onChange={onChange} />}
     </Dropdown>
   );

@@ -637,6 +637,7 @@ function Workspace() {
         />
       ) : <div data-testid="workdir-state" role="status" className="p-6 text-sub text-tertiary">{workdirViews.isPending || canvas.isPending ? '正在读取工作目录…' : workdirViews.isError ? '工作目录读取失败' : '工作目录不可用或无权访问'}</div> : view === 'focus' ? canvas.data && selectedSession ? (
         <FocusView
+          key={selectedSession.id}
           canvas={canvas.data}
           session={selectedSession}
           live={resolveLive(selectedSession, canvas.data.previews[selectedSession.id] ?? [], live[selectedSession.id])}

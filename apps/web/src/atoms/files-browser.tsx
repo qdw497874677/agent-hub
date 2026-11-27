@@ -9,6 +9,7 @@ import { inSelection, isWholeFileAddition, diffWindowRange, parsePatchLines, sel
 import { ReviewEditor, ReviewPanel, useReview } from './review-panel.tsx';
 import type { ReviewDraftDto, ReviewNoteDto } from '../shell/api/files.ts';
 import { useAccount } from '../shell/auth.tsx';
+import { readChangesPosition, storeChangesPosition } from './session-tabs.ts';
 
 /**
  * 工作目录文件浏览（ADR 0025 · P1，只读）。嵌在会话的「文件 / 改动」标签页里（页签由会话头部管）：
@@ -26,6 +27,8 @@ type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number |
 type LastRead = { path: string; member: string | null };
 /** 从对话里的工具路径跳过来：打开这个文件，知道行号就滚到那一行。nonce 变了就再跳一次。 */
 export type Reveal = { path: string; line: number | null; nonce: number };
+/** A new object represents a user navigation, even when clicking the same link again. */
+export type ChangesJump = { base: string };
 
 const fresh = FILES_QUERY;
 
@@ -56,39 +59,62 @@ type Props = {
   status: string;
   tab: FilesTab;
   reveal?: Reveal | null;
-  base?: { base: string; nonce: number } | null;
+  jump?: ChangesJump | null;
   /** diff 里选了行之后「引用到对话」：给回一句 `@path:start-end`。没接这个回调就不显示那个按钮。 */
   onQuote?: (ref: string) => void;
   /** 组合会话的仓库切换条，画在文件 / 改动页顶部。 */
   switcher?: ReactNode;
   /** 组合会话全部成员：改动页按仓库汇总。 */
   members?: readonly FilesContextMemberDto[];
+  /** 并排工作区中，列表与正文顺序展示，给差异留足宽度。 */
+  compact?: boolean;
 };
 
 /** 会话「文件 / 改动」标签页的内容（详情 → 浏览文件 也是切到这里，旧的全屏浮层已去掉）。 */
-export function FilesBrowser({ sessionId, workspaceId, member = null, status, tab, reveal = null, base: wanted = null, onQuote, switcher = null, members = [] }: Props) {
+export function FilesBrowser({ sessionId, workspaceId, member = null, status, tab, reveal = null, jump = null, onQuote, switcher = null, members = [], compact = false }: Props) {
   const client = useQueryClient();
   const keys = filesKeys(workspaceId, sessionId);
-  const wide = useWide();
+  const viewportWide = useWide();
+  const wide = viewportWide && !compact;
   const accountId = useAccount()?.id ?? null;
   const review = useReview(sessionId, accountId, tab === 'changes');
-  const [base, setBase] = useState<Base>(wanted?.base ?? 'session');
-  // 从聊天里「改了 N 个文件」点进来：切到那一轮
-  useEffect(() => {
-    if (wanted) setBase(wanted.base);
-  }, [wanted?.nonce]);
+  const [restored] = useState(() => tab === 'changes' ? readChangesPosition(sessionId) : null);
+  const [base, setBase] = useState<Base>(restored?.base ?? 'session');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
-  const [opened, setOpened] = useState<Opened | null>(null);
-  const [lastRead, setLastRead] = useState<LastRead | null>(null);
+  const [opened, setOpened] = useState<Opened | null>(() => restored?.file ? { ...restored.file, confirmed: false, diff: true } : null);
+  const [lastRead, setLastRead] = useState<LastRead | null>(restored?.file ?? null);
   const [showSensitive, setShowSensitive] = useState(false);
   const [query, setQuery] = useState('');
+  const previousMember = useRef(member);
 
   useEffect(() => {
+    const previous = previousMember.current;
+    previousMember.current = member;
+    // The first member can arrive asynchronously after the saved position has been restored.
+    if (previous === member || (tab === 'changes' && previous === null)) return;
     setOpened(null);
     setLastRead(null);
     setExpanded(new Set(['']));
     setQuery('');
-  }, [member]);
+  }, [member, tab]);
+
+  const appliedJump = useRef<ChangesJump | null>(null);
+  useEffect(() => {
+    if (!jump || appliedJump.current === jump) return;
+    appliedJump.current = jump;
+    if (jump.base !== base) {
+      // A turn badge links to that turn's list, not the previous range's file.
+      setOpened(null);
+      setLastRead(null);
+    }
+    setBase(jump.base);
+  }, [jump, base]);
+
+  const openedPath = opened?.path;
+  const openedMember = opened?.member ?? null;
+  useEffect(() => {
+    if (tab === 'changes') storeChangesPosition(sessionId, { base, file: openedPath ? { path: openedPath, member: openedMember } : null });
+  }, [tab, sessionId, base, openedPath, openedMember]);
 
   useEffect(() => {
     if (!reveal) return;
@@ -370,8 +396,11 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
                   <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(groupedChanges.find((item) => item.error)?.error)}</p>
                 ) : null
               ) : changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}
+              {(aggregate ? groupedChanges.some((item) => item.isPending) : changes.isPending) ? (
+                <p role="status" className="px-3 py-2 text-meta text-tertiary">正在读取改动…</p>
+              ) : null}
               {aggregate ? (
-                members.every((_, index) => (shown(groupedChanges[index]!)?.files.length ?? 0) === 0) ? (
+                groupedChanges.every((item) => shown(item)?.files.length === 0) ? (
                   <p className="px-3 py-2 text-meta text-tertiary">没有改动</p>
                 ) : (
                   members.map((item, index) => {
@@ -656,6 +685,10 @@ function DiffView({ sessionId, member, needsMember, keys, path, base, scope, wid
   const diff = useQuery({ ...fresh, queryKey: [...keys.diff(path, base), sessionId, member, reviewNote ? revealNonce : null], queryFn: () => filesApi.diff(sessionId, path, base, member) });
   const data = shown(diff);
   const rows = useMemo(() => (data && !data.binary ? parsePatchLines(data.patch) : []), [data]);
+  const contentRows = useMemo(() => rows.some((row) => row.kind === 'hunk')
+    ? rows.filter((row) => row.kind !== 'meta' || !/^(diff --git |index |--- |\+\+\+ )/.test(row.text))
+    : rows, [rows]);
+  const [showHeaders, setShowHeaders] = useState(false);
   // 整文件新增：不铺绿底，读起来像普通代码
   const plain = useMemo(() => isWholeFileAddition(rows), [rows]);
 
@@ -719,11 +752,13 @@ function DiffView({ sessionId, member, needsMember, keys, path, base, scope, wid
             ) : (
               <span className="text-meta text-tertiary">点行号选起止行{onQuote ? '，可引用到对话' : ''}</span>
             )}
+            {contentRows.length < rows.length ? <button type="button" aria-expanded={showHeaders} onClick={() => setShowHeaders(!showHeaders)}
+              className="ml-auto min-h-6 shrink-0 rounded px-2 text-meta text-link hover:bg-card-raised [@media(pointer:coarse)]:min-h-8">Git 头信息</button> : null}
           </div>
           {needsMember ? <p className="px-3 py-1 text-meta text-tertiary">添加备注前，请在仓库切换栏或改动列表中明确选择仓库（包括主仓库）。</p> : base === 'turn' ? <p className="px-3 py-1 text-meta text-tertiary">添加备注前，请在对比范围中选择具体回合。</p> : picked && !canReview ? <p className="px-3 py-1 text-meta text-tertiary">当前差异无法保存备注，仍可引用到对话。</p> : null}
           {reviewNote && reviewNote.path === path && reviewNote.base === base && !reopen ? <p className="px-3 py-1 text-meta text-rust">原备注位置已变化或无法确认，未自动定位到当前行。</p> : null}
           {editing && editing.path === path && editing.base === base && editing.member === (data?.reviewMember !== undefined ? data.reviewMember : member) ? <ReviewEditor key={`${editing.path}:${editing.base}:${editing.side}:${editing.start}:${editing.end}:${editing.version}`} draft={editing} sessionId={sessionId} disabled={!canReview || editing.version !== data?.reviewVersion} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); setPicked(null); onReviewSaved(); }} /> : null}
-          <DiffLines key={`${path}\u0000${base}\u0000${member ?? ''}`} rows={rows} picked={picked} pick={pick} plain={plain} reveal={reopen} revealNonce={revealNonce} />
+          <DiffLines key={`${path}\u0000${base}\u0000${member ?? ''}`} rows={showHeaders ? rows : contentRows} picked={picked} pick={pick} plain={plain} reveal={reopen} revealNonce={revealNonce} />
         </>
       ) : null}
     </div>

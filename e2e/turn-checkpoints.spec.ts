@@ -159,6 +159,11 @@ test('回合检查点：两轮真对话，本轮 / 整个会话 / 对比 HEAD，
       await page.reload();
       await openSessionTool(page, 'changes');
       const panel = page.getByTestId('files-panel-changes');
+      if (width < 500) {
+        // 刷新恢复上次打开的 diff；窄屏要先回到改动列表才能切换对比范围。
+        await expect(panel.getByTestId('diff-view')).toContainText('a.txt');
+        await panel.getByTestId('files-back').click();
+      }
       await panel.getByTestId('changes-base').selectOption('turn');
       // files-error 只在失败时才挂上。textContent() 会等到整段测试超时，改动行其实已经画出来。
       const changesRes = await page.request.get(`/api/sessions/${sid}/git/changes?base=turn`);
