@@ -6,7 +6,8 @@ import { GlobalNav } from '../../shell/global-nav.tsx';
 import { Icon } from '../../atoms/icons.tsx';
 import { MessagesEntry } from '../../atoms/messages-entry.tsx';
 import { NotificationBell } from '../../shell/market/notifications.tsx';
-import { WorkspacesDialog } from './workspaces-dialog.tsx';
+import { openSettings, SettingsEntry } from '../../shell/settings-navigation.tsx';
+import { useRoute } from '../../shell/use-route.ts';
 import { MachinesBadge } from '../../shell/workers.tsx';
 import { coarsePointer, modKeyLabel } from '../../shell/device.ts';
 import { PHASE_DOT, activeSessions, elapsedLabel, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
@@ -61,6 +62,7 @@ const GHOST_ICON =
 
 interface Props {
   readonly project: ProjectDto;
+  readonly shortcutsDisabled?: boolean;
   readonly projects: readonly ProjectDto[];
   readonly selectedId: string | null;
   readonly canvas: CanvasDto | null;
@@ -89,6 +91,7 @@ interface Props {
  */
 export function ProjectSidebar({
   project,
+  shortcutsDisabled = false,
   projects,
   selectedId,
   canvas,
@@ -105,7 +108,7 @@ export function ProjectSidebar({
   onClose
 }: Props) {
   const drawer = onClose !== undefined;
-  const [settings, setSettings] = useState(false);
+  const [, navigate] = useRoute();
   const [showSettled, setShowSettled] = useState(false);
   const [collapsed, setCollapsed] = useState(() => !drawer && readFlag(COLLAPSED_KEY));
   const [foldedTasks, setFoldedTasks] = useState<Set<string>>(() => readSet(COLLAPSED_TASKS_KEY));
@@ -268,7 +271,7 @@ export function ProjectSidebar({
 
   // ⌘/Ctrl+B 收起 / 展开（只有桌面那份侧栏挂这个快捷键；输入框里不拦截）。
   useEffect(() => {
-    if (drawer) return;
+    if (drawer || shortcutsDisabled) return;
     const onKey = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'b') return;
       const target = event.target as HTMLElement | null;
@@ -284,7 +287,7 @@ export function ProjectSidebar({
       window.removeEventListener('keydown', onKey);
       window.removeEventListener(TOGGLE_SIDEBAR_EVENT, onToggle);
     };
-  }, [drawer, toggleCollapsed]);
+  }, [drawer, shortcutsDisabled, toggleCollapsed]);
 
   const toggleTask = (taskId: string) =>
     setFoldedTasks((current) => {
@@ -366,12 +369,12 @@ export function ProjectSidebar({
           >
             <Icon name="server" />
           </a>
-          <button className={GHOST_ICON} title="项目设置" aria-label="项目设置" onClick={() => setSettings(true)}>
+          <button className={GHOST_ICON} title="项目设置" aria-label="项目设置" onClick={(event) => openSettings(navigate, { scope: 'project', id: project.id, section: 'general' }, event.currentTarget)}>
             <Icon name="settings" />
           </button>
+          <SettingsEntry className={GHOST_ICON} />
           <AccountMenu placement="up" />
         </div>
-        {settings ? <WorkspacesDialog project={project} onClose={() => setSettings(false)} /> : null}
       </aside>
     );
   }
@@ -412,7 +415,7 @@ export function ProjectSidebar({
           </select>
           <Icon name="chevron-down" size={14} className="pointer-events-none absolute right-1.5 text-tertiary" />
         </label>
-        <button className={GHOST_ICON} title="项目设置" aria-label="项目设置" onClick={() => setSettings(true)}>
+        <button className={GHOST_ICON} title="项目设置" aria-label="项目设置" onClick={(event) => openSettings(navigate, { scope: 'project', id: project.id, section: 'general' }, event.currentTarget)}>
           <Icon name="settings" />
         </button>
         {drawer ? (
@@ -523,10 +526,10 @@ export function ProjectSidebar({
         <AttentionBadge onClick={onHome} compact />
         <MessagesEntry />
         <NotificationBell placement="up" />
+        <SettingsEntry className={GHOST_ICON} />
         <AccountMenu placement="up" />
       </div>
       </div>
-      {settings ? <WorkspacesDialog project={project} onClose={() => setSettings(false)} /> : null}
       {menu && menuSession ? (
         <SessionRowMenu
           items={itemsFor(menuSession)}

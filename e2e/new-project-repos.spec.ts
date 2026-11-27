@@ -115,7 +115,7 @@ test('新建项目：两个仓库各自分支、主仓库、令牌只写不回�
   await page.reload();
   await expect(page.getByRole('button', { name: '新建任务' }).first()).toBeVisible();
   await page.getByTitle('项目设置').first().click();
-  await page.getByRole('tab', { name: '代码与工作目录' }).click();
+  await page.getByRole('link', { name: '代码与工作目录', exact: true }).click();
   const settings = page.getByTestId('project-repos');
   await expect(settings).toBeVisible();
   await expect(settings.getByTestId('repo-row')).toHaveCount(2);

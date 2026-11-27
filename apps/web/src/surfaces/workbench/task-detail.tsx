@@ -79,6 +79,7 @@ function TaskDefaultAgentRow({ canvas, task, editable }: { canvas: CanvasDto; ta
           <DefaultAgentEditor
             prefix="tda"
             projectId={canvas.project.id}
+            modelFallback="留空时，先用同一运行时的项目模型，再用团队默认模型，最后用运行时默认。"
             value={current}
             agents={canvas.agents}
             editable

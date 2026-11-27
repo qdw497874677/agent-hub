@@ -301,7 +301,7 @@ test('项目设置 · 已保存但没改过的行也能检查：带 id、不带�
   await page.reload();
   await expect(page.getByRole('button', { name: '新建任务' }).first()).toBeVisible();
   await page.getByTitle('项目设置').first().click();
-  await page.getByRole('tab', { name: '代码与工作目录' }).click();
+  await page.getByRole('link', { name: '代码与工作目录', exact: true }).click();
   const settings = page.getByTestId('project-repos');
   await expect(settings.getByTestId('repo-row')).toHaveCount(1);
 
@@ -664,7 +664,8 @@ test('手机触控目标 · 项目页头与仓库检查/删除是分开的 44×4
   const sheet = page.getByTestId('nav-sheet');
   await expect(sheet).toBeVisible();
   await sheet.getByRole('button', { name: '项目设置' }).click();
-  await page.getByRole('tab', { name: '代码与工作目录' }).click();
+  await page.getByRole('button', { name: '返回设置目录' }).click();
+  await page.getByRole('link', { name: '代码与工作目录', exact: true }).click();
   const settings = page.getByTestId('project-repos');
   await expect(settings.getByTestId('repo-row')).toHaveCount(1);
 
@@ -704,7 +705,7 @@ test('手机触控目标 · 项目页头与仓库检查/删除是分开的 44×4
   await expect(mobileHeader).toBeHidden();
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/project-header-1280.png` });
   await page.getByTitle('项目设置').first().click();
-  await page.getByRole('tab', { name: '代码与工作目录' }).click();
+  await page.getByRole('link', { name: '代码与工作目录', exact: true }).click();
   const desktopSettings = page.getByTestId('project-repos');
   const desktopCheck = await boxOf(desktopSettings.getByTestId('repo-check').first(), '桌面仓库检查');
   const desktopRemove = await boxOf(desktopSettings.getByTestId('repo-remove').first(), '桌面仓库删除');

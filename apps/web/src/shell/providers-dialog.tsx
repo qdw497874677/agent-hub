@@ -31,13 +31,17 @@ function errorText(error: unknown): string | null {
 }
 
 export function ProvidersDialog({ onClose, me }: { onClose: () => void; me: AccountDto | null }) {
+  return <DialogShell title="模型提供商" onClose={onClose} wide><ProviderSettings me={me} /></DialogShell>;
+}
+
+export function ProviderSettings({ me }: { me: AccountDto | null }) {
   const queryClient = useQueryClient();
   const list = useQuery({ queryKey: ['providers'], queryFn: providersApi.list });
   const refresh = () => Promise.all([queryClient.invalidateQueries({ queryKey: ['providers'] }), queryClient.invalidateQueries({ queryKey: ['hub-models'] })]);
   const [editing, setEditing] = useState<ProviderDto | 'new' | null>(null);
   const providers = list.data?.providers ?? [];
   return (
-    <DialogShell title="模型提供商" onClose={onClose} wide>
+    <>
       <p className="text-sub text-primary">模型提供商</p>
       <p className="mt-1 text-meta text-tertiary" title="模型会出现在开会话的模型列表里（显示为 hub-标识/模型）；密钥不会进 agent 的配置文件">
         添加兼容 OpenAI 或 Anthropic 的接口。密钥保存后不可再查看。
@@ -67,7 +71,7 @@ export function ProvidersDialog({ onClose, me }: { onClose: () => void; me: Acco
           </button>
         </div>
       )}
-    </DialogShell>
+    </>
   );
 }
 

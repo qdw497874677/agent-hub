@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { test, expect, type Page } from '@playwright/test';
 import { currentRun } from './run-id.ts';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 团队工作目录的独占归属：一个目录同一时间只能属于一个项目。
@@ -13,6 +13,8 @@ import { piModel } from './hub-model.ts';
  */
 const RUN = currentRun();
 const SHOTS = process.env.SHOTS_DIR;
+
+test.afterAll(() => stopFakeWorker());
 
 async function csrfHeaders(page: Page, baseURL: string) {
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
@@ -53,8 +55,8 @@ test('团队工作目录：新建 → A 分配 → B 转移 → 之后只有 B �
     // 项目 A 里分配
     await page.goto(`/#/p/${a.id}`);
     await page.getByTitle('项目设置').first().click();
-    const dialog = page.getByRole('dialog');
-    await dialog.getByRole('tab', { name: '代码与工作目录' }).click();
+    const dialog = page.getByTestId('settings-surface');
+    await dialog.getByRole('link', { name: '代码与工作目录', exact: true }).click();
     await dialog.getByTestId('ws-link-open').click();
     await dialog.getByTestId('ws-link').locator('li').filter({ hasText: `shared-ws-${RUN}` }).getByTestId('ws-link-one').click();
     await expect(dialog.getByText(dir.split('/').pop()!).first()).toBeVisible();
@@ -65,14 +67,16 @@ test('团队工作目录：新建 → A 分配 → B 转移 → 之后只有 B �
     // 直接调接口再挂给 B：非要独占，被拒
     const conflict = await page.request.put(`/api/projects/${b.id}/workspaces/${ws.id}`, { headers });
     expect(conflict.status(), await conflict.text()).toBe(409);
-    expect(await conflict.text()).toContain(a.name);
+    expect(await conflict.json()).toMatchObject({ error: { code: 'conflict' } });
+    expect((await viewsOf(a.id)).map((v) => v.workspace.id)).toContain(ws.id);
+    expect((await viewsOf(b.id)).map((v) => v.workspace.id)).not.toContain(ws.id);
 
     // 项目 B：入口里看到「属于 A」，走转移
     await page.goto(`/#/p/${b.id}`);
     await page.reload();
     await page.getByTitle('项目设置').first().click();
-    const dialogB = page.getByRole('dialog');
-    await dialogB.getByRole('tab', { name: '代码与工作目录' }).click();
+    const dialogB = page.getByTestId('settings-surface');
+    await dialogB.getByRole('link', { name: '代码与工作目录', exact: true }).click();
     await dialogB.getByTestId('ws-link-open').click();
     const other = dialogB.getByTestId('ws-link').locator('li').filter({ hasText: `shared-ws-${RUN}` });
     await expect(other).toContainText(a.name);
@@ -84,7 +88,7 @@ test('团队工作目录：新建 → A 分配 → B 转移 → 之后只有 B �
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/1280-transferred.png`, fullPage: true });
     expect((await viewsOf(b.id)).map((v) => v.workspace.id)).toContain(ws.id);
     expect((await viewsOf(a.id)).map((v) => v.workspace.id)).not.toContain(ws.id);
-    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: '返回应用' }).click();
 
     // 团队页：现在只属于 B
     await page.goto('/#/workspaces');
@@ -125,21 +129,15 @@ test('团队工作目录：新建 → A 分配 → B 转移 → 之后只有 B �
 test('关联的团队工作目录里真的能开会话，也能「换个工作目录继续」进去', async ({ page, baseURL }) => {
   await loginByApi(page);
   const headers = await csrfHeaders(page, baseURL!);
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const workerId = await ensureFakeWorker(page, baseURL!);
   const dirs = [join(tmpdir(), `shared-run-a-${RUN}`), join(tmpdir(), `shared-run-b-${RUN}`)];
   for (const d of dirs) mkdirSync(d, { recursive: true });
-  const project = (await (await page.request.post('/api/projects', { data: { name: `shared-run-${RUN}` }, headers })).json()) as { id: string; name: string };
+  const project = (await (await page.request.post('/api/projects', { data: { name: `shared-run-${RUN}`, workerId }, headers })).json()) as { id: string; name: string };
   const made: Array<{ id: string; projectId: string | null }> = [];
   const sessionIds: string[] = [];
   try {
     for (const path of dirs) {
-      const ws = await page.request.post('/api/workspaces', { data: { mode: 'link', path }, headers });
+      const ws = await page.request.post('/api/workspaces', { data: { mode: 'link', path, workerId }, headers });
       expect(ws.status(), await ws.text()).toBeLessThan(300);
       const value = (await ws.json()) as { id: string; projectId: string | null };
       expect(value.projectId).toBeNull();
@@ -148,7 +146,7 @@ test('关联的团队工作目录里真的能开会话，也能「换个工作�
       expect(linked.ok(), await linked.text()).toBe(true);
     }
     const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '共享工作目录里干活' }, headers })).json()) as { id: string };
-    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel(), workspaceId: made[0]!.id }, headers });
+    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '', workerId, workspaceId: made[0]!.id }, headers });
     expect(derived.status(), await derived.text()).toBe(201);
     const session = (await derived.json()) as { id: string; workspaceId: string };
     sessionIds.push(session.id);
@@ -168,7 +166,7 @@ test('关联的团队工作目录里真的能开会话，也能「换个工作�
     sessionIds.push(continued.id);
     expect(continued.workspaceId).toBe(made[1]!.id);
   } finally {
-    // 真模型可能还在这两个目录里。先停会话，删项目被拒就不要拆目录，否则下一用例会看到进程在已删除的 cwd 里退出。
+    // 假 Agent 进程可能还在这两个目录里。先停会话，删项目被拒就不要拆目录。
     for (const id of sessionIds) await page.request.post(`/api/sessions/${id}/interrupt`, { headers }).catch(() => undefined);
     let removed = false;
     for (let i = 0; i < 25 && !removed; i++) {

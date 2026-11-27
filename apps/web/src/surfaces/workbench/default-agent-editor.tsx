@@ -37,6 +37,7 @@ function errorText(error: unknown): string {
 export function DefaultAgentEditor({
   prefix,
   projectId,
+  modelFallback,
   value,
   agents,
   editable,
@@ -47,6 +48,7 @@ export function DefaultAgentEditor({
 }: {
   readonly prefix: string;
   readonly projectId: string;
+  readonly modelFallback: string;
   readonly value: DefaultAgentRef | null | undefined;
   readonly agents: readonly DefaultAgentCatalogEntry[];
   readonly editable: boolean;
@@ -126,7 +128,7 @@ export function DefaultAgentEditor({
             data-testid={`${prefix}-model`}
             list={`${prefix}-models`}
             disabled={!editable || saving}
-            placeholder="留空 = 用运行时默认模型"
+            placeholder="留空则使用默认模型"
             value={draft.model}
             onChange={(event) => setDraft({ ...draft, model: event.target.value })}
           />
@@ -135,7 +137,7 @@ export function DefaultAgentEditor({
               <option key={model} value={model} />
             ))}
           </datalist>
-          <span className="text-[11px] text-tertiary">留空 = 用运行时默认模型</span>
+          <span className="text-[11px] text-tertiary">{modelFallback}</span>
         </label>
         {thinking === null ? null : (
           <label className="grid min-w-0 gap-1 text-meta text-tertiary sm:col-span-2">

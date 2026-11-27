@@ -49,7 +49,7 @@ function useReducedMotion(): boolean {
  * 抽屉的进出、拖拽关闭、Esc、焦点进出都收在这里，Sheet 和内联版共用一套手势阈值。
  * 拖动时直接跟手（关掉 transition），松手要么关、要么弹回。
  */
-function useSheetMotion(onClose: () => void) {
+function useSheetMotion(onClose: () => void, suspended = false) {
   const reduced = useReducedMotion();
   const [entered, setEntered] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -119,6 +119,7 @@ function useSheetMotion(onClose: () => void) {
   }
 
   useEffect(() => {
+    if (suspended) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       requestClose();
@@ -127,7 +128,7 @@ function useSheetMotion(onClose: () => void) {
     return () => window.removeEventListener('keydown', onKey);
     // requestClose 只读 ref 和 setState，闭包不会过期
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [suspended]);
 
   const onPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -228,7 +229,8 @@ export function Sheet({
   zClassName = 'z-50',
   maxHeightClassName = SHEET_MAX_H,
   panelClassName = '',
-  overlay
+  overlay,
+  suspended = false
 }: {
   title: string;
   onClose: () => void;
@@ -244,12 +246,14 @@ export function Sheet({
   panelClassName?: string;
   /** 贴在面板右上角的东西，比如宽弹窗的关闭按钮。 */
   overlay?: ReactNode;
+  /** 被全屏设置遮住时保留抽屉状态，但不和上层抢焦点或 Esc。 */
+  suspended?: boolean;
 }) {
-  const motion = useSheetMotion(onClose);
+  const motion = useSheetMotion(onClose, suspended);
   // 进框和还焦点 useSheetMotion 已经做了；这里只补「Tab 不出框」
   useModalFocus(motion.panelRef, { initial: false, restore: false });
   return createPortal(
-    <div className={`fixed inset-0 overflow-hidden ${zClassName}`}>
+    <div className={`fixed inset-0 overflow-hidden ${zClassName}`} hidden={suspended} inert={suspended}>
       <div
         data-testid="dialog-scrim"
         aria-hidden

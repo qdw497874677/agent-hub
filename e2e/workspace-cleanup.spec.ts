@@ -166,6 +166,8 @@ test('清理：保留有未跟踪文件的、删干净的、squash 合并也删�
       if (width <= 768) await page.getByRole('button', { name: '打开侧栏' }).click();
       // 桌面与移动两份侧栏同时在 DOM 里（lg 隐藏一份），`:visible` 才能点到当前那份。
       await page.locator('button[title="项目设置"]:visible').first().click();
+      if (width <= 768) await page.getByRole('button', { name: '返回设置目录' }).click();
+      await page.getByRole('link', { name: '清理工作目录', exact: true }).click();
       const panel = page.getByTestId('workspace-cleanup');
       await panel.scrollIntoViewIfNeeded();
       await expect(panel.getByTestId('cleanup-item')).toHaveCount(4);
@@ -182,7 +184,7 @@ test('清理：保留有未跟踪文件的、删干净的、squash 合并也删�
       expect(overflow).toBe(false);
       await panel.screenshot({ path: join(SHOTS, `cleanup-panel-${width}.png`) });
       await page.screenshot({ path: join(SHOTS, `settings-${width}.png`) });
-      await page.keyboard.press('Escape');
+      await page.getByRole('button', { name: '返回应用' }).click();
     }
     // 截图耗时长，keep-alive 连接可能已被服务端关闭（ECONNRESET），失败重试一次
     const policy = await page.request.get(`/api/projects/${project.id}/cleanup`).catch(() => page.request.get(`/api/projects/${project.id}/cleanup`));
