@@ -5,6 +5,7 @@ import { AccountMenu } from './auth.tsx';
 import { GlobalNav } from './global-nav.tsx';
 import { NotificationBell } from './market/notifications.tsx';
 import { formatRoute } from './route.ts';
+import { SettingsEntry } from './settings-navigation.tsx';
 
 /**
  * 全站页面骨架（项目工作台以外的页面：记忆、资产、Bot、群、运行记录、工作目录、运营后台）。
@@ -34,6 +35,7 @@ export function AppShell({ children, testId }: { children: ReactNode; testId?: s
         <div className="mt-auto flex flex-col items-center gap-1.5">
           <MessagesEntry />
           <NotificationBell placement="up" />
+          <SettingsEntry />
           <AccountMenu placement="up" />
         </div>
       </aside>
@@ -90,6 +92,7 @@ export function PageHeader({
         <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
           {actions}
           <span className="flex items-center gap-1.5 lg:hidden">
+            <SettingsEntry />
             <AccountMenu />
           </span>
         </div>

@@ -10,6 +10,11 @@ test('空 hash 表示「没指定」，交给调用方决定（记住的上次�
 test('各种路由 format → parse 往返一致', () => {
   const routes: Route[] = [
     { page: 'home' },
+    { page: 'settings', target: null },
+    { page: 'settings', target: { scope: 'personal', section: 'display' } },
+    { page: 'settings', target: { scope: 'project', id: 'p 中文/1', section: 'cleanup' } },
+    { page: 'settings', target: { scope: 'team', id: 't1', section: 'default-models' } },
+    { page: 'settings', target: { scope: 'providers' } },
     { page: 'admin', tab: 'users' },
     { page: 'assets', tab: 'mine', reviewId: null },
     { page: 'assets', tab: 'pending', reviewId: 's1' },
@@ -26,6 +31,12 @@ test('各种路由 format → parse 往返一致', () => {
     const hash = formatRoute(route);
     assert.deepEqual(parseRoute(hash), route);
   }
+});
+
+test('设置深链缺少上下文或分区不识别时回到可用入口，损坏的编码不让页面崩溃', () => {
+  assert.deepEqual(parseRoute('#/settings/personal/unknown'), { page: 'settings', target: null });
+  assert.deepEqual(parseRoute('#/settings/project/p1/unknown'), { page: 'settings', target: { scope: 'project', id: 'p1', section: 'general' } });
+  assert.deepEqual(parseRoute('#/settings/project/%GG'), { page: 'home' });
 });
 
 test('不认识的视图回退列表；没有会话的 focus 也回退列表', () => {

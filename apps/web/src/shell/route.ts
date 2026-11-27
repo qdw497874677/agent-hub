@@ -21,6 +21,7 @@ export const MACHINE_TABS: readonly MachineTab[] = ['overview', 'agent', 'settin
 
 import { imSurface } from '../surfaces/im/manifest.ts';
 import { workbenchSurface } from '../surfaces/workbench/manifest.ts';
+import { formatSettingsRoute, parseSettingsRoute, type SettingsRoute } from './settings-route.ts';
 import type { Surface } from './surface.ts';
 
 /**
@@ -33,6 +34,7 @@ export const SURFACES: readonly Surface[] = [workbenchSurface, imSurface];
 
 export type Route =
   | { readonly page: 'home' }
+  | SettingsRoute
   | { readonly page: 'workspaces' }
   | { readonly page: 'access' }
   | { readonly page: 'machines'; readonly workerId: string | null; readonly tab: MachineTab | null }
@@ -46,6 +48,7 @@ export type Route =
 
 /** 壳自己的页（跨形态的基础设施：工作目录、记忆、资产市场、可观测、运营后台）。 */
 function parseShellRoute(parts: readonly string[]): Route | null {
+  if (parts[0] === 'settings') return parseSettingsRoute(parts);
   if (parts[0] === 'admin') return { page: 'admin', tab: ADMIN_TABS.find((tab) => tab === parts[1]) ?? 'overview' };
   if (parts[0] === 'workspaces') return { page: 'workspaces' };
   if (parts[0] === 'machines') {
@@ -66,7 +69,12 @@ function parseShellRoute(parts: readonly string[]): Route | null {
 }
 
 export function parseRoute(hash: string): Route | null {
-  const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  let parts: string[];
+  try {
+    parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  } catch {
+    return { page: 'home' };
+  }
   if (parts.length === 0) return null;
   for (const surface of SURFACES) {
     const route = surface.parse(parts);
@@ -76,6 +84,7 @@ export function parseRoute(hash: string): Route | null {
 }
 
 export function formatRoute(route: Route): string {
+  if (route.page === 'settings') return formatSettingsRoute(route);
   for (const surface of SURFACES) {
     const href = surface.format(route);
     if (href) return href;

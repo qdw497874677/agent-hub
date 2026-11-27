@@ -4,7 +4,7 @@ import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CanvasDto, ProjectDto, WorkspaceDto, WorkspaceViewDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
-import { DialogShell, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
+import { SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
 import { useAccount } from '../../shell/auth.tsx';
 import { canAdminister } from '../../shell/account-context.ts';
@@ -23,33 +23,20 @@ import { ProjectRepos } from './project-repos.tsx';
 import { projectWorktree } from './worktree-config.ts';
 import { workspaceSummary, workspaceSummaryTone } from './workspace-summary.ts';
 import { projectKeys, workspaceKeys } from '../../shell/query-keys.ts';
+import type { ProjectSettingsSection } from '../../shell/settings-route.ts';
 
 type Pending = { workspace: WorkspaceDto; mode: 'unlink' | 'unregister' | 'delete' | 'force' };
 
 const SOURCE: Record<WorkspaceDto['source'], string> = { linked: '已有目录', created: '新建目录', cloned: '克隆', worktree: 'worktree' };
 
-type ProjectTab = 'project' | 'context' | 'assets' | 'workspaces';
-
-/**
- * 项目设置（workspaces.md §7）：四块话题各占一栏——说明与清理、上下文、资产（仅管理员）、
- * 代码与工作目录（仓库 → 隔离与准备 → 已有工作目录，三段有先后）。
- * 面板都挂着只切显示：在「项目」里改了一半的说明，去看别的 tab 再回来还在。
- */
-export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; onClose: () => void }) {
+export function ProjectSettings({ project, section, teamDefaultsHref, onTeamDefaults }: { project: ProjectDto; section: ProjectSettingsSection; teamDefaultsHref?: string; onTeamDefaults?: () => void }) {
   const workers = useWorkers();
   const account = useAccount();
   const isAdmin = account?.clusterAdmin === true;
   const list = useQuery({ queryKey: ['workspaces', project.id], queryFn: () => api.workspaces(project.id) });
-  const [tab, setTab] = useState<ProjectTab>('project');
   const [pending, setPending] = useState<Pending | null>(null);
-  const tabs: readonly { readonly id: ProjectTab; readonly label: string }[] = [
-    { id: 'project', label: '项目' },
-    { id: 'context', label: '上下文' },
-    ...(isAdmin ? [{ id: 'assets' as const, label: '资产' }] : []),
-    { id: 'workspaces', label: '代码与工作目录' }
-  ];
   // 隐藏用 class 而不是 hidden 属性：面板里自己的 flex/grid 类不会把它顶回可见。
-  const panel = (id: ProjectTab) => (tab === id ? '' : 'hidden');
+  const panel = (id: ProjectSettingsSection) => (section === id ? '' : 'hidden');
   const groups = new Map<string, WorkspaceViewDto[]>();
   let spaces = 0;
   for (const view of list.data ?? []) {
@@ -67,38 +54,16 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
   });
   const summaryTone = workspaceSummaryTone({ repos: (project.repos ?? []).length });
   return (
-    <DialogShell title="项目设置" onClose={onClose}>
+    <>
       <h2 className="mb-3 text-body text-primary">项目设置 · {project.name}</h2>
-      <div role="tablist" aria-label="项目设置" className="mb-3 flex gap-1 overflow-x-auto border-b border-hair">
-        {tabs.map((item, index) => (
-          <button
-            key={item.id}
-            id={`project-tab-${item.id}`}
-            role="tab"
-            aria-selected={tab === item.id}
-            tabIndex={tab === item.id ? 0 : -1}
-            className={`-mb-px shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sub ${
-              tab === item.id ? 'border-fg text-primary' : 'border-transparent text-tertiary hover:text-secondary'
-            }`}
-            onClick={() => setTab(item.id)}
-            onKeyDown={(event) => {
-              if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
-              const step = event.key === 'ArrowRight' ? 1 : -1;
-              const next = tabs[(index + step + tabs.length) % tabs.length];
-              if (!next) return;
-              setTab(next.id);
-              (event.currentTarget.parentElement?.querySelector(`#project-tab-${next.id}`) as HTMLElement | null)?.focus();
-            }}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
       <div className="min-h-[280px]">
-        <div className={panel('project')}>
+        <div className={panel('general')}>
           <DescriptionEditor project={project} />
-          <WorkspaceCleanup projectId={project.id} />
           <ProjectMessagingTrust projectId={project.id} />
+        </div>
+        <div className={panel('defaults')}>
+          <ProjectDefaultAgentSettings project={project} teamDefaultsHref={teamDefaultsHref} onTeamDefaults={onTeamDefaults} />
+          <ProjectAssetSets project={project} />
         </div>
         <div className={panel('context')}>
           <ProjectContext projectId={project.id} canEdit />
@@ -110,7 +75,11 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
             <BuiltinAssets projectId={project.id} />
           </div>
         ) : null}
-        <div className={panel('workspaces')} data-testid="project-code-spaces">
+        <div className={panel('cleanup')}>
+          <h3 className="mb-1 text-sub text-primary">清理工作目录</h3>
+          <WorkspaceCleanup projectId={project.id} />
+        </div>
+        <div className={panel('code')} data-testid="project-code-spaces">
           {/* 这页回答三件事：代码从哪来、目录怎么开、现在有哪些工作目录。答案先说在顶上。 */}
           <p
             data-testid="workspace-summary"
@@ -123,8 +92,6 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
           <ProjectRepos project={project} />
           <WorktreeSettings project={project} />
           <ProjectChecksSettings project={project} />
-          <ProjectDefaultAgentSettings project={project} />
-          <ProjectAssetSets project={project} />
           <section data-testid="project-spaces" className="mt-5 border-t border-hair pt-4">
             <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-sub text-primary">
               已有工作目录
@@ -153,7 +120,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
           </section>
         </div>
       </div>
-    </DialogShell>
+    </>
   );
 }
 
@@ -251,7 +218,7 @@ function ConfirmRemove({ pending, projectId, onDone }: { pending: Pending; proje
  * 运行时的可调项（思考强度）只有画布的 agent 目录里有，和画布共用缓存；
  * 保存后把画布里的 project 就地换掉，别让别处还看着旧值。
  */
-function ProjectDefaultAgentSettings({ project }: { project: ProjectDto }) {
+function ProjectDefaultAgentSettings({ project, teamDefaultsHref, onTeamDefaults }: { project: ProjectDto; teamDefaultsHref?: string; onTeamDefaults?: () => void }) {
   const account = useAccount();
   const editable = canAdminister(account);
   const queryClient = useQueryClient();
@@ -282,12 +249,18 @@ function ProjectDefaultAgentSettings({ project }: { project: ProjectDto }) {
         <span className="text-meta text-tertiary">新会话没选就用它</span>
       </h3>
       <p className="mb-2 text-meta text-tertiary">
-        新会话没选 Agent 时用它。回落顺序：会话里选的 &gt; 任务上的设置（任务详情里改） &gt; 项目这里的设置 &gt; 团队默认模型 &gt;
-        运行时自己的默认；任务上的设置会覆盖项目。模型留空 = 用运行时默认模型。
+        新会话没选 Agent 时用它。任务有自己的默认 Agent 时，优先用任务的设置。
       </p>
+      {teamDefaultsHref ? <a href={teamDefaultsHref} className="text-meta text-link underline-offset-2 hover:underline" onClick={(event) => {
+        if (onTeamDefaults && !event.defaultPrevented && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+          event.preventDefault();
+          onTeamDefaults();
+        }
+      }}>查看团队默认模型</a> : null}
       <DefaultAgentEditor
         prefix="pda"
         projectId={project.id}
+        modelFallback="留空时，先用该运行时的团队默认模型；没设则用运行时默认。"
         value={current}
         agents={canvas.data?.agents ?? []}
         editable={editable}

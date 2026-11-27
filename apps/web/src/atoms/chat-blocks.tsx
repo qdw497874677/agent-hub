@@ -3,7 +3,6 @@ import { AuthorTag } from './author.tsx';
 import { ProvenanceView } from './message-provenance-view.tsx';
 import { projectMessage } from './message-provenance.ts';
 
-/** 会话通信 P1e：agent 间消息在时间线里画成卡片（谁发的、类型、回复状态、正文），正文仍是不可信数据。 */
 /**
  * agent 明确用提问工具问的那一句。只认工具名和输入里的字段，不从回复语气、
  * 也不从后面某条用户消息反推答案——后者可能只是另一件事。
@@ -62,12 +61,7 @@ function AgentQuestion({ block }: { block: Extract<Block, { kind: 'tool' }> }) {
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { api, attachmentUrl } from '../shell/api.ts';
-import { useAccount } from '../shell/auth.tsx';
 import {
-  applyContrast,
-  DEFAULT_DISPLAY,
-  displayKey,
-  parseDisplay,
   toolOpenByDefault,
   type ContrastDisplay,
   type DisplaySettings,
@@ -96,42 +90,6 @@ import { FOLLOW_SLACK, RISE_EASING, RISE_MS, THINKING_MAX, edgeMask, hiddenBelow
  * 用户气泡、markdown 回复、可折叠的思考与工具卡片、行内错误。
  * 只管「怎么画」，数据来自 live-core 折好的 Block。
  */
-
-/** 显示设置：localStorage 按账号分键，改了立刻生效、刷新后还在。 */
-export function useDisplaySettings(): [DisplaySettings, (patch: Partial<DisplaySettings>) => void] {
-  const account = useAccount();
-  const key = displayKey(account?.id ?? null);
-  const [settings, setSettings] = useState<DisplaySettings>(() => readDisplay(key));
-  useEffect(() => setSettings(readDisplay(key)), [key]);
-  // 对比度手开关落在 <html data-contrast> 上：跟随系统时把属性删掉，
-  // 让 styles.css 的 @media (prefers-contrast: more) 继续生效。
-  useEffect(() => {
-    const root = document.documentElement;
-    if (applyContrast(settings) === 'more') root.dataset.contrast = 'more';
-    else delete root.dataset.contrast;
-  }, [settings]);
-  return [
-    settings,
-    (patch) =>
-      setSettings((current) => {
-        const next = { ...current, ...patch };
-        try {
-          localStorage.setItem(key, JSON.stringify(next));
-        } catch {
-          // 隐私模式写不进去：这次会话里照样生效。
-        }
-        return next;
-      })
-  ];
-}
-
-function readDisplay(key: string): DisplaySettings {
-  try {
-    return parseDisplay(localStorage.getItem(key));
-  } catch {
-    return DEFAULT_DISPLAY;
-  }
-}
 
 function useDismiss(open: boolean, close: () => void) {
   const root = useRef<HTMLDivElement | null>(null);
@@ -288,13 +246,13 @@ function Toggle({ label, hint, checked, disabled, onChange }: { label: string; h
 }
 
 /** 「显示」菜单：对应 OpenCode 的 Show reasoning summaries / Expand shell・edit tool parts / compact。 */
-export function DisplaySettingsPanel({ settings, onChange }: { settings: DisplaySettings; onChange: (patch: Partial<DisplaySettings>) => void }) {
+export function DisplaySettingsPanel({ settings, onChange, showTheme = true }: { settings: DisplaySettings; onChange: (patch: Partial<DisplaySettings>) => void; showTheme?: boolean }) {
   return (
     <div className="py-1" data-testid="display-settings">
       <h3 className="px-3 pb-1 pt-1 text-meta font-medium text-tertiary">常用</h3>
-      <div className="px-3 py-1.5">
+      {showTheme ? <div className="px-3 py-1.5">
         <ThemeSwitch />
-      </div>
+      </div> : null}
       <Segmented<ToolDisplay>
         label="工具调用"
         value={settings.tools}

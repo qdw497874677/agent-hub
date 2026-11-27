@@ -1,5 +1,6 @@
 import { MessagesEntry } from '../../atoms/messages-entry.tsx';
 import { AccountMenu } from '../../shell/auth.tsx';
+import { SettingsEntry } from '../../shell/settings-navigation.tsx';
 import { NotificationBell } from '../../shell/market/notifications.tsx';
 import { AttentionBadge, AttentionInbox } from '../../atoms/attention.tsx';
 import { TaskQueue } from './task-queue.tsx';
@@ -290,6 +291,7 @@ export function HomePage({
           />
           <MessagesEntry />
           <NotificationBell />
+          <SettingsEntry />
           <AccountMenu />
         </div>
       </header>

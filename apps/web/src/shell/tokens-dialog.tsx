@@ -43,6 +43,14 @@ const BTN = 'rounded-sm border border-hair px-3 py-2 text-sub text-secondary hov
 
 /** 访问令牌：给脚本、CI、外部 agent 调开放 API / MCP 用。新建、列表、吊销；明文只显示一次。 */
 export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => void }) {
+  return <DialogShell title="访问令牌" onClose={onClose}><TokenSettingsBody me={me} onClose={onClose} /></DialogShell>;
+}
+
+export function TokenSettings({ me }: { me: AccountDto }) {
+  return <TokenSettingsBody me={me} />;
+}
+
+function TokenSettingsBody({ me, onClose }: { me: AccountDto; onClose?: () => void }) {
   const queryClient = useQueryClient();
   const list = useQuery({ queryKey: ['api-tokens'], queryFn: tokensApi.list });
   const canService = me.role === 'owner' || me.clusterAdmin;
@@ -75,7 +83,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
   const tokens: ApiTokenDto[] = list.data ?? [];
   const active = tokens.filter((t) => t.revokedAt === null);
   return (
-    <DialogShell title="访问令牌" onClose={onClose}>
+    <>
       <p className="text-sub text-primary">访问令牌</p>
       <p className="mt-1 text-meta text-tertiary" title="请求头 Authorization: Bearer ahp_…，可调开放 API 或 MCP；永远用不了本机机器">
         用于脚本和{' '}
@@ -248,6 +256,6 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
           <McpGuidePanel />
         </details>
       )}
-    </DialogShell>
+    </>
   );
 }

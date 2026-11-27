@@ -27,10 +27,11 @@ async function openSettings(page: Page, projectId: string, mobile: boolean) {
   if (mobile) {
     await page.locator('header').filter({ has: page.locator('button[aria-label="打开侧栏"]') }).getByRole('button', { name: '打开侧栏' }).click();
     await page.getByTestId('nav-sheet').getByRole('button', { name: '项目设置' }).click();
+    await page.getByRole('button', { name: '返回设置目录' }).click();
   } else {
     await page.getByTitle('项目设置').first().click();
   }
-  await page.getByRole('tab', { name: '代码与工作目录' }).click();
+  await page.getByTestId('settings-surface').getByRole('link', { name: '代码与工作目录', exact: true }).click();
   await expect(page.getByTestId('project-repos').getByTestId('repo-row')).toHaveCount(1);
 }
 

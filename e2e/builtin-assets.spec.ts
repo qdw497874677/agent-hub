@@ -60,7 +60,8 @@ async function openAssetsTab(page: Page, projectId: string) {
   // 窄屏侧栏是收起的，设置入口在里面；桌面与移动两份侧栏同时在 DOM 里，`:visible` 才点得到当前那份
   if ((page.viewportSize()?.width ?? 1280) <= 768) await page.getByRole('button', { name: '打开侧栏' }).click();
   await page.locator('button[title="项目设置"]:visible').first().click();
-  await page.getByRole('tab', { name: '资产' }).click();
+  if ((page.viewportSize()?.width ?? 1280) <= 768) await page.getByRole('button', { name: '返回设置目录' }).click();
+  await page.getByTestId('settings-surface').getByRole('link', { name: '资产', exact: true }).click();
   await expect(page.getByTestId('builtin-assets')).toBeVisible();
 }
 

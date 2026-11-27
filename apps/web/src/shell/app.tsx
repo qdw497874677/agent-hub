@@ -25,14 +25,14 @@ import { MessagesPage } from '../surfaces/im/messages.tsx';
 import { BotsPage } from '../surfaces/im/bots.tsx';
 import { ObservePage } from './observe.tsx';
 import { MarketPage } from './market/page.tsx';
-import { modKeyLabel, useNarrow } from './device.ts';
+import { modKeyLabel, useNarrow, useWide } from './device.ts';
 import { Sheet } from './dialog-shell.tsx';
 import { TaskDetail } from '../surfaces/workbench/task-detail.tsx';
 import { UndoToast } from '../atoms/undo-toast.tsx';
 import { splitArchivedTasks } from '../atoms/task-display.ts';
 import { patchCanvasTask } from './confirmed-patch.ts';
 import { clearOptionFeedback, optionFeedbackIsCurrent, setOptionFeedback } from '../atoms/option-feedback.tsx';
-import type { View } from './route.ts';
+import type { Route, View } from './route.ts';
 import { useAccount } from './account-context.ts';
 import { rememberPaletteRecent } from '../surfaces/workbench/palette-recent.ts';
 import { NewSessionWithModelContext } from './new-session-with-model.ts';
@@ -40,12 +40,29 @@ import { NewModelSessionDialog } from './new-model-session-dialog.tsx';
 import { WorkdirTabs } from '../surfaces/workbench/workdir-tabs.tsx';
 import { eligibleWorkdir } from '../surfaces/workbench/workdir-model.ts';
 import { useWorkspaceViews } from '../surfaces/workbench/workspace-chooser.tsx';
+import { settingsBackgroundRoute, useRestoreSettingsFocus } from './settings-navigation.tsx';
+import { SettingsHost } from './settings-host.tsx';
+import { DisplayPreferences } from '../atoms/display-preferences.tsx';
 
 const LAST_PROJECT = 'agent-hub:last-project';
 
 /** 运营后台与工作台互不相干：分开渲染，各自的数据各自拉。 */
 export function App() {
   const [route] = useRoute();
+  const settings = route?.page === 'settings' ? route : null;
+  const background = settings ? settingsBackgroundRoute() : route;
+  useRestoreSettingsFocus(settings !== null);
+  return (
+    <DisplayPreferences>
+      <div className="h-full" inert={settings !== null}>
+        <AppPage route={background} settingsOpen={settings !== null} />
+      </div>
+      {settings ? <SettingsHost route={settings} projectId={background?.page === 'project' ? background.projectId : null} /> : null}
+    </DisplayPreferences>
+  );
+}
+
+function AppPage({ route, settingsOpen }: { route: Route | null; settingsOpen: boolean }) {
   if (route?.page === 'machines') return <MachinesPage workerId={route.workerId} tab={route.tab} />;
   if (route?.page === 'workspaces') return <TeamWorkspacesPage />;
   if (route?.page === 'memory') return <MemoryPage scope={route.scope} />;
@@ -57,7 +74,7 @@ export function App() {
   // 「机器」以前在运营后台里（#/admin/workers）。老书签直接换到新家，且要赶在管理员门禁前面，
   // 否则非管理员会先撞上「只有 hub 管理员能进运营后台」。
   if (route?.page === 'admin' && route.tab === 'workers') return <RedirectToMachines />;
-  return route?.page === 'admin' ? <AdminPage tab={route.tab} /> : <Workspace />;
+  return route?.page === 'admin' ? <AdminPage tab={route.tab} /> : <Workspace route={route} settingsOpen={settingsOpen} />;
 }
 
 function RedirectToMachines() {
@@ -68,11 +85,12 @@ function RedirectToMachines() {
   return null;
 }
 
-function Workspace() {
-  const [route, navigate] = useRoute();
+function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen: boolean }) {
+  const [, navigate] = useRoute();
   const account = useAccount();
   // 项目默认落在列表：画布是刻意进去看的全局关系，不是每次打开项目的必经页。
   const narrow = useNarrow();
+  const wide = useWide();
   const homeView: View = 'list';
   const [newTask, setNewTask] = useState(false);
   const [createdTask, setCreatedTask] = useState<TaskDto | null>(null);
@@ -103,6 +121,8 @@ function Workspace() {
   const projectRoute = route?.page === 'project' ? route : null;
   // Workspace 在首页和项目之间复用；离开项目或切换项目时不要把旧抽屉带回来。
   useEffect(() => { setSidebarOpen(false); }, [projectRoute?.projectId]);
+  // 切到有固定侧栏的宽屏时，不能让手机抽屉挡住桌面入口。
+  useEffect(() => { if (wide) setSidebarOpen(false); }, [wide]);
   const project = useMemo(
     () => (projectRoute ? (projects.data ?? []).find((candidate) => candidate.id === projectRoute.projectId) ?? null : null),
     [projectRoute, projects.data]
@@ -116,7 +136,7 @@ function Workspace() {
   const workdirWorkspace = workdirView && project && eligibleWorkdir(workdirView.workspace, workdirView.ownerProjectId, project.id) ? workdirView.workspace : null;
 
   useEffect(() => {
-    if (!projects.data) return;
+    if (settingsOpen || !projects.data) return;
     if (route === null) {
       // 只认「上次打开的那个」。没有就停在首页——不替用户挑一个看起来像的项目。
       const remembered = projects.data.find((candidate) => candidate.id === localStorage.getItem(LAST_PROJECT));
@@ -128,7 +148,7 @@ function Workspace() {
       // 刚建好的项目可能还没进缓存：等这轮拉取结束再判「不存在」，否则会被踢回首页。
       navigate({ page: 'home' }, 'replace');
     }
-  }, [route, projectRoute, project, projects.data, projects.isFetching, navigate, homeView]);
+  }, [route, projectRoute, project, projects.data, projects.isFetching, navigate, homeView, settingsOpen]);
 
   const goProject = useCallback(
     (picked: ProjectDto, next: View, sessionId: string | null, state?: unknown) => {
@@ -474,6 +494,7 @@ function Workspace() {
   }, [canvas.data?.sessions]);
 
   useEffect(() => {
+    if (settingsOpen) return;
     function onKeyDown(event: KeyboardEvent): void {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -482,7 +503,7 @@ function Workspace() {
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [settingsOpen]);
 
   const jump = useCallback(
     (taskId: string, sessionId: string | null) => {
@@ -554,6 +575,7 @@ function Workspace() {
   const sidebar = (onClose?: () => void) => (
     <ProjectSidebar
       project={project}
+      shortcutsDisabled={settingsOpen}
       projects={projects.data ?? []}
       selectedId={onClose && view === 'canvas' ? windowFocus : selected}
       canvas={display?.canvas ?? null}
@@ -605,8 +627,8 @@ function Workspace() {
       <div className="hidden h-full lg:flex">{sidebar()}</div>
       {/* 手机/平板侧栏走同一个抽屉：Esc、焦点陷阱、外部点按关闭、关掉把焦点还给汉堡按钮。
           以前是个普通 div，键盘用户按 Esc 关不掉，Tab 还能跑到被遮住的页面里。 */}
-      {sidebarOpen ? (
-        <Sheet title="项目与导航" testId="nav-sheet" scroll={false} onClose={() => setSidebarOpen(false)}>
+      {!wide && sidebarOpen ? (
+        <Sheet title="项目与导航" testId="nav-sheet" scroll={false} suspended={settingsOpen} onClose={() => setSidebarOpen(false)}>
           {sidebar(() => setSidebarOpen(false))}
         </Sheet>
       ) : null}

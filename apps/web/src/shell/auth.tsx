@@ -9,6 +9,7 @@ import { TokensDialog } from './tokens-dialog.tsx';
 import { TeamGrants, TeamRoles, roleName } from './team-roles.tsx';
 import { AgentDefaultsSection } from './agent-defaults.tsx';
 import { GitHostTokenPanel } from '../surfaces/workbench/git-dialog.tsx';
+import { SettingsEntry } from './settings-navigation.tsx';
 
 /**
  * 登录闸门：没登录只渲染登录/注册页；登录后把当前账号放进 context。
@@ -397,6 +398,10 @@ const when = (ms: number) => new Date(ms).toLocaleString('zh-CN', { month: 'nume
 
 /** 我的登录设备：逐台登出，或一键登出其他所有设备。 */
 function DevicesDialog({ onClose }: { onClose: () => void }) {
+  return <DialogShell title="登录设备" onClose={onClose}><DeviceSettings /></DialogShell>;
+}
+
+export function DeviceSettings() {
   const queryClient = useQueryClient();
   const list = useQuery({ queryKey: ['auth', 'logins'], queryFn: authApi.logins });
   const afterRevoke = async (result?: { current?: boolean }) => {
@@ -411,7 +416,7 @@ function DevicesDialog({ onClose }: { onClose: () => void }) {
   const others = useMutation({ mutationFn: authApi.revokeOtherLogins, onSuccess: () => afterRevoke() });
   const devices: LoginDeviceDto[] = list.data ?? [];
   return (
-    <DialogShell title="登录设备" onClose={onClose}>
+    <>
       <p className="text-sub text-primary">登录设备</p>
       {list.isPending ? (
         <p className="mt-4 text-meta text-tertiary">加载中…</p>
@@ -447,7 +452,7 @@ function DevicesDialog({ onClose }: { onClose: () => void }) {
       >
         {others.isSuccess && devices.length <= 1 ? '其他设备都已登出' : '登出其他所有设备'}
       </button>
-    </DialogShell>
+    </>
   );
 }
 
@@ -493,6 +498,7 @@ export function AccountMenu({ placement = 'down' }: { placement?: 'down' | 'up' 
           </div>
 
           <div className="mt-3 border-t border-hair pt-1.5">
+            <SettingsEntry label onOpen={() => setOpen(false)} className={`${MENU_ROW} flex items-center gap-2`} />
             <p className="px-2 pb-0.5 text-meta text-tertiary">个人</p>
             <button
               className={MENU_ROW}
@@ -578,6 +584,10 @@ const SMALL_DANGER = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-meta
 
 /** 我的团队：人人能看成员；团队 owner（和 hub 管理员）能邀请、撤销邀请、改角色、删人。 */
 function TeamDialog({ onClose }: { onClose: () => void }) {
+  return <DialogShell title="我的团队" onClose={onClose}><TeamSettings /></DialogShell>;
+}
+
+export function TeamSettings({ modelsOnly = false, hideDefaults = false }: { modelsOnly?: boolean; hideDefaults?: boolean }) {
   const queryClient = useQueryClient();
   const me = useAccount();
   const team = useQuery({ queryKey: ['team'], queryFn: teamApi.team });
@@ -609,9 +619,9 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
   const data = team.data;
   const full = data?.seatsLeft !== null && data?.seatsLeft !== undefined && data.seatsLeft <= 0;
   return (
-    <DialogShell title="我的团队" onClose={onClose}>
-      <p className="text-sub text-primary">{data?.name ?? '我的团队'}</p>
-      {data?.seatsLeft !== null && data?.seatsLeft !== undefined ? (
+    <>
+      {!modelsOnly && <p className="text-sub text-primary">{data?.name ?? '我的团队'}</p>}
+      {!modelsOnly && data?.seatsLeft !== null && data?.seatsLeft !== undefined ? (
         <p className="mt-1 text-meta text-tertiary">剩余名额 {Math.max(0, data.seatsLeft)}</p>
       ) : null}
       {team.isPending ? (
@@ -620,6 +630,9 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
         <p role="alert" className="mt-4 text-meta text-rust">{message(team.error)}</p>
       ) : (
         <>
+          {/* 人人能看（成员的输入框只读）；保存按 canManage 收在区块里 */}
+          {!hideDefaults && <AgentDefaultsSection canManage={data!.canManage} />}
+          {!modelsOnly && <>
           <ul className="mt-3 flex max-h-[40dvh] flex-col gap-2 overflow-y-auto">
             {data!.members.map((member) => (
               <li key={member.id} data-testid="team-member" className="flex items-center gap-2 rounded-sm border border-hair bg-card px-3 py-2">
@@ -661,8 +674,6 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
               </li>
             ))}
           </ul>
-          {/* 人人能看（成员的输入框只读）；保存按 canManage 收在区块里 */}
-          <AgentDefaultsSection canManage={data!.canManage} />
           {data!.canManage && (
             <>
               {data!.invites.length > 0 && (
@@ -747,14 +758,19 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
               </div>
             </details>
           )}
+          </>}
         </>
       )}
-    </DialogShell>
+    </>
   );
 }
 
 /** 个人设置：改显示名；改密码要原密码，改完其他设备都会退出。 */
 function SettingsDialog({ onClose }: { onClose: () => void }) {
+  return <DialogShell title="个人设置" onClose={onClose}><ProfileSettings /></DialogShell>;
+}
+
+export function ProfileSettings() {
   const queryClient = useQueryClient();
   const me = useAccount();
   const [name, setName] = useState(me?.displayName ?? '');
@@ -776,7 +792,7 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
   });
   const mismatch = again !== '' && again !== newPassword;
   return (
-    <DialogShell title="个人设置" onClose={onClose}>
+    <>
       <p className="text-sub text-primary">个人设置</p>
       <form
         className="mt-3 flex flex-col gap-2"
@@ -814,7 +830,7 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
           {password.isPending ? '请稍候…' : '修改密码'}
         </button>
       </form>
-    </DialogShell>
+    </>
   );
 }
 

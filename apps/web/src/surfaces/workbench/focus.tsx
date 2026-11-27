@@ -10,7 +10,8 @@ import { AttentionAutoAck } from '../../atoms/attention.tsx';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
 import { api, sessionGroupId, sessionStartupApi } from '../../shell/api.ts';
-import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, questionOf, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
+import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, questionOf } from '../../atoms/chat-blocks.tsx';
+import { useDisplaySettings } from '../../atoms/display-preferences.tsx';
 import { groupTimeline } from '../../atoms/timeline-groups.ts';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
 import { Composer } from '../../atoms/composer.tsx';
@@ -229,7 +230,7 @@ export function FocusView({
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'f') return;
       if (isTypingTarget(event.target) || tab !== 'chat') return;
       const host = viewRef.current;
-      if (host === null) return;
+      if (host === null || host.closest('[inert]')) return;
       const owner = event.target instanceof Node ? event.target : document.activeElement;
       const inside = owner !== null && host.contains(owner);
       // 焦点还挂在 body 上（刚进页面、刚点过空白处）也算：这时没有「别人的输入框」要保护，

@@ -27,7 +27,8 @@ test('会后提炼：默认规则版；乱填的模型被拒；项目设置里�
   await page.goto(`/#/p/${project.id}`);
   await page.getByRole('button', { name: '打开侧栏' }).click();
   await page.getByRole('button', { name: '项目设置' }).click();
-  await page.getByRole('tab', { name: '上下文' }).click();
+  await page.getByRole('button', { name: '返回设置目录' }).click();
+  await page.getByRole('link', { name: '上下文', exact: true }).click();
   const box = page.getByTestId('project-distill');
   await expect(box.getByTestId('project-distill-model')).toHaveValue('');
   await expect(box.getByTestId('project-distill-model')).toContainText('规则版');
