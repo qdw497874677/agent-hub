@@ -3,21 +3,19 @@ import type { Hono } from 'hono';
 import type { Schedules } from './schedules.ts';
 import {
   authorizeSession,
-  createPreviewLinkUseCase,
   markWorkerPreviewsOfflineUseCase,
   matchPreviewShare,
   parsePreviewPortRange,
   projectOfSession,
-  systemSubject,
   type Deps,
   type EnrollmentDeps,
   type PreviewLink,
   type PreviewLinkId,
-  type SessionId,
+  type WorkspaceId,
   type Subject
 } from '@agent-hub/domain';
 import type { SqliteStore } from '@agent-hub/storage-sqlite';
-import { autoLinkCandidates, type WorkspaceOwner } from './preview-autolink.ts';
+import { autoLinkCandidates, type AutoLinkCandidate, type WorkspaceOwner } from './preview-autolink.ts';
 import { createPreviewChannel, type PreviewChannel } from './preview-channel.ts';
 import { createPreviewProxy, type PreviewProxy } from './preview-proxy.ts';
 import { createPreviewPrefix } from './preview-prefix.ts';
@@ -44,6 +42,7 @@ export interface PreviewWiring {
   readonly ports: { readonly from: number; readonly to: number } | null;
   readonly channel: PreviewChannel | null;
   readonly proxy: PreviewProxy | null;
+  candidates(sessionId: string): Promise<readonly (AutoLinkCandidate & { root: string; workspaceId: WorkspaceId })[]>;
   /** 启动时对齐一次端口，之后每 30 秒一次。 */
   start(): void;
   reconcile(): Promise<void>;
@@ -115,35 +114,6 @@ export function wirePreviews(input: PreviewWiringInput): PreviewWiring {
           if (changed > 0) previewLog(`端口状态更新：${changed} 条（${workerId}）`);
         })().catch((failure: unknown) => previewLog(`同步端口状态失败：${(failure as Error).message}`));
       },
-      // P2：终端输出里认出端口就自动挂一条预览（幂等、上限与端口分配都走领域用例）。
-      onDetected: (workerId, event) => {
-        void (async () => {
-          if (previewProxy === null || previewPorts === null) return;
-          const created = await createPreviewLinkUseCase(
-            {
-              projects: deps.projects,
-              tasks: deps.tasks,
-              sessions: deps.sessions,
-              workspaces: deps.workspaces,
-              workspaceGroups: deps.workspaceGroups,
-              access: deps.access,
-              previewLinks: store.previewLinks,
-              previewPorts,
-              now
-            },
-            systemSubject('preview.detected'),
-            { sessionId: event.sessionId, port: event.port, source: 'detected', ...(event.label === undefined ? {} : { label: event.label }) }
-          );
-          if (!created.ok) {
-            // 「最多 8 条」「端口用完了」这类是正常上限，不打扰日志。
-            if (created.error.code !== 'conflict') previewLog(`自动挂预览失败：${created.error.message}`);
-            return;
-          }
-          if (created.value.workerId !== workerId) return;
-          await previewProxy.listen(created.value);
-          previewLog(`自动发现端口 ${created.value.port}（会话 ${event.sessionId.slice(0, 8)}）`);
-        })().catch((failure: unknown) => previewLog(`自动挂预览失败：${(failure as Error).message}`));
-      },
       onWorkerDown: (workerId) => {
         void markWorkerPreviewsOfflineUseCase({ previewLinks: store.previewLinks }, workerId)
           .then((changed) => {
@@ -177,29 +147,28 @@ export function wirePreviews(input: PreviewWiringInput): PreviewWiring {
     });
   }
 
-  const autoDiscoverPreviews = async (): Promise<void> => {
-    if (previewProxy === null || previewPorts === null) return;
-    if (readEnv('HUB_PREVIEW_AUTO') === '0') return;
-    const links = await store.previewLinks.listAll();
+  const candidates = async (sessionId: string): Promise<readonly (AutoLinkCandidate & { root: string; workspaceId: WorkspaceId })[]> => {
+    if (previewProxy === null || previewPorts === null) return [];
     const spaces = [...(await store.workspaces.temporaries()), ...(await store.workspaces.longLived())];
     const owners: WorkspaceOwner[] = [];
     const allowed = new Set<string>();
     const workerIds = new Set<string>();
+    const ownerWorkspace = new Map<string, WorkspaceId>();
     for (const space of spaces) {
       if (space.workerId === null) continue;
       for (const session of await store.sessions.listByWorkspace(space.id)) {
         if (session.status === 'failed') continue;
-        if (session.workerId !== space.workerId) continue;
+        if (session.workerId !== space.workerId || session.workspaceId !== space.id) continue;
         owners.push({ sessionId: session.id, workerId: space.workerId, path: space.path });
+        if (!session.groupId) ownerWorkspace.set(session.id, space.id);
         allowed.add(session.id);
         workerIds.add(space.workerId);
       }
     }
-    if (owners.length === 0) {
-      if (readEnv('HUB_PREVIEW_DEBUG') === '1') log(`预览自动发现：没有可挂的会话（空间 ${spaces.length} 个）`);
-      return;
-    }
+    const relevantWorkers = new Set(owners.filter((owner) => owner.sessionId === sessionId).map((owner) => owner.workerId));
+    const result: (AutoLinkCandidate & { root: string; workspaceId: WorkspaceId })[] = [];
     for (const workerId of workerIds) {
+      if (!relevantWorkers.has(workerId)) continue;
       const listed = await deps.gateway.processes?.(workerId);
       if (listed === undefined) {
         if (readEnv('HUB_PREVIEW_DEBUG') === '1') log('预览自动发现：网关没有提供进程清单');
@@ -212,42 +181,24 @@ export function wirePreviews(input: PreviewWiringInput): PreviewWiring {
       // 只拿这台机器上的会话工作空间去匹配：路径前缀跨机器没有意义。
       const workerOwners = owners.filter((entry) => entry.workerId === workerId);
       if (readEnv('HUB_PREVIEW_DEBUG') === '1') log(`预览自动发现：${workerId} ${listed.value.length} 个进程，会话 ${workerOwners.length} 条`);
-      const candidates = autoLinkCandidates(
+      const found = autoLinkCandidates(
         workerId,
         listed.value.map((process) => ({ pid: process.pid, cwd: process.cwd, ports: process.ports })),
         workerOwners,
-        { links, allowedSessions: allowed }
+        { allowedSessions: allowed, perSessionMax: 256 }
       );
-      for (const candidate of candidates) {
-        const created = await createPreviewLinkUseCase(
-          {
-            projects: deps.projects,
-            tasks: deps.tasks,
-            sessions: deps.sessions,
-            workspaces: deps.workspaces,
-            workspaceGroups: deps.workspaceGroups,
-            access: deps.access,
-            previewLinks: store.previewLinks,
-            previewPorts,
-            now
-          },
-          systemSubject('preview.detected'),
-          { sessionId: candidate.sessionId as SessionId, port: candidate.port, source: 'detected' }
-        );
-        if (!created.ok) {
-          if (created.error.code !== 'conflict') log(`按进程自动挂预览失败：${created.error.message}`);
-          continue;
-        }
-        await previewProxy.listen(created.value);
-        log(`按进程自动挂了预览：${candidate.sessionId} 端口 ${candidate.port}`);
+      for (const entry of found.filter((item) => item.sessionId === sessionId)) {
+        const roots = new Set(workerOwners.filter((owner) => owner.sessionId === entry.sessionId).map((owner) => owner.path));
+        const workspaceId = ownerWorkspace.get(entry.sessionId);
+        if (roots.size === 1 && workspaceId) result.push({ ...entry, root: [...roots][0]!, workspaceId });
       }
     }
+    return result;
   };
 
   /** 预览端口和库里的链接对齐：新加的开监听、删掉的关掉。启动时一次，之后每 30 秒一次。 */
   const reconcile = async (): Promise<void> => {
     if (previewProxy === null) return;
-    await autoDiscoverPreviews().catch((failure: unknown) => log(`自动发现预览失败：${(failure as Error).message}`));
     const links = await store.previewLinks.listAll();
     const wanted = new Set<string>(links.map((link) => link.id));
     for (const listening of previewProxy.listening()) {
@@ -261,6 +212,7 @@ export function wirePreviews(input: PreviewWiringInput): PreviewWiring {
 
   return {
     ports: previewPorts,
+    candidates,
     get channel() { return previewChannel; },
     get proxy() { return previewProxy; },
     reconcile,

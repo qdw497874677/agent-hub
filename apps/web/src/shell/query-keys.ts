@@ -94,6 +94,7 @@ export const sessionKeys = {
   mcp: (sessionId: string) => ['session', sessionId, 'mcp'] as const,
   /** 预览链接（docs/design/preview.md §4）：只有这条会话知道，增删后整体失效。 */
   previews: (sessionId: string) => ['session', sessionId, 'previews'] as const,
+  previewWorkflow: (sessionId: string) => ['session', sessionId, 'preview-workflow'] as const,
   /** 项目级能力授权（docs/design/project-session-mcp.md §25-35）：归属人逐项开启，默认全关。 */
   projectGrant: (sessionId: string) => ['session', sessionId, 'project-grant'] as const
 };

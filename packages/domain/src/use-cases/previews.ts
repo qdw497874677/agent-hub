@@ -1,6 +1,6 @@
 import type { Subject } from '../access.ts';
 import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
-import { asSessionId, newId, type PreviewLinkId } from '../ids.ts';
+import { asSessionId, newId, type PreviewLinkId, type WorkspaceId } from '../ids.ts';
 import {
   PREVIEW_LINKS_MAX,
   previewLabelOf,
@@ -33,6 +33,8 @@ export interface CreatePreviewCommand {
   readonly label?: string;
   /** 默认 `manual`；P2 的输出探测会把 `detected` 传进来。 */
   readonly source?: PreviewLink['source'];
+  /** Workflow evidence is valid only for this exact authorized destination. */
+  readonly expectedTarget?: { readonly workerId: string | null; readonly root: string; readonly workspaceId?: WorkspaceId };
 }
 
 const freshLinkId = async (repo: PreviewLinkRepository): Promise<PreviewLinkId> => {
@@ -55,6 +57,9 @@ export async function createPreviewLinkUseCase(
 ): Promise<Result<PreviewLink, DomainError>> {
   const target = await terminalTarget(deps, subject, command.sessionId);
   if (!target.ok) return target;
+  const matches = (value: typeof target.value) => !command.expectedTarget ||
+    (value.workerId === command.expectedTarget.workerId && value.root === command.expectedTarget.root);
+  if (!matches(target.value)) return err(conflict('预览会话位置已改变'));
 
   const problem = previewPortProblem(command.port);
   if (problem !== null) return err(invalid(problem));
@@ -62,7 +67,13 @@ export async function createPreviewLinkUseCase(
   const sessionId = asSessionId(command.sessionId);
   const links = await deps.previewLinks.listBySession(sessionId);
   const existing = links.find((link) => link.port === command.port);
-  if (existing !== undefined) return ok(existing);
+  if (existing !== undefined) {
+    if (command.expectedTarget && existing.workerId !== (command.expectedTarget.workerId ?? 'local')) return err(conflict('预览机器不匹配'));
+    const current = await terminalTarget(deps, subject, command.sessionId);
+    if (!current.ok) return current;
+    if (!matches(current.value)) return err(conflict('预览会话位置已改变'));
+    return ok(existing);
+  }
 
   if (links.length >= PREVIEW_LINKS_MAX) {
     return err(conflict(`一个会话最多 ${PREVIEW_LINKS_MAX} 条预览`));
@@ -91,7 +102,18 @@ export async function createPreviewLinkUseCase(
     createdAt: at,
     lastSeenAt: at,
   };
-  await deps.previewLinks.save(link);
+  if (command.expectedTarget) {
+    const current = await terminalTarget(deps, subject, command.sessionId);
+    if (!current.ok) return current;
+    if (!matches(current.value)) return err(conflict('预览会话位置已改变'));
+  }
+  if (command.expectedTarget) {
+    const { workerId, root, workspaceId } = command.expectedTarget;
+    if (!workerId || !workspaceId || !deps.previewLinks.insertIfCurrentWorkspace) return err(conflict('无法安全确认预览会话位置'));
+    if (!(await deps.previewLinks.insertIfCurrentWorkspace(link, { workspaceId, workerId, root }))) return err(conflict('预览会话位置已改变或无法确认'));
+  } else {
+    await deps.previewLinks.save(link);
+  }
   return ok(link);
 }
 

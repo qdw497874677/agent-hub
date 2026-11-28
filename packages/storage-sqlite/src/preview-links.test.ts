@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   asAgentId,
   asSessionId,
+  asWorkspaceId,
   createProject,
   createTask,
   deriveSession,
@@ -24,6 +25,34 @@ const linkOf = (patch: Partial<PreviewLink> & Pick<PreviewLink, 'id' | 'sessionI
   shareTokenHash: null,
   shareExpiresAt: null,
   ...patch,
+});
+
+test('workflow 条件插入：直接工作空间匹配才写入，位置漂移或旧关联不写入', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, workspace_id TEXT, group_id TEXT, worker_id TEXT);
+    CREATE TABLE workspaces (id TEXT PRIMARY KEY, worker_id TEXT, path TEXT, state TEXT);
+    INSERT INTO sessions VALUES ('s-1', 'w-1', NULL, 'worker-1');
+    INSERT INTO workspaces VALUES ('w-1', 'worker-1', '/repo', 'ready');`);
+  const repo = createSqlitePreviewLinks(db);
+  const expected = { workspaceId: asWorkspaceId('w-1'), workerId: 'worker-1', root: '/repo' };
+  const link = linkOf({ id: previewLinkIdFrom('0a1b2c3d'), sessionId: asSessionId('s-1'), hubPort: 17901, workerId: 'worker-1', source: 'detected' });
+  assert.ok(repo.insertIfCurrentWorkspace);
+  for (const [change, restore] of [
+    ["UPDATE workspaces SET path = '/changed'", "UPDATE workspaces SET path = '/repo'"],
+    ["UPDATE workspaces SET worker_id = 'other'", "UPDATE workspaces SET worker_id = 'worker-1'"],
+    ["UPDATE sessions SET worker_id = 'other'", "UPDATE sessions SET worker_id = 'worker-1'"],
+    ["UPDATE sessions SET workspace_id = NULL", "UPDATE sessions SET workspace_id = 'w-1'"],
+    ["UPDATE sessions SET group_id = 'g-1'", 'UPDATE sessions SET group_id = NULL'],
+    ["UPDATE workspaces SET state = 'removed'", "UPDATE workspaces SET state = 'ready'"],
+  ]) {
+    db.exec(change!);
+    assert.equal(await repo.insertIfCurrentWorkspace(link, expected), false, change);
+    assert.deepEqual(await repo.listAll(), []);
+    db.exec(restore!);
+  }
+  assert.equal(await repo.insertIfCurrentWorkspace(link, expected), true);
+  assert.equal((await repo.listAll()).length, 1);
+  db.close();
 });
 
 test('预览链接存储：读写往返，按会话/端口查，删除', async () => {

@@ -525,10 +525,15 @@ export function createApp(options: AppOptions): Hono {
         deps: options.previews.deps,
         ports: options.previews.ports,
         ...(options.previews.afterChange === undefined ? {} : { afterChange: options.previews.afterChange }),
+        ...(options.previews.workflow === undefined ? {} : { workflow: options.previews.workflow }),
+        ...(options.previews.navigationHost === undefined ? {} : { navigationHost: options.previews.navigationHost }),
         audit: (c, subject, action, target, detail) => auditResource(c, subject, action, target, detail),
       },
       subjectOf,
     );
+  } else {
+    app.get('/api/sessions/:sessionId/preview-workflow', (c) => c.json({ available: false, targets: [] }));
+    app.post('/api/sessions/:sessionId/preview-workflow', (c) => c.json({ error: { code: 'not_found', message: '预览工作流不可用' } }, 404));
   }
 
   app.get('/api/home', async (c) => {

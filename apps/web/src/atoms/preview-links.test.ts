@@ -57,8 +57,8 @@ test('标签最长 60 个字，两端空白不算', () => {
 });
 
 test('状态行三种都有人话', () => {
-  assert.equal(previewStateLine({ state: 'ready' }), '运行中');
-  assert.equal(previewStateLine({ state: 'stale' }), '服务没在跑');
+  assert.equal(previewStateLine({ state: 'ready' }), '链接已登记');
+  assert.equal(previewStateLine({ state: 'stale' }), '状态待确认');
   assert.equal(previewStateLine({ state: 'offline' }), '机器离线');
 });
 

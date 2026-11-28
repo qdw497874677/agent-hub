@@ -1,5 +1,8 @@
 import type { DeliveryDto, PreviewLinkDto, SessionDto } from '@agent-hub/contract';
-import { call, post, sq } from './http.ts';
+import { call, post, RequestFailed, sq } from './http.ts';
+import type { PreviewDiagnostic, PreviewWorkflow, PreviewWorkflowTarget } from './preview-types.ts';
+
+export type { PreviewDiagnostic, PreviewWorkflow, PreviewWorkflowTarget } from './preview-types.ts';
 
 export type { DeliveryDto, JournalEntryDto, PreviewLinkDto, SessionDto, SessionEventDto } from '@agent-hub/contract';
 
@@ -162,6 +165,8 @@ export function sessionGroupId(session: SessionDto | null | undefined): string |
 export const previewsApi = {
   list: (sessionId: string) =>
     call<{ links: PreviewLinkDto[] }>(`${sq(sessionId)}/previews`).then((r) => r.links),
+  listWithAddresses: (sessionId: string) =>
+    call<{ links: PreviewLinkDto[]; addresses: Record<string, string | null> }>(`${sq(sessionId)}/previews`),
   create: (sessionId: string, body: { port: number; label?: string }) =>
     post<{ link: PreviewLinkDto }>(`${sq(sessionId)}/previews`, body).then((r) => r.link),
   remove: (sessionId: string, linkId: string) =>
@@ -178,6 +183,15 @@ export const previewsApi = {
   /** 撤销公开分享：令牌立刻作废，链接回到「只有登录用户能看」。 */
   unshare: (sessionId: string, linkId: string) =>
     call<{ ok: true }>(`${sq(sessionId)}/previews/${encodeURIComponent(linkId)}/share`, { method: 'DELETE' })
+};
+
+export const previewWorkflowApi = {
+  get: (sessionId: string) => call<PreviewWorkflow>(`${sq(sessionId)}/preview-workflow`).catch((error: unknown) => {
+    if (error instanceof RequestFailed && error.status === 404) return { available: false, targets: [] } satisfies PreviewWorkflow;
+    throw error;
+  }),
+  register: (sessionId: string, port: number) => post<{ target: PreviewWorkflowTarget }>(`${sq(sessionId)}/preview-workflow`, { port }),
+  diagnostic: (sessionId: string, linkId: string) => post<PreviewDiagnostic>(`${sq(sessionId)}/previews/${encodeURIComponent(linkId)}/diagnostic`, {})
 };
 
 /** 会话连线：无向，a/b 只是规范化后的两端。 */

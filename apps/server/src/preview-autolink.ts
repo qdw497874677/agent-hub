@@ -1,11 +1,9 @@
 import type { PreviewLink } from '@agent-hub/domain';
 
 /**
- * 预览自动出链接（docs/design/session-service.md §9）：
- * 进程/端口清单是事实来源——端口在听、进程的工作目录在某条会话的工作目录里，
- * 就给这条会话挂一条预览链接，不用人去填端口。
+ * 从进程/端口清单保守推导观察到的候选；不会自动创建或发布预览链接。
  *
- * 纯决策函数：调用方负责拿数据（进程、工作空间、已有链接）和执行（建链接、监听）。
+ * 纯决策函数：调用方负责获取进程、工作空间和已有链接。
  * 规则刻意保守：只认 1024 以上端口、只认最长前缀匹配、按机器去重、按会话限量。
  */
 
@@ -65,6 +63,20 @@ export function autoLinkCandidates(
   const localOwners = owners.filter((entry) => entry.workerId === workerId && entry.workerId !== '');
   // 同一个 session 可能挂着多个工作空间（组合工作空间）：只留最长的那个前缀。
   const sorted = [...localOwners].sort((a, b) => b.path.length - a.path.length);
+  const claims = new Map<number, Set<string>>();
+  for (const process of processes) {
+    if (process.workerId !== undefined && process.workerId !== workerId) continue;
+    const matching = sorted.filter((entry) => covers(entry.path, process.cwd));
+    const longest = matching[0]?.path.length;
+    const sessions = new Set(matching.filter((entry) => entry.path.length === longest).map((entry) => entry.sessionId));
+    for (const port of process.ports) {
+      const claimed = claims.get(port) ?? new Set<string>();
+      // An unmatched process sharing the port makes ownership uncertain too.
+      if (sessions.size === 0) claimed.add('');
+      for (const session of sessions) claimed.add(session);
+      claims.set(port, claimed);
+    }
+  }
   const seen = new Set<string>();
   const out: AutoLinkCandidate[] = [];
 
@@ -75,6 +87,8 @@ export function autoLinkCandidates(
       if (!Number.isInteger(port) || port < MIN_PORT || port > 65_535) continue;
       const owner = sorted.find((entry) => covers(entry.path, process.cwd));
       if (owner === undefined) continue;
+      const ownersForPort = claims.get(port);
+      if (ownersForPort?.size !== 1 || !ownersForPort.has(owner.sessionId)) continue;
       if (options.allowedSessions !== undefined && !options.allowedSessions.has(owner.sessionId)) continue;
       const key = `${workerId}|${port}`;
       if (seen.has(key)) continue;

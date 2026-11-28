@@ -43,6 +43,7 @@ import { gitApi } from '../../shell/api.ts';
 import { FileLinksContext, type FileLinks } from '../../atoms/file-links.tsx';
 import { SESSION_TABS, readChangesSplit, readStoredTab, sessionTabLabel, stepTab, storeChangesSplit, storeTab, type SessionTab } from '../../atoms/session-tabs.ts';
 import { PreviewPanel } from '../../atoms/preview-panel.tsx';
+import { PreviewWorkflowAction } from '../../atoms/preview-workflow.tsx';
 import { RewindDialog } from '../../atoms/rewind-dialog.tsx';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from '../../atoms/live.ts';
 import { ContextMeter } from '../../atoms/context-meter.tsx';
@@ -1175,6 +1176,15 @@ export function FocusView({
           </span>
         ) : null}
       </div>
+      {tab === 'chat' ? <PreviewWorkflowAction conversationRow key={session.id} sessionId={session.id} onManage={() => setTab('preview')} onFeedback={(feedback) => {
+        const base = draftRef.current;
+        const text = base + (base === '' ? '' : base.endsWith('\n\n') ? '' : base.endsWith('\n') ? '\n' : '\n\n') + feedback;
+        draftRef.current = text;
+        onDraftChange(text);
+        quoteSeq.current += 1;
+        setQuote({ text, nonce: quoteSeq.current, focus: false });
+        setTab('chat');
+      }} /> : null}
       {tab !== 'chat' && narrow ? <div className="flex min-h-[44px] shrink-0 items-center gap-3 border-b border-hair px-3"><button type="button" data-testid="session-back-to-chat" className="min-h-[44px] text-sub text-link" onClick={() => setTab('chat')}>← 返回对话</button><span className="text-sub text-secondary">{sessionTabLabel(tab, tab === 'changes' ? changeCount : undefined)}</span></div> : null}
       {visited.has('files') ? (
         <div key={`${session.id}-files`} className={tab === 'files' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
@@ -1184,7 +1194,7 @@ export function FocusView({
       {/* 预览和终端一样：首访后保持挂载（hidden 不卸载），切回来表单里没提交的内容还在 */}
       {visited.has('preview') ? (
         <div key={`${session.id}-preview`} className={tab === 'preview' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-          <PreviewPanel sessionId={session.id} active={tab === 'preview'} defaultPort={canvas.project.previewPort ?? null} />
+          <PreviewPanel key={session.id} sessionId={session.id} active={tab === 'preview'} defaultPort={canvas.project.previewPort ?? null} />
         </div>
       ) : null}
       {profileOpen ? (

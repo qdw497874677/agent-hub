@@ -103,6 +103,23 @@ export function createSqlitePreviewLinks(db: DatabaseSync): PreviewLinkRepositor
         link.shareExpiresAt ?? null,
       );
     },
+    async insertIfCurrentWorkspace(link, expected): Promise<boolean> {
+      if (link.workerId !== expected.workerId) return false;
+      // One SQLite statement makes the destination predicate and insert atomic.
+      // Only explicit single-workspace sessions with a consistent non-null Worker qualify.
+      const inserted = db.prepare(`INSERT INTO preview_links
+        (id, session_id, worker_id, port, hub_port, label, source, state, created_at, last_seen_at, share_token_hash, share_expires_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
+          WHERE s.id = ? AND s.workspace_id = ? AND s.group_id IS NULL
+            AND s.worker_id = ? AND w.worker_id = ? AND w.path = ? AND w.state <> 'removed'
+        ) AND NOT EXISTS (SELECT 1 FROM preview_links WHERE session_id = ? AND port = ?)`)
+        .run(link.id, link.sessionId, link.workerId, link.port, link.hubPort, link.label, link.source, link.state,
+          link.createdAt, link.lastSeenAt, link.shareTokenHash ?? null, link.shareExpiresAt ?? null,
+          link.sessionId, expected.workspaceId, expected.workerId, expected.workerId, expected.root, link.sessionId, link.port);
+      return Number(inserted.changes) === 1;
+    },
     async remove(id: PreviewLinkId): Promise<void> {
       deleteStmt.run(id);
     },

@@ -1,19 +1,18 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ServiceDto } from '@agent-hub/contract';
-import { previewsApi, servicesApi } from '../shell/api.ts';
-import { serviceKeys, sessionKeys } from '../shell/query-keys.ts';
+import { servicesApi } from '../shell/api.ts';
+import { serviceKeys } from '../shell/query-keys.ts';
 import { SMALL_BUTTON } from '../shell/dialog-shell.tsx';
 import { useCompact } from '../shell/device.ts';
 import { resolveWorker, useWorkers } from '../shell/workers.tsx';
-import { previewUrlFor } from './preview-links.ts';
+import { PreviewWorkflowAction } from './preview-workflow.tsx';
 import {
   SERVICE_LOG_MAX,
   serviceCommandProblem,
   serviceMetaText,
   servicePortProblem,
   servicePortText,
-  servicePreviewLink,
   serviceRootProblem,
   serviceStateText,
   serviceStateTone,
@@ -577,30 +576,7 @@ export function SessionServices({ taskId, scope, choices, defaultSessionId = nul
   );
 }
 
-/**
- * 「打开预览」只在真的有链接时出现：契约里预览链接没有 serviceId，
- * 只能按端口（同机器优先）在各会话的链接里认一条。
- */
 function ServicePreviewAction({ service }: { service: ServiceDto }) {
-  const sessionId = service.sessionId;
-  const previews = useQuery({
-    queryKey: sessionKeys.previews(sessionId ?? 'none'),
-    queryFn: () => previewsApi.list(sessionId ?? ''),
-    enabled: sessionId !== null && service.port !== null && service.id !== 'svc_pending',
-    staleTime: 15_000,
-    retry: false
-  });
-  const link = servicePreviewLink(previews.data ?? [], service);
-  if (link === null || typeof window === 'undefined') return null;
-  return (
-    <a
-      data-testid="service-open-preview"
-      className={ACTION}
-      href={previewUrlFor(window.location, link.hubPort)}
-      target="_blank"
-      rel="noreferrer"
-    >
-      打开预览
-    </a>
-  );
+  if (service.sessionId === null || service.port === null || service.id === 'svc_pending') return null;
+  return <PreviewWorkflowAction key={`${service.sessionId}:${service.workerId}:${service.port}`} sessionId={service.sessionId} service={{ port: service.port, workerId: service.workerId }} compact />;
 }

@@ -42,8 +42,8 @@ export function previewDraftProblem(input: { port: string; label: string }): str
 
 /** 状态行：一句话说清楚现在能不能打开。 */
 export function previewStateLine(link: { state: PreviewLinkDto['state'] }): string {
-  if (link.state === 'ready') return '运行中';
-  if (link.state === 'stale') return '服务没在跑';
+  if (link.state === 'ready') return '链接已登记';
+  if (link.state === 'stale') return '状态待确认';
   return '机器离线';
 }
 

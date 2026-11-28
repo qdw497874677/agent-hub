@@ -605,7 +605,7 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
       await Promise.all(links.map((link) => listen(link)));
     },
     listening(): ReadonlyArray<{ readonly linkId: string; readonly hubPort: number }> {
-      return [...listeners.values()].map(({ link }) => ({ linkId: link.id, hubPort: link.hubPort }));
+      return [...listeners.values()].filter(({ server }) => server.listening).map(({ link }) => ({ linkId: link.id, hubPort: link.hubPort }));
     },
     async close(): Promise<void> {
       closed.value = true;

@@ -103,6 +103,8 @@ export interface PreviewChannel {
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   open(workerId: string, request: PreviewOpenRequest): Promise<PreviewStream>;
   hasWorker(workerId: string): boolean;
+  /** Identity changes on every preview-channel reconnect. */
+  connectionToken?(workerId: string): object | null;
   /** 该机器上开着的流数量（诊断 / 测试用）。 */
   streamCount(workerId: string): number;
   close(): void;
@@ -549,6 +551,9 @@ export function createPreviewChannel(options: PreviewChannelOptions): PreviewCha
     open,
     hasWorker(workerId: string): boolean {
       return connections.has(workerId);
+    },
+    connectionToken(workerId: string): object | null {
+      return connections.get(workerId) ?? null;
     },
     streamCount(workerId: string): number {
       return connections.get(workerId)?.streams.size ?? 0;

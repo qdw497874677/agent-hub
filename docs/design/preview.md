@@ -3,6 +3,8 @@
 状态：P1 已落地（2026-11-14，端口映射链路 + 会话页「预览」页签）
 日期：2026-11-14
 
+当前入口和诊断见[远程预览与调试闭环](preview-workflow-plan.md)。本文保留原传输设计和落地记录；自动发现只提供候选，不再自行登记或发布端口。
+
 ## 1. 要解决的问题
 
 会话在 worker 上跑 agent、构建前后端。用户想看「刚改完的样子」，现在只能自己开终端找端口，
@@ -74,9 +76,8 @@ export interface PreviewLink {
 三条来源，按可信度排序：
 
 1. **手动登记**（v1 必须有）：预览面板输入端口 + 标签，`POST /api/sessions/:id/previews { port, label }`。
-2. **输出探测**：worker 侧解析会话相关进程的输出与终端回显，匹配
-   `(https?://)?(localhost|127\.0\.0\.1|0\.0\.0\.0):(\d{2,5})`；命中后**提议**一条链接（`source:'detected'`），
-   仍需用户点「暴露」才生效（避免 agent 读日志时误触发）。
+2. **只读清单发现**：Hub 使用当前 Worker 的进程 cwd 和监听端口清单生成候选；归属不唯一就不推荐。
+   只有用户明确发起打开或登记才会创建私有映射（`source:'detected'`）。终端和 Agent 的输出不能发布端口。
 3. **显式声明**（后续）：项目配置 `scripts[].previewPort`，同学 T3 的 `previewUrl` 但只存端口。
 
 任何来源都要在 worker 侧过一次校验：该端口在 `/proc/net/tcp{,6}` 里处于 `LISTEN`，且地址是回环
@@ -157,6 +158,7 @@ interface PreviewAck { kind: 'preview_ack'; streamId: string; credits: number } 
 - `HUB_PREVIEW_PORTS=17901-17920`（默认按 `HUB_PORT` 推），需要在防火墙/安全组放通这段 TCP；
   阿里云是本项目唯一公网部署，脚本里说明「不放通就只能在 hub 主机本机访问」。
 - 端口映射只监听 hub 的**同一个绑定地址**（`HUB_HOST`），不要额外开 `0.0.0.0`。
+- 独立预览监听当前是 HTTP；HTTPS Hub 的 `Secure` 登录 Cookie 不会发送到该监听器。没有另行配置并验证的安全预览入口时，不支持从 HTTPS Hub 直接打开这条私有 HTTP 路径。不能靠自动公开分享或降级登录绕过。
 - 风险提示：预览链接 = 该 dev server 的全部能力（可能读到工作空间文件）。默认私有 + 逐请求鉴权
   是底线；公开分享必须显式、可撤销、有到期时间。
 
@@ -165,7 +167,7 @@ interface PreviewAck { kind: 'preview_ack'; streamId: string; credits: number } 
 - 会话页新页签「预览」（`apps/web/src/atoms/session-tabs.ts` 的 union/数组、`sessionTabLabel`、
   `focus.tsx` 的 `tabs` 过滤与面板）：列表显示「端口 · 标签 · 状态 · 最近活跃」，操作
   「打开 / 复制链接 / 嵌入 / 移除」；顶部一行说明「这些链接对登录用户可见」。
-- 空态给两条路：「在终端里跑起来，我们会自动发现」+「手动填端口」。
+- 空态可重新检查已确认的候选，或手动填端口；登记成功和映射就绪都不等于应用已响应。
 - 画布卡片（P3）：卡片底部一个「预览」按钮，点开新标签；不在卡片里塞 iframe（卡片太小、移动端更差）。
 
 ## 10.1 P1 落地记录（2026-11-14）

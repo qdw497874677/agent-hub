@@ -184,6 +184,18 @@ if (process.argv[2] === 'backup') {
   process.exit(result.code);
 }
 const host = readEnv('HUB_HOST') ?? '127.0.0.1';
+// A wildcard bind exposes no client destination; loopback binds cannot be reached via a public host.
+const previewNavigationHost = (() => {
+  const publicUrl = readEnv('HUB_PUBLIC_URL');
+  if (host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]') {
+    const loopback = host.includes(':') ? '[::1]' : host;
+    const publicHost = publicUrl ? new URL(publicUrl).hostname : null;
+    return publicHost && !['127.0.0.1', 'localhost', '[::1]'].includes(publicHost) ? null : loopback;
+  }
+  if (publicUrl) return new URL(publicUrl).hostname;
+  if (host === '0.0.0.0' || host === '::') return null;
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+})();
 const port = Number(readEnv('HUB_PORT') ?? 7878);
 const token = readEnv('HUB_TOKEN');
 const webDist = join(repoRoot, 'apps', 'web', 'dist');
@@ -1550,7 +1562,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   },
   providers: providerWiring,
   // 预览链接（docs/design/preview.md §4）：只装 `/api/sessions/:id/previews` 三条路由，转发在代理层。
-  ...(previewPorts === null ? {} : { previews: { deps: { ...deps, previewLinks: store.previewLinks }, ports: previewPorts, afterChange: () => reconcilePreviews(), ...(readEnv('HUB_PUBLIC_URL') === null ? {} : { publicHost: new URL(readEnv('HUB_PUBLIC_URL') as string).hostname, https: new URL(readEnv('HUB_PUBLIC_URL') as string).protocol === 'https:' }) } }),
+  ...(previewPorts === null ? {} : { previews: { deps: { ...deps, previewLinks: store.previewLinks }, ports: previewPorts, afterChange: () => reconcilePreviews(), navigationHost: previewNavigationHost, ...(readEnv('HUB_PUBLIC_URL') === null ? {} : { publicHost: new URL(readEnv('HUB_PUBLIC_URL') as string).hostname, https: new URL(readEnv('HUB_PUBLIC_URL') as string).protocol === 'https:' }), ...(readEnv('HUB_PREVIEW_WORKFLOW') === '0' ? {} : { workflow: { host: previewNavigationHost, candidates: previews.candidates, channel: previews.channel, proxy: previews.proxy, workerOnline: async (workerId: string) => (await deps.gateway.status()).some((worker) => worker.workerId === workerId && worker.state === 'online') } }) } }),
   services: { deps: { ...deps, sessionServices: store.sessionServices } },
   resources: { metrics: workerMetrics, settings: store.settings, workers: workerControl, audit: store.audit, now: () => Date.now(), access: deps.access },
   /** 每台 Worker 的自定义运行时别名（CAP-1）：存库 + 推给在线 Worker（离线就等它下次连上自动推）。 */

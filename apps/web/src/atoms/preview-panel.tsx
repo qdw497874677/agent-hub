@@ -10,13 +10,13 @@ import {
   previewAge,
   previewDraftProblem,
   previewStateLine,
-  previewUrlFor,
   shareActive,
   shareHoursLabel,
   shareHoursOptions,
   shareStateText,
   sortPreviews
 } from './preview-links.ts';
+import { safePreviewUrl, transportLimited } from './preview-workflow-model.ts';
 
 /**
  * 会话页的「预览」页签（docs/design/preview.md §3 / §10）。
@@ -27,8 +27,8 @@ import {
 
 const INPUT =
   'w-full min-w-0 rounded-sm border border-hair bg-card px-2 py-1.5 text-meta text-primary outline-none placeholder:text-tertiary focus:border-ring';
-/** 手机上按钮至少要 32px 高，手指才点得准。 */
-const BUTTON = `${SMALL_BUTTON} inline-flex min-h-8 items-center justify-center`;
+/** 窄屏以实际像素保证触控目标。 */
+const BUTTON = `${SMALL_BUTTON} inline-flex min-h-[44px] items-center justify-center md:min-h-8`;
 /** 行上的小标签（「自动发现」/「公开」）：高度和按钮对齐，不抢视线。 */
 const TAG = 'inline-flex shrink-0 items-center rounded-sm border px-1 text-[10px] leading-4';
 /** 桌面：内容区自己滚，和页签等高。 */
@@ -52,7 +52,9 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
   const queryClient = useQueryClient();
   const narrow = useNarrow();
   const key = sessionKeys.previews(sessionId);
+  const addressKey = ['preview-addresses', sessionId] as const;
   const links = useQuery({ queryKey: key, queryFn: () => previewsApi.list(sessionId), enabled: active, retry: false });
+  const addresses = useQuery({ queryKey: addressKey, queryFn: () => previewsApi.listWithAddresses(sessionId), enabled: active, retry: false });
 
   const [port, setPort] = useState(defaultPort === null ? '' : String(defaultPort));
   const [label, setLabel] = useState('');
@@ -121,6 +123,8 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
       setLabel('');
       setAttempted(false);
       void queryClient.invalidateQueries({ queryKey: key });
+      void queryClient.invalidateQueries({ queryKey: addressKey });
+      void queryClient.invalidateQueries({ queryKey: sessionKeys.previewWorkflow(sessionId) });
     }
   });
 
@@ -130,6 +134,8 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
       setConfirmId(null);
       queryClient.setQueryData<PreviewLinkDto[]>(key, (current) => (current ?? []).filter((item) => item.id !== linkId));
       void queryClient.invalidateQueries({ queryKey: key });
+      void queryClient.invalidateQueries({ queryKey: addressKey });
+      void queryClient.invalidateQueries({ queryKey: sessionKeys.previewWorkflow(sessionId) });
     }
   });
 
@@ -184,12 +190,7 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
     create.mutate({ port: Number(port.trim()), ...(label.trim() === '' ? {} : { label: label.trim() }) });
   };
 
-  const open = (link: PreviewLinkDto) => {
-    window.open(previewUrlFor(window.location, link.hubPort), '_blank', 'noopener');
-  };
-
-  const copy = async (link: PreviewLinkDto) => {
-    const url = previewUrlFor(window.location, link.hubPort);
+  const copy = async (link: PreviewLinkDto, url: string) => {
     setCopiedId(null);
     if ((await copyText(url)) === 'copied') {
       setFallbackId(null);
@@ -268,7 +269,7 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
       {rows.length > 0 ? (
         <ul className="mt-2 flex min-w-0 flex-col gap-1.5">
           {rows.map((link) => {
-            const url = previewUrlFor(window.location, link.hubPort);
+            const url = safePreviewUrl(addresses.data?.addresses[link.id] ?? null);
             const offline = link.state === 'offline';
             const confirmed = confirmId === link.id;
             const sharing = shareId === link.id;
@@ -293,7 +294,7 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
                 </p>
                 <p className="mt-0.5 flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-meta">
                   <span className={offline ? 'text-rust' : link.state === 'ready' ? 'text-sage' : 'text-tertiary'}>
-                    {previewStateLine(link)}
+                    {previewStateLine(link)} · 页面响应未确认
                   </span>
                   <span className="text-tertiary">{previewAge(now, link.lastSeenAt)}</span>
                 </p>
@@ -301,17 +302,21 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
                 {offline ? (
                   <p className="mt-0.5 text-[11px] text-tertiary">机器离线的时候链接打不开，等它回来再试。</p>
                 ) : null}
+                {url && transportLimited(window.location.protocol, url) ? <p className="mt-1 text-meta text-rust">当前 Hub 使用 HTTPS，但此预览使用 HTTP。安全登录 Cookie 无法发送到此入口，私有预览可能无法通过登录验证；请联系管理员配置安全访问方式。</p> : null}
 
                 <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">
-                  <button
+                  <a
                     data-testid="preview-open"
-                    className={BUTTON}
-                    disabled={offline}
-                    title={offline ? '机器离线，链接现在打不开' : `在新标签打开 ${url}`}
-                    onClick={() => open(link)}
+                    className={`${BUTTON} ${!url || offline ? 'pointer-events-none opacity-40' : ''}`}
+                    aria-disabled={!url || offline}
+                    tabIndex={!url || offline ? -1 : undefined}
+                    href={!offline && url ? url : undefined}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={!url ? '预览入口尚未确认' : offline ? '机器离线，链接现在打不开' : `在新标签打开 ${url}`}
                   >
                     打开
-                  </button>
+                  </a>
                   {link.shared ? (
                     <span
                       data-testid="preview-shared"
@@ -324,9 +329,9 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
                   <button
                     data-testid="preview-copy"
                     className={BUTTON}
-                    disabled={offline}
-                    title={offline ? '机器离线，链接现在打不开' : '复制链接'}
-                    onClick={() => void copy(link)}
+                    disabled={offline || !url}
+                    title={!url ? '预览入口尚未确认' : offline ? '机器离线，链接现在打不开' : '复制链接'}
+                    onClick={() => { if (url) void copy(link, url); }}
                   >
                     {copiedId === link.id ? '已复制' : '复制'}
                   </button>
@@ -489,7 +494,7 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
                     data-testid="preview-url"
                     className={`${INPUT} mt-1.5 font-mono text-[11px]`}
                     readOnly
-                    value={url}
+                    value={url ?? ''}
                     onFocus={(event) => event.currentTarget.select()}
                     aria-label="预览链接"
                   />

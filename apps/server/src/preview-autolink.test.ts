@@ -105,3 +105,8 @@ test('自动发现：allowedSessions 之外的会话不挂', () => {
   );
   assert.deepEqual(got, []);
 });
+
+test('同目录不同会话或同端口跨目录有歧义时不出候选', () => {
+  assert.deepEqual(autoLinkCandidates('w1', [{ pid: 1, cwd: '/work/app', ports: [7000] }], [owner('s1', '/work/app'), owner('s2', '/work/app')]), []);
+  assert.deepEqual(autoLinkCandidates('w1', [{ pid: 1, cwd: '/work/app', ports: [7000] }, { pid: 2, cwd: '/other', ports: [7000] }], [owner('s1', '/work/app')]), []);
+});
