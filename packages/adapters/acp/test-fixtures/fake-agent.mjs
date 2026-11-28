@@ -178,24 +178,30 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
         say(msg.params.sessionId, '**第一行**\n\n`第二行`');
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }
-      // 对话活动折叠 E2E：真实 ACP → Hub → SSE；先停在思考中，测试决定何时继续。
+      // 对话活动折叠 E2E：以真实 ACP → Hub → SSE 分别暂停思考和正文后的工具。
       if (GATE_DIR && all.includes('please-turn-activity')) {
         const sessionId = msg.params.sessionId;
         const publish = (update) => send({ method: 'session/update', params: { sessionId, update } });
         const thought = (text) => publish({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text } });
-        const tool = (name, input, output, status = 'completed') => {
-          const toolCallId = `activity-${turn}-${name}-${status}`;
+        const startTool = (name, input) => {
+          const toolCallId = `activity-${turn}-${name}`;
           publish({ sessionUpdate: 'tool_call', toolCallId, title: name, kind: 'other', rawInput: input });
-          publish({ sessionUpdate: 'tool_call_update', toolCallId, status, content: [{ type: 'content', content: { type: 'text', text: output } }] });
+          return toolCallId;
         };
-        const go = join(GATE_DIR, 'activity.go');
+        const finishTool = (toolCallId, text) => publish({ sessionUpdate: 'tool_call_update', toolCallId, status: 'completed', content: [{ type: 'content', content: { type: 'text', text } }] });
+        const waitForActivity = async (name) => {
+          const go = join(GATE_DIR, name);
+          const deadline = Date.now() + 120_000;
+          while (!existsSync(go) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+        };
         thought('先看目录思路');
-        const deadline = Date.now() + 120_000;
-        while (!existsSync(go) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+        await waitForActivity('activity.go');
         thought('和文件结构');
-        tool('read', { path: 'alpha.txt' }, '活动搜索标记');
+        finishTool(startTool('read', { path: 'alpha.txt' }), '活动搜索标记');
         say(sessionId, '工具之间的正文');
-        tool('bash', { command: 'pwd' }, '/test/workdir');
+        const shell = startTool('bash', { command: 'pwd' });
+        await waitForActivity('activity-shell.go');
+        finishTool(shell, '/test/workdir');
         say(sessionId, '这一轮正常结束');
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }

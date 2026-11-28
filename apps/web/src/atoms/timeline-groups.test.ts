@@ -24,18 +24,16 @@ test('单个工具或思考也形成默认收起的活动', () => {
   }
 });
 
-test('正文交错保持原序、同轮一个摘要，下一轮独立', () => {
+test('正文结束当前活动组，同轮后续活动另起一组，下一轮独立', () => {
   const items = groupTimeline([
     prompt(1), text(2), tool(3), text(4), thinking(5), tool(6), text(7),
     prompt(8), tool(9), text(10)
   ], { running: false });
-  assert.deepEqual(items.map((item) => item.type), ['block', 'block', 'work', 'block', 'block', 'work', 'block']);
+  assert.deepEqual(items.map((item) => item.type), ['block', 'block', 'work', 'block', 'work', 'block', 'block', 'work', 'block']);
   const groups = items.filter((item) => item.type === 'work');
-  assert.deepEqual(groups[0]!.items.map((item) => item.block.seq), [3, 4, 5, 6]);
-  assert.deepEqual(groups.map((group) => group.open), [false, false]);
-  assert.equal(groups[0]!.summary.thinking, 1);
-  assert.equal(groups[0]!.summary.steps, 2);
-  assert.equal(summaryCounts(groups[0]!.summary), '思考 1 · 读取 2');
+  assert.deepEqual(groups.map((group) => group.items.map((item) => item.block.seq)), [[3], [5, 6], [9]]);
+  assert.deepEqual(groups.map((group) => group.open), [false, false, false]);
+  assert.deepEqual(groups.map((group) => summaryCounts(group.summary)), ['读取 1', '思考 1 · 读取 1', '读取 1']);
 });
 
 test('审批、问题、错误及明确显示的活动都是不可跨越的边界', () => {
@@ -46,11 +44,12 @@ test('审批、问题、错误及明确显示的活动都是不可跨越的边�
 });
 
 test('回放与运行中都默认收起；稍后排队的问话不会冒充新运行轮', () => {
-  const blocks = [prompt(1), tool(2, 'read', null), prompt(3, true)];
+  const blocks = [prompt(1), tool(2), text(3), tool(4, 'read', null), prompt(5, true)];
   const live = groupTimeline(blocks, { running: true });
   const replay = groupTimeline(blocks, { running: false });
-  assert.ok(live[1]?.type === 'work' && live[1].live && live[1].summary.running && !live[1].open);
-  assert.ok(replay[1]?.type === 'work' && !replay[1].live && !replay[1].open);
+  assert.ok(live[1]?.type === 'work' && !live[1].live);
+  assert.ok(live[3]?.type === 'work' && live[3].live && live[3].summary.running && !live[3].open);
+  assert.ok(replay[3]?.type === 'work' && !replay[3].live && !replay[3].open);
 });
 
 test('流式思考 seq 改变时活动身份不变，回放同样分组', () => {
@@ -69,6 +68,23 @@ test('流式思考 seq 改变时活动身份不变，回放同样分组', () => 
     { seq: 3, at: 3, event: { kind: 'thinking', delta: '二' } }
   ]);
   assert.deepEqual(groupTimeline(replay, { running: true }), groupTimeline(blocks, { running: true }));
+});
+
+test('一段流式正文只断一次，之后的活动不改变先前展开组的身份', () => {
+  const prefix = applyBlocks(applyBlocks([], { kind: 'prompt', text: '问题' }, 1), { kind: 'thinking', delta: '先看看' }, 2);
+  let blocks = applyBlocks(prefix, { kind: 'text', delta: '目录' }, 3);
+  blocks = applyBlocks(blocks, { kind: 'text', delta: '已读取' }, 4);
+  blocks = applyBlocks(blocks, { kind: 'thinking', delta: '检查下一步' }, 5);
+  const before = groupTimeline(prefix, { running: true })[1];
+  const [user, first, prose, next] = groupTimeline(blocks, { running: true });
+  assert.ok(user?.type === 'block' && user.block.kind === 'prompt');
+  assert.ok(before?.type === 'work' && first?.type === 'work' && next?.type === 'work');
+  assert.equal(first.key, before.key);
+  assert.notEqual(next.key, first.key);
+  assert.ok(prose?.type === 'block' && prose.block.kind === 'text');
+  assert.equal(prose.block.text, '目录已读取');
+  assert.equal(first.live, false);
+  assert.equal(next.live, true);
 });
 
 test('失败分级、计数和时长', () => {

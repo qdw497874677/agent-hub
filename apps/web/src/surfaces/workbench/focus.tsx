@@ -659,6 +659,11 @@ export function FocusView({
   // 批准卡仍然保留原有回合和停止行为；只让动画为尚未处理的批准让位。
   const currentTurn = lastPrompt === undefined ? blocks : blocks.filter((block) => block.seq > lastPrompt);
   const hasPendingApproval = currentTurn.some((block) => block.kind === 'approval' && block.resolved === null);
+  // 只有最后一项确为尚在运行的工具组时，才把同一条工具进度挪到组头。
+  // 送达、断线、待批准和工具结束后等待模型的提示都不能被这个摘要替代。
+  const lastTimelineItem = timelineItems[timelineItems.length - 1];
+  const inlineWorkProgress = !syncState && !hasPendingApproval && delivery.pending.length === 0 && visibleHint?.stage === 'runtime' && visibleHint.phase === 'tool' && lastTimelineItem?.type === 'work' && lastTimelineItem.live && lastTimelineItem.summary.running && timelineBlocks[timelineBlocks.length - 1]?.kind === 'tool'
+    ? visibleHint : null;
   /**
    * 输入框上方那条：桌面是「正在做什么 / 分支」，窄屏不重复进度（已移到对话末尾），
    * 只留一个「工作区」入口——分支、路径、加仓库都在里面。
@@ -1373,8 +1378,8 @@ export function FocusView({
                     );
                     if (item.type === 'work') {
                       return (
-                        <WorkGroup key={`${session.id}:${item.key}`} summary={item.summary} defaultOpen={item.open} live={item.live} stale={Boolean(syncState)} forceOpen={findOpen}>
-                          {(open, mounted) => item.items.map((entry) => entry.block.kind === 'text' ? renderBlock(entry) : (
+                        <WorkGroup key={`${session.id}:${item.key}`} summary={item.summary} defaultOpen={item.open} live={item.live} stale={Boolean(syncState)} forceOpen={findOpen} progress={item === lastTimelineItem ? inlineWorkProgress ?? undefined : undefined}>
+                          {(open, mounted) => item.items.map((entry) => (
                             <div key={entry.index} data-testid="work-group-entry" hidden={!open}>{mounted ? renderBlock(entry, true) : null}</div>
                           ))}
                         </WorkGroup>
@@ -1418,7 +1423,7 @@ export function FocusView({
                   ) : null}
                   {/* 两端唯一的当前进度：贴在对话末尾，不再在输入框上方重复。 */}
                   <div className="min-h-8">
-                    {visibleHint ? (
+                    {visibleHint && !inlineWorkProgress ? (
                     <p
                       className="flex min-h-8 min-w-0 items-center gap-2 self-start text-meta text-tertiary"
                       data-testid="turn-hint"

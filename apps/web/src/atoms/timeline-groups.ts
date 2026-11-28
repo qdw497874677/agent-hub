@@ -1,4 +1,4 @@
-/** 按轮汇总活动；正文保留在原位置，操作和状态块是不可跨越的边界。 */
+/** 只汇总相邻的活动；正文、操作和状态块留在原位并结束当前组。 */
 import { toolRowKind, type ToolRowKind } from './tool-rows.ts';
 import { toolView } from './tool-format.ts';
 
@@ -60,6 +60,9 @@ export function groupTimeline<B extends Groupable>(blocks: readonly B[], opts: {
 }): TimelineItem<B>[] {
   const groupable = (block: B) => isWork(block) && (opts.groupable?.(block) ?? true);
   const lastPrompt = blocks.reduce((last, block, index) => block.kind === 'prompt' && !block.queued ? index : last, -1);
+  // 等待发送的问话不应抢走仍在运行的活动组的状态。
+  let lastActiveIndex = blocks.length - 1;
+  while (lastActiveIndex >= 0 && blocks[lastActiveIndex]!.kind === 'prompt' && blocks[lastActiveIndex]!.queued) lastActiveIndex -= 1;
   const out: TimelineItem<B>[] = [];
   let i = 0;
   while (i < blocks.length) {
@@ -68,10 +71,8 @@ export function groupTimeline<B extends Groupable>(blocks: readonly B[], opts: {
       i += 1;
       continue;
     }
-    let j = i;
-    // 正文可以夹在活动之间，但不可移位；其他任何块都是硬边界。
-    while (j < blocks.length && (groupable(blocks[j]!) || blocks[j]!.kind === 'text')) j += 1;
-    while (j > i && !groupable(blocks[j - 1]!)) j -= 1;
+    let j = i + 1;
+    while (j < blocks.length && groupable(blocks[j]!)) j += 1;
     const run = blocks.slice(i, j).map((block, k) => ({ block, index: i + k }));
     const tools = run.filter((item) => isTool(item.block)) as { block: B & ToolLike; index: number }[];
     const probes = tools.map((item) => ({ kind: toolRowKind(item.block.name, toolView(item.block.name, item.block.input)), ok: item.block.result === null ? null : item.block.result.ok }));
@@ -83,7 +84,7 @@ export function groupTimeline<B extends Groupable>(blocks: readonly B[], opts: {
       for (const probe of probes) counts[probe.kind] = (counts[probe.kind] ?? 0) + 1;
       const failed = probes.filter((probe) => probe.ok === false).length - rec.size;
       const running = probes.some((probe) => probe.ok === null);
-      const live = opts.running && i > lastPrompt && !blocks.slice(j).some((block) => block.kind !== 'prompt' || !block.queued);
+      const live = opts.running && i > lastPrompt && j - 1 === lastActiveIndex;
       out.push({
         type: 'work',
         // 流式思考的 seq 会随每个 delta 更新；块的位置在追加过程中稳定。
