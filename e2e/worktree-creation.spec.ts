@@ -86,7 +86,6 @@ async function setup(page: Page, origin: string, root: string) {
 
 async function openFromDirectory(page: Page, origin: string, projectId: string, workspaceId: string) {
   await page.goto(`${origin}/#/p/${projectId}/workdir/${workspaceId}`);
-  await page.getByTestId('workdir-add').click();
   await page.getByTestId('workdir-create-worktree').click();
   await page.getByTestId('workdir-task-picker').getByRole('button', { name: '本地计划测试任务' }).click();
   const creation = page.getByTestId('worktree-creation');
@@ -132,13 +131,18 @@ test('默认关闭计划：API 不缓存 404，既有会话入口保留', async 
     const homeResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/home');
     await page.goto(`${baseURL}/#/p/${project.id}/workdir/${workspaces[0]!.id}`);
     expect((await homeResponse).status()).toBe(200);
-    await page.getByTestId('workdir-add').click();
-    await expect(page.getByTestId('workdir-new-session')).toBeEnabled();
+    await page.getByTestId('session-tab-add').click();
+    await expect(page.getByTestId('session-tab-new-session')).toBeEnabled();
     await expect(page.getByTestId('workdir-create-worktree')).toHaveCount(0);
-    await page.getByTestId('workdir-new-session').click();
-    await page.getByTestId('workdir-task-picker').getByRole('button', { name: '本地计划测试任务' }).click();
+    await page.getByTestId('session-tab-new-session').click();
+    const newTab = page.getByTestId('session-tab-create');
+    await expect(newTab).toBeVisible();
+    await expect(newTab.getByLabel('工作位置')).toHaveValue(`workspace:${workspaces[0]!.id}`);
+    await expect(newTab.getByTestId('worktree-open')).toHaveCount(0);
+    await newTab.getByRole('button', { name: '取消', exact: true }).click();
+    await page.goto(`${baseURL}/#/p/${project.id}/list`);
+    await page.getByRole('button', { name: '开始会话：本地计划测试任务', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '开始会话' });
-    await expect(dialog.getByRole('button', { name: '开始', exact: true })).toBeEnabled();
     await expect(dialog.getByTestId('worktree-open')).toHaveCount(0);
     await dialog.getByTestId('ws-download-repo').check();
     const worktree = dialog.getByTestId('ws-new-worktree');
@@ -228,13 +232,14 @@ for (const width of [1280, 390]) {
             ...(group ? { groupId: plan.groupId } : { workspaceId: plan.workspaceId })
           });
           await page.goto(`/#/p/${project.id}/focus/${session.id}`);
-          const trigger = page.getByTestId('session-scope-trigger');
-          await expect(trigger).toHaveAccessibleName(/2/);
+          const trigger = page.getByTestId('session-tab-trigger');
+          await expect(trigger).toBeVisible();
           await trigger.click();
-          const picker = page.getByTestId('session-scope-picker');
-          await expect(picker.getByTestId('session-scope-item')).toHaveCount(2);
-          if (otherScopeSessionId) await expect(picker.locator(`[data-session-id="${otherScopeSessionId}"]`)).toHaveCount(0);
-          await picker.locator(`[data-session-id="${peer.id}"]`).click();
+          const picker = page.getByTestId('session-tab-picker');
+          const available = picker.getByTestId('session-tab-open-existing');
+          await expect(available).toHaveCount(1);
+          if (otherScopeSessionId) await expect(available.and(page.locator(`[data-session-id="${otherScopeSessionId}"]`))).toHaveCount(0);
+          await available.and(page.locator(`[data-session-id="${peer.id}"]`)).click();
           await expect(page).toHaveURL(new RegExp(`/focus/${peer.id}$`));
           otherScopeSessionId = session.id;
         }

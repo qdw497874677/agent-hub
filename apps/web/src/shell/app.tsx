@@ -37,7 +37,8 @@ import { useAccount } from './account-context.ts';
 import { rememberPaletteRecent } from '../surfaces/workbench/palette-recent.ts';
 import { NewSessionWithModelContext } from './new-session-with-model.ts';
 import { NewModelSessionDialog } from './new-model-session-dialog.tsx';
-import { WorkdirTabs } from '../surfaces/workbench/workdir-tabs.tsx';
+import { SessionDocumentTabs } from '../surfaces/workbench/session-document-tabs.tsx';
+import { resolveWorker, useWorkers } from './workers.tsx';
 import { eligibleWorkdir } from '../surfaces/workbench/workdir-model.ts';
 import { useWorkspaceViews } from '../surfaces/workbench/workspace-chooser.tsx';
 import { settingsBackgroundRoute, useRestoreSettingsFocus } from './settings-navigation.tsx';
@@ -88,6 +89,7 @@ function RedirectToMachines() {
 function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen: boolean }) {
   const [, navigate] = useRoute();
   const account = useAccount();
+  const workdirWorkers = useWorkers();
   // 项目默认落在列表：画布是刻意进去看的全局关系，不是每次打开项目的必经页。
   const narrow = useNarrow();
   const wide = useWide();
@@ -179,6 +181,18 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
 
   const refresh = useCallback(() => {
     if (project) void queryClient.invalidateQueries({ queryKey: projectKeys.canvas(project.id) });
+  }, [project, queryClient]);
+
+  const retainCreatedSession = useCallback((session: SessionDto) => {
+    if (!project) return;
+    const key = projectKeys.canvas(project.id);
+    void queryClient.cancelQueries({ queryKey: key });
+    queryClient.setQueryData<CanvasDto>(key, (current) => current && !current.sessions.some((item) => item.id === session.id)
+      ? { ...current, sessions: [...current.sessions, session] }
+      : current);
+    queueMicrotask(() => {
+      void queryClient.invalidateQueries({ queryKey: key });
+    });
   }, [project, queryClient]);
 
   /**
@@ -653,14 +667,22 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
         </div>
 
       {view === 'workdir' ? canvas.data && account && workdirWorkspace ? (
-        <WorkdirTabs key={`${account.id}:${project.id}:${workdirWorkspace.id}`} accountId={account.id} projectId={project.id} workspace={workdirWorkspace} canvas={canvas.data} worktreePlansAvailable={home.data?.worktreePlansAvailable === true} openSessionId={workdirOpenSession} onSession={selectWorkdirSession}
+        <SessionDocumentTabs key={`${account.id}:${project.id}:${workdirWorkspace.id}`} accountId={account.id} scopeKey={`workdir:${workdirWorkspace.id}`} initialSessionId={workdirOpenSession} workspace={workdirWorkspace} canvas={canvas.data} onSession={selectWorkdirSession} onNewSessionCreated={retainCreatedSession} onRefresh={refresh} worktreeAction={home.data?.worktreePlansAvailable ? <button type="button" data-testid="workdir-create-worktree" className="min-h-[44px] px-2 text-meta text-secondary" disabled={!resolveWorker(workdirWorkers.list, workdirWorkspace.workerId)} onClick={() => { const worker = resolveWorker(workdirWorkers.list, workdirWorkspace.workerId); if (worker) { setWorkdirDerive({ id: workdirWorkspace.id, workerId: worker.workerId, createWorktree: true }); setWorkdirTaskPicker(true); } }}>创建 Worktree</button> : null}
           onBack={() => navigate({ page: 'project', projectId: project.id, view: 'list', sessionId: null })}
-          onNewSession={(workspace, workerId, createWorktree) => { setWorkdirDerive({ id: workspace.id, workerId, createWorktree }); setWorkdirTaskPicker(true); }}
-          renderSession={(id) => selectedSession?.id === id && selectedSession.workspaceId === workdirWorkspace.id && !selectedSession.groupId ? <FocusView key={id} independentWorkdir canvas={canvas.data!} session={selectedSession} live={resolveLive(selectedSession, canvas.data!.previews[id] ?? [], live[id])} historyState={history[id] ?? 'loading'} onRetryHistory={() => void loadHistory(selectedSession)} syncState={sync[id]} onRetrySync={() => retrySync(id)} draft={drafts[id] ?? ''} onDraftChange={(text) => setDrafts((current) => ({ ...current, [id]: text }))} onBack={() => navigate({ page: 'project', projectId: project.id, view: 'list', sessionId: null })} onProjectNavigation={() => setSidebarOpen(true)} onSearch={() => setSearch(true)} onChanged={refresh} onOpenSession={openSession} onSeedDraft={(sessionId, text) => setDrafts((current) => ({ ...current, [sessionId]: text }))} artifacts={canvas.data!.artifacts.filter((artifact) => artifact.sessionId === id)} onChangeOption={(optionId, value) => changeOption(id, optionId, value)} /> : <div className="p-6 text-tertiary">{sideSession.isError || selectedSession ? '会话不可用或不属于此目录' : '正在读取会话…'}</div>}
+          renderSession={(id, navigation) => selectedSession?.id === id ? <FocusView key={id} documentTabs={navigation} independentWorkdir canvas={canvas.data!} session={selectedSession} live={resolveLive(selectedSession, canvas.data!.previews[id] ?? [], live[id])} historyState={history[id] ?? 'loading'} onRetryHistory={() => void loadHistory(selectedSession)} syncState={sync[id]} onRetrySync={() => retrySync(id)} draft={drafts[id] ?? ''} onDraftChange={(text) => setDrafts((current) => ({ ...current, [id]: text }))} onBack={() => navigate({ page: 'project', projectId: project.id, view: 'list', sessionId: null })} onProjectNavigation={() => setSidebarOpen(true)} onSearch={() => setSearch(true)} onChanged={refresh} onOpenSession={openSession} onSeedDraft={(sessionId, text) => setDrafts((current) => ({ ...current, [sessionId]: text }))} artifacts={canvas.data!.artifacts.filter((artifact) => artifact.sessionId === id)} onChangeOption={(optionId, value) => changeOption(id, optionId, value)} /> : null} sessionUnavailable={sideSession.isError ? '会话不可用或无法读取' : '正在读取会话…'}
         />
-      ) : <div data-testid="workdir-state" role="status" className="p-6 text-sub text-tertiary">{workdirViews.isPending || canvas.isPending ? '正在读取工作目录…' : workdirViews.isError ? '工作目录读取失败' : '工作目录不可用或无权访问'}</div> : view === 'focus' ? canvas.data && selectedSession ? (
-        <FocusView
-          key={selectedSession.id}
+      ) : <div data-testid="workdir-state" role="status" className="p-6 text-sub text-tertiary">{workdirViews.isPending || canvas.isPending ? '正在读取工作目录…' : workdirViews.isError ? '工作目录读取失败' : '工作目录不可用或无权访问'}</div> : view === 'focus' ? canvas.data && account ? (
+        <SessionDocumentTabs accountId={account.id} canvas={canvas.data} scopeKey="focus" initialSessionId={selected} onSession={(id) => { if (id && id !== selected) openSession(id); }} onBack={backFromFocus} onNewSessionCreated={retainCreatedSession} onRefresh={refresh} sessionUnavailable={(id) => <div className="flex min-h-0 flex-1 items-center justify-center px-6" data-testid="session-route-state">
+          <div className="max-w-sm space-y-3 text-center" role={id === selected && sideSession.isError ? 'alert' : 'status'}>
+            <p className="text-body text-primary">{id !== selected || sideSession.isPending ? '正在读取会话…' : sideSession.error instanceof RequestFailed && sideSession.error.status === 403 ? '没有权限查看这条会话' : sideSession.error instanceof RequestFailed && sideSession.error.status === 404 ? '找不到这条会话' : '会话读取失败'}</p>
+            <p className="text-meta text-tertiary">确认会话后才能发送消息。</p>
+            <div className="flex flex-wrap justify-center gap-3 text-sub">
+              <button type="button" onClick={backFromFocus} className="min-h-11 text-tertiary hover:text-primary">返回</button>
+              {id === selected && sideSession.isError ? <button type="button" onClick={() => void sideSession.refetch()} className="min-h-11 text-sage underline underline-offset-2">重试</button> : null}
+            </div>
+          </div>
+        </div>} renderSession={(id, navigation) => selectedSession?.id === id ? <FocusView
+          key={id} documentTabs={navigation}
           canvas={canvas.data}
           session={selectedSession}
           live={resolveLive(selectedSession, canvas.data.previews[selectedSession.id] ?? [], live[selectedSession.id])}
@@ -680,7 +702,7 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
           onChangeOption={(optionId, value) =>
             changeOption(selectedSession.id, optionId, value)
           }
-        />
+        /> : null} />
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center px-6" data-testid="session-route-state">
           <div className="max-w-sm space-y-3 text-center" role={canvas.isError || sideSession.isError || !selected ? 'alert' : 'status'}>

@@ -41,16 +41,17 @@ for (const width of [1280, 390]) {
         const excluded = await start(other.id);
         await post(`/api/sessions/${a.id}/prompt`, { text: '会话 A 的记录' }, 202);
 
-        const item = (scope: Locator, id: string) => scope.locator(`[data-testid="session-scope-item"][data-session-id="${id}"]`);
-        const options = async (scope: Locator, active: string) => {
-          const trigger = scope.getByTestId('session-scope-trigger');
-          await expect(trigger).toHaveAccessibleName(/切换会话.*2/);
+        const item = (scope: Locator, id: string) => scope.locator(`:is([data-testid="session-tab-item"], [data-testid="session-tab-open-existing"])[data-session-id="${id}"]`);
+        const options = async (scope: Locator, active: string, count: number) => {
+          const trigger = scope.getByTestId('session-tab-trigger');
+          await expect(trigger).toHaveAccessibleName(new RegExp(`切换标签.*${count}`));
           const bounds = (await trigger.boundingBox())!;
           if (touch) { expect(bounds.width).toBeGreaterThanOrEqual(44); expect(bounds.height).toBeGreaterThanOrEqual(44); }
           await trigger.click();
-          const picker = page.getByTestId('session-scope-picker');
+          const picker = page.getByTestId('session-tab-picker');
           await expect(picker).toBeVisible();
-          await expect(picker.getByTestId('session-scope-item')).toHaveCount(2);
+          await expect(picker.getByTestId('session-tab-item')).toHaveCount(count);
+          await expect(picker.getByTestId('session-tab-open-existing')).toHaveCount(2 - count);
           await expect(item(picker, active)).toHaveAttribute('aria-current', /true|page/);
           await expect(item(picker, excluded.id)).toHaveCount(0);
           return picker;
@@ -68,7 +69,7 @@ for (const width of [1280, 390]) {
           await held;
           await route.continue();
         });
-        await item(await options(page.locator('body'), a.id), b.id).click();
+        await item(await options(page.locator('body'), a.id, 1), b.id).click();
         await expect(page).toHaveURL(new RegExp(`/focus/${b.id}$`));
         await expect.poll(() => requests).toBeGreaterThan(0);
         await expect(page.getByTestId('session-history-state')).toContainText('正在读取会话记录');
@@ -76,7 +77,7 @@ for (const width of [1280, 390]) {
         await expect(page.getByRole('log', { name: '会话记录' }).getByTestId('msg-user').filter({ hasText: '会话 A 的记录' })).toHaveCount(0);
         release();
         await expect(page.getByTestId('session-history-state')).toHaveCount(0);
-        await item(await options(page.locator('body'), b.id), a.id).click();
+        await item(await options(page.locator('body'), b.id, 2), a.id).click();
         await expect(page.getByRole('textbox', { name: '发送消息' })).toHaveValue(draft);
 
         // 只换同一运行中的 hash，不重新载入文档或伪造一份草稿。
@@ -86,12 +87,12 @@ for (const width of [1280, 390]) {
         await expect(window.getByRole('textbox', { name: '发送消息' })).toHaveValue(draft);
         await expect(window.getByTestId('msg-user').filter({ hasText: '会话 A 的记录' })).toBeVisible();
         await page.screenshot({ path: testInfo.outputPath(`session-canvas-${width}.png`) });
-        await item(await options(window, a.id), b.id).click();
+        await item(await options(window, a.id, 1), b.id).click();
         window = page.locator(`[data-testid="canvas-window"][data-session-id="${b.id}"]`);
         await expect(window).toBeVisible();
         await expect(page).toHaveURL(/\/canvas$/);
         await expect(window.getByRole('textbox', { name: '发送消息' })).toHaveValue('');
-        await item(await options(window, b.id), a.id).click();
+        await item(await options(window, b.id, 2), a.id).click();
         await expect(page.locator(`[data-testid="canvas-window"][data-session-id="${a.id}"]`).getByRole('textbox', { name: '发送消息' })).toHaveValue(draft);
       } finally {
         release();

@@ -1,9 +1,9 @@
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test, expect, type Page, type Locator } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
  * 画布中展开会话（docs/design/canvas-expanded-sessions.md）：
@@ -17,29 +17,33 @@ const viewport = (page: Page) => page.locator('.react-flow__viewport').evaluate(
 const windows = (page: Page) => page.getByTestId('canvas-window');
 const win = (page: Page, id: string) => page.locator(`[data-testid="canvas-window"][data-session-id="${id}"]`);
 const card = (page: Page, id: string) => page.locator(`.react-flow__node-session[data-id="${id}"]`);
+const dirs = new Set<string>();
+
+test.afterAll(() => {
+  stopFakeWorker();
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+});
 
 async function setup(page: Page, baseURL: string, count: number) {
   await loginByApi(page);
+  const workerId = await ensureFakeWorker(page, baseURL);
   const csrf = (await page.context().cookies()).find((c) => c.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  let agentId: string | undefined;
-  for (let i = 0; i < 40 && !agentId; i++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((w) => w.state === 'online')?.agentIds[0];
-    if (!agentId) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const post = async <T>(url: string, data: unknown, status = 201): Promise<T> => {
+    const response = await page.request.post(url, { headers, data });
+    expect(response.status(), await response.text()).toBe(status);
+    return await response.json() as T;
+  };
   const dir = mkdtempSync(join(tmpdir(), 'e2e-windows-'));
-  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 窗口 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
-  const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '多窗口' }, headers })).json()) as { id: string };
-  rmSync(dir, { recursive: true, force: true }); // 目录不在：agent 很快失败落地，不真去跑模型
+  dirs.add(dir);
+  const project = await post<{ id: string }>('/api/projects', { name: `e2e 窗口 ${Date.now().toString(36)}`, rootPath: dir, workerId });
+  const task = await post<{ id: string }>('/api/tasks', { projectId: project.id, title: '多窗口' });
   const ids: string[] = [];
-  for (let i = 0; i < count; i++) ids.push(((await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string }).id);
+  for (let i = 0; i < count; i++) ids.push((await post<{ id: string }>('/api/sessions/derive', { taskId: task.id, workerId, agentId: FAKE_AGENT_ID, model: '' })).id);
   const long = Array.from({ length: 40 }, (_, i) => `窗口第 ${i + 1} 行：${'很长的一段话，'.repeat(6)}`).join('\n');
-  await page.request.post(`/api/sessions/${ids[0]}/prompt`, { data: { text: long }, headers });
+  await post(`/api/sessions/${ids[0]}/prompt`, { text: long }, 202);
   await page.goto(`/#/p/${project.id}/canvas`);
   await expect(page.locator('.react-flow__node-session')).toHaveCount(count);
-  await page.waitForTimeout(1200);
   return { ids, projectId: project.id };
 }
 
@@ -115,12 +119,15 @@ test.describe('画布中展开会话', () => {
     // 标题栏拖窗口：窗口动、画布不动，变成自由窗口
     {
       const vp = await viewport(page);
-      const title = win(page, a).getByTestId('window-titlebar').locator('p').first();
+      const title = win(page, a).getByTestId('window-titlebar');
+      await expect(title).toBeVisible();
       const before = (await win(page, a).boundingBox())!;
       const t = (await title.boundingBox())!;
-      await page.mouse.move(t.x + 20, t.y + t.height / 2);
+      // The session name is a button; drag from the title bar's inert top padding instead.
+      const [x, y] = [t.x + 7, t.y + 5];
+      await page.mouse.move(x, y);
       await page.mouse.down();
-      for (let k = 1; k <= 10; k++) await page.mouse.move(t.x + 20 + 4 * k, t.y + t.height / 2 + 3 * k);
+      for (let k = 1; k <= 10; k++) await page.mouse.move(x + 4 * k, y + 3 * k);
       await page.mouse.up();
       await expect(win(page, a)).toHaveAttribute('data-mode', 'free');
       const after = (await win(page, a).boundingBox())!;

@@ -104,6 +104,8 @@ interface Props {
   readonly artifacts: readonly ArtifactDto[];
   readonly onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
   readonly independentWorkdir?: boolean;
+  /** The host owns the open-view tabs; this does not change external session links. */
+  readonly documentTabs?: ReactNode;
 }
 
 /**
@@ -147,7 +149,8 @@ export function FocusView({
   artifacts,
   onChangeOption,
   windowChrome,
-  independentWorkdir = false
+  independentWorkdir = false,
+  documentTabs
 }: Props) {
   const [busy, setBusy] = useState(false);
   // 组合工作目录（多仓库项目）：只有这种会话才有 groupId
@@ -885,7 +888,7 @@ export function FocusView({
           lastSeq={live?.lastSeq ?? session.lastSeq}
           attention={status === 'done' && answerItem ? { possible: answerItem.possible } : null}
         />
-        {narrow && !independentWorkdir ? <SessionSwitcher canvas={canvas} session={session} compact status={status} lastSeq={live?.lastSeq ?? session.lastSeq} onOpen={onOpenSession} /> : null}
+        {documentTabs ?? (narrow && !independentWorkdir ? <SessionSwitcher canvas={canvas} session={session} compact status={status} lastSeq={live?.lastSeq ?? session.lastSeq} onOpen={onOpenSession} /> : null)}
         <span className="flex shrink-0 items-center">
           <button
             className={`${narrow ? 'hidden' : 'hidden md:flex'} h-11 shrink-0 items-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary md:px-2 md:h-9`}
@@ -1064,7 +1067,7 @@ export function FocusView({
           {windowChrome?.actions}
         </span>
       </header>
-      {!narrow && !independentWorkdir ? <SessionSwitcher canvas={canvas} session={session} compact={false} status={status} lastSeq={live?.lastSeq ?? session.lastSeq} onOpen={onOpenSession} /> : null}
+      {!narrow && !independentWorkdir && !documentTabs ? <SessionSwitcher canvas={canvas} session={session} compact={false} status={status} lastSeq={live?.lastSeq ?? session.lastSeq} onOpen={onOpenSession} /> : null}
       {narrow ? <MobileHandoff key={session.id} session={session} projectId={canvas.project.id} open={mobileHandoffSession === session.id} onClose={() => setMobileHandoffSession(null)} restoreFocusRef={moreRef} /> : null}
       {session.kind === 'side' ? (
         <button

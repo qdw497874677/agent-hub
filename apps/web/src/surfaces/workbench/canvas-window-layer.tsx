@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Rnd } from 'react-rnd';
-import type { CanvasDto, SessionDto } from '../../shell/api.ts';
+import { sessionGroupId, type CanvasDto, type SessionDto } from '../../shell/api.ts';
+import { useWorkspaceViews } from './workspace-chooser.tsx';
+import { eligibleWorkdir } from './workdir-model.ts';
 import { FocusView } from './focus.tsx';
+import { SessionDocumentTabs } from './session-document-tabs.tsx';
 import { resolveLive, waitingForReply, type Block, type LiveMap } from '../../atoms/live.ts';
 import { useTurnProgress } from '../../atoms/use-turn-progress.ts';
 import { statusStyle } from '../../atoms/status.tsx';
 import { useAccount } from '../../shell/auth.tsx';
 import {
   closeWindow, focusWindow, focused, keepOnly, layoutWindows, minimizeWindow, minimized, moveWindow, openWindow,
-  restoreWindow, retile, tileCapacity, toggleMaximize, windowsKey, type Rect, type WindowSet, type WindowStore
+  restoreWindow, retile, tileCapacity, toggleMaximize, windowsKey, selectWindowSession, type Rect, type WindowSet, type WindowStore, type SessionWindow
 } from './canvas-windows.ts';
 import { localWindowStore } from './canvas-windows-store.ts';
 import { Sheet } from '../../shell/dialog-shell.tsx';
@@ -80,10 +83,13 @@ export function useCanvasWindows(
     if (!measured) return; // 还没量出可视区时不收窗口（否则刷新时会把平铺窗口全收进窗口条）
     act((current, cap) => {
       const top = focused(current);
-      return top && current.windows.filter((w) => w.mode === 'tiled').length > cap ? restoreWindow(current, top.sessionId, cap) : current;
+      return top && current.windows.filter((w) => w.mode === 'tiled').length > cap ? restoreWindow(current, top.windowId, cap) : current;
     });
   }, [capacity, measured, act]);
-  const expand = useCallback((sessionId: string) => act((current, cap) => openWindow(current, sessionId, cap)), [act]);
+  const expand = useCallback((sessionId: string) => {
+    const session = canvas.sessions.find((item) => item.id === sessionId);
+    act((current, cap) => openWindow(current, sessionId, cap, session && !sessionGroupId(session) ? session.workspaceId : null));
+  }, [act, canvas.sessions]);
   const expanded = useCallback((sessionId: string) => set.windows.some((w) => w.sessionId === sessionId), [set]);
   return { set, expand, expanded, retile: () => act((current, cap) => retile(current, cap)), act, area };
 }
@@ -105,6 +111,7 @@ interface LayerProps {
   readonly onChangeOption: (sessionId: string, optionId: string, value: string | boolean) => Promise<void>;
   readonly onProjectSessions: (sessionId: string) => void;
   readonly onWindowFocusChange: (sessionId: string | null) => void;
+  readonly onNewSessionCreated: (session: SessionDto) => void;
 }
 
 export function sessionTitle(canvas: CanvasDto, session: SessionDto): string {
@@ -120,54 +127,78 @@ const BTN = 'flex h-9 w-8 shrink-0 items-center justify-center rounded-sm text-m
  * 画布上面的窗口层（屏幕坐标）：画布平移缩放时窗口不动，字始终清楚。
  * 交互分区：标题栏拖窗口、对话区只滚动、右下角改大小；窗口以外的画布照旧。
  */
-export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRetryHistory, sync, onRetrySync, drafts, onDraftChange, onChanged, onOpen, onChangeOption, onProjectSessions, onWindowFocusChange }: LayerProps) {
+export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRetryHistory, sync, onRetrySync, drafts, onDraftChange, onChanged, onOpen, onChangeOption, onProjectSessions, onWindowFocusChange, onNewSessionCreated }: LayerProps) {
   const { set, act, area } = windows;
+  const account = useAccount();
+  const workspaceViews = useWorkspaceViews(canvas.project.id);
   const byId = useMemo(() => new Map(canvas.sessions.map((session) => [session.id, session])), [canvas.sessions]);
   const rects = useMemo(() => (area ? layoutWindows(set, area) : new Map<string, Rect>()), [set, area]);
   const top = focused(set);
-  const open = set.windows.filter((w) => byId.has(w.sessionId));
+  const open = set.windows.filter((w) => w.sessionId === null || byId.has(w.sessionId));
   const [chooser, setChooser] = useState(false);
+  const standaloneSwipe = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   useEffect(() => { onWindowFocusChange(top?.sessionId ?? null); }, [top?.sessionId, onWindowFocusChange]);
   useEffect(() => {
-    if (!narrow || !area || !top || !byId.has(top.sessionId)) setChooser(false);
+    if (!narrow || !area || !top || top.sessionId !== null && !byId.has(top.sessionId)) setChooser(false);
   }, [narrow, area, top, byId]);
   if (!area || open.length === 0) return null;
 
-  const pane = (sessionId: string, actions: ReactNode, onSwipe?: (step: number) => void) => {
-    const session = byId.get(sessionId)!;
-    return (
-      <FocusView
-        key={sessionId}
-        canvas={canvas}
-        session={session}
-        live={resolveLive(session, canvas.previews[session.id] ?? [], live[session.id])}
-        historyState={history[session.id] ?? 'loading'}
-        onRetryHistory={() => onRetryHistory(session)}
-        syncState={sync[session.id]}
-        onRetrySync={() => onRetrySync(session.id)}
-        draft={drafts[session.id] ?? ''}
-        onDraftChange={(text) => onDraftChange(session.id, text)}
-        onChanged={onChanged}
-        onOpenSession={(id) => act((current, cap) => openWindow(current, id, cap))}
-        onSeedDraft={onDraftChange}
-        artifacts={canvas.artifacts.filter((artifact) => artifact.sessionId === session.id)}
-        onChangeOption={(optionId, value) => onChangeOption(session.id, optionId, value)}
-        windowChrome={{ actions, onSwipe }}
-      />
-    );
-  };
+  const pane = (window: SessionWindow, actions: ReactNode, onSwipe?: (step: number) => void) => (
+    <SessionDocumentTabs
+      key={window.windowId}
+      accountId={account?.id ?? 'anon'}
+      canvas={canvas}
+      scopeKey={`canvas:${window.windowId}`}
+      initialSessionId={window.sessionId}
+      anchorSessionId={window.anchorSessionId}
+      workspace={(() => {
+        const anchor = byId.get(window.anchorSessionId);
+        const id = window.anchorWorkspaceId ?? (anchor && !sessionGroupId(anchor) ? anchor.workspaceId : null);
+        return (workspaceViews.data ?? []).find(({ workspace, ownerProjectId }) => workspace.id === id && eligibleWorkdir(workspace, ownerProjectId, canvas.project.id))?.workspace;
+      })()}
+      standaloneActions={actions}
+      sessionUnavailable="会话暂不可用"
+      onSession={(id) => act((current) => selectWindowSession(current, window.windowId, id))}
+      onNewSessionCreated={onNewSessionCreated}
+      onRefresh={onChanged}
+      renderSession={(sessionId, navigation) => {
+        const session = byId.get(sessionId);
+        if (!session) return null;
+        return <FocusView
+          key={sessionId}
+          canvas={canvas}
+          session={session}
+          live={resolveLive(session, canvas.previews[session.id] ?? [], live[session.id])}
+          historyState={history[session.id] ?? 'loading'}
+          onRetryHistory={() => onRetryHistory(session)}
+          syncState={sync[session.id]}
+          onRetrySync={() => onRetrySync(session.id)}
+          draft={drafts[session.id] ?? ''}
+          onDraftChange={(text) => onDraftChange(session.id, text)}
+          onChanged={onChanged}
+          onOpenSession={windows.expand}
+          onSeedDraft={onDraftChange}
+          artifacts={canvas.artifacts.filter((artifact) => artifact.sessionId === session.id)}
+          onChangeOption={(optionId, value) => onChangeOption(session.id, optionId, value)}
+          documentTabs={navigation}
+          windowChrome={{ actions, onSwipe }}
+        />;
+      }}
+    />
+  );
 
   const bar = (
     <WindowBar
       items={minimized(set).flatMap((w) => {
-        const session = byId.get(w.sessionId);
-        if (!session) return [];
-        const local = live[session.id];
-        const agentLabel = canvas.agents.find((candidate) => candidate.id === session.agentId)?.label ?? session.agentId;
+        const session = byId.get(w.sessionId ?? w.anchorSessionId);
+        if (!session && w.sessionId !== null) return [];
+        const local = session ? live[session.id] : undefined;
+        const agentLabel = session ? (canvas.agents.find((candidate) => candidate.id === session.agentId)?.label ?? session.agentId) : '';
         return [{
+          windowId: w.windowId,
           session,
-          title: sessionTitle(canvas, session),
-          waiting: waitingForReply(local ?? null, local?.status ?? session.status),
+          title: w.sessionId === null || !session ? '终端' : sessionTitle(canvas, session),
+          waiting: !!session && w.sessionId !== null && waitingForReply(local ?? null, local?.status ?? session.status),
           blocks: local?.blocks ?? [],
           agentLabel
         }];
@@ -178,32 +209,47 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRe
   );
 
   if (narrow) {
-    const shown = top && byId.has(top.sessionId) ? top : null;
+    const shown = top && (top.sessionId === null || byId.has(top.sessionId)) ? top : null;
     if (!shown) return bar;
-    const index = open.findIndex((w) => w.sessionId === shown.sessionId);
+    const index = open.findIndex((w) => w.windowId === shown.windowId);
     const go = (step: number) => {
       const next = open[(index + step + open.length) % open.length];
-      if (next && next.sessionId !== shown.sessionId) act((current, cap) => restoreWindow(current, next.sessionId, cap));
+      if (next && next.windowId !== shown.windowId) act((current, cap) => restoreWindow(current, next.windowId, cap));
     };
     return (
-      <div className="absolute inset-0 z-30 flex flex-col bg-canvas" data-testid="canvas-window" data-session-id={shown.sessionId} data-mobile="true">
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{pane(shown.sessionId, <>
-          <button className="min-h-[44px] min-w-[44px] shrink-0 text-sub text-tertiary hover:text-primary" aria-label="‹ 画布" onClick={() => act((current) => minimizeWindow(current, shown.sessionId))}>‹</button>
+      <div className="absolute inset-0 z-30 flex flex-col bg-canvas" data-testid="canvas-window" data-session-id={shown.sessionId ?? undefined} data-window-id={shown.windowId} data-mobile="true">
+        <div
+          className="flex min-h-0 flex-1 flex-col overflow-hidden [&_header.window-drag-handle]:[touch-action:pan-y]"
+          onPointerDown={(event) => {
+            const target = event.target;
+            if (!(target instanceof Element) || !target.closest('header.window-drag-handle') || target.closest('button, a, input, textarea, select, [role="menu"], [role="menuitem"]')) return;
+            standaloneSwipe.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+          }}
+          onPointerUp={(event) => {
+            const start = standaloneSwipe.current;
+            standaloneSwipe.current = null;
+            if (!start || start.pointerId !== event.pointerId) return;
+            const dx = event.clientX - start.x;
+            if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(event.clientY - start.y)) go(dx < 0 ? 1 : -1);
+          }}
+          onPointerCancel={() => { standaloneSwipe.current = null; }}
+        >{pane(shown, <>
+          <button className="min-h-[44px] min-w-[44px] shrink-0 text-sub text-tertiary hover:text-primary" aria-label="‹ 画布" onClick={() => act((current) => minimizeWindow(current, shown.windowId))}>‹</button>
           <button className="min-h-[44px] min-w-[44px] shrink-0 text-meta text-secondary hover:text-primary" aria-label={`窗口 ${index + 1}/${open.length}`} aria-haspopup="dialog" onClick={() => setChooser(true)}><span className="font-mono" data-testid="window-count">{index + 1}/{open.length}</span></button>
-          <button className="min-h-[44px] min-w-[44px] shrink-0 text-meta text-tertiary hover:text-primary" aria-label="关闭窗口" onClick={() => act((current) => closeWindow(current, shown.sessionId))}>×</button>
+          <button className="min-h-[44px] min-w-[44px] shrink-0 text-meta text-tertiary hover:text-primary" aria-label="关闭窗口" onClick={() => act((current) => closeWindow(current, shown.windowId))}>×</button>
         </>, go)}</div>
         {chooser ? (
           <Sheet title="已打开的窗口" testId="window-chooser" onClose={() => setChooser(false)} footer={
-            <button className="min-h-[44px] w-full rounded-md border border-hair px-3 text-left text-sub text-primary hover:bg-hover" onClick={() => { setChooser(false); onProjectSessions(shown.sessionId); }}>
+            <button className="min-h-[44px] w-full rounded-md border border-hair px-3 text-left text-sub text-primary hover:bg-hover" onClick={() => { setChooser(false); onProjectSessions(shown.sessionId ?? shown.anchorSessionId); }}>
               查看项目全部会话 <span aria-hidden className="float-right">→</span>
             </button>
           }>
             <p className="px-2 pb-2 text-meta text-tertiary">已打开 {open.length} 个窗口</p>
             {open.map((w) => {
-              const current = w.sessionId === shown.sessionId;
-              return <button key={w.sessionId} data-testid="window-chooser-item" data-session-id={w.sessionId} aria-current={current ? 'true' : undefined} className={`flex min-h-[44px] w-full items-center gap-3 rounded-md px-3 text-left text-sub ${current ? 'bg-selected text-primary' : 'text-secondary hover:bg-hover'}`} onClick={() => { act((value, cap) => restoreWindow(value, w.sessionId, cap)); setChooser(false); }}>
-                <span className="min-w-0 flex-1 truncate">{sessionTitle(canvas, byId.get(w.sessionId)!)}</span>
-                <span className="shrink-0 font-mono text-meta text-tertiary">#{w.sessionId.slice(-4)}</span>
+              const current = w.windowId === shown.windowId;
+              return <button key={w.windowId} data-testid="window-chooser-item" data-session-id={w.sessionId ?? undefined} data-window-id={w.windowId} aria-current={current ? 'true' : undefined} className={`flex min-h-[44px] w-full items-center gap-3 rounded-md px-3 text-left text-sub ${current ? 'bg-selected text-primary' : 'text-secondary hover:bg-hover'}`} onClick={() => { act((value, cap) => restoreWindow(value, w.windowId, cap)); setChooser(false); }}>
+                <span className="min-w-0 flex-1 truncate">{w.sessionId === null ? '终端' : sessionTitle(canvas, byId.get(w.sessionId)!)}</span>
+                <span className="shrink-0 font-mono text-meta text-tertiary">#{(w.sessionId ?? w.anchorSessionId).slice(-4)}</span>
                 {current ? <span className="shrink-0 text-meta text-tertiary">当前</span> : null}
               </button>;
             })}
@@ -216,13 +262,13 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRe
   return (
     <div className="pointer-events-none absolute inset-0 z-20" data-testid="canvas-window-layer">
       {open.map((w) => {
-        const rect = rects.get(w.sessionId);
+        const rect = rects.get(w.windowId);
         if (!rect || w.mode === 'min') return null;
-        const isTop = top?.sessionId === w.sessionId;
-        const session = byId.get(w.sessionId)!;
+        const isTop = top?.windowId === w.windowId;
+        const session = byId.get(w.sessionId ?? w.anchorSessionId);
         return (
           <Rnd
-            key={w.sessionId}
+            key={w.windowId}
             className="pointer-events-auto"
             style={{ zIndex: w.z }}
             position={{ x: rect.x, y: rect.y }}
@@ -230,51 +276,52 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRe
             minWidth={320}
             minHeight={240}
             bounds="parent"
-            dragHandleClassName="window-drag"
+            dragHandleClassName="window-drag, .window-drag-handle"
             cancel="button, a, input, textarea, select, [role=menu], [role=menuitem]"
             enableResizing={w.mode === 'max' ? false : { bottomRight: true, right: true, bottom: true }}
             disableDragging={w.mode === 'max'}
             resizeHandleStyles={{ bottomRight: { right: 0, bottom: 0, width: 18, height: 18, zIndex: 50 } }}
             resizeHandleComponent={{ bottomRight: <span data-testid="window-resize" className="block size-full cursor-se-resize border-r-2 border-b-2 border-strong" /> }}
-            onMouseDown={() => act((current) => focusWindow(current, w.sessionId))}
-            onTouchStart={() => act((current) => focusWindow(current, w.sessionId))}
+            onMouseDown={() => act((current) => focusWindow(current, w.windowId))}
+            onTouchStart={() => act((current) => focusWindow(current, w.windowId))}
             onDragStop={(_, d) => {
               if (Math.abs(d.x - rect.x) < 2 && Math.abs(d.y - rect.y) < 2) return;
-              act((current) => moveWindow(current, w.sessionId, { ...rect, x: d.x, y: d.y }, area));
+              act((current) => moveWindow(current, w.windowId, { ...rect, x: d.x, y: d.y }, area));
             }}
             onResizeStop={(_, __, element, ___, position) =>
               act((current) =>
-                moveWindow(current, w.sessionId, { x: position.x, y: position.y, width: element.offsetWidth, height: element.offsetHeight }, area)
+                moveWindow(current, w.windowId, { x: position.x, y: position.y, width: element.offsetWidth, height: element.offsetHeight }, area)
               )
             }
           >
             {/* 窗口本身要是 flex 容器：pane 的滚动区靠 flex-1 + min-h-0 收缩，block 父级下会塌成内容高度（#215）。 */}
             <section
-              aria-label={`会话窗口：${sessionTitle(canvas, session)}`}
+              aria-label={session ? `会话窗口：${w.sessionId === null ? '终端' : sessionTitle(canvas, session)}` : '会话窗口'}
               data-testid="canvas-window"
-              data-session-id={w.sessionId}
+              data-session-id={w.sessionId ?? undefined}
+              data-window-id={w.windowId}
               data-mode={w.mode}
               data-focused={isTop ? 'true' : undefined}
               className={`flex h-full flex-col overflow-hidden rounded-md border bg-canvas shadow-lg ${isTop ? 'border-fg/40' : 'border-hair'}`}
             >
               {pane(
-                w.sessionId,
+                w,
                 <>
-                  <button className={BTN} title="最小化" aria-label="最小化" onClick={() => act((current) => minimizeWindow(current, w.sessionId))}>
+                  <button className={BTN} title="最小化" aria-label="最小化" onClick={() => act((current) => minimizeWindow(current, w.windowId))}>
                     –
                   </button>
                   <button
                     className={BTN}
                     title={w.mode === 'max' ? '还原' : '最大化'}
                     aria-label={w.mode === 'max' ? '还原' : '最大化'}
-                    onClick={() => act((current, cap) => toggleMaximize(current, w.sessionId, cap))}
+                    onClick={() => act((current, cap) => toggleMaximize(current, w.windowId, cap))}
                   >
                     {w.mode === 'max' ? '❐' : '□'}
                   </button>
-                  <button className={BTN} title="打开会话页" aria-label="打开会话页" onClick={() => onOpen(w.sessionId)}>
+                  <button className={BTN} title="打开会话页" aria-label="打开会话页" disabled={w.sessionId === null} onClick={() => { if (w.sessionId !== null) onOpen(w.sessionId); }}>
                     ↗
                   </button>
-                  <button className={BTN} title="关闭窗口（会话照常跑）" aria-label="关闭窗口" onClick={() => act((current) => closeWindow(current, w.sessionId))}>
+                  <button className={BTN} title="关闭窗口（会话照常跑）" aria-label="关闭窗口" onClick={() => act((current) => closeWindow(current, w.windowId))}>
                     ×
                   </button>
                 </>
@@ -293,7 +340,7 @@ function WindowBar({
   onRestore,
   onClose
 }: {
-  items: { session: SessionDto; title: string; waiting: boolean; blocks: readonly Block[]; agentLabel: string }[];
+  items: { windowId: string; session: SessionDto | undefined; title: string; waiting: boolean; blocks: readonly Block[]; agentLabel: string }[];
   onRestore: (sessionId: string) => void;
   onClose: (sessionId: string) => void;
 }) {
@@ -304,16 +351,16 @@ function WindowBar({
       data-testid="window-bar"
       className="pointer-events-auto absolute bottom-3 left-1/2 z-30 flex max-w-[calc(100%-8rem)] -translate-x-1/2 gap-1.5 overflow-x-auto rounded-lg border border-strong bg-overlay p-1 shadow-overlay"
     >
-      {items.map(({ session, title, waiting, blocks, agentLabel }) => {
-        const style = statusStyle(session.status, session.lastSeq);
+      {items.map(({ windowId, session, title, waiting, blocks, agentLabel }) => {
+        const style = session ? statusStyle(session.status, session.lastSeq) : null;
         return (
-          <span key={session.id} className="flex shrink-0 items-center rounded-sm border border-hair">
-            <button className="flex h-9 max-w-[14rem] items-center gap-1.5 px-2 text-meta text-secondary hover:text-primary" onClick={() => onRestore(session.id)} title={title}>
-              <span className={`block size-[7px] shrink-0 ${style.dot} ${style.shape}`} />
+          <span key={windowId} className="flex shrink-0 items-center rounded-sm border border-hair">
+            <button className="flex h-9 max-w-[14rem] items-center gap-1.5 px-2 text-meta text-secondary hover:text-primary" onClick={() => onRestore(windowId)} title={title}>
+              {style ? <span className={`block size-[7px] shrink-0 ${style.dot} ${style.shape}`} /> : null}
               <span className="truncate">{title}</span>
-              {waiting ? <WaitingDot sessionId={session.id} blocks={blocks} agentLabel={agentLabel} /> : null}
+              {waiting && session ? <WaitingDot sessionId={session.id} blocks={blocks} agentLabel={agentLabel} /> : null}
             </button>
-            <button className="h-9 px-1.5 text-meta text-tertiary hover:text-primary" aria-label={`关闭 ${title}`} onClick={() => onClose(session.id)}>
+            <button className="h-9 px-1.5 text-meta text-tertiary hover:text-primary" aria-label={`关闭 ${title}`} onClick={() => onClose(windowId)}>
               ×
             </button>
           </span>

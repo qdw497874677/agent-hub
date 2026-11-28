@@ -263,6 +263,18 @@ export const editLogRequest = z.object({ body: z.string().min(1).max(32 * 1024) 
 export const workLogPage = z.object({ entries: z.array(workLogEntrySchema), nextBeforeSeq: z.number().int().nullable() });
 export type WorkLogEntryDto = z.infer<typeof workLogEntrySchema>;
 
+export const createSessionTabRequest = z.object({
+  taskId: id,
+  agentId: id,
+  model: z.string().optional(),
+  workerId: z.string().min(1),
+  placement: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('workspace'), workspaceId: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal('group'), groupId: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal('chat-only') }).strict()
+  ])
+}).strict();
+
 export const deriveSessionRequest = z.object({
   taskId: id,
   agentId: id,

@@ -73,6 +73,7 @@ export interface WorkdirTerminals { available: boolean; reason?: string; termina
 export const workdirTerminalPath = (projectId: string, workspaceId: string) => `/api/projects/${encodeURIComponent(projectId)}/workdir-tabs/${encodeURIComponent(workspaceId)}/terminals`;
 
 export const api = {
+  createSessionTab: (projectId: string, body: { taskId: string; agentId: string; model?: string; workerId: string; placement: { kind: 'workspace'; workspaceId: string } | { kind: 'group'; groupId: string } | { kind: 'chat-only' } }) => post<SessionDto>(`/api/projects/${encodeURIComponent(projectId)}/session-tabs`, body),
   messageSource: (sessionId: string, messageId: string) =>
     call<import('../../atoms/message-provenance.ts').SourceDetails>(`/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/source`, { cache: 'no-store' }),
   workdirTerminals: (projectId: string, workspaceId: string) => call<WorkdirTerminals>(workdirTerminalPath(projectId, workspaceId)),

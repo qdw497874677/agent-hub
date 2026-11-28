@@ -15,7 +15,12 @@ export interface Rect {
 }
 
 export interface SessionWindow {
-  readonly sessionId: string;
+  readonly windowId: string;
+  /** 当前显示的会话；终端标签激活时为空。 */
+  readonly sessionId: string | null;
+  /** 初始会话用于恢复标签所属工作目录，不随标签切换改变。 */
+  readonly anchorSessionId: string;
+  readonly anchorWorkspaceId?: string;
   readonly mode: WindowMode;
   /** 自由窗口的位置大小，相对可视区的比例（0–1）。 */
   readonly frac?: Rect;
@@ -37,9 +42,9 @@ export const MIN_TILE = { width: 360, height: 320 } as const;
 const GAP = 12;
 
 const topZ = (set: WindowSet): number => set.windows.reduce((max, w) => Math.max(max, w.z), 0);
-const find = (set: WindowSet, id: string) => set.windows.find((w) => w.sessionId === id);
+const find = (set: WindowSet, id: string) => set.windows.find((w) => w.windowId === id);
 const update = (set: WindowSet, id: string, patch: (w: SessionWindow) => SessionWindow): WindowSet => ({
-  windows: set.windows.map((w) => (w.sessionId === id ? patch(w) : w))
+  windows: set.windows.map((w) => (w.windowId === id ? patch(w) : w))
 });
 
 /** 这块区域最多放几格平铺窗口（每格不小于 MIN_TILE，最多 MAX_TILES）。 */
@@ -85,15 +90,19 @@ export function tileWindows(area: Rect, count: number): Rect[] {
 /** 平铺中的窗口超过容量：最久没聚焦的那几个最小化。 */
 function overflow(set: WindowSet, capacity: number): WindowSet {
   const tiled = set.windows.filter((w) => w.mode === 'tiled').sort((a, b) => b.z - a.z);
-  const out = new Set(tiled.slice(Math.max(1, capacity)).map((w) => w.sessionId));
+  const out = new Set(tiled.slice(Math.max(1, capacity)).map((w) => w.windowId));
   if (out.size === 0) return set;
-  return { windows: set.windows.map((w) => (out.has(w.sessionId) ? { ...w, mode: 'min', restore: 'tiled' } : w)) };
+  return { windows: set.windows.map((w) => (out.has(w.windowId) ? { ...w, mode: 'min', restore: 'tiled' } : w)) };
 }
 
 /** 展开一条会话：已开着就聚焦（最小化的恢复），不重复开。 */
-export function openWindow(set: WindowSet, sessionId: string, capacity: number): WindowSet {
-  if (find(set, sessionId)) return restoreWindow(set, sessionId, capacity);
-  return overflow({ windows: [...set.windows, { sessionId, mode: 'tiled', z: topZ(set) + 1 }] }, capacity);
+export function openWindow(set: WindowSet, sessionId: string, capacity: number, workspaceId?: string | null): WindowSet {
+  const existing = set.windows.find((w) => w.sessionId === sessionId);
+  if (existing) return restoreWindow(set, existing.windowId, capacity);
+  // randomUUID is unavailable on HTTP origins; production can be accessed over HTTP.
+  const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  const windowId = `window:${random}`;
+  return overflow({ windows: [...set.windows, { windowId, sessionId, anchorSessionId: sessionId, ...(workspaceId ? { anchorWorkspaceId: workspaceId } : {}), mode: 'tiled', z: topZ(set) + 1 }] }, capacity);
 }
 
 export function focusWindow(set: WindowSet, sessionId: string): WindowSet {
@@ -129,7 +138,7 @@ export function toggleMaximize(set: WindowSet, sessionId: string, capacity: numb
 }
 
 export function closeWindow(set: WindowSet, sessionId: string): WindowSet {
-  return { windows: set.windows.filter((w) => w.sessionId !== sessionId) };
+  return { windows: set.windows.filter((w) => w.windowId !== sessionId) };
 }
 
 /** 拖过、改过大小：变成自由窗口，不再参与平铺。rect 是屏幕坐标，存成相对 area 的比例。 */
@@ -148,9 +157,16 @@ export function retile(set: WindowSet, capacity: number): WindowSet {
   return overflow({ windows: set.windows.map((w) => (w.mode === 'free' || w.mode === 'max' ? { ...w, mode: 'tiled' } : w)) }, capacity);
 }
 
-/** 会话没了（删了、进回收站、没权限）就静默丢掉。 */
+/** 标签切换只改变窗口内容，不改变窗口身份、布局或层级。 */
+export function selectWindowSession(set: WindowSet, windowId: string, sessionId: string | null): WindowSet {
+  const window = find(set, windowId);
+  if (!window || window.sessionId === sessionId) return set;
+  return update(set, windowId, (current) => ({ ...current, sessionId }));
+}
+
+/** 会话没了（删了、进回收站、没权限）就静默丢掉；终端窗口保留。 */
 export function keepOnly(set: WindowSet, exists: (sessionId: string) => boolean): WindowSet {
-  const windows = set.windows.filter((w) => exists(w.sessionId));
+  const windows = set.windows.filter((w) => (w.sessionId === null || exists(w.sessionId)));
   return windows.length === set.windows.length ? set : { windows };
 }
 
@@ -169,12 +185,12 @@ export function layoutWindows(set: WindowSet, area: Rect): Map<string, Rect> {
   const out = new Map<string, Rect>();
   const tiled = set.windows.filter((w) => w.mode === 'tiled');
   const capacity = tileCapacity(area);
-  const keep = new Set([...tiled].sort((a, b) => b.z - a.z).slice(0, capacity).map((w) => w.sessionId));
-  const shown = tiled.filter((w) => keep.has(w.sessionId));
-  tileWindows(area, shown.length).forEach((rect, i) => out.set(shown[i]!.sessionId, rect));
+  const keep = new Set([...tiled].sort((a, b) => b.z - a.z).slice(0, capacity).map((w) => w.windowId));
+  const shown = tiled.filter((w) => keep.has(w.windowId));
+  tileWindows(area, shown.length).forEach((rect, i) => out.set(shown[i]!.windowId, rect));
   for (const w of set.windows) {
-    if (w.mode === 'max') out.set(w.sessionId, area);
-    if (w.mode === 'free' && w.frac) out.set(w.sessionId, clampInto(fromFrac(w.frac, area), area));
+    if (w.mode === 'max') out.set(w.windowId, area);
+    if (w.mode === 'free' && w.frac) out.set(w.windowId, clampInto(fromFrac(w.frac, area), area));
   }
   return out;
 }
@@ -207,10 +223,16 @@ export function parseWindowSet(raw: string | null): WindowSet {
       !!r && typeof r === 'object' && ['x', 'y', 'width', 'height'].every((k) => Number.isFinite((r as Record<string, unknown>)[k]));
     const windows = (value as { windows: unknown[] }).windows.flatMap((item): SessionWindow[] => {
       const w = item as Partial<SessionWindow>;
-      if (typeof w.sessionId !== 'string' || !modes.has(w.mode as WindowMode) || !Number.isFinite(w.z)) return [];
+      if (!w || (typeof w.sessionId !== 'string' && w.sessionId !== null) || !modes.has(w.mode as WindowMode) || !Number.isFinite(w.z)) return [];
+      const windowId = typeof w.windowId === 'string' && w.windowId ? w.windowId : w.sessionId;
+      const anchorSessionId = typeof w.anchorSessionId === 'string' && w.anchorSessionId ? w.anchorSessionId : w.sessionId;
+      if (!windowId || !anchorSessionId) return [];
       const mode = w.mode === 'free' && !isRect(w.frac) ? 'tiled' : (w.mode as WindowMode);
       return [{
+        windowId,
         sessionId: w.sessionId,
+        anchorSessionId,
+        ...(typeof w.anchorWorkspaceId === 'string' && w.anchorWorkspaceId ? { anchorWorkspaceId: w.anchorWorkspaceId } : {}),
         mode,
         z: w.z as number,
         ...(isRect(w.frac) ? { frac: w.frac } : {}),
@@ -218,7 +240,7 @@ export function parseWindowSet(raw: string | null): WindowSet {
       }];
     });
     const seen = new Set<string>();
-    return { windows: windows.filter((w) => (seen.has(w.sessionId) ? false : (seen.add(w.sessionId), true))) };
+    return { windows: windows.filter((w) => (seen.has(w.windowId) ? false : (seen.add(w.windowId), true))) };
   } catch {
     return EMPTY;
   }

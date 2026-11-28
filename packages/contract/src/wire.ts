@@ -57,6 +57,7 @@ export type CheckProjectReposRequest = z.infer<typeof checkProjectReposRequest>;
 export type ProjectReposCheckDto = z.infer<typeof projectReposCheckDto>;
 export type CreateTaskRequest = z.infer<typeof createTaskRequest>;
 export type DeriveSessionRequest = z.infer<typeof deriveSessionRequest>;
+export type CreateSessionTabRequest = z.infer<typeof import('./wire/http.ts').createSessionTabRequest>;
 export type ForkSessionRequest = z.infer<typeof forkSessionRequest>;
 export type ContinueElsewhereRequest = z.infer<typeof continueElsewhereRequest>;
 export type SaveLayoutRequest = z.infer<typeof saveLayoutRequest>;

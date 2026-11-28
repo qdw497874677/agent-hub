@@ -262,7 +262,18 @@ export function CanvasView({
   }, []);
   // 展开成画布窗口（双击会话卡 / ⤢ / 右键）：多个并排看，状态存在本机浏览器
   const narrow = useNarrow();
-  const windows = useCanvasWindows(canvas, container, narrow);
+  // A newly created tab can be selected before the next canvas refresh arrives.
+  const [createdSessions, setCreatedSessions] = useState<readonly SessionDto[]>([]);
+  useEffect(() => setCreatedSessions([]), [canvas.project.id]);
+  useEffect(() => {
+    const ids = new Set(canvas.sessions.map((session) => session.id));
+    setCreatedSessions((current) => current.some((session) => ids.has(session.id)) ? current.filter((session) => !ids.has(session.id)) : current);
+  }, [canvas.sessions]);
+  const windowCanvas = useMemo(() => ({
+    ...canvas,
+    sessions: [...canvas.sessions, ...createdSessions.filter((session) => !canvas.sessions.some((item) => item.id === session.id))]
+  }), [canvas, createdSessions]);
+  const windows = useCanvasWindows(windowCanvas, container, narrow);
   const { expand, expanded } = windows;
   const handledExpand = useRef<number | null>(null);
   useEffect(() => {
@@ -682,7 +693,7 @@ export function CanvasView({
       <CanvasWindowLayer
         windows={windows}
         narrow={narrow}
-        canvas={canvas}
+        canvas={windowCanvas}
         live={live}
         history={history}
         onRetryHistory={onRetryHistory}
@@ -691,6 +702,10 @@ export function CanvasView({
         drafts={drafts}
         onDraftChange={onDraftChange}
         onChanged={onChanged}
+        onNewSessionCreated={(session) => {
+          setCreatedSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
+          onChanged();
+        }}
         onOpen={onOpen}
         onProjectSessions={onProjectSessions}
         onWindowFocusChange={onWindowFocusChange}

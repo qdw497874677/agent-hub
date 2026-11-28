@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   EMPTY, closeWindow, focusWindow, focused, keepOnly, layoutWindows, minimizeWindow, minimized, moveWindow, openWindow,
-  parseWindowSet, restoreWindow, retile, tileCapacity, tileWindows, toggleMaximize, type Rect
+  parseWindowSet, restoreWindow, retile, selectWindowSession, tileCapacity, tileWindows, toggleMaximize, type Rect
 } from './canvas-windows.ts';
 
+const wid = (set: import('./canvas-windows.ts').WindowSet, sessionId: string) => set.windows.find((w) => w.sessionId === sessionId)!.windowId;
 const wide: Rect = { x: 0, y: 0, width: 1400, height: 800 };
 const overlaps = (a: Rect, b: Rect) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 const inside = (r: Rect, area: Rect) => r.x >= area.x && r.y >= area.y && r.x + r.width <= area.x + area.width && r.y + r.height <= area.y + area.height;
@@ -68,31 +69,31 @@ test('打开：同一会话不重复开，再开 = 聚焦；超过容量最久�
 
 test('聚焦、最小化、恢复、关闭、最大化', () => {
   let set = openWindow(openWindow(EMPTY, 'a', 4), 'b', 4);
-  set = focusWindow(set, 'a');
+  set = focusWindow(set, wid(set, 'a'));
   assert.equal(focused(set)!.sessionId, 'a');
-  set = minimizeWindow(set, 'a');
+  set = minimizeWindow(set, wid(set, 'a'));
   assert.equal(focused(set)!.sessionId, 'b');
-  set = restoreWindow(set, 'a', 4);
+  set = restoreWindow(set, wid(set, 'a'), 4);
   assert.equal(set.windows.find((w) => w.sessionId === 'a')!.mode, 'tiled');
-  set = toggleMaximize(set, 'b', 4);
-  assert.deepEqual(layoutWindows(set, wide).get('b'), wide);
-  set = toggleMaximize(set, 'b', 4);
+  set = toggleMaximize(set, wid(set, 'b'), 4);
+  assert.deepEqual(layoutWindows(set, wide).get(wid(set, 'b')), wide);
+  set = toggleMaximize(set, wid(set, 'b'), 4);
   assert.equal(set.windows.find((w) => w.sessionId === 'b')!.mode, 'tiled');
-  set = closeWindow(set, 'a');
+  set = closeWindow(set, wid(set, 'a'));
   assert.deepEqual(set.windows.map((w) => w.sessionId), ['b']);
 });
 
 test('拖过变自由：按比例存，区域变了等比还原并夹回区域；重新平铺恢复', () => {
   let set = openWindow(openWindow(EMPTY, 'a', 4), 'b', 4);
-  set = moveWindow(set, 'a', { x: 100, y: 100, width: 500, height: 400 }, wide);
+  set = moveWindow(set, wid(set, 'a'), { x: 100, y: 100, width: 500, height: 400 }, wide);
   assert.equal(set.windows.find((w) => w.sessionId === 'a')!.mode, 'free');
-  assert.deepEqual(layoutWindows(set, wide).get('a'), { x: 100, y: 100, width: 500, height: 400 });
+  assert.deepEqual(layoutWindows(set, wide).get(wid(set, 'a')), { x: 100, y: 100, width: 500, height: 400 });
   const half: Rect = { x: 0, y: 0, width: 700, height: 400 };
-  assert.deepEqual(layoutWindows(set, half).get('a'), { x: 50, y: 50, width: 360, height: 240 });
+  assert.deepEqual(layoutWindows(set, half).get(wid(set, 'a')), { x: 50, y: 50, width: 360, height: 240 });
   // 只剩 b 参与平铺：一个靠右
-  assert.equal(layoutWindows(set, wide).get('b')!.width, 720);
-  set = minimizeWindow(set, 'a');
-  set = restoreWindow(set, 'a', 4);
+  assert.equal(layoutWindows(set, wide).get(wid(set, 'b'))!.width, 720);
+  set = minimizeWindow(set, wid(set, 'a'));
+  set = restoreWindow(set, wid(set, 'a'), 4);
   assert.equal(set.windows.find((w) => w.sessionId === 'a')!.mode, 'free', '自由窗口最小化后恢复回自由');
   set = retile(set, 4);
   assert.ok(set.windows.every((w) => w.mode === 'tiled'));
@@ -104,7 +105,7 @@ test('拖过变自由：按比例存，区域变了等比还原并夹回区域�
 test('平铺按打开顺序分格，聚焦不让窗口换位置', () => {
   let set = openWindow(openWindow(EMPTY, 'a', 4), 'b', 4);
   const before = layoutWindows(set, wide);
-  set = focusWindow(set, 'a');
+  set = focusWindow(set, wid(set, 'a'));
   assert.deepEqual(layoutWindows(set, wide), before);
 });
 
@@ -116,6 +117,21 @@ test('会话没了就丢掉；坏存档当没有', () => {
   assert.deepEqual(parseWindowSet('{oops'), EMPTY);
   assert.deepEqual(parseWindowSet(null), EMPTY);
   assert.deepEqual(parseWindowSet(JSON.stringify({ windows: [{ sessionId: 'x', mode: 'free', z: 1 }, { sessionId: 'x', mode: 'min', z: 2 }, { mode: 'tiled' }] })).windows, [
-    { sessionId: 'x', mode: 'tiled', z: 1 }
+    { windowId: 'x', sessionId: 'x', anchorSessionId: 'x', mode: 'tiled', z: 1 }
   ]);
+});
+
+
+test('标签切换保留窗口身份、布局与层级，终端状态可保存恢复', () => {
+  let set = openWindow(EMPTY, 'a', 4);
+  const id = wid(set, 'a');
+  set = moveWindow(set, id, { x: 100, y: 100, width: 500, height: 400 }, wide);
+  const before = set.windows[0]!;
+  set = selectWindowSession(set, id, 'b');
+  assert.deepEqual(set.windows[0], { ...before, sessionId: 'b' });
+  assert.equal(layoutWindows(set, wide).get(id)?.x, 100);
+  set = selectWindowSession(set, id, null);
+  assert.equal(keepOnly(set, () => false), set);
+  assert.deepEqual(parseWindowSet(JSON.stringify(set)), set);
+  assert.equal(minimizeWindow(set, id).windows[0]!.mode, 'min');
 });

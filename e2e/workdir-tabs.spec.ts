@@ -91,24 +91,32 @@ for (const width of [1280, 390]) {
           if (request.method() === 'GET' && new URL(request.url()).pathname === terminals) terminalReads++;
         });
         await page.goto(`${origin}/#/p/${projectId}/workdir/${workspaceId}`);
-        const tabs = page.getByTestId('workdir-tabs');
-        const add = tabs.getByTestId('workdir-add');
-        const unavailable = tabs.getByTestId('workdir-terminal-status');
+        const tabs = page.getByTestId('session-document-tabs');
+        const add = tabs.getByTestId('session-tab-add');
+        const trigger = tabs.getByTestId('session-tab-trigger');
+        const unavailable = tabs.getByRole('status');
+        const openExisting = async (id: string) => {
+          await trigger.click();
+          await page.getByTestId('session-tab-picker').locator(`[data-testid="session-tab-open-existing"][data-session-id="${id}"]`).click();
+        };
         await add.click();
         await expect(unavailable).toContainText('终端');
-        await expect(tabs.getByTestId('workdir-new-terminal')).toBeDisabled();
-        await tabs.getByTestId('workdir-open-session').filter({ hasText: first.id.slice(-4) }).click();
-        await expect(tabs.getByTestId('focus-header')).toContainText('测试任务标题');
-        const activeTab = touch ? tabs.getByTestId('workdir-choose-tab') : tabs.getByTestId('workdir-tab-session').filter({ visible: true });
+        await expect(tabs.getByTestId('session-tab-new-terminal')).toBeDisabled();
+        await expect(tabs.getByTestId('session-tab-new-session')).toBeEnabled();
+        await add.click();
+        await openExisting(first.id);
+        await expect(page.getByTestId('focus-header')).toContainText('测试任务标题');
+        if (touch) await trigger.click();
+        const activeTab = page.locator(`[data-testid="session-tab-item"][data-session-id="${first.id}"]:visible`);
         await expect(activeTab).toContainText('测试任务标题');
         await expect(activeTab).not.toContainText(first.id.slice(-4));
         await expect(unavailable).toBeHidden();
-        await expect(tabs.getByText('工作目录不可用', { exact: true })).toHaveCount(0);
+        await expect(page.getByText('工作目录不可用', { exact: true })).toHaveCount(0);
+        if (touch) await page.keyboard.press('Escape');
 
-        await add.click();
-        await tabs.getByTestId('workdir-open-session').click();
-        if (touch) await activeTab.click();
-        const options = tabs.getByTestId('workdir-tab-session').filter({ visible: true });
+        await openExisting(second.id);
+        if (touch) await trigger.click();
+        const options = page.locator('[data-testid="session-tab-item"][data-session-id]:visible');
         await expect(options).toHaveCount(2);
         for (const session of [first, second]) {
           await expect(options.filter({ hasText: session.id.slice(-4) })).toContainText('测试任务标题');
@@ -118,17 +126,18 @@ for (const width of [1280, 390]) {
         await api(`/api/sessions/${second.id}/title`, { title: renamed }, 200, 'PUT');
         // Measure across the old 3 s interval: the authoritative 403 is not a retry loop.
         await expect.poll(() => terminalReads).toBe(1);
-        await expect(tabs.getByTestId('focus-header')).toBeVisible();
+        await expect(page.getByTestId('focus-header')).toBeVisible();
         await page.clock.install();
         await page.clock.runFor(6_100);
         expect(terminalReads).toBe(1);
-        await expect(tabs.getByLabel('发送消息')).toBeVisible();
+        await expect(page.getByLabel('发送消息')).toBeVisible();
         await page.reload();
-        await expect(tabs.getByTestId('focus-header')).toContainText(renamed);
+        await expect(page.getByTestId('focus-header')).toContainText(renamed);
         if (touch) {
-          await expect(activeTab).toContainText(renamed);
           await expect(add).toBeInViewport({ ratio: 1 });
           expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
+          await trigger.click();
+          await expect(options.filter({ hasText: renamed })).toHaveCount(1);
         } else {
           await expect(options.filter({ hasText: renamed })).toHaveCount(1);
         }
@@ -150,18 +159,19 @@ for (const width of [1280, 390]) {
         expect((await api<{ sessions: unknown[] }>(canvasPath)).sessions).toHaveLength(0);
         await page.goto(`${origin}/#/p/${projectId}/list`);
         await page.getByTestId('list-view').locator(`[data-testid="workdir-entry"][data-workspace-id="${workspaceId}"]`).click();
-        const tabs = page.getByTestId('workdir-tabs');
-        const plus = tabs.getByTestId('workdir-add');
+        const tabs = page.getByTestId('session-document-tabs');
+        const plus = tabs.getByTestId('session-tab-add');
+        const trigger = tabs.getByTestId('session-tab-trigger');
         await plus.click();
-        await tabs.getByTestId('workdir-new-terminal').click();
-        const status = tabs.getByTestId('terminal-status');
+        await tabs.getByTestId('session-tab-new-terminal').click();
+        const status = page.getByTestId('terminal-status');
         await expect(status).toContainText('已连接');
         if (shots) await page.screenshot({ path: join(shots, `workdir-terminal-${width}.png`) });
         const inventory = () => api<{ terminals: Terminal[] }>(terminals).then((rows) => rows.terminals);
         const first = (await inventory())[0]!;
         expect(first.state).toBe('running');
         const type = async (command: string) => {
-          const input = tabs.locator('.xterm-helper-textarea');
+          const input = page.locator('.xterm-helper-textarea');
           await input.focus();
           await page.keyboard.insertText(command);
           await page.keyboard.press('Enter');
@@ -176,9 +186,8 @@ for (const width of [1280, 390]) {
         const alive = () => { try { process.kill(Number(pid), 0); return true; } catch { return false; } };
         expect(alive()).toBe(true);
         if (touch) {
-          const chooser = tabs.getByTestId('workdir-choose-tab');
-          expect((await chooser.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-          const keys = (await tabs.getByTestId('terminal-keys').boundingBox())!;
+          expect((await trigger.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+          const keys = (await page.getByTestId('terminal-keys').boundingBox())!;
           expect(keys.y + keys.height).toBeLessThanOrEqual(621);
         }
 
@@ -186,16 +195,16 @@ for (const width of [1280, 390]) {
         const session = await api<{ id: string }>('/api/sessions/derive', { taskId: task.id, workerId, workspaceId, agentId: FAKE_AGENT_ID, model: '' });
         await page.reload();
         await expect(status).toContainText('已连接');
-        await plus.click();
-        await tabs.getByTestId('workdir-open-session').click();
-        const composer = tabs.getByLabel('发送消息');
+        await trigger.click();
+        await page.getByTestId('session-tab-picker').locator(`[data-testid="session-tab-open-existing"][data-session-id="${session.id}"]`).click();
+        const composer = page.getByLabel('发送消息');
         await composer.fill('只回这段文字，不要用工具：OK');
         await composer.press('Control+Enter');
-        await expect(tabs.getByRole('log').getByText('OK', { exact: true })).toBeVisible();
+        await expect(page.getByRole('log').getByText('OK', { exact: true })).toBeVisible();
         await composer.fill('这个草稿随标签切换保留');
         const select = async (kind: 'session' | 'terminal') => {
-          if (touch) await tabs.getByTestId('workdir-choose-tab').click();
-          await tabs.getByTestId(`workdir-tab-${kind}`).filter({ visible: true }).click();
+          if (touch) await trigger.click();
+          await page.locator(`[data-testid="session-tab-item"][data-${kind}-id]:visible`).click();
         };
         await select('terminal');
         await expect(status).toContainText('已连接');
@@ -206,10 +215,9 @@ for (const width of [1280, 390]) {
         await select('session');
         await expect(composer).toHaveValue('这个草稿随标签切换保留');
         if (shots) await page.screenshot({ path: join(shots, `workdir-session-${width}.png`) });
-        if (touch) await tabs.getByTestId('workdir-choose-tab').click();
-        await tabs.getByRole('button', { name: '关闭会话共享同目录', exact: true }).click();
-        if (touch && !(await tabs.getByTestId('workdir-tab-terminal').isVisible())) await tabs.getByTestId('workdir-choose-tab').click();
-        await expect(tabs.getByTestId('workdir-tab-session')).toHaveCount(0);
+        if (touch) await trigger.click();
+        await page.locator(`[data-testid="session-tab-close"][data-session-id="${session.id}"]:visible`).click();
+        await expect(page.getByTestId('session-tab-close').and(page.locator('[data-session-id]'))).toHaveCount(0);
         expect((await api<{ sessions: Array<{ id: string }> }>(canvasPath)).sessions[0]?.id).toBe(session.id);
 
         const other = await api<{ id: string }>(`/api/projects/${projectId}/workspaces`, { kind: 'long_lived', mode: 'empty', workerId });
@@ -225,19 +233,19 @@ for (const width of [1280, 390]) {
         await page.reload();
         if (!touch) {
           await plus.click();
-          await expect(tabs.getByTestId('workdir-new-terminal')).toBeDisabled();
+          await expect(tabs.getByTestId('session-tab-new-terminal')).toBeDisabled();
           await plus.click();
         }
         await select('terminal');
         await expect(status).toContainText('已连接');
         expect(alive()).toBe(true);
-        if (touch) await tabs.getByTestId('workdir-choose-tab').click();
-        await tabs.getByRole('button', { name: '关闭终端', exact: true }).click();
+        if (touch) await trigger.click();
+        await page.locator(`[data-testid="session-tab-close"][data-terminal-id="${first.id}"]:visible`).click();
         await expect.poll(async () => (await inventory()).find((row) => row.id === first.id)?.state).toBe('ended');
         await expect.poll(alive).toBe(false);
         await page.reload();
-        if (touch) await tabs.getByTestId('workdir-choose-tab').click();
-        await expect(tabs.getByTestId('workdir-tab-terminal').filter({ visible: true })).toHaveCount(0);
+        if (touch) await trigger.click();
+        await expect(page.locator('[data-testid="session-tab-item"][data-terminal-id]:visible')).toHaveCount(0);
         await api(`/api/workspaces/${other.id}/remove`, { deleteDirectory: true, force: true }, 200);
       } finally {
         stopFakeWorker();

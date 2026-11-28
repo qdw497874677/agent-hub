@@ -47,6 +47,7 @@ import {
   metadataSearchResponseSchema,
   createTaskRequest,
   deriveSessionRequest,
+  createSessionTabRequest,
   createWorkspaceRequest,
   removeWorkspaceRequest,
   cleanupPolicyRequest,
@@ -119,6 +120,12 @@ import {
   setProjectDescriptionUseCase,
   createTaskUseCase,
   deriveSessionUseCase,
+  resolveDefaultAgent,
+  placeSession,
+  checkModelOn,
+  asAgentId,
+  withActiveTask,
+  err,
   prepareLongLivedWorkspaceUseCase,
   prepareTemporaryWorkspaceUseCase,
   deleteWorkspaceUseCase,
@@ -151,6 +158,7 @@ import {
   unlinkSessionsUseCase,
   loadHome,
   invalid,
+  conflict,
   notFound,
   promptSessionUseCase,
   retryDeliveryNow,
@@ -993,6 +1001,56 @@ export function createApp(options: AppOptions): Hono {
     const ownerId = principalOf(c)?.user.id ?? null;
     const result = await deleteAgentProfile(deps, ownerId, c.req.param('profileId'));
     return result.ok ? c.json({ ok: true }) : fail(c, result.error);
+  });
+
+  app.post('/api/projects/:projectId/session-tabs', async (c) => {
+    const input = await body(c, createSessionTabRequest);
+    if (!input.ok) return input.response;
+    const actor = subjectOf(c);
+    const project = await deps.projects.byId(asProjectId(c.req.param('projectId')));
+    const permission = await authorizeProject(deps.access, actor, project, 'session.create');
+    if (!permission.ok) return fail(c, permission.error);
+    if (!project) return fail(c, notFound('项目不存在'));
+    const task = await deps.tasks.byId(asTaskId(input.value.taskId));
+    if (!task || task.projectId !== project.id) return fail(c, notFound('任务不存在'));
+    if (task.archivedAt != null) return fail(c, conflict('任务已归档，请恢复后再继续'));
+    const workers = await deps.gateway.status();
+    const worker = workers.find((item) => item.workerId === input.value.workerId && item.state === 'online');
+    if (!worker) return fail(c, conflict('指定的机器不在线'));
+    const workerAllowed = await authorizeWorker(deps.access, actor, worker.workerId);
+    if (!workerAllowed.ok) return fail(c, workerAllowed.error);
+    const effective = await resolveDefaultAgent(deps, { project, task, explicit: { runtime: input.value.agentId, model: input.value.model ?? '' } });
+    const model = effective.effective.model;
+    const descriptor = deps.agents.descriptor(asAgentId(input.value.agentId));
+    if (!descriptor || descriptor.capabilities.prompt.state === 'denied') return fail(c, conflict('指定的运行时不可用'));
+    const allowed = await options.providers?.checkModel(actor, model, task.id);
+    if (allowed && !allowed.ok) return fail(c, allowed.error);
+    // Check runtime/model on the named machine before creating an empty directory.
+    const placed = placeSession(workers, { agentId: input.value.agentId, requested: worker.workerId, projectWorker: worker.workerId, model });
+    if (!placed.ok) return fail(c, placed.error);
+    const checked = checkModelOn(workers, worker.workerId, asAgentId(input.value.agentId), model, allowed?.ok ? allowed.value : undefined);
+    if (!checked.ok) return fail(c, checked.error);
+    let placement = input.value.placement;
+    if (placement.kind === 'chat-only') {
+      const prepared = await withActiveTask(deps, task.id, async () => {
+        const current = await deps.tasks.byId(task.id);
+        if (!current || current.projectId !== project.id) return err(notFound('任务不存在'));
+        const online = (await deps.gateway.status()).some((item) => item.workerId === worker.workerId && item.state === 'online');
+        if (!online) return err(conflict('指定的机器不在线'));
+        return prepareTemporaryWorkspaceUseCase(deps, { projectId: project.id, taskId: task.id, workerId: worker.workerId, home: homedir(), mode: 'empty', actor });
+      });
+      if (!prepared.ok) return fail(c, prepared.error);
+      placement = { kind: 'workspace', workspaceId: prepared.value.id };
+    }
+    const result = await deriveSessionUseCase(deps, {
+      taskId: task.id, agentId: input.value.agentId, model, workerId: worker.workerId, actor,
+      tabPlacement: { projectId: project.id, workerId: worker.workerId, placement },
+      ...(allowed?.ok && allowed.value ? { hubProtocol: allowed.value } : {})
+    });
+    if (!result.ok) return fail(c, result.error);
+    await recordSessionAction(deps, options.activity, c, actor, 'session.start', result.value.id, '');
+    await noteProvenance(deps, options.activity, c, actor, result.value, viaOfClient(c));
+    return c.json(result.value, 201);
   });
 
   app.post('/api/sessions/derive', async (c) => {
