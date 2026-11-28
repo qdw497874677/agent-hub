@@ -305,14 +305,20 @@ test('窄屏：列表滚到哪，进详情再退回来还在哪', async ({ page,
   const csrf = await csrfOf(page.context());
   const tag = currentRun();
   // 多接几台，列表才滚得起来（页头之外不再有底部添加块，列表本身要够长）
+  const workerIds: string[] = [];
   for (let index = 0; index < 16; index += 1) {
-    await enrollMachine(page.request, baseURL!, { 'x-hub-csrf': csrf }, `e2e 长列表 ${tag}-${index}`);
+    workerIds.push(await enrollMachine(page.request, baseURL!, { 'x-hub-csrf': csrf }, `e2e 长列表 ${tag}-${index}`));
   }
+  // CLI 接入完成不代表子进程已连上；等本轮全部在线，再测试真实刷新而非启动中的列表变化。
+  await expect.poll(async () => {
+    const workers = await (await page.request.get('/api/workers')).json() as Array<{ workerId: string; state: string }>;
+    return workerIds.filter((id) => workers.some((worker) => worker.workerId === id && worker.state === 'online')).length;
+  }, { timeout: 120_000, message: '等待本轮 16 台机器上线' }).toBe(workerIds.length);
 
   await page.setViewportSize({ width: 390, height: 520 });
   await page.goto('/#/machines');
   const main = page.locator('main').first();
-  await expect(page.getByTestId('machine-row').first()).toBeVisible();
+  await expect(page.getByTestId('machine-row').filter({ hasText: `e2e 长列表 ${tag}-` })).toHaveCount(workerIds.length);
   await expect.poll(() => main.evaluate((node) => node.scrollHeight - node.clientHeight)).toBeGreaterThan(200);
   await main.evaluate((node) => {
     node.scrollTop = 200;
