@@ -62,6 +62,7 @@ interface ToolDef {
   readonly module: McpModuleName;
   /** 令牌要有这个权限点，工具才会出现在 tools/list 里（#E4：不列令牌用不了的工具）。 */
   readonly need: Permission;
+  readonly alsoNeeds?: readonly Permission[];
   /** 文档里的权限范围（报错时告诉调用方缺哪个）。 */
   readonly scope: string | null;
   readonly readOnly: boolean;
@@ -137,6 +138,7 @@ function toolOf(key: string, route: RouteDef, meta: ResolvedMcp): ToolDef {
     body,
     module: meta.module,
     need: meta.need,
+    ...(meta.alsoNeeds === undefined ? {} : { alsoNeeds: meta.alsoNeeds }),
     scope: ((route as { security?: { bearer?: string[] }[] }).security?.[0]?.bearer?.[0]) ?? null,
     readOnly: meta.readOnly,
     idempotent: meta.idempotent,
@@ -165,7 +167,7 @@ export function mcpToolsFor(permissions: readonly Permission[] | undefined, poli
   const tools = mcpTools(policy);
   if (permissions === undefined) return tools;
   const have = new Set(permissions);
-  return tools.filter((tool) => have.has(tool.need));
+  return tools.filter((tool) => have.has(tool.need) && (tool.alsoNeeds?.every((need) => have.has(need)) ?? true));
 }
 
 /** 会话事件投影（实现在 projection.ts，routes.ts 的 events 路由也用它）。 */

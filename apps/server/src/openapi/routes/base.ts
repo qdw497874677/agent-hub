@@ -47,6 +47,7 @@ export interface McpRouteMeta {
   readonly module: McpModule;
   /** 令牌要有这个权限点，工具才出现在 tools/list 里（mcpToolsFor 用它筛）。 */
   readonly need: Permission;
+  readonly alsoNeeds?: readonly Permission[];
   /** false 的写操作；只读路由可省略（默认按 method 判）。 */
   readonly readOnly?: boolean;
   /** 工具名；缺省 = handle 的 snake_case。 */
@@ -68,6 +69,7 @@ export interface ResolvedMcp {
   readonly key: string;
   readonly module: McpModule;
   readonly need: Permission;
+  readonly alsoNeeds?: readonly Permission[];
   readonly name: string;
   readonly readOnly: boolean;
   readonly idempotent: boolean;
@@ -96,6 +98,5 @@ export const route = <R extends Parameters<typeof createRoute>[0]>(scope: ScopeN
     readonly mcp: McpRouteExposure;
   };
 };
-
 
 

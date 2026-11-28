@@ -17,8 +17,10 @@ import type { ProviderWiringApi } from '../providers.ts';
 import type { SessionActivityOptions } from '../session-activity.ts';
 import type { StreamHub } from '../stream-hub.ts';
 import type { routes } from './routes.ts';
+import type { ExactTurnReader } from '@agent-hub/storage-sqlite';
 
 export interface OpenApiOptions {
+  readonly readExactTurn?: ExactTurnReader;
   readonly tokens: Pick<ApiTokenDeps, 'apiTokens' | 'users' | 'tokens' | 'now'> & Partial<Pick<ApiTokenDeps, 'projects'>>;
   /** 每个令牌每分钟最多多少次请求 / 多少次 prompt；e2e 调小来验 429。 */
   readonly rate?: { readonly general?: number; readonly prompt?: number; readonly streams?: number };

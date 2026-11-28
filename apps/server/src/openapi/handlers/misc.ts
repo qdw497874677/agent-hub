@@ -37,7 +37,8 @@ export function installMe(app: OpenAPIHono<Env>, rt: V1Runtime): void {
     const actor = rt.principal(c);
     return c.json({
       user: { id: actor.user.id, name: actor.user.displayName, service: isServiceAccount(actor.user) },
-      token: { id: actor.via!.tokenId, name: actor.via!.name, kind: actor.via!.kind }
+      token: { id: actor.via!.tokenId, name: actor.via!.name, kind: actor.via!.kind },
+      capabilities: ['session_targets_v1', 'bounded_session_start_v1', ...(rt.options.readExactTurn ? ['exact_turn_status_v1'] : [])]
     });
   });
 }

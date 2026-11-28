@@ -1,7 +1,7 @@
 # 工具清单（自动生成）
 
 由 `npm run skill:tools` 从 `apps/server/src/openapi/routes.ts` 的 MCP 元数据生成，等于 `tools/list` 的结果。
-当前 76 个：只读 29，写 47。
+当前 78 个：只读 31，写 47。
 
 「参数」只列名字，`?` 表示可选；具体类型和必填组合见 `SKILL.md` 与 `<hub>/openapi/v1/openapi.json`。
 
@@ -14,7 +14,7 @@
 | `install_builtin_browser` | 写 | `worker.read` | `/workers/{workerId}/builtin-browser` | workerId | 给机器安装内置浏览器（component_install 的别名）（写工具，要 `clientRequestId`） |
 | `component_install` | 写 | `worker.read` | `/workers/{workerId}/components` | workerId, componentId?, version?, capability? | 给机器安装组件（按 componentId 或 capability）（写工具，要 `clientRequestId`） |
 | `list_projects` | 读 | `project.read` | `/projects` | — | 我可见的项目 |
-| `project_create` | 写 | `project.create` | `/projects` | name, rootPath?, workerId?, repoUrl?, defaultBranch?, description? | 新建项目（写工具，要 `clientRequestId`） |
+| `project_create` | 写 | `project.create` | `/projects` | name, rootPath?, workerId?, repoUrl?, defaultBranch?, repos?, primaryRepoId?, description? | 新建项目（写工具，要 `clientRequestId`） |
 | `get_project` | 读 | `project.read` | `/projects/{projectId}` | projectId | 看一个项目 |
 | `project_update` | 写 | `project.update` | `/projects/{projectId}` | projectId, description?, checks?, defaultAgent? | 改项目说明、检查命令或默认 Agent（写工具，要 `clientRequestId`） |
 | `resolve_default_agent` | 读 | `project.read` | `/defaults/resolve` | projectId, taskId?, runtime?, model? | 解析新会话会用的默认 Agent |
@@ -40,7 +40,8 @@
 | `list_task_log` | 读 | `task.read` | `/tasks/{taskId}/log` | taskId, limit?, beforeSeq? | 工作日志（倒序分页） |
 | `append_task_log` | 写 | `task.create` | `/tasks/{taskId}/log` | taskId, body, links?, sessionId? | 写一条工作日志（写工具，要 `clientRequestId`） |
 | `edit_task_log` | 写 | `task.create` | `/tasks/{taskId}/log/{entryId}` | taskId, entryId, body | 改自己写的日志（写工具，要 `clientRequestId`） |
-| `session_start` | 写 | `session.create` | `/sessions` | taskId, agentId, model?, workerId?, workspaceId?, workspaceMode?, groupId?, requires?, profileId?, options?, kind?, parentSessionId?, assetIds?, assetSetIds?, repoId?, handle?, linkWith? | 在任务下开一条会话（写工具，要 `clientRequestId`） |
+| `list_session_targets` | 读 | `task.read` | `/tasks/{taskId}/session-targets` | taskId | 查询任务的会话落点 |
+| `session_start` | 写 | `session.create` | `/sessions` | taskId, agentId, model?, workerId?, workspaceId?, workspaceMode?, groupId?, requires?, profileId?, options?, kind?, parentSessionId?, assetIds?, assetSetIds?, repoId?, handle?, linkWith?, placement? | 在任务下开一条会话（写工具，要 `clientRequestId`） |
 | `fork_session` | 写 | `session.create` | `/sessions/fork` | sessionId, atSeq?, agentId, model | 从某条消息分叉（写工具，要 `clientRequestId`） |
 | `get_session` | 读 | `session.read` | `/sessions/{sessionId}` | sessionId, waitSec? | 会话详情 |
 | `session_model` | 写 | `session.prompt` | `/sessions/{sessionId}/model` | sessionId, model | 换这条会话的模型（可换提供商）（写工具，要 `clientRequestId`） |
@@ -55,6 +56,7 @@
 | `message_get` | 读 | `session.read` | `/messages/{messageId}` | messageId, waitSec? | 外部发的一条消息与它的回复 |
 | `message_inbox` | 读 | `session.read` | `/inbox` | after?, limit? | 外部收件箱（回复） |
 | `activity` | 读 | `session.read` | `/sessions/{sessionId}/activity` | sessionId | 谁对这条会话做了什么 |
+| `get_session_turn` | 读 | `session.read` | `/sessions/{sessionId}/turns/{turn}` | sessionId, turn | 精确查询一轮的投递结果 |
 | `sync_workspace` | 写 | `project.update` | `/workspaces/{workspaceId}/sync` | workspaceId | 检查单仓工作空间的远端是否匹配项目（写工具，要 `clientRequestId`） |
 | `create_workspace` | 写 | `project.update` | `/projects/{projectId}/workspaces` | projectId | 新建临时或长期工作空间 |
 | `remove_workspace` | 写 | `project.update` | `/workspaces/{workspaceId}/remove` | workspaceId, deleteDirectory?, force? | 移除工作空间（可连目录一起删）（写工具，要 `clientRequestId`） |
@@ -77,14 +79,14 @@
 | `provider_set_key` | 写 | `provider.manage` | `/providers/{providerId}/key` | providerId, apiKey | 设置或轮换提供商密钥（写工具，要 `clientRequestId`） |
 | `provider_probe` | 写 | `provider.manage` | `/providers/probe` | providerId?, protocol?, baseUrl?, apiKey?, workerId? | 探测上游模型列表 |
 | `provider_test` | 写 | `provider.manage` | `/providers/{providerId}/test` | providerId, workerId | 从机器测试提供商连通 |
-| `provider_delete` | 写 | `provider.manage` | `/providers/{providerId}` | providerId, confirm? | 删除模型提供商（写工具，要 `clientRequestId`） |
-| `provider_routing_set` | 写 | `provider.manage` | `/providers/routing/{workerId}` | workerId, routing, confirm? | 设置机器的提供商路由（写工具，要 `clientRequestId`） |
+| `provider_delete` | 写 | `provider.manage` | `/providers/{providerId}` | providerId, confirm? | 删除模型提供商 |
+| `provider_routing_set` | 写 | `provider.manage` | `/providers/routing/{workerId}` | workerId, routing, confirm? | 设置机器的提供商路由 |
 | `token_list` | 读 | `token.manage` | `/tokens` | — | 列出可管理的访问令牌 |
 | `token_create` | 写 | `token.manage` | `/tokens` | name, scopes, expiresAt, projectIds? | 签发访问令牌（明文只返回一次）（写工具，要 `clientRequestId`） |
-| `token_rotate` | 写 | `token.manage` | `/tokens/{tokenId}/rotate` | tokenId | 轮换访问令牌（明文只返回一次）（写工具，要 `clientRequestId`） |
-| `token_revoke` | 写 | `token.manage` | `/tokens/{tokenId}/revoke` | tokenId | 吊销访问令牌（写工具，要 `clientRequestId`） |
+| `token_rotate` | 写 | `token.manage` | `/tokens/{tokenId}/rotate` | tokenId | 轮换访问令牌（明文只返回一次） |
+| `token_revoke` | 写 | `token.manage` | `/tokens/{tokenId}/revoke` | tokenId | 吊销访问令牌 |
 
 ## 写工具的重试约定
 
 带 `（要 clientRequestId）` 的工具，每次**逻辑上的**调用都必须带一个稳定的 `clientRequestId`；
-超时重试要复用同一个值，24 小时内返回第一次的结果。不要每次重试生成新的 id —— 那等于重复下单。
+缓存只有有限保留期，超时或 5xx 不代表未执行，也不保证能重放。先查已知任务、会话或投递，切勿换新 ID 补发。

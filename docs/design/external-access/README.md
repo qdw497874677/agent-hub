@@ -1,6 +1,6 @@
 # 外部接入（MCP）页：改动前后
 
-后续改造见 [外部接入与 `ahub` CLI 改造计划](cli-plan.md)。该计划沿用现有外部接入授权与审计，不替换此页面。
+首次使用见 [`ahub` 快速上手](cli-quickstart.md)；协议和后续强回执见 [外部接入与 `ahub` CLI 改造计划](cli-plan.md)。CLI 沿用现有外部接入授权与审计，不替换此页面。
 
 `before/` 是审计时的访问令牌弹窗（明文令牌已打码），`after/` 是本分支 e2e 截的图（`E2E_SCREENSHOTS`），数据是本地临时 Hub 的模拟数据。
 

@@ -39,12 +39,13 @@ session_reply { sessionId, text, clientRequestId, clientMessageId }
 
 ```
 events { sessionId, sinceTurn, waitSec: 50 }   # 返回 { events, nextAfter }；没新事件就阻塞到超时
-get_session { sessionId, waitSec? }            # 结束后确认 status / ended / 用量
+get_session_turn { sessionId, turn }          # 以原始投递证据确认指定回合的结果
 list_task_log { taskId }                       # 复盘它自己记的决策
 ```
 
 - `events` 的 structuredContent / HTTP 响应都是 `{ events: [...], nextAfter }`，不要把它当成数组或再拆 `result`。
-- 每次都传 `sinceTurn=session_reply 返回的 turn`；之后同时用 `after=nextAfter` 增量拉。空页也要保留服务端给的游标；断线从最后确认的游标读，不重新发 prompt。只认 `turn` 严格相等的 `ended`，再检查其 `outcome`。
+- `events` 仅供阅读时间线。`sinceTurn` 是下界；之后用 `after=nextAfter` 增量拉。空页也保留游标，断线只续读。并行排队时 `ended` 上的 `turn` 可能是下一轮，不能用来判定本次投递完成。
+- 保存 `session_reply` 的 `turn`、`seq`、`deliveryId`。用 `get_session_turn` 核对 `promptSeq` / `deliveryId` 与回执一致，仅把可信的 `terminal + done` 视作这轮成功；`unknown` 不要补发。外部 SSE 暂停，使用 `events` 长轮询；浏览器内部会话流不受影响。
 - `waitSec`（最长 50）会等到有**符合过滤条件**的事件或超时。会话启动留下的无 turn 旧事件不会让它立刻空返回。
 - `get_session` 的状态描述最新一轮，不能代替目标回合的事件。单次长轮询空返回不是完成；总等待到期时记录 `sessionId`、`turn` 和游标，之后可续查，不自动重发或取消。
 - 想打断：`session_cancel { sessionId }`（它可能已经在收尾，重复调用无副作用）。

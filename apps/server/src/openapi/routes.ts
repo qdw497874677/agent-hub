@@ -12,6 +12,8 @@ import { taskPulls, tasks } from './routes/tasks.ts';
 import { tokens } from './routes/tokens.ts';
 import { workers } from './routes/workers.ts';
 import { workspaces, workspacesCleanup } from './routes/workspaces.ts';
+import { exactTurnRoute } from './exact-turn.ts';
+import { sessionTargetsRoute } from './session-targets.ts';
 
 export { V1 };
 export type { McpModule, McpRouteExposure, McpRouteMeta, ResolvedMcp, ScopeNote } from './routes/base.ts';
@@ -59,6 +61,7 @@ export function resolveMcp(key: string, route: McpRouteLike): ResolvedMcp | null
     key,
     module: exposure.module,
     need: exposure.need,
+    ...(exposure.alsoNeeds === undefined ? {} : { alsoNeeds: exposure.alsoNeeds }),
     name: exposure.expose ?? snake(key),
     readOnly,
     idempotent: exposure.idempotent === true,
@@ -73,7 +76,9 @@ export const routes = {
   ...projects,
   ...assets,
   ...tasks,
+  sessionTargets: sessionTargetsRoute,
   ...sessions,
+  sessionTurn: exactTurnRoute,
   ...workspaces,
   ...sessionsWork,
   ...taskPulls,

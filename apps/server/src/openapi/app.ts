@@ -19,6 +19,8 @@ import { installProviders } from './handlers/providers.ts';
 import { installSessionComms } from './handlers/session-comms.ts';
 import { installSessionSettle, installSessionWork } from './handlers/session-work.ts';
 import { installSessions, installSessionsLive, installSessionsStart } from './handlers/sessions.ts';
+import { installExactTurn } from './exact-turn.ts';
+import { installSessionTargets } from './session-targets.ts';
 import { installTaskPulls, installTasks } from './handlers/tasks.ts';
 import { installTokens } from './handlers/tokens.ts';
 import { installWorkers } from './handlers/workers.ts';
@@ -162,6 +164,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   installWorkers(v1, rt);
   installProjects(v1, rt);
   installTasks(v1, rt);
+  installSessionTargets(v1, rt);
   installSessionsStart(v1, rt);
   installWorkspaces(v1, rt);
   installSessionWork(v1, rt);
@@ -169,6 +172,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   installSessionSettle(v1, rt);
   installWorkspacesSweep(v1, rt);
   installSessions(v1, rt);
+  installExactTurn(v1, rt, options.readExactTurn);
   installSessionComms(v1, rt);
   installProviders(v1, rt);
   installTokens(v1, rt);
@@ -201,7 +205,8 @@ export const openApiInfo = {
       '- 认证：`Authorization: Bearer ahp_…`，令牌在「设置 → API 令牌」里创建，只显示一次。\n' +
       '- 权限 = 令牌的权限范围 ∩ 账号在团队里的权限；hub 本机的机器永远用不了。\n' +
       '- 限流：每个令牌每分钟 120 次请求、20 次 prompt，超了 429 + Retry-After。\n' +
-      '- MCP：同一个令牌 POST `/openapi/v1/mcp`（streamable HTTP）。对外只暴露显式登记的工具（项目、任务、工作日志、会话事件；写工具要 `MCP_WRITE=1`，且必须带 `clientRequestId`）。\n' +
+      '- MCP：同一个令牌 POST `/openapi/v1/mcp`（streamable HTTP）。写工具受 Hub 外部接入设置及令牌权限限制，必须带 `clientRequestId`。\n' +
+      '- 外部会话 SSE 暂停。读会话记录请使用 `/events` 长轮询，确认指定回合结果请使用 `/turns/{turn}`。\n' +
       '- 错误统一为 `{ error: { code, message } }`。'
   },
   servers: [{ url: '/' }]

@@ -11,7 +11,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { createAssetReader } from '@agent-hub/adapter-assets';
-import { createSecretVault, createSqliteAgentObserve, createSqliteApiTokens, createSqliteComponents, createSqliteMachineObserve, createSqliteMessageObserve, createSqlitePlannedWorktrees, createSqliteProviders, createSqliteWorkObserve, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createSecretVault, createSqliteAgentObserve, createSqliteApiTokens, createSqliteComponents, createSqliteExactTurn, createSqliteMachineObserve, createSqliteMessageObserve, createSqlitePlannedWorktrees, createSqliteProviders, createSqliteWorkObserve, createSqliteWorkspaceSweeps, createTaskArchiveBlockers, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, ServiceGateway, SessionId, SessionStartReadiness, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
 import { authenticateWorker, withToolAccess,
   createBotUseCase,
@@ -1653,6 +1653,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   }),
   memory: { memory: memoryService },
   openApi: {
+    readExactTurn: createSqliteExactTurn(store.db),
     tokens: apiTokenDeps,
     manage: apiTokenDeps,
     replays: store.mcpReplays,

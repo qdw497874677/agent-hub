@@ -30,7 +30,7 @@ export const misc = {
   }, { skip: '给外部 agent 下载的文件，不是可执行工具；用 MCP resources/read 或本 GET' }),
   me: route(null, {
     method: 'get', path: `${V1}/me`, tags: ['meta'], summary: '当前令牌是谁',
-    description: '返回令牌所属的账号与令牌的权限范围。任何有效令牌都能调。',
-    responses: { 200: json(z.object({ user: z.object({ id: z.string(), name: z.string(), service: z.boolean() }), token: z.object({ id: z.string(), name: z.string(), kind: z.enum(['personal', 'service']) }) })) }
+    description: '返回令牌所属的账号及当前 Hub 支持的契约。能力列表不代表授予权限。任何有效令牌都能调。',
+    responses: { 200: json(z.object({ user: z.object({ id: z.string(), name: z.string(), service: z.boolean() }), token: z.object({ id: z.string(), name: z.string(), kind: z.enum(['personal', 'service']) }), capabilities: z.array(z.string()) })) }
   }, { skip: '令牌自己的身份在 /me 里；工具清单不需要一个「查我自己」的工具' }),
 } as const;

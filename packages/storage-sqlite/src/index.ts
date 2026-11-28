@@ -24,3 +24,5 @@ export { createSqliteTaskCreations, migrateTaskCreationSchema } from './task-cre
 export { createSqliteProjectSessionGrants } from './project-session-grant.ts';
 export { createTaskArchiveBlockers } from './task-archive-blockers.ts';
 export { createSqlitePlannedWorktrees } from './planned-worktrees.ts';
+export { createSqliteExactTurn, EXACT_TURN_ROW_LIMIT, EXACT_TURN_PAYLOAD_LIMIT } from './exact-turn.ts';
+export type { ExactTurnReader, ExactTurnStatus } from './exact-turn.ts';

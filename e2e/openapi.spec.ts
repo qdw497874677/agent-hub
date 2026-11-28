@@ -1,15 +1,12 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, request as apiRequest, type APIRequestContext } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { e2eHubModel, piModel } from './hub-model.ts';
-import { serverEnv } from './server-env.ts';
-import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
+import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 /**
- * 开放 API（ADR 0014）：设置里建令牌（只显示一次）→ Bearer 调 /openapi/v1 → 远程机器上开会话、发消息、读 SSE 流
+ * 开放 API（ADR 0014）：设置里建令牌（只显示一次）→ Bearer 调 /openapi/v1 → 远程机器上开会话、发消息、读投影事件
  * → MCP 调工具 → 权限不够 403 → 本机 Worker 永远用不了 → 吊销后 401。手机宽度的令牌面板也截图。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'];
@@ -19,7 +16,9 @@ async function csrfHeaders(request: APIRequestContext, baseURL: string) {
   return { origin: baseURL, 'x-hub-csrf': csrf };
 }
 
-test('开放 API：令牌、对话 + 事件流、MCP、权限拒绝、本机永远不开放、吊销', async ({ page, baseURL }) => {
+test.afterAll(stopFakeWorker);
+
+test('开放 API：令牌、对话事件投影、MCP、权限拒绝、本机永远不开放、吊销', async ({ page, baseURL }) => {
   test.setTimeout(240_000);
   await loginByApi(page);
   const headers = await csrfHeaders(page.request, baseURL!);
@@ -38,27 +37,26 @@ test('开放 API：令牌、对话 + 事件流、MCP、权限拒绝、本机永�
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
   await page.getByRole('button', { name: '账号' }).click();
-  await page.getByRole('button', { name: '访问令牌' }).click();
-  const dialog = page.getByRole('dialog', { name: '访问令牌' });
+  await page.getByTestId('menu-access').click();
+  await expect(page.getByRole('heading', { name: '外部接入（MCP）' })).toBeVisible();
   const name = `e2e-bot-${Date.now().toString(36)}`;
-  await dialog.getByTestId('token-name').fill(name);
-  const scopeLabels = ['改项目和任务', '发起会话', '看机器', ...(e2eHubModel() ? ['使用模型提供商'] : [])];
-  for (const label of scopeLabels) await dialog.getByText(label, { exact: true }).click();
+  await page.getByTestId('token-name').fill(name);
+  await page.locator('[data-testid="token-preset"][data-preset="delegate"]').click();
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'tokens-create-390.png') });
-  await dialog.getByTestId('token-create').click();
-  const value = dialog.getByTestId('token-value');
+  await page.getByTestId('token-create').click();
+  const value = page.getByTestId('token-value');
   // 明文默认打码，点「显示」才露出来
   await expect(value).toContainText('ahp_');
   await expect(value).toContainText('••••');
-  await dialog.getByTestId('token-reveal').click();
+  await page.getByTestId('token-reveal').click();
   await expect(value).not.toContainText('••••');
   const token = ((await value.textContent()) ?? '').trim();
   // 接入片段只引用环境变量，不带明文
-  await expect(dialog.getByTestId('mcp-guide-snippet')).not.toContainText(token);
+  await expect(page.getByTestId('mcp-guide-snippet')).not.toContainText(token);
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'tokens-fresh-390.png') });
-  await dialog.getByRole('button', { name: '我已保存' }).click();
-  await expect(dialog.getByTestId('token-value')).toHaveCount(0);
-  const row = dialog.locator(`[data-token-name="${name}"]`);
+  await page.getByRole('button', { name: '我已保存' }).click();
+  await expect(page.getByTestId('token-value')).toHaveCount(0);
+  const row = page.locator(`[data-token-name="${name}"]`);
   await expect(row).toBeVisible();
   await expect(row).not.toContainText(token);
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'tokens-list-390.png') });
@@ -102,65 +100,37 @@ test('开放 API：令牌、对话 + 事件流、MCP、权限拒绝、本机永�
   expect(forbidden.status()).toBe(403);
   expect(((await forbidden.json()) as { error: { code: string } }).error.code).toBe('forbidden');
 
-  // —— 4. 远程机器上对话 + SSE 事件流 ——
-  const pairing = (await (await page.request.post('/api/workers/pairing', { headers })).json()) as { code: string };
-  const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
-  const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], {
-    env: { PATH: process.env['PATH'] ?? '', HUB_URL: hubUrl, HUB_PAIR: pairing.code, WORKER_LABEL: 'e2e openapi 机器' },
-    encoding: 'utf8'
-  });
-  expect(enrolled.status, enrolled.stderr).toBe(0);
-  const [workerId = '', credential = ''] = enrolled.stdout.trim().split('\n');
-  const state = mkdtempSync(join(tmpdir(), 'hub-e2e-openapi-worker-'));
-  const dir = join(state, 'repo');
-  mkdirSync(dir);
-  let worker: ChildProcess | null = null;
+  // —— 4. 远程假 ACP 真实执行，外部只读投影，内部保留消息作者 ——
+  const workerId = await ensureFakeWorker(page, baseURL!);
+  const dir = mkdtempSync(join(tmpdir(), 'hub-e2e-openapi-workdir-'));
   try {
-    worker = spawn(process.execPath, ['apps/worker/src/main.ts'], {
-      env: {
-        ...serverEnv(),
-        HUB_URL: hubUrl,
-        HUB_WORKER_CREDENTIAL: credential,
-        WORKER_ID: workerId,
-        WORKER_ORIGIN: 'remote',
-        WORKER_LABEL: 'e2e openapi 机器',
-        WORKER_ROOTS: e2eWorkerRoots(),
-        WORKER_STATE_DIR: state
-      },
-      stdio: 'ignore'
-    });
-    let remote: { workerId: string; agentIds?: string[]; state: string } | undefined;
     await expect
       .poll(async () => {
         const list = (await (await bot.get('/openapi/v1/workers')).json()) as { workerId: string; agentIds?: string[]; state: string }[];
-        remote = list.find((entry) => entry.workerId === workerId && entry.state === 'online');
-        return Boolean(remote);
+        return list.some((entry) => entry.workerId === workerId && entry.state === 'online' && entry.agentIds?.includes(FAKE_AGENT_ID));
       }, { timeout: 30_000 })
       .toBe(true);
-    const agentId = remote?.agentIds?.[0];
-    expect(agentId, '远程机器上要有至少一个 agent').toBeTruthy();
 
     const project = (await (await bot.post('/openapi/v1/projects', { data: { name: `${name} 远程`, rootPath: dir, workerId } })).json()) as { id: string };
     const task = await bot.post('/openapi/v1/tasks', { data: { projectId: project.id, title: '经开放 API 聊一句' } });
     expect(task.status(), await task.text()).toBe(201);
     const taskId = ((await task.json()) as { id: string }).id;
-    const started = await bot.post('/openapi/v1/sessions', { data: { taskId, agentId, model: piModel(), workerId } });
+    const started = await bot.post('/openapi/v1/sessions', { data: { taskId, agentId: FAKE_AGENT_ID, model: 'fake/m1', workerId } });
     expect(started.status(), await started.text()).toBe(201);
     const sessionId = ((await started.json()) as { id: string }).id;
-    const prompted = await bot.post(`/openapi/v1/sessions/${sessionId}/prompt`, { data: { text: '只回复「好」一个字' } });
+    const prompted = await bot.post(`/openapi/v1/sessions/${sessionId}/prompt`, { data: { text: '外部投影测试' } });
     expect(prompted.status(), await prompted.text()).toBe(202);
 
-    // SSE：用原生 fetch 读流，至少能拿到带 seq 的 prompt 事件，作者带 via
-    const controller = new AbortController();
-    const response = await fetch(`${baseURL}/openapi/v1/sessions/${sessionId}/stream`, { headers: { authorization: `Bearer ${token}` }, signal: controller.signal });
-    expect(response.status).toBe(200);
-    const reader = response.body!.getReader();
-    let text = '';
-    const deadline = Date.now() + 20_000;
-    while (!text.includes('"kind":"prompt"') && Date.now() < deadline) text += new TextDecoder().decode((await reader.read()).value);
-    controller.abort();
-    expect(text).toMatch(/event: event\n/);
-    expect(text).toContain(`"via":"${name}"`);
+    const stream = await bot.get(`/openapi/v1/sessions/${sessionId}/stream`);
+    expect(stream.status()).toBe(503);
+    expect((await stream.json()).error.code).toBe('external_stream_disabled');
+    await expect.poll(async () => {
+      const response = await bot.get(`/openapi/v1/sessions/${sessionId}/events`);
+      expect(response.status()).toBe(200);
+      const projected = (await response.json()) as { nextAfter: number; events: { seq: number; event: { kind: string } }[] };
+      expect(projected.events.some(({ event }) => event.kind === 'prompt')).toBe(false);
+      return projected.events.some(({ seq, event }) => seq > 0 && seq <= projected.nextAfter && event.kind === 'ended');
+    }).toBe(true);
     const session = (await (await bot.get(`/openapi/v1/sessions/${sessionId}`)).json()) as { id: string };
     expect(session.id).toBe(sessionId);
     expect(((await (await bot.get(`/openapi/v1/tasks/${taskId}`)).json()) as { sessions: unknown[] }).sessions.length).toBe(1);
@@ -179,9 +149,10 @@ test('开放 API：令牌、对话 + 事件流、MCP、权限拒绝、本机永�
     await expect(page.getByTestId('msg-author-via').first()).toContainText(name);
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'chat-via-token.png') });
   } finally {
-    worker?.kill();
-    rmSync(state, { recursive: true, force: true });
+    stopFakeWorker();
+    rmSync(dir, { recursive: true, force: true });
     await page.request.delete(`/api/workers/${workerId}`, { headers }).catch(() => undefined);
+    rmSync(localDir, { recursive: true, force: true });
   }
 
   // —— 5. MCP：同一个令牌、同一套权限 ——
@@ -200,9 +171,9 @@ test('开放 API：令牌、对话 + 事件流、MCP、权限拒绝、本机永�
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
   await page.getByRole('button', { name: '账号' }).click();
-  await page.getByRole('button', { name: '访问令牌' }).click();
+  await page.getByTestId('menu-access').click();
   page.once('dialog', (confirm) => void confirm.accept());
-  await page.getByRole('dialog', { name: '访问令牌' }).locator(`[data-token-name="${name}"]`).getByTestId('token-revoke').click();
+  await page.locator(`[data-token-name="${name}"]`).getByTestId('token-revoke').click();
   await expect(page.locator(`[data-token-name="${name}"]`)).toHaveCount(0);
   await expect.poll(async () => (await bot.get('/openapi/v1/me')).status()).toBe(401);
   await page.request.delete(`/api/tokens/${readOnly.info.id}`, { headers });

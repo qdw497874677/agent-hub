@@ -17,17 +17,17 @@ Agent Hub 是一台"会话服务器"：项目 → 任务 → 会话（agent 进�
 - 写工具要令牌带对应 scope（`project.create`、`task.create`、`session.prompt`…）。缺权限时工具**不会出现在 tools/list 里**；这不是你没找对，是该令牌没有。
 - 配置模型提供商要另开 `providers:manage`（管理员授予，不能给只限项目的令牌）。配方见 `references/workflows.md` §8。
 - 服务器可能开了「只读模式」：写工具会整体消失。此时只能读，告诉用户去关掉只读模式或换令牌。
-- REST 与 MCP 是同一套能力：需要 SSE 长流、文件上传、`Idempotency-Key` 重试时走 REST（`<hub>/openapi/v1/...`），其余优先 MCP。
+- REST 与 MCP 共用权限与安全事件投影。外部 SSE 暂停，用 `events` 长轮询；要确认某次投递的结果用 `get_session_turn`。
 
 从仓库根目录可用本机辅助工具检查连接、等待指定回合：
 
 ```sh
-node scripts/workbench-mcp.ts login https://hub.example.com/openapi/v1/mcp
-node scripts/workbench-mcp.ts check
-node scripts/workbench-mcp.ts wait "$SESSION_ID" "$TURN" --timeout-sec 600
+node scripts/ahub.ts auth login --hub https://hub.example.com --profile work
+node scripts/ahub.ts auth status --profile work
+node scripts/ahub.ts session wait "$SESSION_ID" --turn "$TURN" --timeout 600 --profile work
 ```
 
-`login` 在终端隐藏录入令牌，保存到当前用户的 `~/.config/agent-hub/workbench-mcp.json`（遵从 `XDG_CONFIG_HOME`，权限 `0600`）；不要把令牌放进命令或聊天。只有确认目标是可信的本机、内网或 Tailnet 地址时，才对 `http://` 显式加 `--allow-http`。`check` 失败时区分不可达、鉴权、工具不可见和协议不兼容；`wait` 不提交或取消任何会话操作，断线后可用 `--after <nextAfter>` 续查。令牌曾公开则先撤销并重新签发。
+`auth login` 隐藏录入令牌，保存在本机私有 profile；不要把令牌放进命令或聊天。`--allow-http` 只允许本机回环。等待不会取消会话；若断线，之后查询同一会话和回合。旧 `scripts/workbench-mcp.ts` 仍可连接，但其 `wait` 不用于精确结果验收。令牌曾公开则先撤销并重新签发。
 
 ## 基本循环（够用 80%）
 
@@ -38,15 +38,15 @@ list_workers             → 挑一台 state=online、origin=remote、装了对�
 task_create              → { projectId, title, goal?, clientRequestId }
 session_start            → { taskId, workerId, agentId, model?, clientRequestId } （可选 workspaceMode:'isolated'）
 session_reply            → { sessionId, text, clientRequestId, clientMessageId? }  ← 把目标、约束和验收讲清楚
-events                   → { sessionId, sinceTurn, after?, waitSec: 50 }  ← 只认目标回合的 ended
-get_session              → 最新状态和用量，不代替指定回合的 ended
+events                   → { sessionId, sinceTurn, after?, waitSec: 50 }  ← 只读进展
+get_session_turn         → { sessionId, turn }  ← 核对原回执的 seq 和 deliveryId
 ```
 
 - 一个任务下可以有多条会话（并行分支、不同机器）。**独立的事就开新会话**，别在一条会话里来回变需求。
 - `session_start` 不传 `workspaceId` / `groupId` 时，如果项目里没有能用的长期目录，平台会自动开一个**单仓**临时工作目录。多仓要先用 `workspace_group_create` 建组，再把 `groupId` 传给 `session_start`（见「多仓组合会话」）。
 - `events` 是投影后的：`text`、`tool`、`tool_result`（带工具名）、`ended`、`diagnostic`。**提示词原文和工具输入输出不会给你**，要看代码改动用 `workspace_changes`。
 - 会话跑完不等于进程立刻消失（保活约 15 分钟，方便追问）。要继续聊直接 `session_reply`。
-- 等一轮结束别狂刷：`get_session { sessionId, waitSec: 30 }` / `events { sessionId, after, waitSec: 30 }` 长轮询（≤50 秒，到点照常返回，不取消这一轮）。
+- `get_session` 只描述最近状态；长轮询 `events { sessionId, after, waitSec: 30 }` 看进展。按原投递查到已确认的结束前，不要把时间线的回合标签当作成功证据。
 
 ## 多会话协作（开发 ↔ 验证）
 

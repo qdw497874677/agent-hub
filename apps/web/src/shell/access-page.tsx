@@ -21,6 +21,38 @@ const day = (ms: number) => new Date(ms).toLocaleDateString('zh-CN', { year: 'nu
  */
 const KEY = ['api-tokens'] as const;
 
+function CliGuide() {
+  const location = window.location;
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  const safe = location.protocol === 'https:' || (location.protocol === 'http:' && loopback);
+  // hash 是页面路由；pathname 保留反向代理前缀，不能用完整地址或 origin 代替。
+  const base = `${location.origin}${location.pathname}`.replace(/\/$/, '');
+  const quotedBase = `'${base.replace(/'/g, "'\\''")}'`;
+  const command = `node scripts/ahub.ts auth login --hub ${quotedBase} --profile work${location.protocol === 'http:' ? ' --allow-http' : ''}`;
+  const copies = useCopy(command);
+  return (
+    <details data-testid="cli-guide" className="mt-3 rounded-sm border border-hair bg-card px-3 py-2.5">
+      <summary className="cursor-pointer text-meta text-primary">在终端使用 agent-hub CLI</summary>
+      <div className="mt-2 space-y-2 text-meta text-secondary">
+        <p>需要支持 CLI 的 Hub。先<a data-testid="cli-guide-link" href="https://github.com/qdw497874677/agent-hub/blob/master/docs/design/external-access/cli-quickstart.md" target="_blank" rel="noopener noreferrer" className="mx-1 underline underline-offset-2 hover:text-primary">获取 agent-hub 源码并查看快速上手</a>；目前没有独立安装包。</p>
+        <p>在上方新建令牌时选择「只给指定项目」并选择项目，按需要设置权限；保存好只显示一次的令牌。接下来在终端交互式输入，不要写进命令。</p>
+        <p>在 agent-hub 源码目录中使用 Node.js 26 运行：</p>
+        {safe ? (
+          <>
+            <pre data-testid="cli-guide-command" className="overflow-x-auto rounded-sm bg-panel px-2 py-2 font-mono text-[11px] text-primary">{command}</pre>
+            <CopyButton action={copies} label="复制登录命令" testId="cli-guide-copy" className={SMALL} />
+            {copies.manual ? <ManualCopy text={command} attempt={copies.attempts} testId="cli-guide-manual" /> : null}
+            {location.protocol === 'http:' ? <p>此命令仅用于本机回环地址，--allow-http 明确允许本地 HTTP。</p> : null}
+          </>
+        ) : (
+          <p data-testid="cli-guide-insecure" className="text-rust">当前页面使用非本地 HTTP，不能安全地用此地址登录。请使用 HTTPS，或先建立可信的本机回环隧道，再按快速上手指南使用本地地址和 --allow-http。</p>
+        )}
+        <p>CLI 不会从此页面读取令牌；登录时按终端提示输入。Hub 若不兼容，请联系管理员升级。</p>
+      </div>
+    </details>
+  );
+}
+
 function WritesSwitch() {
   const client = useQueryClient();
   const access = useQuery({ queryKey: ['mcp-access'], queryFn: mcpAccessApi.get });
@@ -383,6 +415,7 @@ export function AccessPage() {
           </Section>
           <Section title="接到客户端">
             <McpGuidePanel />
+            <CliGuide />
           </Section>
           <Section title={`令牌（${active.length}）`}>
             <Panel>

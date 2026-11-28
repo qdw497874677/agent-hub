@@ -7,9 +7,7 @@ import {
   applyStartExtras,
   checkStartExtras
 } from '../../session-start-extras.ts';
-import { streamSSE } from 'hono/streaming';
 import type {
-  JournalEntry,
   Session
 } from '@agent-hub/domain';
 import {
@@ -37,7 +35,6 @@ import {
 } from '@agent-hub/domain';
 import type { z } from 'zod';
 import type {
-  deriveSessionRequest,
   forkSessionRequest
 } from '@agent-hub/contract';
 import { fail } from '../../http-error.ts';
@@ -51,6 +48,8 @@ import {
   routes
 } from '.././routes.ts';
 import { workspaceForApiStart } from '../../session-workspace.ts';
+import { boundedStart } from '../bounded-start.ts';
+import type { apiStartRequest } from '../routes/sessions.ts';
 import {
   isProjectableEntry,
   lastJournalSeq,
@@ -76,8 +75,15 @@ export function installSessionsStart(app: OpenAPIHono<Env>, rt: V1Runtime): void
   };
   on(routes.startSession, async (c) => {
     const actor = rt.principal(c);
-    const { handle, linkWith, ...input } = valid<z.output<typeof deriveSessionRequest>>(c, 'json');
     if (!can(actor, 'session.create')) return fail(c, forbidden('令牌没有 sessions:write'));
+    const { placement, handle, linkWith, ...input } = valid<z.output<typeof apiStartRequest>>(c, 'json');
+    if (placement === 'bounded_v1') {
+      const started = await boundedStart(rt, actor, await c.req.json());
+      if (!started.ok) return fail(c, started.error);
+      await recordSessionAction(rt.deps, rt.activity, c, actor, 'session.start', started.value.id, '');
+      await noteProvenance(rt.deps, rt.activity, c, actor, started.value, 'api');
+      return c.json(await withHandle(rt, started.value), 201);
+    }
     const extras = { handle, linkWith };
     const linkIds = await checkStartExtras(rt.deps, rt.messaging?.messages, input.taskId, extras, actor);
     if (!linkIds.ok) return fail(c, linkIds.error);
@@ -287,55 +293,7 @@ export function installSessionsLive(app: OpenAPIHono<Env>, rt: V1Runtime): void 
     }
     return c.json(rt.activity ? await sessionActivity(rt.activity, sessionId) : []);
   });
-  on(routes.stream, async (c) => {
-    const actor = rt.principal(c);
-    const sessionId = asSessionId(c.req.param('sessionId') ?? '');
-    if (!(await rt.deps.sessions.byId(sessionId))) return fail(c, notFound('会话不存在'));
-    const key = actor.via!.tokenId;
-    const open = rt.openStreams.get(key) ?? 0;
-    if (open >= rt.maxStreams) return rt.tooMany(c, 5, `每个令牌最多同时开 ${rt.maxStreams} 条事件流`);
-    rt.openStreams.set(key, open + 1);
-    const fromHeader = Number(c.req.header('last-event-id') ?? NaN);
-    const after = Number.isFinite(fromHeader) ? fromHeader : (valid<{ after?: number }>(c, 'query').after ?? 0);
-    return streamSSE(
-      c,
-      async (stream) => {
-        // 先订阅再补发，补发完再放出缓冲里更新的：不漏也不重。
-        let sent = after;
-        let replaying = true;
-        const buffered: JournalEntry[] = [];
-        const send = async (entry: JournalEntry) => {
-          if (entry.seq <= sent) return;
-          sent = entry.seq;
-          await stream.writeSSE({ event: 'event', id: String(entry.seq), data: JSON.stringify(entry) });
-        };
-        const unsubscribe = rt.hub.subscribe((frame) => {
-          if (frame.sessionId !== sessionId) return;
-          if (frame.event === null) {
-            void stream.writeSSE({ event: 'status', data: JSON.stringify({ status: frame.status }) });
-            return;
-          }
-          const entry: JournalEntry = { seq: frame.seq, event: frame.event, at: rt.now() } as JournalEntry;
-          if (replaying) buffered.push(entry);
-          else void send(entry);
-        });
-        const ping = setInterval(() => void stream.write(': ping\n\n'), 15_000);
-        try {
-          for (const entry of await refreshAuthors(rt.activity, await rt.deps.sessions.eventsAfter(sessionId, after))) await send(entry);
-          replaying = false;
-          for (const entry of buffered.splice(0)) await send(entry);
-          await new Promise<void>((resolve) => {
-            if (c.req.raw.signal.aborted) resolve();
-            c.req.raw.signal.addEventListener('abort', () => resolve());
-            stream.onAbort(() => resolve());
-          });
-        } finally {
-          clearInterval(ping);
-          unsubscribe();
-          rt.openStreams.set(key, Math.max(0, (rt.openStreams.get(key) ?? 1) - 1));
-        }
-      },
-      async () => undefined
-    );
-  });
+  // External streams previously emitted raw, potentially uncommitted events. Fail closed until
+  // replay and live delivery can share projection and continuous authorization checks.
+  on(routes.stream, (c) => c.json({ error: { code: 'external_stream_disabled', message: '外部事件流暂不可用；请用 GET /openapi/v1/sessions/{sessionId}/events?after=<seq>&waitSec=50 长轮询，并以 nextAfter 续读。' } }, 503));
 }

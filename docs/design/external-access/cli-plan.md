@@ -1,6 +1,6 @@
 # 外部接入与 `ahub` CLI 改造计划
 
-状态：**设计待批准，尚未实施**。核对基线：agent-hub `99c585e4`；Orca `a91fc0a6`。本文定义新 CLI 的目标契约；现有客户端的行为以当前实现为准。
+状态：**P0/P1 已在工作树实现，P2 服务端强回执仍是计划**。设计对照基线：agent-hub `99c585e4`；Orca `a91fc0a6`。本文保留原设计背景和后续目标；当前命令与实际用法见 [快速上手](cli-quickstart.md)。首版输出精确状态，不在等待时混读时间线，也没有 `--after` 或用户输入专用退出码。
 
 ## 1. 要解决什么
 
@@ -22,7 +22,7 @@ CLI 使用现有 `/openapi/v1`；REST 和外部 MCP 继续共用路由、身份�
 
 ## 3. 使用体验与命令
 
-命令名为本计划目标，以下不是当前可执行命令。首发命令运行在仓库要求的 Node 26 环境，不依赖 Orca、不要求客户端安装 Git 或 Agent；先提供源码检出和 CI 可调用的入口 `scripts/ahub.ts`，再依据试用决定是否发独立安装包。现有 [工作台 Skill 打包](../../../apps/server/src/workbench-skill.ts)只收 Markdown，接入说明可链接入口，不假定下载 Skill 就装好了 CLI。
+下表使用 `ahub` 简写，实际入口是 `node scripts/ahub.ts`。首发需要 Node 26 和源码，不依赖 Orca，不要求在客户端安装 Agent。现有 [工作台 Skill 打包](../../../apps/server/src/workbench-skill.ts)只收 Markdown，不包含 CLI。
 
 | 命令 | 行为 |
 | --- | --- |
@@ -31,7 +31,7 @@ CLI 使用现有 `/openapi/v1`；REST 和外部 MCP 继续共用路由、身份�
 | `ahub doctor --task <id> [--worker <id>]` | 查令牌、目标及候选 Worker／工作目录／运行时与模型，显示已就绪、离线、无权限或不支持、无法确认等。只读；不装运行时、不启用组件、不 clone、不写配置。服务器执行时必须重查，doctor 不是授权或预留。 |
 | `ahub task create --project <id> --title ...` | 只建 Task，不隐式开会话。返回完整 Task ID。 |
 | `ahub session start --task <id> --worker <id> --workspace <id> --agent <id> [--model <id>]` | 第一阶段只选**已有单一工作目录**；需要临时 worktree、组合目录或初始化仓库，沿用现有界面／API 另做。模型可省略并由 Hub 解析；没有生效默认就给出可行动错误。不自动换 Worker、目录或模型。 |
-| `ahub session send <id> --stdin [--wait]`；`session wait <id> --turn <n> [--after <seq>]` | send 先报 Hub ACK；`--wait` 等 ACK 的 `deliveryId` 对应的结果。单独 wait 由 Hub 把 `turn` 解析到原 prompt 和 delivery；找不到可信关联就报未知。`--after` 只影响进度读取，不影响结果查询。超时或 Ctrl-C 不向 Hub 发停止命令。 |
+| `ahub session send <id> --stdin [--wait]`；`session wait <id> --turn <n> [--timeout <seconds>]` | send 等 Hub ACK；`--wait` 等 ACK 的 `deliveryId` 对应的结果。单独 wait 由 Hub 把 `turn` 解析到原 prompt 和 delivery；找不到可信关联就报未知。超时或 Ctrl-C 不向 Hub 发停止命令。 |
 | `ahub operation status <id>`；后续 `operation retry <id>` | 首发只读返回本地请求快照和已掌握的远端证据，不会再次 POST。仅在服务端具备明确的操作回执协议后才开放同 ID 重放。 |
 
 典型流程中，`auth login` → `project list` → `task create` → `doctor --task` → `session start` → `session send --wait` → `task show`。不提供一步式 `run`：它会把建任务、目录与启动和发送的副作用混在一起，出故障后难以判断该查哪一步。可脚本串联；每一步都有独立 ID 和退出结果。
@@ -63,7 +63,7 @@ CLI 使用现有 `/openapi/v1`；REST 和外部 MCP 继续共用路由、身份�
 | `4` | 可确认的未送达、失败、停止或中断 |
 | `5` | 等待预算耗尽，本轮仍有明确的非终态；没有取消工作 |
 | `6` | 操作或回合**结果未知**；包括无法建立可信匹配、旧 Hub 无所需证据等 |
-| `7` | 确认需要用户输入；不等于失败或完成 |
+| `7` | 保留给未来能精确归属本轮的用户输入状态；首版不返回 |
 | `130` | 本地等待被 Ctrl-C 中止；不向 Hub 发 interrupt |
 
 ### 4.3 丢回执的恢复分两档
@@ -87,7 +87,7 @@ P2 的重放和首次提交明确分开：仅对仍查得到的原收据返回�
 | **P1b · 有界写入** | Server 的严格 start；CLI `task create`、`session start`、`session send`、checkpoint／status；沿用 REST 写权限，不把仅控制 MCP 的只读开关描述成 REST 禁写。要发只读凭据就不授写 scope。可交付第一版给内部用户。 | 真实隔离 Hub + 远程 Worker + 假 ACP：同一流程终点可追溯；丢响应／重启后不会第二次写；老 MCP 工具和旧脚本保持兼容。 |
 | **P2 · 可恢复写** | Domain/SQLite/Server 的强回执和 Worker 同 attempt 对账；CLI 检测协议并开放 `operation retry`；完成短指南和面向接入页的接入手册。 | 故障注入证明同任务、同 Session、同 prompt 不重复；撤权／轮换、旧 Worker、过期收据均安全停住。未过不能宣传可重放。 |
 
-先定 DTO 和契约测试，再允许 Server／CLI 两个写入范围并行，文档和兼容策略归同一负责人。Server 不为 CLI 增加新的 Worker 权限；CLI 不拥有业务规则。暂不改 Web 接入页；若后续加 CLI tab 或复制命令，再做桌面与手机的 Playwright，不把它作为首发依赖。
+Server 不为 CLI 增加新的 Worker 权限；CLI 不拥有业务规则。外部接入页提供不含令牌的登录命令和快速上手链接，并验证桌面与手机；公网 HTTP 不提供登录命令。
 
 发布顺序是 Hub 能力 → 新 CLI → 小范围接入。不采集令牌、正文、提示词；按操作种类记录拒绝、未送达、未知、确定完成和收据查找结果。只要出现重复 Session／重复 prompt、越权读或外部出现未投影事件，立即暂停相应写能力／外部流并保留只读与收据查验。回退包不移除待对账收据或恢复原始 SSE；若新收据尚有未决项，先停止新写、按前向修复处理，不直接启用会绕过新约束的旧写路径。
 

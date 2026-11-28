@@ -1,6 +1,5 @@
 // sessions 能力段的路由定义（从 routes.ts 原样搬出；顺序即注册顺序）。
 import { z } from '@hono/zod-openapi';
-import { projectEvents } from '../projection.ts';
 import {
   changeOptionRequest,
   deriveSessionRequest,
@@ -30,6 +29,10 @@ import {
   settleSessionResponse
 } from './schemas.ts';
 
+// Keep legacy MCP's flat input shape. The handler additionally validates the original JSON
+// with boundedStartRequest when placement is set; the legacy schema strips unknown fields.
+export const apiStartRequest = deriveSessionRequest.extend({ placement: z.literal('bounded_v1').optional() });
+
 export const sessions = {
   startSession: route('sessions:write', {
     method: 'post', path: `${V1}/sessions`, tags: ['sessions'], summary: '在任务下开一条会话',
@@ -38,11 +41,12 @@ export const sessions = {
       '参数：taskId、agentId、model（省略或空串=按 resolve_default_agent 的层级取：任务默认 > 项目默认 > 团队运行时默认模型）、workerId（建议显式给在线机器）、workspaceId（可选）、groupId（可选：已有的组合工作空间；多仓项目要先在 Hub 建组，本工具不会自动建组合组）、assetIds（可选：只带这些资产）。\n' +
       '会话通信：repoId（可选：一仓一会话——只为项目里这个仓库新开隔离 worktree，和 workspaceId / groupId 互斥）、handle（可选：任务内短名，别的会话用 peer:<handle> 找它）、linkWith（可选：建好后和这些同项目会话建立显式连线；实际互发仍受通信权限约束）。\n' +
       '资产：不传 assetIds = 用项目生效的全部资产；要排除某个技能/指令时，传完整清单减掉它（清单里的 id 必须对该项目可见，看不见的会被丢掉）。\n' +
-      '返回：会话对象（id、status、model、workspaceId、handle）。handle 是任务内短名，和 session_peers 返回的一致：没显式传 handle 时用默认短名 `<agentId>-<会话 id 的 4 位后缀>`；只有没接消息总线时为 null。\n' +
+      '显式传 placement=bounded_v1 时，只接受 taskId/workerId/workspaceId/agentId、可选 model 和 placement；不准备目录、不安装组件、不换机器。\n' +
+      '返回：会话对象（id、status、model、workspaceId、handle），不等于运行时已就绪。handle 是任务内短名，和 session_peers 返回的一致；没显式传 handle 时用默认短名。\n' +
       '下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n' +
       '错误：400 参数不合法（含 handle 格式、repoId 不在项目里）；403 无 sessions:write 或不能和 linkWith 里的会话说话；404 linkWith 的会话不在同一项目；409 机器不可用、没装该 runtime、短名已被占用或 linkWith 的会话已收起（archived）。\n' +
-      '重试：MCP 调用要给 clientRequestId，同一值重试不会开第二条会话。',
-    request: body(deriveSessionRequest),
+      'MCP 写入须给 clientRequestId；丢回执先核对，不要用新键重试。',
+    request: body(apiStartRequest),
     responses: { 201: json(sessionWithHandleSchema, '已开始') }
   }, { module: 'sessions', need: 'session.create', readOnly: false, expose: 'session_start', idempotent: true }),
   forkSession: route('sessions:write', {
@@ -56,7 +60,7 @@ export const sessions = {
       '取一条会话的状态与配置。**status 只描述最近一轮**：running = 这一轮在跑；done/stopped/interrupted/failed = 这一轮的结果。\n' +
       '参数：sessionId。\n' +
       '返回：会话对象（status、turn、lastSeq、model、workspaceId、taskId…；taskId 可能为 null，表示常驻容器会话）。handle 是任务内短名，和 session_peers 返回的一致：没显式设 handle 时是默认短名 `<agentId>-<会话 id 的 4 位后缀>`；只有没接消息总线时为 null。\n' +
-      '轮询用法：记下 turn；调 events(sessionId, sinceTurn=turn) 或 events(sessionId, after=lastSeq)；未到终态就 3–5 秒后再看；看到本 turn 的 ended 事件即这一轮结束。\n' +
+      '要确认指定回合，用 get_session_turn；会话状态与事件上的 turn 标签不能作为某次投递的结束证据。\n' +
       '下一步：用 events 读它的时间线；要发下一句用 session_reply。\n' +
       '长轮询：waitSec（0–50）= 这一轮还在跑时最多等这么久再返回（不取消这一轮；到点仍在跑就原样返回 running）。\n' +
       '错误：404 会话不存在或属于看不见的项目。',
@@ -79,9 +83,9 @@ export const sessions = {
     description:
       '给会话发一条消息，立即返回（202）；回合在后台跑。\n' +
       '参数：text、clientMessageId（建议总是带；同一条消息重试用同一个值，服务端按它去重）。\n' +
-      'MCP 重试：clientRequestId 是整个工具调用的重试键（同一值不会重复发送）；clientMessageId 是这条消息的去重键，两者独立——换 clientRequestId 重试同一条消息时，仍靠 clientMessageId 去重。\n' +
-      '返回：{ ok, turn, seq, deliveryId, state }——turn 是这句开启的轮次。\n' +
-      '轮询用法：拿返回的 turn，反复调 events(sessionId, sinceTurn=turn)；读到的每条事件都带同一个 turn；看到 ended 就是这一轮结束（事件里 outcome 区分 done/stopped/interrupted/failed）。\n' +
+      'clientRequestId 是整个工具调用的重试键，clientMessageId 是这条消息的去重键（仅近期）。丢回执不等于未执行，不要换键补发。\n' +
+      '返回：{ ok, turn, seq, deliveryId, state }——202 只表示 Hub 已接收，不表示已送达或结束。\n' +
+      '确认这轮结果请用 get_session_turn，并核对 promptSeq / deliveryId 与原回执一致。\n' +
       '下一步：轮询 events 或 list_task_log 看进展与结论；要打断用 session_cancel。\n' +
       '错误：404 会话不存在或看不见；409 会话不在运行（先 session_start）；429 太频繁。',
     request: { params: sessionId, ...body(promptRequest) },
@@ -110,7 +114,7 @@ export const sessions = {
       '参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）；waitSec（0–50，没有*可投影且符合过滤条件*的事件时最多等这么久，有就立刻返回）。\n' +
       '返回：`{ events: [{ seq, at, turn, event }], nextAfter }`。MCP 的 structuredContent 就是这份对象（不要把数组再包进 result）。event.kind ∈ text | tool | tool_result | ended | diagnostic。\n' +
       'nextAfter 是本窗扫到的最后一条原始 journal seq（thinking / prompt 等被投影丢掉时也要前进），没有原始事件时沿用入参 after 或 0。下次把 after 设为 nextAfter，不要因为 events 为空就重复拉同一段。\n' +
-      '轮询用法：第一次 sinceTurn=turn、after 可省略；之后用 after=返回的 nextAfter 增量拉；本 turn 出现 ended 即结束。有 waitSec 时这一次调用会阻塞到有可投影的匹配事件或超时，不必自己短间隔空转。\n' +
+      '轮询用法：用 after=上一页的 nextAfter 增量拉。sinceTurn 是下界；ended 上的 turn 不能证明这次投递已结束。指定回合的结果见 get_session_turn。\n' +
       'waitSec 与 sinceTurn / after 一起用时：只在还没有可投影且符合过滤条件的事件时才等待（会话启动留下的 prompt / thinking / 无 turn 旧事件不会让它立刻空返回，也不会把 nextAfter 卡在 0）。\n' +
       '下一步：把 after 设为 nextAfter 继续轮；工具细节与思考过程不对开放 API 暴露。\n' +
       '错误：404 会话不存在或看不见。',
@@ -123,7 +127,7 @@ export const sessions = {
       })
     },
     responses: { 200: json(eventListSchema) }
-  }, { module: 'sessions', need: 'session.read', expose: 'events', project: projectEvents }),
+  }, { module: 'sessions', need: 'session.read', expose: 'events' }),
   linkSession: route('sessions:write', {
     method: 'post', path: `${V1}/sessions/{sessionId}/links`, tags: ['sessions'], summary: '把两条会话连起来（能互发消息、只读看对方工作空间）',
     description:
@@ -190,15 +194,11 @@ export const sessions = {
     responses: { 200: json(z.object({ messages: z.array(agentMessageSchema), next: z.number() })) }
   }, { module: 'sessions', need: 'session.read', expose: 'message_inbox' }),
   stream: route('sessions:read', {
-    method: 'get', path: `${V1}/sessions/{sessionId}/stream`, tags: ['sessions'], summary: '会话事件流（SSE）',
-    description:
-      '先补发 `after`（或 `Last-Event-ID`）之后的事件，再实时推。\n\n' +
-      '- `event: event`，`id` = 事件序号，`data` = `{ seq, event, at, turn }`（同 /events 的一项）\n' +
-      '- `event: status`，`data` = `{ status }`：只有状态变了\n' +
-      '- 每 15 秒一条 `: ping` 注释保活。每个令牌最多同时开 5 条。',
+    method: 'get', path: `${V1}/sessions/{sessionId}/stream`, tags: ['sessions'], summary: '会话事件流（外部 SSE 暂停）',
+    description: '外部 SSE 暂不可用（503）。请改用 `/events?after=<seq>&waitSec=50` 长轮询，并使用 `nextAfter` 续读。内部网页实时更新不受影响。',
     request: { params: sessionId, query: z.object({ after: z.coerce.number().int().min(0).optional() }) },
-    responses: { 200: { content: { 'text/event-stream': { schema: z.string() } }, description: 'SSE 流' } }
-  }, { skip: 'SSE 不适合做工具调用；长任务用 session_events 轮询或 REST /stream' }),
+    responses: { 503: json(z.object({ error: z.object({ code: z.literal('external_stream_disabled'), message: z.string() }) }), '外部事件流暂不可用') }
+  }, { skip: '外部 SSE 暂停；使用 events 长轮询' }),
   activity: route('sessions:read', {
     method: 'get', path: `${V1}/sessions/{sessionId}/activity`, tags: ['sessions'], summary: '谁对这条会话做了什么',
     request: { params: sessionId },

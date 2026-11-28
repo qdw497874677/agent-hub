@@ -469,8 +469,8 @@ test('内置浏览器面：列 / 启用内置资产；机器浏览器状态；�
 });
 
 test('对话：开会话 → prompt（作者带 via）→ events / stream；审计写 via 令牌', async () => {
-  const { david, mint, api, world, hub, accounts, app } = await setup();
-  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token;
+  const { david, mint, api, world, accounts, apiTokens, app } = await setup();
+  const { token, info } = await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read']);
   const call = api(token);
   const project = (await call('/projects', post({ name: 'p' }))).body;
   const task = (await call('/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body;
@@ -490,7 +490,7 @@ test('对话：开会话 → prompt（作者带 via）→ events / stream；审�
   assert.ok(Array.isArray(eventList.events), 'events 要包在 { events, nextAfter } 里');
   assert.equal(typeof eventList.nextAfter, 'number');
   const events = eventList.events as { event: { kind: string }; turn?: number }[];
-  // 对外投影不含 prompt 原文；作者 via 在 SSE 里仍能看到。
+  // 对外投影不含 prompt 原文。
   assert.ok(!events.some((e: { event: { kind: string } }) => e.event.kind === 'prompt'));
 
   const second = await call(`/sessions/${session.body.id}/prompt`, post({ text: '再来一句' }));
@@ -511,19 +511,17 @@ test('对话：开会话 → prompt（作者带 via）→ events / stream；审�
   assert.ok(!turnsOnly.some((entry: { event: { kind: string } }) => entry.event.kind === 'diagnostic'), '没有 turn 的旧事件被过滤');
   assert.ok(accounts.auditRows.some((row) => row.action === 'session.start' && row.detail.includes('via 令牌「bot」')));
 
-  // SSE：补发已有事件
-  const controller = new AbortController();
-  const response = await app.fetch(new Request(`http://hub/openapi/v1/sessions/${session.body.id}/stream`, { headers: { authorization: `Bearer ${token}` }, signal: controller.signal }));
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/);
-  const reader = response.body!.getReader();
-  let text = '';
-  while (!text.includes('"kind":"prompt"')) text += new TextDecoder().decode((await reader.read()).value);
-  assert.match(text, /event: event\n/);
-  assert.match(text, /\nid: \d+\n/);
-  void hub;
-  controller.abort();
-  await reader.cancel().catch(() => undefined);
+  // External SSE fails closed, including when a resume cursor is supplied.
+  const response = await app.fetch(new Request(`http://hub/openapi/v1/sessions/${session.body.id}/stream?after=1`, { headers: { authorization: `Bearer ${token}`, 'last-event-id': '2' } }));
+  assert.equal(response.status, 503);
+  const body = await response.text();
+  assert.match(body, /external_stream_disabled/);
+  assert.match(body, /nextAfter/);
+  assert.doesNotMatch(body, /event: event|"kind":"prompt"/);
+  const tokenRow = apiTokens.rows.get(info.id)!;
+  apiTokens.rows.set(info.id, { ...tokenRow, revokedAt: Date.now() });
+  const revoked = await app.fetch(new Request(`http://hub/openapi/v1/sessions/${session.body.id}/stream`, { headers: { authorization: `Bearer ${token}` } }));
+  assert.equal(revoked.status, 401);
 });
 
 test('令牌打本机：机器没配原生模型也先 403，不把拒绝说成未配置模型', async () => {
@@ -863,7 +861,7 @@ test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口
   assert.deepEqual(live, snapshot, '规范变了：跑 npm run openapi:snapshot 并在 PR 里说明');
   assert.ok(Object.values(live.paths).flatMap((p: any) => Object.keys(p)).length >= 26);
   assert.equal((await app.fetch(new Request('http://hub/openapi/v1/docs'))).status, 200);
-  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 48);
+  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 50);
 });
 
 test('过期的令牌、被停用的人的令牌：401', async () => {
@@ -882,9 +880,9 @@ test('过期的令牌、被停用的人的令牌：401', async () => {
 
 test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输出', () => {
   // 默认不强制只读：有写工具就一起列出来（能不能调由令牌权限和只读模式决定）
-  assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create', 'task_default_agent', 'task_pull_requests']);
+  assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_session_targets', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create', 'task_default_agent', 'task_pull_requests']);
   assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name).sort(), ['get_project', 'list_projects', 'resolve_default_agent', 'team_agent_defaults', 'workspace_changes']);
-  assert.equal(mcpTools({ readOnly: true }).length, 29);
+  assert.equal(mcpTools({ readOnly: true }).length, 31);
   const workspaceTools = mcpTools({ modules: new Set(['workspaces']), writes: true });
   const workspaceNames = workspaceTools.map((t) => t.name).sort();
   for (const name of [
@@ -1685,6 +1683,14 @@ test('events：返回 { events, nextAfter }；waitSec 在 sinceTurn 无匹配时
   assert.equal(got.body.events[0].event.kind, 'text');
   assert.equal(got.body.nextAfter, 2);
 
+  world.deps.sessions.journal.set(session.body.id, [
+    ...world.deps.sessions.journal.get(session.body.id)!,
+    { seq: 3, at: 3, turn: 1, event: { kind: 'tool_call', name: 'read', input: '{"value":"SYNTHETIC_PRIVATE"}' } },
+    { seq: 4, at: 4, turn: 1, event: { kind: 'tool_result', name: 'read', ok: true, durationMs: 1, output: 'SYNTHETIC_PRIVATE' } },
+    { seq: 5, at: 5, turn: 1, event: { kind: 'ended', outcome: 'interrupted', outcomeUnknown: true, reason: 'SYNTHETIC_PRIVATE' } }
+  ]);
+  const rest = await call(`/sessions/${session.body.id}/events?sinceTurn=1`);
+
   const mcp = await app.fetch(
     new Request('http://hub/openapi/v1/mcp', {
       method: 'POST',
@@ -1696,8 +1702,11 @@ test('events：返回 { events, nextAfter }；waitSec 在 sinceTurn 无匹配时
   const structured = payload.result?.structuredContent;
   assert.ok(structured && Array.isArray(structured.events), JSON.stringify(structured));
   assert.equal('result' in (structured ?? {}), false);
-  assert.equal(structured?.nextAfter, 2);
+  assert.equal(structured?.nextAfter, 5);
   assert.equal((structured?.events as { event: { kind: string } }[])[0]?.event.kind, 'text');
+  assert.deepEqual(structured, rest.body);
+  assert.deepEqual((structured!.events as { event: { kind: string } }[]).map((e) => e.event.kind), ['text', 'tool', 'tool_result', 'ended']);
+  assert.doesNotMatch(JSON.stringify(structured), /SYNTHETIC_PRIVATE/);
 });
 
 test('events：waitSec 等可投影事件；prompt/thinking 不结束等待，但 nextAfter 仍前进', async () => {

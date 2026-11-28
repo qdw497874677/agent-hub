@@ -15,9 +15,9 @@ const entries = Object.entries(routes) as unknown as [string, Entry][];
 
 /** 期望暴露面：改接口 / 改登记时这组数字必须一起改（提醒别顺手扩大对外面积）。 */
 const EXPECTED = {
-  routes: 83,
-  tools: 76,
-  readOnly: 29,
+  routes: 85,
+  tools: 78,
+  readOnly: 31,
   writes: 47,
   skips: ['health', 'me', 'setProjectDescription', 'setProjectRepo', 'stream', 'submitAssetRevision', 'workbenchSkill']
 };
@@ -40,12 +40,14 @@ const TOOL_NAMES = [
   'get_asset',
   'get_project',
   'get_session',
+  'get_session_turn',
   'get_task',
   'install_builtin_browser',
   'list_assets',
   'list_builtin_assets',
   'list_models',
   'list_projects',
+  'list_session_targets',
   'list_task_log',
   'list_tasks',
   'list_workers',
