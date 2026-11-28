@@ -19,8 +19,12 @@ interface Gateway {
   input(input: { terminalId: string; epoch: string; data: string }): boolean;
 }
 export interface WorkdirTerminalServiceOptions {
-  /** Startup rollout switch. Disabling prevents new PTYs, not reconciliation. */
-  readonly enabled: boolean;
+  /** Disabling prevents new PTYs, not reconciliation or reuse of a confirmed prior receipt. */
+  readonly enabled: () => boolean;
+  /** In managed mode, only logins proved at the protected ingress can reach this service. */
+  readonly protectedLogin?: { token(c: Context): string; socketToken(request: IncomingMessage): string };
+  readonly workerReady?: (workerId: string) => boolean;
+  readonly admissionReady?: () => boolean;
   readonly access: WorkDirTerminalAccessOptions;
   readonly terminals: WorkdirTerminalStore;
   readonly safety: WorkdirSafety;
@@ -50,6 +54,13 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
   const sameTarget = (row: WorkdirTerminal, target: { workerId: string; workspace: { path: string } }) =>
     row.workerId === target.workerId && row.cwd === target.workspace.path;
   const current = (entry: Entry) => clients.get(entry.row.id) === entry && entry.socket.readyState === WebSocket.OPEN;
+  const workerReady = (workerId: string) => options.workerReady?.(workerId) ?? true;
+  const canCreate = (workerId: string) => options.enabled() && workerReady(workerId) && (options.admissionReady?.() ?? true);
+  const authorizedNow = (entry: Entry) => {
+    const row = terminals.get(entry.row.id);
+    return current(entry) && row?.state === 'running' && row.epoch === entry.row.epoch &&
+      options.access.hasGrant(row.ownerId, row.workerId) && workerReady(row.workerId);
+  };
   const send = (entry: Entry, frame: object) => { if (current(entry)) { try { entry.socket.send(JSON.stringify(frame)); } catch { /* disconnected */ } } };
   const drop = (entry: Entry) => {
     if (clients.get(entry.row.id) !== entry) return;
@@ -66,7 +77,7 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
     if (!row || row.state !== 'running' || row.epoch !== entry.row.epoch) return false;
     const allowed = await eligible(principal, row.projectId, row.workspaceId, row.ownerId);
     const fresh = terminals.get(entry.row.id);
-    return current(entry) && fresh?.state === 'running' && fresh.epoch === row.epoch && allowed.ok && sameTarget(fresh, allowed.target);
+    return authorizedNow(entry) && !!fresh && allowed.ok && sameTarget(fresh, allowed.target);
   };
   const enqueue = (entry: Entry, fn: () => Promise<void>, bytes = 0) => {
     entry.queuedBytes += bytes;
@@ -146,7 +157,7 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
   };
 
   async function cookie(c: Context): Promise<Principal | null> {
-    const token = loginTokenOf(c.req.header('cookie'));
+    const token = options.protectedLogin ? options.protectedLogin.token(c) : loginTokenOf(c.req.header('cookie'));
     if (!token) return null;
     const principal = await options.authenticate(token);
     return principal && principal.via === undefined ? principal : null;
@@ -169,7 +180,8 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
       if ('response' in access) return access.response;
       c.header('cache-control', 'no-store');
       const rows = terminals.listByOwner(access.principal.user.id).filter((row) => row.projectId === c.req.param('projectId') && row.workspaceId === c.req.param('workspaceId'));
-      if (!options.enabled) return c.json({ available: false, reason: '工作目录终端未启用', terminals: rows.map(dto) });
+      if (!options.enabled()) return c.json({ available: false, reason: '工作目录终端未启用', terminals: rows.map(dto) });
+      if (!canCreate(access.target.workerId)) return c.json({ available: false, reason: '机器未通过独立终端安全检查', terminals: rows.map(dto) });
       try {
         const inv = await gateway(access.target.workerId).inventory();
         return c.json({ available: inv.ok, ...(!inv.ok ? { reason: inv.code === 'unsupported' ? '机器不支持独立终端' : '机器暂时不可用' } : {}), terminals: rows.map(dto) });
@@ -179,7 +191,6 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
       if (!csrf(c)) return error(c, 403, 'forbidden', 'CSRF 校验失败');
       const access = await identify(c);
       if ('response' in access) return access.response;
-      if (!options.enabled) return error(c, 503, 'unavailable', '工作目录终端未启用');
       const body = await c.req.json().catch(() => null) as unknown;
       if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof (body as { requestId?: unknown }).requestId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test((body as { requestId: string }).requestId)) return error(c, 400, 'invalid', '请求体不合法');
       const requestId = (body as { requestId: string }).requestId;
@@ -189,6 +200,7 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
           if (existing.projectId !== c.req.param('projectId') || existing.workspaceId !== c.req.param('workspaceId') || !sameTarget(existing, access.target)) return error(c, 409, 'conflict', '请求已用于其他目录');
           return c.json(dto(existing), 202);
         }
+        if (!canCreate(access.target.workerId)) return error(c, 503, 'unavailable', '工作目录终端未启用或机器未就绪');
         const inv = await gateway(access.target.workerId).inventory();
         if (!inv.ok) return error(c, 503, 'unavailable', inv.code === 'unsupported' ? '机器不支持独立终端' : '机器暂时不可用');
         const result = await safety.runExclusive(async () => {
@@ -202,6 +214,7 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
             if (old.projectId !== c.req.param('projectId') || old.workspaceId !== c.req.param('workspaceId') || !sameTarget(old, fresh.target)) throw new Error('changed');
             return { row: old, created: false };
           }
+          if (!options.access.hasGrant(principal.user.id, fresh.target.workerId) || !canCreate(fresh.target.workerId)) return null;
           const timestamp = now();
           const intent = terminals.create({ id: `wdt_${randomUUID()}`, requestId, ownerId: access.principal.user.id, projectId: c.req.param('projectId'), workspaceId: fresh.target.workspace.id, workerId: fresh.target.workerId, cwd: fresh.target.workspace.path, epoch: null, state: 'pending', createdAt: timestamp, updatedAt: timestamp });
           const row = terminals.transition(intent.id, 'pending', null, 'pending', inv.value.epoch, now());
@@ -210,12 +223,17 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
           creating.add(row.id);
           return { row, created: true };
         });
+        if (result === null) return error(c, 503, 'unavailable', '工作目录终端未启用或机器未就绪');
         if (!result.created) return c.json(dto(result.row), 202);
         let row = result.row;
         try {
           const principal = await cookie(c);
           const allowed = await eligible(principal, row.projectId, row.workspaceId, row.ownerId);
-          if (!allowed.ok || !sameTarget(row, allowed.target)) return c.json(dto(await closeRow(row)), 202);
+          const admitted = terminals.get(row.id);
+          if (!allowed.ok || !sameTarget(row, allowed.target) || !options.access.hasGrant(row.ownerId, row.workerId) || !canCreate(row.workerId) || admitted?.state !== 'pending' || admitted.epoch !== row.epoch) {
+            if (admitted?.state === 'pending' || admitted?.state === 'closing') row = transition(admitted, 'ended') ?? admitted;
+            return c.json(dto(terminals.get(row.id) ?? row), 202);
+          }
           const created = await gateway(row.workerId).create({ terminalId: row.id, workspaceId: row.workspaceId, cwd: row.cwd, epoch: row.epoch! });
           const fresh = terminals.get(row.id);
           if (created.ok && fresh?.state === 'pending' && fresh.epoch === row.epoch && created.value.state !== 'ended') row = transition(fresh, created.value.state) ?? fresh;
@@ -242,13 +260,13 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
     let projectId: string, workspaceId: string, terminalId: string;
     try { [projectId, workspaceId, terminalId] = [decodeURIComponent(match[1]!), decodeURIComponent(match[2]!), decodeURIComponent(match[3]!)]; }
     catch { return reject(socket, 403); }
-    const token = loginTokenOf(request.headers.cookie);
+    const token = options.protectedLogin ? options.protectedLogin.socketToken(request) : loginTokenOf(request.headers.cookie);
     const principal = token ? await options.authenticate(token) : null;
     if (!principal || principal.via !== undefined) return reject(socket, 401);
     const row = terminals.get(terminalId);
     if (!row || row.projectId !== projectId || row.workspaceId !== workspaceId || row.ownerId !== principal.user.id || row.state !== 'running' || !row.epoch) return reject(socket, 404);
     const result = await eligible(principal, projectId, workspaceId, row.ownerId);
-    if (!result.ok || !sameTarget(row, result.target)) return reject(socket, 404);
+    if (!result.ok || !sameTarget(row, result.target) || terminals.get(row.id)?.state !== 'running' || !options.access.hasGrant(row.ownerId, row.workerId) || !workerReady(row.workerId)) return reject(socket, 404);
     if (clients.has(row.id)) return reject(socket, 403);
     const query = new URL(request.url ?? '/', 'http://hub').searchParams;
     const size = (name: string, fallback: number) => Math.max(1, Math.min(1000, Math.trunc(Number(query.get(name)) || fallback)));
@@ -267,7 +285,7 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
         if (!frame || typeof frame !== 'object') return;
         if (frame.t === 'ping') { entry.alive = true; send(entry, { t: 'pong' }); return; }
         enqueue(entry, async () => {
-          if (!(await valid(entry)) || !current(entry)) return drop(entry);
+          if (!(await valid(entry)) || !authorizedNow(entry)) return drop(entry);
           if (frame.t === 'input' && typeof frame.d === 'string' && frame.d.length > 0 && frame.d.length <= 131_072) gateway(row.workerId).input({ terminalId: row.id, epoch: row.epoch!, data: frame.d });
           if (frame.t === 'resize') {
             const c = Math.trunc(Number(frame.cols)), r = Math.trunc(Number(frame.rows));
@@ -284,12 +302,12 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
             safety.assertNoRemoval({ workspaceId: row.workspaceId, workerId: row.workerId, cwd: row.cwd });
             return current(entry);
           });
-          if (!admitted) return;
+          if (!admitted || !authorizedNow(entry)) return;
           const attached = await gateway(row.workerId).attach({ terminalId: row.id, epoch: row.epoch!, cols, rows });
-          if (!attached.ok || !(await valid(entry)) || !current(entry)) return;
+          if (!attached.ok || !(await valid(entry)) || !authorizedNow(entry)) return;
           send(entry, { t: 'ready', terminalId: row.id });
           if (attached.value.scrollback) {
-            if (!(await valid(entry)) || !current(entry)) return;
+            if (!(await valid(entry)) || !authorizedNow(entry)) return;
             send(entry, { t: 'data', d: attached.value.scrollback });
           }
           entry.attaching = false;
@@ -315,7 +333,7 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
     onData(workerId: string, epoch: string, terminalId: string, data: string) {
       const entry = clients.get(terminalId);
       if (!entry || entry.row.workerId !== workerId || entry.row.epoch !== epoch) return;
-      enqueue(entry, async () => { if (await valid(entry) && current(entry)) send(entry, { t: 'data', d: data }); else drop(entry); }, data.length);
+      enqueue(entry, async () => { if (await valid(entry) && authorizedNow(entry)) send(entry, { t: 'data', d: data }); else drop(entry); }, data.length);
     },
     onExit(workerId: string, epoch: string, terminalId: string, code: number) {
       const row = terminals.get(terminalId);
@@ -327,11 +345,15 @@ export function createWorkdirTerminalService(options: WorkdirTerminalServiceOpti
           const principal = await options.authenticate(entry.token);
           if (!current(entry)) return;
           const allowed = await eligible(principal, row.projectId, row.workspaceId, row.ownerId);
-          if (current(entry) && allowed.ok && sameTarget(row, allowed.target)) send(entry, { t: 'exit', code });
+          if (current(entry) && allowed.ok && sameTarget(row, allowed.target) && options.access.hasGrant(row.ownerId, row.workerId) && workerReady(row.workerId)) send(entry, { t: 'exit', code });
         })().catch(() => undefined).finally(() => drop(entry));
       }
     },
     onWorkerGone(workerId: string) { for (const entry of clients.values()) if (entry.row.workerId === workerId) drop(entry); },
+    onRevoked() {
+      for (const entry of clients.values()) if (!authorizedNow(entry)) drop(entry);
+      void reconcile().catch(() => undefined);
+    },
     reconcile,
     close() { clearInterval(timer); clearInterval(heartbeat); for (const entry of clients.values()) drop(entry); wss.close(); }
   };

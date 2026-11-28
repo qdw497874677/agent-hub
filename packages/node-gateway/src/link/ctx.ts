@@ -97,6 +97,8 @@ export interface WorkerLinkOptions {
    */
   readonly terminal?: TerminalHost;
   readonly workdirTerminal?: WorkdirTerminalHost;
+  /** Worker startup has verified the managed terminal security prerequisites. */
+  readonly workdirTerminalManaged?: boolean;
   /**
    * 会话服务（docs/design/session-service.md）：本地长驻进程的启停与日志。
    * 不给 = `ws.service_*` 一律回 unsupported，hub 侧显示「这台机器的 Worker 太旧」。

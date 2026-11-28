@@ -6,7 +6,7 @@ import { Handle, NodeResizeControl, Position, type NodeProps, type Node } from '
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { createPortal } from 'react-dom';
-import { previewsApi, type AttachmentInputDto, type PreviewLinkDto, type PromptAckDto, type SessionDto, type TaskDto, type WorkerInfoDto } from '../../shell/api.ts';
+import { previewsApi, sessionStartupApi, type AttachmentInputDto, type PreviewLinkDto, type PromptAckDto, type SessionDto, type TaskDto, type WorkerInfoDto } from '../../shell/api.ts';
 import { sessionKeys } from '../../shell/query-keys.ts';
 import { previewUrlFor } from '../../atoms/preview-links.ts';
 import { WorkerChip } from '../../shell/workers.tsx';
@@ -340,6 +340,17 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
     blocks,
     send: (text, attachments, clientMessageId) => onSend(text, clientMessageId, attachments)
   });
+  // 卡片仅在有本地待回显消息时核对启动状态；未知机器不能推断成离线。
+  const startupQuery = useQuery({
+    queryKey: ['session-startup', session.id],
+    queryFn: () => sessionStartupApi.get(session.id),
+    enabled: delivery.pending.length > 0,
+    retry: false,
+    refetchInterval: delivery.pending.length > 0 ? 2_000 : false,
+    refetchIntervalInBackground: false
+  });
+  const startupState = startupQuery.isError || !startupQuery.isFetchedAfterMount ? undefined : startupQuery.data?.state;
+  const queueReason = startupState === 'offline' ? 'offline' : startupState === 'starting' ? 'starting' : startupState === 'failed' || startupState === 'upgrade_required' ? 'blocked' : undefined;
   // 排队 / 发送中 / 未送达的用户消息只在原处淡一点、多一个圆点，不搬家：
   // 以前它们被抽到 composer 上方的独立区块，一条消息会来回跳三次。
   const timeline = cardBlocks(markQueued(blocks, heldPromptSeqs(deliveriesBySeq)));
@@ -591,6 +602,9 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             onDiscard={delivery.discard}
             compact
             testIdPrefix="card-"
+            deliveries={deliveriesBySeq}
+            uncertainDeliveryIds={live?.uncertainDeliveryIds}
+            queueReason={queueReason}
             className="gap-1.5"
             renderPrompt={(pending) => (
               <CardPromptBubble

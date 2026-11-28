@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
 import type { RpcChannel, ServerToWorker } from '@agent-hub/contract';
-import { AsyncQueue, PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_BRANCH_ATTEMPT, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_SESSION_START_NATIVE_REF, WORKER_CAPABILITY_OPTION_RECEIPT, WORKER_CAPABILITY_WORKDIR_TERMINAL_V1, WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1, createRpcChannel, serverToWorkerSchema, workerToServerSchema, wsImportProjectGitBundle } from '@agent-hub/contract';
+import { AsyncQueue, PROJECT_GIT_BUNDLE_MAX_BASE64_BYTES, WORKER_CAPABILITY_BRANCH_ATTEMPT, WORKER_CAPABILITY_DURABLE_DELIVERY, WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT, WORKER_CAPABILITY_SESSION_START_READY, WORKER_CAPABILITY_SESSION_START_NATIVE_REF, WORKER_CAPABILITY_OPTION_RECEIPT, WORKER_CAPABILITY_WORKDIR_TERMINAL_V1, WORKER_CAPABILITY_WORKDIR_TERMINAL_MANAGED_V1, WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1, createRpcChannel, serverToWorkerSchema, workerToServerSchema, wsImportProjectGitBundle } from '@agent-hub/contract';
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { CAPABILITY_NAMES, asAgentId, asSessionId, available, capabilityMatrix, type AgentRuntime, type Capability, type CapabilityName, type SessionEvent } from '@agent-hub/domain';
@@ -143,6 +143,79 @@ async function harness(options: HarnessOptions = {}) {
   };
   return { gateway, url, connect, stop };
 }
+
+test('managed workdir gates traffic and readiness while allowing old identities to drain', async () => {
+  const epoch = randomUUID(), terminalId = `wdt_${randomUUID()}`;
+  const data: string[] = [], exits: string[] = [];
+  let trusted = true;
+  const h = await harness({ gateway: { echoMs: 0, workdirManaged: () => trusted }, authenticate: async ({ workerId }) => ({ ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'test', createdAt: 1 } }), onWorkdirTerminalData: (id) => data.push(id), onWorkdirTerminalExit: (id) => exits.push(id), reply: (method) => method === 'workdir_terminal.v1.inventory' ? { epoch, terminals: [] } : method === 'workdir_terminal.v1.create' ? { state: 'running' } : method === 'workdir_terminal.v1.attach' ? { cols: 80, rows: 24, reused: false, scrollback: 'eA==' } : method === 'workdir_terminal.v1.close' ? { exited: true } : method === 'terminal.list' ? { terminals: [] } : { ok: true } });
+  const caps = [WORKER_CAPABILITY_WORKDIR_TERMINAL_V1, WORKER_CAPABILITY_WORKDIR_TERMINAL_MANAGED_V1, WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1];
+  const old = await h.connect('old', { capabilities: [WORKER_CAPABILITY_WORKDIR_TERMINAL_V1] });
+  trusted = false; const insecure = await h.connect('insecure', { capabilities: caps });
+  trusted = true; const good = await h.connect('good', { capabilities: caps });
+  let replacement: Wire | undefined;
+  try {
+    assert.deepEqual(h.gateway.workdirTerminalReadiness(), { workers: [{ id: 'good', label: 'good' }], incompatibleOnline: true });
+    const key = { epoch, terminalId };
+    for (const id of ['old', 'insecure']) {
+      const g = h.gateway.workdirTerminals(id);
+      assert.equal((await g.create({ ...key, workspaceId: 'w', cwd: '/tmp' })).ok, false);
+      assert.equal((await g.attach({ ...key, cols: 80, rows: 24 })).ok, false);
+      assert.equal((await g.resize({ ...key, cols: 80, rows: 24 })).ok, false);
+      assert.equal(g.input({ ...key, data: 'eA==' }), false);
+      assert.equal((await g.inventory()).ok, true);
+      assert.equal((await g.close(key)).ok, true);
+    }
+    for (const wire of [old, insecure]) {
+      wire.ws.send(JSON.stringify({ type: 'workdir_terminal_data_v1', ...key, data: 'eA==' }));
+      wire.ws.send(JSON.stringify({ type: 'workdir_terminal_exit_v1', ...key, code: 0 }));
+    }
+    await until(() => exits.length === 2);
+    assert.deepEqual(data, []);
+    assert.equal(old.calls.some((call) => ['workdir_terminal.v1.create', 'workdir_terminal.v1.attach', 'workdir_terminal.v1.resize'].includes(call.method)), false);
+    const g = h.gateway.workdirTerminals('good');
+    assert.equal((await g.create({ ...key, workspaceId: 'w', cwd: '/tmp' })).ok, true);
+    assert.equal((await g.attach({ ...key, cols: 80, rows: 24 })).ok, true);
+    assert.equal((await g.resize({ ...key, cols: 80, rows: 24 })).ok, true);
+    assert.equal(g.input({ ...key, data: 'eA==' }), true);
+    good.ws.send(JSON.stringify({ type: 'workdir_terminal_data_v1', ...key, data: 'eA==' }));
+    await until(() => data.length === 1 && good.frames.some((frame) => frame.kind === 'workdir_terminal_input_v1'));
+    replacement = await h.connect('good', { capabilities: [WORKER_CAPABILITY_WORKDIR_TERMINAL_V1] });
+    assert.equal(g.input({ ...key, data: 'eA==' }), false);
+    assert.equal((await g.attach({ ...key, cols: 80, rows: 24 })).ok, false);
+    assert.equal(h.gateway.workdirTerminalReadiness().workers.length, 0);
+  } finally { await h.stop(old, insecure, good, ...(replacement ? [replacement] : [])); }
+});
+
+test('readiness counts restricted mutation-capable workers, but not read-only workers', async () => {
+  const h = await harness({ gateway: { echoMs: 0, workdirManaged: () => true }, authenticate: async ({ workerId }) => ({ ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'test', createdAt: 1 }, capabilities: workerId === 'reader' ? ['files.read'] : ['git.remote'] }) });
+  const reader = await h.connect('reader');
+  let writer: Wire | undefined;
+  try {
+    assert.deepEqual(h.gateway.workdirTerminalReadiness(), { workers: [], incompatibleOnline: false });
+    writer = await h.connect('writer');
+    assert.deepEqual(h.gateway.workdirTerminalReadiness(), { workers: [], incompatibleOnline: true });
+  } finally { await h.stop(reader, ...(writer ? [writer] : [])); }
+});
+
+test('readiness separates mutation safety from terminal grant eligibility', async () => {
+  let trusted = true;
+  const h = await harness({ gateway: { echoMs: 0, workdirManaged: () => trusted }, authenticate: async ({ workerId }) => ({ ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'test', createdAt: 1 } }) });
+  const safe = await h.connect('safe-regular', { capabilities: [WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1] });
+  let insecure: Wire | undefined, eligible: Wire | undefined, unsafe: Wire | undefined;
+  try {
+    assert.deepEqual(h.gateway.workdirTerminalReadiness(), { workers: [], incompatibleOnline: false });
+    const terminalCaps = [WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1, WORKER_CAPABILITY_WORKDIR_TERMINAL_V1, WORKER_CAPABILITY_WORKDIR_TERMINAL_MANAGED_V1];
+    trusted = false;
+    insecure = await h.connect('insecure-terminal', { capabilities: terminalCaps });
+    assert.deepEqual(h.gateway.workdirTerminalReadiness(), { workers: [], incompatibleOnline: false });
+    trusted = true;
+    eligible = await h.connect('eligible-terminal', { capabilities: terminalCaps });
+    assert.deepEqual(h.gateway.workdirTerminalReadiness(), { workers: [{ id: 'eligible-terminal', label: 'eligible-terminal' }], incompatibleOnline: false });
+    unsafe = await h.connect('unsafe-mutation');
+    assert.deepEqual(h.gateway.workdirTerminalReadiness(), { workers: [{ id: 'eligible-terminal', label: 'eligible-terminal' }], incompatibleOnline: true });
+  } finally { await h.stop(safe, ...[insecure, eligible, unsafe].filter((wire): wire is Wire => !!wire)); }
+});
 
 test('workdir protocol is negotiated and isolated from legacy terminal frames and inventory', async () => {
   const epoch = randomUUID(), terminalId = `wdt_${randomUUID()}`;
@@ -418,9 +491,9 @@ test('workdir requires a uniquely authenticated current worker, including incomi
   } finally { await h.stop(shared, enrolled, local, ...(replacement ? [replacement] : [])); }
 });
 
-test('real worker link hosts isolated workdir terminal RPC and input frames', async () => {
+test('real managed worker link advertises and hosts isolated workdir terminal RPC and input frames', async () => {
   const seen: string[] = [];
-  const h = await harness({ gateway: { echoMs: 0 }, authenticate: async ({ workerId }) => ({ ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'test', createdAt: 1 } }), onWorkdirTerminalData: (_w, _e, _id, data) => seen.push(data) });
+  const h = await harness({ gateway: { echoMs: 0, workdirManaged: () => true }, authenticate: async ({ workerId }) => ({ ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'test', createdAt: 1 } }), onWorkdirTerminalData: (_w, _e, _id, data) => seen.push(data) });
   let accepted = false;
   let link: ReturnType<typeof connectWorkerLink>;
   let output: (text: string) => void = () => {};
@@ -432,7 +505,7 @@ test('real worker link hosts isolated workdir terminal RPC and input frames', as
     pty: { spawn: () => ({ pid: 1, onData: (cb) => { output = cb; return { dispose() {} }; }, onExit: (cb) => { exit = cb; return { dispose() {} }; },
       write: (data) => { writes.push(data); }, resize() {}, pause() {}, resume() {}, kill() {} }) }
   })!;
-  link = connectWorkerLink({ url: h.url, token: '', workerId: 'real-workdir', label: 'real', reconnect: false, runtimes: [], sessionIdleMs: 0, welcomeFallbackMs: 50, workdirTerminal: host, onAccepted: () => { accepted = true; } });
+  link = connectWorkerLink({ url: h.url, token: '', workerId: 'real-workdir', label: 'real', reconnect: false, runtimes: [], sessionIdleMs: 0, welcomeFallbackMs: 50, workdirTerminal: host, workdirTerminalManaged: true, onAccepted: () => { accepted = true; } });
   try {
     await until(() => accepted);
     const gateway = h.gateway.workdirTerminals('real-workdir');

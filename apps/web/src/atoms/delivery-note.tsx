@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { deliveryApi, type DeliveryDto } from '../shell/api.ts';
-import { deliveryNeedsAction, HELD_DELIVERY_STATES, queuedBehind, queuedBehindUncertain, uncertainSending } from './turn-hint.ts';
+import { deliveryNeedsAction, HELD_DELIVERY_STATES, queuedBehind, queuedDeliveryText, uncertainSending, type QueueReason } from './turn-hint.ts';
 
 /**
  * 送达状态（ADR 0031 D2）：按 prompt 的 seq 查。送达了就什么都不显示（安静）。
@@ -15,6 +15,7 @@ export const DeliveryContext = createContext<{
   quietSeq?: number;
   withdrawQueued?: boolean;
   startupFailed?: boolean;
+  queueReason?: QueueReason | undefined;
   uncertainDeliveryIds?: readonly string[];
 } | null>(null);
 
@@ -94,7 +95,8 @@ export function DeliveryNote({ seq }: { seq: number }) {
   else if (d.state === 'undelivered')
     body = <span className="text-rust" title={d.lastError ?? undefined}>未送达{d.lastError ? `：${d.lastError}` : ''}{actions}</span>;
   else if (d.attempt === 0) {
-    body = <span className="text-tertiary">{queuedBehindUncertain(d, ctx.bySeq.values(), uncertain) ? '已排队 · 等待上一轮状态确认' : <>已排队 · 等待投递{behind ? ' · 前面还有消息' : ''}</>}{ctx.startupFailed && !behind ? <> · {retry}</> : null}{(!behind || ctx.withdrawQueued) ? <> · {cancel}</> : null}</span>;
+    const text = queuedDeliveryText(d.seq, ctx.bySeq.values(), uncertain, ctx.queueReason);
+    body = <span className="text-tertiary">{text}{ctx.startupFailed && !behind ? <> · {retry}</> : null}{(!behind || ctx.withdrawQueued) ? <> · {cancel}</> : null}</span>;
   }
   else {
     const secs = Math.max(0, Math.ceil(((d.nextAt ?? now) - now) / 1000));

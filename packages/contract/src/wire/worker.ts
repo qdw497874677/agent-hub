@@ -30,6 +30,7 @@ export const WORKER_CAPABILITY_SESSION_START_READY = 'session_start_ready';
 export const WORKER_CAPABILITY_SESSION_START_NATIVE_REF = 'session_start_native_ref';
 export const WORKER_CAPABILITY_OPTION_RECEIPT = 'option_receipt';
 export const WORKER_CAPABILITY_WORKDIR_TERMINAL_V1 = 'workdir_terminal_v1';
+export const WORKER_CAPABILITY_WORKDIR_TERMINAL_MANAGED_V1 = 'workdir_terminal_managed_v1';
 /** Safe group initialization and explicit settled proofs for workspace mutations. */
 export const WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1 = 'workspace_mutation_safety_v1';
 

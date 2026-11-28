@@ -381,6 +381,7 @@ export function FocusView({
   });
   const startup = startupQuery.isError || !startupQuery.isFetchedAfterMount ? undefined : startupQuery.data;
   const startupState = startup?.state ?? 'unknown';
+  const queueReason = startupState === 'offline' ? 'offline' : startupState === 'starting' ? 'starting' : startupState === 'failed' || startupState === 'upgrade_required' ? 'blocked' : undefined;
   const startupReason = startup?.state === 'failed' ? startup.reason : undefined;
   const startupText = startupState === 'starting' ? '正在启动运行时…'
     : startupState === 'ready' ? '运行时已就绪'
@@ -644,6 +645,7 @@ export function FocusView({
         deliveries: deliveriesBySeq.values(),
         progress,
         uncertainDeliveryIds: live?.uncertainDeliveryIds,
+        queueReason,
         withdrawQueued: true
       });
   // 断线后的旧输出不能证明此刻仍在运行；送达层的独立反馈则仍然显示。
@@ -1350,7 +1352,7 @@ export function FocusView({
               <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
             ) : null : (
               <FileLinksContext.Provider value={fileLinks}>
-                <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: quietLastPrompt ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed', uncertainDeliveryIds: live?.uncertainDeliveryIds }}>
+                <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq, quietSeq: quietLastPrompt ? lastPrompt : undefined, withdrawQueued: true, startupFailed: startupState === 'failed', queueReason, uncertainDeliveryIds: live?.uncertainDeliveryIds }}>
                   {timelineItems.map((item) => {
                     const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }, inWork = false) => (
                       <ChatBlock
@@ -1394,6 +1396,9 @@ export function FocusView({
                     onDiscard={delivery.discard}
                     quiet={visibleHint !== null || Boolean(syncState)}
                     hasDelivery={(pending) => pending.seq !== undefined && deliveriesBySeq.has(pending.seq)}
+                    deliveries={deliveriesBySeq}
+                    uncertainDeliveryIds={live?.uncertainDeliveryIds}
+                    queueReason={queueReason}
                     className={settings.compact ? 'gap-2' : 'gap-4'}
                     renderPrompt={(pending, _index, seq) => (
                       <ChatBlock

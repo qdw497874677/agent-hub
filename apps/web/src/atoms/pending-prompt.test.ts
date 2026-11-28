@@ -54,7 +54,7 @@ test('没有变化时返回原数组，避免 setState 空转', () => {
 
 test('三种状态各有自己的一句话', () => {
   assert.equal(pendingLabel('sending'), '正在发送…');
-  assert.match(pendingLabel('queued'), /排队/);
+  assert.equal(pendingLabel('queued'), '发送中…');
   assert.equal(pendingLabel('unknown'), '未收到回执');
 });
 

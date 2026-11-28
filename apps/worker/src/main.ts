@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { consumeWorkerCredentials, rewriteCredentialEnv } from './credential-env.ts';
-import { workdirTerminalEnabled } from './workdir-terminal-config.ts';
+import { workdirTerminalEnabled, workdirTerminalManaged } from './workdir-terminal-config.ts';
 import { arch, homedir, hostname, platform } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -476,6 +476,7 @@ const link = connectWorkerLink({
   assets,
   ...(terminal ? { terminal } : {}),
   ...(workdirTerminal ? { workdirTerminal } : {}),
+  workdirTerminalManaged: workdirTerminalManaged(!!workdirTerminal, hubUrl, process.geteuid?.()),
   service: serviceHost,
   /** 只读进程 / 端口清单：只报 cwd 落在 WORKER_ROOTS 里的进程。 */
   processes: () => scanProcesses({ roots }),

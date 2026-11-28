@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { adminApi } from '../api.ts';
 import type { SettingsDto } from '../api.ts';
 import { at, Section, Panel, Empty, errorText, useAdminAction } from './shared.tsx';
+import { WorkdirTerminalSettings } from './workdir-terminal-settings.tsx';
 
 export function Overview() {
   const overview = useQuery({ queryKey: ['admin', 'overview'], queryFn: adminApi.overview, refetchInterval: 15_000 });
@@ -68,6 +69,7 @@ export function Overview() {
         </Panel>
       </Section>
       <PlatformSettings />
+      <WorkdirTerminalSettings />
     </>
   );
 }

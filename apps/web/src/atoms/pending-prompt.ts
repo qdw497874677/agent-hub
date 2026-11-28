@@ -71,7 +71,7 @@ export function reconcilePending(
 
 const LABELS: Record<PendingPromptState, string> = {
   sending: '正在发送…',
-  queued: '已收到 · 排队中',
+  queued: '发送中…',
   unknown: '未收到回执'
 };
 

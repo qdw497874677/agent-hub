@@ -41,6 +41,7 @@ import {
 import { sameSecret } from './request-guard.ts';
 import { createRateLimiter } from './rate-limit.ts';
 import { createLoginBackoff } from './login-backoff.ts';
+import { WORKDIR_TERMINAL_LOGIN_COOKIE } from './workdir-terminal-ingress.ts';
 
 /**
  * 账号的 HTTP 外壳（docs/design/accounts.md §8–§10）：
@@ -63,6 +64,7 @@ export interface AuthOptions {
   /** 自定义角色 + 显式授权（ADR 0017）：认证时挂到 Principal 上。 */
   readonly access?: AccessRepos;
   readonly credentialAdmin?: ManagedCredentialLogin;
+  readonly workdirTerminalLogin?: Pick<ManagedCredentialLogin, 'issue'>;
 }
 
 export const CSRF_HEADER = 'x-hub-csrf';
@@ -155,6 +157,7 @@ export function installAuth(app: Hono, options: AuthOptions): { principalOf: Pri
   const clearCookies = (c: Context) => {
     deleteCookie(c, loginCookieName(true), { path: '/', secure: true });
     if (options.credentialAdmin) deleteCookie(c, CREDENTIAL_ADMIN, { path: '/', secure: true });
+    if (options.workdirTerminalLogin) deleteCookie(c, WORKDIR_TERMINAL_LOGIN_COOKIE, { path: '/', secure: true });
     deleteCookie(c, LOGIN, { path: '/' });
     deleteCookie(c, CSRF, { path: '/' });
   };
@@ -262,6 +265,7 @@ export function installAuth(app: Hono, options: AuthOptions): { principalOf: Pri
       backoff.succeed(email);
       await securityEvent(accounts, result.value.user, 'auth.login', result.value.user.email, '', ip);
       options.credentialAdmin?.issue(c, result.value);
+      options.workdirTerminalLogin?.issue(c, result.value);
     } else {
       backoff.fail(email);
       const known = await accounts.users.byEmail(email);

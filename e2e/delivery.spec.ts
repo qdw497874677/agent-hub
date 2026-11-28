@@ -85,6 +85,7 @@ test('送达状态：离线排队 / 撤回 / 重连后送达', async ({ page, ba
     const promptResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith(`/api/sessions/${session.id}/prompt`));
     await page.getByRole('button', { name: /^(发送|排队发送)$/ }).click();
     await expect(page.getByTestId('pending-prompts')).toContainText('乐观反馈第四句', { timeout: 600 });
+    await expect(page.getByTestId('turn-hint')).toContainText('正在发送…');
     const response = await promptResponse;
     expect(response.ok(), await response.text()).toBe(true);
     const optimistic = await response.json() as { deliveryId: string };
@@ -101,8 +102,8 @@ test('送达状态：离线排队 / 撤回 / 重连后送达', async ({ page, ba
     const notes = page.getByTestId('delivery-note');
     await expect(page.getByTestId('session-startup-status')).toHaveAttribute('data-state', 'offline');
     await expect(notes).toHaveCount(2);
-    await expect(notes.nth(0)).toContainText('已排队 · 等待投递');
-    await expect(notes.nth(1)).toContainText('前面还有消息');
+    await expect(notes.nth(0)).toContainText('已排队 · 等待机器上线');
+    await expect(notes.nth(1)).toContainText('已排队 · 前面还有消息');
     await expect(notes.getByRole('button', { name: '立即重试' })).toHaveCount(0);
     const pending = await deliveries();
     expect(pending.filter((row) => row.state === 'queued').map((row) => row.attempt)).toEqual([0, 0]);
@@ -113,13 +114,15 @@ test('送达状态：离线排队 / 撤回 / 重连后送达', async ({ page, ba
     await page.setViewportSize({ width: 390, height: 844 });
     // 每条排队消息都保留自己的撤回入口，桌面和手机一样。
     await expect(notes.getByRole('button', { name: '撤回' })).toHaveCount(2);
+    await expect(notes.nth(0)).toContainText('已排队 · 等待机器上线');
+    await expect(notes.nth(1)).toContainText('已排队 · 前面还有消息');
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/delivery-pending-390.png` });
     await page.setViewportSize({ width: 1280, height: 800 });
 
     // 撤回第二句：标「已撤回」，第三句顶上来
     await notes.nth(0).getByRole('button', { name: '撤回' }).click();
     await expect(notes.nth(0)).toHaveText('已撤回 · 没有发给 agent');
-    await expect(notes.nth(1)).toContainText('已排队');
+    await expect(notes.nth(1)).toContainText('已排队 · 等待机器上线');
     await expect.poll(async () => (await deliveries()).find((row) => row.id === second.deliveryId)?.state).toBe('cancelled');
 
     // Worker 回来：第三句送达，气泡下只剩「已撤回」
@@ -215,7 +218,7 @@ test('排序：A 还在跑时 B 只排队，A 真的结束后 B 才进运行时'
     const bNote = log.getByTestId('msg-user').filter({ hasText: '第二轮 B please-mark:b' }).getByTestId('delivery-note');
     await expect(aNote).toHaveAttribute('data-state', 'sending');
     await expect(bNote).toHaveAttribute('data-state', 'queued');
-    await expect(bNote).toContainText('已排队 · 等待投递 · 前面还有消息');
+    await expect(bNote).toContainText('已排队 · 前面还有消息');
     await expect(bNote.getByRole('button', { name: '撤回' })).toBeVisible();
 
     // 队列事实：A sending、B queued；B 的 nextAt 还是 null（泵没把它当到期项）。

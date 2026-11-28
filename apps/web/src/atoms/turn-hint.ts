@@ -27,7 +27,7 @@ import type { TurnPhase, TurnProgress } from './turn-progress.ts';
 export const HELD_DELIVERY_STATES: ReadonlySet<DeliveryDto['state']> = new Set(['queued', 'sending', 'undelivered']);
 
 /** 这一条前面还有没送到的消息吗（那它就是在排队，不是在投递）。 */
-export function queuedBehind(delivery: DeliveryDto, all: Iterable<DeliveryDto>): boolean {
+export function queuedBehind(delivery: Pick<DeliveryDto, 'seq'>, all: Iterable<DeliveryDto>): boolean {
   for (const other of all) {
     if (other.seq < delivery.seq && HELD_DELIVERY_STATES.has(other.state)) return true;
   }
@@ -38,12 +38,27 @@ export function uncertainSending(delivery: DeliveryDto, ids: readonly string[]):
   return delivery.state === 'sending' && ids.includes(delivery.id);
 }
 
-export function queuedBehindUncertain(delivery: DeliveryDto, all: Iterable<DeliveryDto>, ids: readonly string[]): boolean {
+export function queuedBehindUncertain(delivery: Pick<DeliveryDto, 'seq' | 'state'>, all: Iterable<DeliveryDto>, ids: readonly string[]): boolean {
   if (delivery.state !== 'queued') return false;
   for (const other of all) {
     if (other.seq < delivery.seq && uncertainSending(other, ids)) return true;
   }
   return false;
+}
+
+export type QueueReason = 'offline' | 'starting' | 'blocked';
+
+/** 回执里的 queued 不代表前面一定有消息；只在有前序或受阻证据时称为排队。 */
+export function queuedDeliveryText(seq: number | undefined, deliveries: Iterable<DeliveryDto>, uncertainDeliveryIds: readonly string[] = [], reason?: QueueReason): string {
+  if (seq !== undefined) {
+    const all = Array.isArray(deliveries) ? deliveries : [...deliveries];
+    const current = { seq, state: 'queued' as const };
+    if (queuedBehindUncertain(current, all, uncertainDeliveryIds)) return '已排队 · 等待上一轮状态确认';
+    if (queuedBehind(current, all)) return '已排队 · 前面还有消息';
+  }
+  if (reason === 'offline') return '已排队 · 等待机器上线';
+  if (reason === 'starting') return '已排队 · 等待运行时就绪';
+  return reason === 'blocked' ? '已排队 · 等待投递' : '发送中…';
 }
 
 /**
@@ -81,12 +96,15 @@ export interface TurnHintInput {
   readonly progress: TurnProgress | null;
   readonly withdrawQueued?: boolean;
   readonly uncertainDeliveryIds?: readonly string[];
+  /** 已确认的运行时状态，不从回执推测。 */
+  readonly queueReason?: QueueReason | undefined;
 }
 
 /** 能算作「agent 真的在动」的相位：要么有输出，要么在等工具。空窗和只有登记块都不算。 */
 const RUNTIME_ACTIVITY: ReadonlySet<TurnPhase> = new Set<TurnPhase>(['writing', 'tool']);
 
-export function turnHint({ pending, delivery, deliveries, progress, withdrawQueued = false, uncertainDeliveryIds = [] }: TurnHintInput): TurnHint | null {
+export function turnHint({ pending, delivery, deliveries, progress, withdrawQueued = false, uncertainDeliveryIds = [], queueReason }: TurnHintInput): TurnHint | null {
+  const allDeliveries = [...deliveries];
   // 1. 本地还有一条比 `delivery` 更晚的消息（没回执，或已有回执但还没写进对话）：
   //    当前这一句是它，运行时进度属于上一句，不能借来说它。
   const newest = pending[pending.length - 1];
@@ -94,11 +112,12 @@ export function turnHint({ pending, delivery, deliveries, progress, withdrawQueu
     // 超时只是「不确定」，不是失败：重试 / 放弃两个按钮在那行上，别在这里再说一遍。
     if (newest.state === 'unknown') return null;
     if (newest.state === 'queued') {
+      const text = queuedDeliveryText(newest.seq, allDeliveries, uncertainDeliveryIds, queueReason);
       return {
-        text: '已排队 · 等待投递',
-        detail: '服务器已经收下这条消息，正在等待投递',
+        text,
+        detail: text === '发送中…' ? '服务器已经收下这条消息，等待投递' : text,
         stage: 'delivery',
-        phase: 'queued'
+        phase: text === '发送中…' ? 'sending' : 'queued'
       };
     }
     return {
@@ -113,7 +132,7 @@ export function turnHint({ pending, delivery, deliveries, progress, withdrawQueu
   //    `sending` 会一直占到这一轮真的结束（结束证据才写 delivered，ADR 0031 D2），
   //    所以它压不住**有证据**的运行时；但「还没有块」只是没证据，送达层怎么说就怎么说。
   if (delivery !== undefined && HELD_DELIVERY_STATES.has(delivery.state)) {
-    if (deliveryNeedsAction(delivery, deliveries, withdrawQueued)) return null;
+    if (deliveryNeedsAction(delivery, allDeliveries, withdrawQueued)) return null;
     if (delivery.state === 'sending') {
       if (uncertainSending(delivery, uncertainDeliveryIds)) {
         return { text: '暂未确认这一轮的结果', detail: '暂未确认这一轮的结果', stage: 'delivery', phase: 'sending' };
@@ -128,11 +147,12 @@ export function turnHint({ pending, delivery, deliveries, progress, withdrawQueu
         phase: 'sending'
       };
     }
+    const text = queuedDeliveryText(delivery.seq, allDeliveries, uncertainDeliveryIds, queueReason);
     return {
-      text: '已排队 · 等待投递',
-      detail: '服务器已经存下这条消息，正在等待投递',
+      text,
+      detail: text === '发送中…' ? '服务器已经收下这条消息，等待投递' : text,
       stage: 'delivery',
-      phase: 'queued'
+      phase: text === '发送中…' ? 'sending' : 'queued'
     };
   }
   if (delivery?.state === 'cancelled') return null;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { DeliveryDto } from '@agent-hub/contract';
 import type { PendingPrompt } from './pending-prompt.ts';
 import type { TurnProgress } from './turn-progress.ts';
-import { deliveryNeedsAction, queuedBehind, turnHint } from './turn-hint.ts';
+import { deliveryNeedsAction, queuedBehind, queuedDeliveryText, turnHint } from './turn-hint.ts';
 
 const T0 = 1_700_000_000_000;
 
@@ -86,7 +86,7 @@ test('当前这句还在排队，上一句在输出：说排队，不把上一�
   const hint = turnHint({ pending: [queued], delivery: running, deliveries: [running], progress: writing });
   assert.equal(hint?.stage, 'delivery');
   assert.equal(hint?.phase, 'queued');
-  assert.equal(hint?.text, '已排队 · 等待投递');
+  assert.equal(hint?.text, '已排队 · 前面还有消息');
 });
 
 test('回执到了但还没写进对话：仍说自己在发，不借上一句的输出', () => {
@@ -100,7 +100,7 @@ test('回执到了但还没写进对话：仍说自己在发，不借上一句�
 test('排在别人后面：说排队，不说在发', () => {
   const all = [delivery(1, 'undelivered'), delivery(2, 'queued')];
   const hint = turnHint({ pending: [], delivery: all[1], deliveries: all, progress: null });
-  assert.equal(hint?.text, '已排队 · 等待投递');
+  assert.equal(hint?.text, '已排队 · 前面还有消息');
   assert.equal(hint?.stage, 'delivery');
   assert.equal(hint?.phase, 'queued');
 });
@@ -160,4 +160,22 @@ test('queuedBehind 只看前面没送到的那些', () => {
   assert.equal(queuedBehind(delivery(1, 'sending'), [delivery(1, 'sending')]), false);
   assert.equal(queuedBehind(delivery(2, 'queued'), [delivery(1, 'delivered'), delivery(2, 'queued')]), false);
   assert.equal(queuedBehind(delivery(3, 'queued'), [delivery(1, 'queued'), delivery(3, 'queued')]), true);
+});
+
+test('队首回执不证明前面有消息，明确离线或启动失败才说明排队', () => {
+  const head = delivery(1, 'queued');
+  assert.equal(queuedDeliveryText(1, [head]), '发送中…');
+  assert.equal(queuedDeliveryText(1, [head], [], 'offline'), '已排队 · 等待机器上线');
+  assert.equal(queuedDeliveryText(1, [head], [], 'starting'), '已排队 · 等待运行时就绪');
+  assert.equal(queuedDeliveryText(1, [head], [], 'blocked'), '已排队 · 等待投递');
+  assert.equal(turnHint({ pending: [pending('queued', 1)], delivery: undefined, deliveries: [], progress: null })?.text, '发送中…');
+  assert.equal(turnHint({ pending: [pending('queued', 1)], delivery: undefined, deliveries: [], progress: null, queueReason: 'offline' })?.text, '已排队 · 等待机器上线');
+});
+
+test('前序结果不确定时等待确认，单次迭代器也能识别前序', () => {
+  const first = delivery(1, 'sending');
+  const next = delivery(2, 'queued');
+  assert.equal(queuedDeliveryText(2, [first, next], [first.id]), '已排队 · 等待上一轮状态确认');
+  const hint = turnHint({ pending: [], delivery: next, deliveries: new Map([[1, first], [2, next]]).values(), progress: null, uncertainDeliveryIds: [first.id] });
+  assert.equal(hint?.text, '已排队 · 等待上一轮状态确认');
 });

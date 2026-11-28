@@ -18,6 +18,7 @@ import {
   WORKER_CAPABILITY_SESSION_START_NATIVE_REF,
   WORKER_CAPABILITY_OPTION_RECEIPT,
   WORKER_CAPABILITY_WORKDIR_TERMINAL_V1,
+  WORKER_CAPABILITY_WORKDIR_TERMINAL_MANAGED_V1,
   WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1,
   workdirTerminalInventory, workdirTerminalCreate, workdirTerminalAttach, workdirTerminalResize, workdirTerminalClose,
   serverToWorkerSchema,
@@ -228,6 +229,8 @@ export interface GatewayHooks {
 }
 
 export interface GatewayOptions {
+  /** When supplied, managed terminal traffic requires this trusted upgrade path. */
+  readonly workdirManaged?: (request: IncomingMessage) => boolean;
   /** Frozen at startup: block affected workspace mutations on unverified or incompatible Workers. */
   readonly workspaceMutationSafetyRequired?: boolean;
   /** 心跳间隔。连续一个间隔没收到 pong 就判定离线并断开。 */
@@ -332,6 +335,8 @@ interface Registered {
   /** 这条连接的 Worker 显式 opt-in 了项目 Git bundle 导入没有（hello 能力）；每次 hello 重建。 */
   projectGitBundleImport: boolean;
   workdirTerminal: boolean;
+  workdirTerminalManaged: boolean;
+  workdirTrustedUpgrade: boolean;
   workspaceMutationSafety: boolean;
   /** 这条连接做过终端对账没有（重连 / inventory 只做一次）。 */
   terminalReconciled: boolean;
@@ -366,6 +371,7 @@ export interface WorkdirTerminalGateway {
 
 export interface ServerGateway {
   workdirTerminals(workerId: string): WorkdirTerminalGateway;
+  workdirTerminalReadiness(): { workers: { id: string; label: string }[]; incompatibleOnline: boolean };
   /** Last-known positive negotiation, retained while the registry entry survives disconnect. Not an authorization check. */
   workdirTerminalSupported(workerId: string): boolean;
   /** Current uniquely authenticated connection explicitly supports the complete mutation safety protocol. */
@@ -765,27 +771,29 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   }
 
   function workdirTerminals(workerId: string): WorkdirTerminalGateway {
-    async function call<T>(invoke: (channel: RpcChannel) => Promise<RpcOutcome<T>>): Promise<TerminalOutcome<T>> {
+    async function call<T>(invoke: (channel: RpcChannel) => Promise<RpcOutcome<T>>, managed = false): Promise<TerminalOutcome<T>> {
       const entry = online(workerId);
       if (!entry?.channel || !entry.socket) return terminalUnavailable(workerId);
       if (!entry.observationIdentity || !entry.workdirTerminal) return { ok: false, code: 'unsupported', message: 'Worker does not support workdir terminals' };
       if (!canInvoke(entry.capabilities, 'sessions')) return { ok: false, code: 'forbidden', message: capabilityDenied('sessions') };
+      if (managed && !terminalReadyEntry(entry)) return { ok: false, code: 'unsupported', message: 'Worker is not ready for managed workdir terminals' };
       const socket = entry.socket, channel = entry.channel;
       const result = await invoke(channel);
-      if (registry.get(workerId) !== entry || entry.socket !== socket || entry.channel !== channel || !entry.observationIdentity || socket.readyState !== WebSocket.OPEN)
+      if (registry.get(workerId) !== entry || entry.socket !== socket || entry.channel !== channel || !entry.observationIdentity || socket.readyState !== WebSocket.OPEN || (managed && !terminalReadyEntry(entry)))
         return { ok: false, code: 'stale', message: 'Worker connection changed' };
       return result.ok ? { ok: true, value: result.value } : { ok: false, code: result.error.code, message: result.error.message };
     }
     function send(frame: ServerToWorker): boolean {
       const entry = online(workerId);
       if (!entry?.socket || !entry.observationIdentity || !entry.workdirTerminal || !canInvoke(entry.capabilities, 'sessions') || !serverToWorkerSchema.safeParse(frame).success) return false;
+      if (frame.kind === 'workdir_terminal_input_v1' && !terminalReadyEntry(entry)) return false;
       try { entry.socket.send(JSON.stringify(frame)); return true; } catch { return false; }
     }
     return {
       inventory: () => call((channel) => channel.request(workdirTerminalInventory, {})),
-      create: (input) => call((channel) => channel.request(workdirTerminalCreate, input)),
-      attach: (input) => call((channel) => channel.request(workdirTerminalAttach, input)),
-      resize: (input) => call((channel) => channel.request(workdirTerminalResize, input)),
+      create: (input) => call((channel) => channel.request(workdirTerminalCreate, input), true),
+      attach: (input) => call((channel) => channel.request(workdirTerminalAttach, input), true),
+      resize: (input) => call((channel) => channel.request(workdirTerminalResize, input), true),
       close: (input) => call((channel) => channel.request(workdirTerminalClose, input)),
       detach: (input) => { send({ kind: 'workdir_terminal_detach_v1', ...input }); },
       input: (input) => send({ kind: 'workdir_terminal_input_v1', ...input })
@@ -1003,6 +1011,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   }
 
   wss.on('connection', (socket: WebSocket, request?: IncomingMessage) => {
+    let workdirTrustedUpgrade = false;
+    try { workdirTrustedUpgrade = !!request && options.workdirManaged?.(request) === true; } catch { /* fail closed */ }
     const address = request?.socket.remoteAddress;
     const clientAddress = clientAddressOf(request, hooks.trustProxy === true) ?? null;
     let entry: Registered | null = null;
@@ -1173,6 +1183,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           branchAttempts: new Map(),
           projectGitBundleImport: frame.capabilities?.includes(WORKER_CAPABILITY_PROJECT_GIT_BUNDLE_IMPORT) === true,
           workdirTerminal: frame.capabilities?.includes(WORKER_CAPABILITY_WORKDIR_TERMINAL_V1) === true,
+          workdirTerminalManaged: frame.capabilities?.includes(WORKER_CAPABILITY_WORKDIR_TERMINAL_MANAGED_V1) === true,
+          workdirTrustedUpgrade,
           workspaceMutationSafety: frame.capabilities?.includes(WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1) === true,
           terminalReconciled: false,
           serviceReconciled: false,
@@ -1308,7 +1320,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       }
       const from = entry.workerId;
       if (frame.type === 'workdir_terminal_data_v1') {
-        if (entry.observationIdentity && entry.workdirTerminal && canInvoke(entry.capabilities, 'sessions')) hooks.onWorkdirTerminalData?.(from, frame.epoch, frame.terminalId, frame.data);
+        if (terminalReadyEntry(entry)) hooks.onWorkdirTerminalData?.(from, frame.epoch, frame.terminalId, frame.data);
         return;
       }
       if (frame.type === 'workdir_terminal_exit_v1') {
@@ -1573,6 +1585,11 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     return registry.get(entry.workerId) === entry && !!entry.observationIdentity && !!entry.channel &&
       entry.socket?.readyState === WebSocket.OPEN && entry.workspaceMutationSafety;
   }
+  function terminalReadyEntry(entry: Registered): boolean {
+    return registry.get(entry.workerId) === entry && !!entry.observationIdentity && !!entry.channel &&
+      entry.socket?.readyState === WebSocket.OPEN && entry.workdirTerminal && canInvoke(entry.capabilities, 'sessions') &&
+      (!options.workdirManaged || (entry.workdirTerminalManaged && entry.workdirTrustedUpgrade));
+  }
   /** Scoped to fenced mutations: never infer completion from generic handler/transport errors. */
   async function settledMutation<T>(workerId: string, run: (channel: RpcChannel) => Promise<RpcOutcome<T>>, what: string): Promise<Result<T, DomainError>> {
     const entry = online(workerId);
@@ -1793,6 +1810,12 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     sendTerminalInput,
     reconcileTerminals,
     workdirTerminals,
+    workdirTerminalReadiness() {
+      const entries = [...registry.values()].filter((entry) => entry.socket?.readyState === WebSocket.OPEN && entry.channel &&
+        (canInvoke(entry.capabilities, 'sessions') || canInvoke(entry.capabilities, 'git') || canInvoke(entry.capabilities, 'git.remote') || canInvoke(entry.capabilities, 'files.write')));
+      const ready = entries.filter((entry) => terminalReadyEntry(entry) && mutationSafeEntry(entry));
+      return { workers: ready.map((entry) => ({ id: entry.workerId, label: entry.label })), incompatibleOnline: entries.some((entry) => !mutationSafeEntry(entry)) };
+    },
     workdirTerminalSupported(workerId) { return registry.get(workerId)?.workdirTerminal === true; },
     workspaceMutationSafe(workerId) {
       const entry = online(workerId);

@@ -50,7 +50,7 @@ function setup(attachGate?: { started: () => void; release: Promise<void> }, ena
       tasks: { byId: async () => null },
       workspaces: { byId: async () => workspace, linksOf: async () => [{ projectId: 'p1' }], onMachine: async () => [workspace] },
       access: { context: async () => ({ hubTeamId: 'team', settings: { membersCanAddMachines: true } }), worker: async () => ({ kind: 'worker', id: 'worker1', teamId: 'team' }) }
-    }, localWorkerId: () => null, grants: () => grant
+    }, localWorkerId: () => null, hasGrant: (userId: string, workerId: string) => workDirShellGranted(grant, userId, workerId)
   } as unknown as WorkDirTerminalAccessOptions;
   const gateway: ReturnType<WorkdirTerminalServiceOptions['gateway']> = {
     async inventory() { return { ok: true, value: { epoch, terminals: [...live].map(([terminalId, workspaceId]) => ({ terminalId, workspaceId, state: 'running' as const })) } }; },
@@ -60,7 +60,7 @@ function setup(attachGate?: { started: () => void; release: Promise<void> }, ena
     async close(input) { closeCalls++; if (closeExits) live.delete(input.terminalId); return { ok: true, value: { exited: closeExits } }; },
     detach() { detachCalls++; }, input() { return true; }
   };
-  const service = createWorkdirTerminalService({ enabled, access, terminals: store, safety, gateway: () => { gatewayCalls++; if (offline) throw Error('worker offline'); return gateway; }, authenticate: async (token) => authenticated && token === 'good' ? principal : null, owner: async () => principal, hostAllowed: () => true });
+  const service = createWorkdirTerminalService({ enabled: () => enabled, access, terminals: store, safety, gateway: () => { gatewayCalls++; if (offline) throw Error('worker offline'); return gateway; }, authenticate: async (token) => authenticated && token === 'good' ? principal : null, owner: async () => principal, hostAllowed: () => true });
   const app = new Hono(); service.install(app);
   const request = (method: string, url = base, body?: unknown, cookie = 'hub_login=good; hub_csrf=csrf') => app.request(url, { method, headers: { cookie, 'x-hub-csrf': 'csrf', 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   return { service, request, rows, live, setOffline: (value: boolean) => { offline = value; }, setGrant: (value: string) => { grant = value; }, setEpoch: (value: string) => { epoch = value; }, setAuth: (value: boolean) => { authenticated = value; }, setCreateFails: (value: boolean) => { createFails = value; }, setCreateState: (value: typeof createState) => { createState = value; }, setCloseExits: (value: boolean) => { closeExits = value; }, get gatewayCalls() { return gatewayCalls; }, get createCalls() { return createCalls; }, get closeCalls() { return closeCalls; }, get detachCalls() { return detachCalls; }, close() { if (!closed) { closed = true; service.close(); } } };

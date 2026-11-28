@@ -11,6 +11,7 @@ import {
   WORKER_CAPABILITY_SESSION_START_NATIVE_REF,
   WORKER_CAPABILITY_OPTION_RECEIPT,
   WORKER_CAPABILITY_WORKDIR_TERMINAL_V1,
+  WORKER_CAPABILITY_WORKDIR_TERMINAL_MANAGED_V1,
   WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1,
   createRpcChannel,
   linkEcho,
@@ -281,6 +282,7 @@ export function installTransport(ctx: LinkCtx): Transport {
             WORKER_CAPABILITY_OPTION_RECEIPT,
             WORKER_CAPABILITY_WORKSPACE_MUTATION_SAFETY_V1,
             ...(options.workdirTerminal ? [WORKER_CAPABILITY_WORKDIR_TERMINAL_V1] : []),
+            ...(options.workdirTerminal && options.workdirTerminalManaged ? [WORKER_CAPABILITY_WORKDIR_TERMINAL_MANAGED_V1] : []),
             ...(branchAttemptAgents.length > 0 ? [WORKER_CAPABILITY_BRANCH_ATTEMPT] : [])
           ],
           ...(branchAttemptAgents.length > 0 ? { branchAttemptAgents } : {}),

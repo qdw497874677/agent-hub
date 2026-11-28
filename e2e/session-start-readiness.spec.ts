@@ -40,6 +40,11 @@ for (const width of [1280, 390]) {
       }
       await expect.poll(states).toEqual(['queued:0', 'queued:0', 'queued:0']);
       for (const key of ['a', 'b', 'withdraw']) expect(count(key)).toBe(0);
+      const notes = page.getByTestId('delivery-note');
+      await expect(notes).toHaveCount(3);
+      await expect(notes.first()).toContainText('已排队 · 等待运行时就绪');
+      await expect(notes.nth(1)).toContainText('已排队 · 前面还有消息');
+      await expect(notes.getByRole('button', { name: '撤回' })).toHaveCount(3);
 
       writeFileSync(`${gate}.fail`, 'fail\n');
       await expect(startup).toHaveAttribute('data-state', 'failed');

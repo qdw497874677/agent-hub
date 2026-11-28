@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
 import { FAKE_AGENT_ID, ensureFakeWorker, stopFakeWorker } from './fake-worker.ts';
 
 /**
@@ -13,30 +12,20 @@ import { FAKE_AGENT_ID, ensureFakeWorker, stopFakeWorker } from './fake-worker.t
  *   服务端幂等，不会出现两条一样的消息。
  * - 机器离线：清楚说明消息可以先排队，并验证服务器真的持久排队，而不是只模拟离线显示。
  */
-async function openSession(page: Page, baseURL: string) {
+async function openSession(page: Page, baseURL: string, dir: string) {
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL, 'x-hub-csrf': csrf };
-  // Worker 连上来要一两秒：等它上线，别把「慢」当成「没有 agent」。
-  let agentId: string | undefined;
-  for (let attempt = 0; attempt < 30 && agentId === undefined; attempt++) {
-    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
-    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
-    if (agentId === undefined) await page.waitForTimeout(500);
-  }
-  test.skip(!agentId, '这台机器上没有可用的 agent');
-  const dir = mkdtempSync(join(tmpdir(), 'e2e-offline-'));
-  const project = (await (
-    await page.request.post('/api/projects', {
-      data: { name: `e2e 弱网 ${Date.now().toString(36)}`, rootPath: dir },
-      headers
-    })
-  ).json()) as { id: string };
-  const task = (await (
-    await page.request.post('/api/tasks', { data: { projectId: project.id, title: '弱网' }, headers })
-  ).json()) as { id: string };
+  const workerId = await ensureFakeWorker(page, baseURL);
+  const post = async (url: string, data: object) => {
+    const response = await page.request.post(url, { headers, data });
+    expect(response.status(), await response.text()).toBe(201);
+    return await response.json() as { id: string };
+  };
+  const project = await post('/api/projects', { name: `e2e 弱网 ${Date.now().toString(36)}`, rootPath: dir, workerId });
+  const task = await post('/api/tasks', { projectId: project.id, title: '弱网' });
   const derived = await page.request.post('/api/sessions/derive', {
-    data: { taskId: task.id, agentId, model: piModel() },
+    data: { taskId: task.id, agentId: FAKE_AGENT_ID, model: '' },
     headers
   });
   expect(derived.status(), await derived.text()).toBe(201);
@@ -56,38 +45,44 @@ async function promptCount(page: Page, headers: Record<string, string>, sessionI
 }
 
 test('弱网：回执超时后气泡变未送达，重试不会产生重复消息', async ({ page, baseURL }) => {
-  const { area, headers, sessionId } = await openSession(page, baseURL ?? '');
-  const text = `弱网消息 ${Date.now().toString(36)}`;
+  const dir = mkdtempSync(join(tmpdir(), 'e2e-offline-'));
+  try {
+    const { area, headers, sessionId } = await openSession(page, baseURL!, dir);
+    const text = `弱网消息 ${Date.now().toString(36)}`;
 
-  // 第一次请求卡住 9 秒（超过 8 秒回执超时），之后放行。
-  let first = true;
-  await page.route('**/api/sessions/*/prompt', async (route) => {
-    if (first) {
-      first = false;
-      await new Promise((resolve) => setTimeout(resolve, 9_000));
-    }
-    await route.continue();
-  });
+    // 第一次请求卡住 9 秒（超过 8 秒回执超时），之后放行。
+    let first = true;
+    await page.route('**/api/sessions/*/prompt', async (route) => {
+      if (first) {
+        first = false;
+        await new Promise((resolve) => setTimeout(resolve, 9_000));
+      }
+      await route.continue();
+    });
 
-  await area.fill(text);
-  await area.press('Control+Enter');
+    await area.fill(text);
+    await area.press('Control+Enter');
 
-  const pending = page.getByTestId('pending-prompts');
-  await expect(pending).toBeVisible();
-  await expect(page.getByTestId('turn-hint')).toContainText('正在发送…');
+    const pending = page.getByTestId('pending-prompts');
+    await expect(pending).toBeVisible();
+    await expect(page.getByTestId('turn-hint')).toContainText('正在发送…');
 
-  // 8 秒超时后：同一颗气泡原地变成「未送达」，给出重试/放弃。
-  await expect(page.getByTestId('pending-unknown')).toBeVisible({ timeout: 12_000 });
-  await expect(page.getByTestId('pending-unknown')).toContainText('未收到回执');
-  await expect(page.getByTestId('pending-retry')).toBeVisible();
+    // 8 秒超时后：同一颗气泡原地说明没收到回执，给出重试/放弃。
+    await expect(page.getByTestId('pending-unknown')).toBeVisible({ timeout: 12_000 });
+    await expect(page.getByTestId('pending-unknown')).toContainText('未收到回执');
+    await expect(page.getByTestId('pending-retry')).toBeVisible();
 
-  await page.getByTestId('pending-retry').click();
+    await page.getByTestId('pending-retry').click();
 
-  // 重试用的是同一个 clientMessageId：journal 里只有一条。
-  await expect
-    .poll(async () => promptCount(page, headers, sessionId, text), { timeout: 15_000 })
-    .toBe(1);
-  await expect(page.getByTestId('pending-prompts')).toHaveCount(0);
+    // 重试用的是同一个 clientMessageId：journal 里只有一条。
+    await expect
+      .poll(async () => promptCount(page, headers, sessionId, text), { timeout: 15_000 })
+      .toBe(1);
+    await expect(page.getByTestId('pending-prompts')).toHaveCount(0);
+  } finally {
+    stopFakeWorker();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 for (const width of [1280, 390]) {
@@ -142,7 +137,7 @@ for (const width of [1280, 390]) {
       }).toBe('queued/0');
       const note = page.getByRole('log', { name: '会话记录' }).getByTestId('msg-user').filter({ hasText: text }).getByTestId('delivery-note');
       await expect(note).toHaveAttribute('data-state', 'queued');
-      await expect(note).toContainText('已排队 · 等待投递');
+      await expect(note).toContainText('已排队 · 等待机器上线');
       await expect(note.getByRole('button', { name: '撤回' })).toBeVisible();
     } finally {
       stopFakeWorker();

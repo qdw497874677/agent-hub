@@ -155,6 +155,9 @@ import { createOptionWaiters, ingestOptionReceipt } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createTerminalBridge, type TerminalBridge } from './terminal-bridge.ts';
 import { createWorkdirTerminalService } from './workdir-terminal-service.ts';
+import { createWorkdirTerminalAdminStore } from './workdir-terminal-admin.ts';
+import { createWorkdirTerminalIngress, workdirTerminalAdminOrigin } from './workdir-terminal-ingress.ts';
+import { workDirShellGranted } from './workdir-terminal-access.ts';
 import { createWorktreePlans, plannedWorktreeGuard, type WorktreePlanProgress, type WorktreePlanSpec } from './worktree-plans.ts';
 import { authHeaderFor } from './repo-auth.ts';
 import { repoTokenKey } from '@agent-hub/domain';
@@ -241,10 +244,18 @@ const secretsVault = createSecretVault(store.db, secretKey);
 // safety guards active even if rollout was subsequently disabled. Storage errors
 // intentionally abort startup rather than permit unsafe mutations.
 const workdirTerminalsEnabled = readEnv('HUB_WORKDIR_TERMINALS') === '1';
+const workdirLegacyGrants = readEnv('HUB_WORKDIR_SHELL_GRANTS');
+const workdirAdminRequested = readEnv('HUB_WORKDIR_TERMINAL_ADMIN_ORIGIN');
+const workdirProxyProof = readEnv('HUB_WORKDIR_TERMINAL_PROXY_PROOF');
+const workdirOrigin = workdirTerminalAdminOrigin({ origin: workdirAdminRequested, bind: host, uid: process.geteuid?.(), spawnWorker, previewPrefix: readEnv('HUB_PREVIEW_PREFIX'), proxyProof: workdirProxyProof });
+const workdirIngress = workdirOrigin && workdirProxyProof && !workdirTerminalsEnabled && !workdirLegacyGrants && guard.hostAllowed(workdirOrigin.host)
+  ? createWorkdirTerminalIngress(workdirOrigin, workdirProxyProof, Date.now) : null;
+const workdirAdminStore = createWorkdirTerminalAdminStore(store.db);
+const workdirManagedLogin = workdirIngress ?? (workdirAdminRequested ? { token: () => '', socketToken: () => '' } : undefined);
 const worktreePlansEnabled = readEnv('HUB_WORKTREE_PLANS') === '1';
 const plannedWorktrees = createSqlitePlannedWorktrees<WorktreePlanSpec, WorktreePlanProgress>(store.db);
 const hasUsedPlans = store.db.prepare("SELECT 1 FROM planned_worktrees WHERE state NOT IN ('draft','failed') LIMIT 1").get() !== undefined;
-const workdirSafetyRequired = workdirTerminalsEnabled || worktreePlansEnabled || hasUsedPlans || store.workdirSafety.hasOutstanding();
+const workdirSafetyRequired = workdirIngress !== null || workdirTerminalsEnabled || worktreePlansEnabled || hasUsedPlans || store.workdirSafety.hasOutstanding();
 // A restart loses in-memory capability history. Preserve the legacy-open gate
 // for machines with durable shells at boot even after those shells are drained.
 const workdirHeldWorkersAtBoot = new Set(store.workdirTerminals.listNonEnded().map((row) => row.workerId));
@@ -634,6 +645,14 @@ const accounts: AccountDeps = {
 };
 // 公网绑定必须能证明「这台 hub 有主」：要么配了 HUB_TOKEN（给脚本/worker），要么已经有主人账号。
 // 放在账号仓库打开之后（才知道有没有主人），又放在种测试账号之前（测试账号不算主人的证明）。
+if (workdirIngress) {
+  const admin = await accounts.users.firstClusterAdmin();
+  if (!admin || admin.disabledAt !== null || admin.emailVerifiedAt === null || readEnv('HUB_TEST_ACCOUNT') !== 'off') {
+    console.error('拒绝启动：终端托管要求先建立已验证的 Hub 管理员，并关闭测试账号播种。');
+    store.close();
+    process.exit(1);
+  }
+}
 if (!LOOPBACKS.has(host) && token === null && (await accounts.users.firstClusterAdmin()) === null) {
   console.error(
     `拒绝启动：绑定到 ${host}，但既没设 HUB_TOKEN，也还没有主人账号。\n` +
@@ -1250,7 +1269,7 @@ serverGateway = createServerGateway({
     }).catch((error: unknown) => log(`标记服务失联失败（${workerId}/${serviceId}）：${String(error)}`));
   },
   onLog: log
-}, { workspaceMutationSafetyRequired: workdirSafetyRequired });
+}, { workspaceMutationSafetyRequired: workdirSafetyRequired, ...(workdirManagedLogin ? { workdirManaged: workdirIngress?.worker ?? (() => false) } : {}) });
 
 // 会话终端（docs/design/terminal.md）：浏览器 WS 的鉴权沿用 cookie + session.prompt
 // （能往 PTY 里打字等于能以会话身份执行命令，viewer 不该有，issue #213）；
@@ -1266,14 +1285,21 @@ terminalBridge = createTerminalBridge({
 });
 
 workdirTerminals = createWorkdirTerminalService({
-  enabled: workdirTerminalsEnabled,
+  enabled: () => workdirManagedLogin ? workdirIngress !== null && workdirAdminStore.isEnabled() : workdirTerminalsEnabled,
+  ...(workdirManagedLogin ? {
+    protectedLogin: workdirManagedLogin,
+    workerReady: (workerId: string) => serverGateway!.workdirTerminalReadiness().workers.some((worker) => worker.id === workerId),
+    admissionReady: () => !serverGateway!.workdirTerminalReadiness().incompatibleOnline
+  } : {}),
   access: {
     deps,
     localWorkerId: () => {
       const locals = (serverGateway?.workers() ?? []).filter((worker) => worker.state === 'online' && worker.origin === 'local');
       return locals.length === 1 ? locals[0]!.workerId : null;
     },
-    grants: () => readEnv('HUB_WORKDIR_SHELL_GRANTS') ?? undefined
+    hasGrant: (userId, workerId) => workdirManagedLogin
+      ? workdirAdminStore.hasGrant(userId, workerId)
+      : workDirShellGranted(workdirLegacyGrants ?? undefined, userId, workerId)
   },
   terminals: store.workdirTerminals,
   safety: store.workdirSafety,
@@ -1436,7 +1462,17 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
       })] : [])
     ] : []
   },
-  auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles, agentDefaults: store.agentDefaults }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log', ...(credentialAdmin ? { credentialAdmin } : {}) },
+  auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles, agentDefaults: store.agentDefaults }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log', ...(credentialAdmin ? { credentialAdmin } : {}), ...(workdirIngress ? { workdirTerminalLogin: workdirIngress } : {}) },
+  workdirTerminalAdmin: {
+    store: workdirAdminStore, users: store.users, now: accounts.now,
+    protectedTransport: (c) => !!workdirIngress?.token(c),
+    readiness() {
+      const { workers, incompatibleOnline } = serverGateway!.workdirTerminalReadiness();
+      return workdirIngress ? { mode: 'managed', enabled: false, workers, blockedReason: incompatibleOnline ? '仍有不兼容的在线机器，不能开启' : null }
+        : { mode: 'unavailable', enabled: !workdirAdminRequested && workdirTerminalsEnabled, workers: [], blockedReason: '未配置受保护的终端管理入口' };
+    },
+    onRevoked: () => { workdirTerminals?.onRevoked(); }
+  },
   workdirTerminals,
   ...(worktreePlansEnabled ? { worktreePlans: createWorktreePlans({ deps, store: plannedWorktrees,
     // Keep missing-base clone unavailable until cross-process recovery and the TLS path are proven.

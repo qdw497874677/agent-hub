@@ -218,11 +218,13 @@ import { installOpenApi } from './openapi/app.ts';
 import type { OpenApiOptions } from './openapi/app.ts';
 import type { ApiTokenDeps } from '@agent-hub/domain';
 import type { createWorkdirTerminalService } from './workdir-terminal-service.ts';
+import { installWorkdirTerminalAdmin, type WorkdirTerminalAdminOptions } from './workdir-terminal-admin.ts';
 import { installDisabledWorktreePlanRoutes, installWorktreePlanRoutes } from './worktree-plan-routes.ts';
 import type { createWorktreePlans } from './worktree-plans.ts';
 
 export interface AppOptions {
   readonly workdirTerminals?: ReturnType<typeof createWorkdirTerminalService>;
+  readonly workdirTerminalAdmin?: WorkdirTerminalAdminOptions;
   readonly worktreePlans?: ReturnType<typeof createWorktreePlans>;
   readonly agentHandoff?: AgentHandoffService;
   readonly taskArchiveBlockers?: TaskArchiveBlockers;
@@ -405,6 +407,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.projectGitProbe) installProjectGitProbeRoutes(app, options.projectGitProbe, subjectOf);
     if (options.hubCredentials) installHubCredentialRoutes(app, options.hubCredentials.broker, subjectOf, options.hubCredentials.authorize);
     if (options.admin) installAdmin(app, options.admin, principalOf);
+    if (options.workdirTerminalAdmin) installWorkdirTerminalAdmin(app, options.workdirTerminalAdmin, principalOf);
     if (options.auth.team) installTeam(app, options.auth.team, principalOf);
     if (options.auth.accessAdmin) installAccessRoutes(app, options.auth.accessAdmin, subjectOf);
     if (options.messaging) installMessagingRoutes(app, { ...options.messaging, deps, users: options.auth.accounts.users }, subjectOf);

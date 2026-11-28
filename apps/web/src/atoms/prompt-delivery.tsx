@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { AttachmentInputDto, PromptAckDto } from '../shell/api.ts';
+import type { AttachmentInputDto, DeliveryDto, PromptAckDto } from '../shell/api.ts';
+import { queuedDeliveryText, uncertainSending, type QueueReason } from './turn-hint.ts';
 import {
   expirePending,
   newClientMessageId,
@@ -142,6 +143,9 @@ export interface PendingPromptsProps {
   readonly quiet?: boolean;
   /** 服务端送达记录已经接管该气泡时，不重复本地状态。 */
   readonly hasDelivery?: (prompt: PendingPrompt) => boolean;
+  readonly deliveries?: ReadonlyMap<number, DeliveryDto>;
+  readonly uncertainDeliveryIds?: readonly string[];
+  readonly queueReason?: QueueReason | undefined;
 }
 
 /**
@@ -157,7 +161,10 @@ export function PendingPrompts({
   compact = false,
   className = '',
   quiet = false,
-  hasDelivery
+  hasDelivery,
+  deliveries,
+  uncertainDeliveryIds = [],
+  queueReason
 }: PendingPromptsProps) {
   if (pending.length === 0) return null;
   return (
@@ -181,6 +188,11 @@ export function PendingPrompts({
             onDiscard={onDiscard}
             testIdPrefix={testIdPrefix}
             quiet={(quiet && index === pending.length - 1) || (hasDelivery?.(prompt) ?? false)}
+            label={prompt.state === 'queued' ? (() => {
+              const current = prompt.seq === undefined ? undefined : deliveries?.get(prompt.seq);
+              if (current?.state === 'sending') return uncertainSending(current, uncertainDeliveryIds) ? '暂未确认这一轮的结果' : '发送中…';
+              return queuedDeliveryText(prompt.seq, deliveries?.values() ?? [], uncertainDeliveryIds, queueReason);
+            })() : undefined}
           />
         </div>
       ))}
@@ -197,13 +209,15 @@ function PendingStateLine({
   onRetry,
   onDiscard,
   testIdPrefix,
-  quiet
+  quiet,
+  label
 }: {
   readonly prompt: PendingPrompt;
   readonly onRetry: (prompt: PendingPrompt) => void;
   readonly onDiscard: (id: string) => void;
   readonly testIdPrefix: string;
   readonly quiet: boolean;
+  readonly label?: string | undefined;
 }) {
   if (prompt.state === 'unknown') {
     return (
@@ -240,7 +254,7 @@ function PendingStateLine({
       data-testid={`${testIdPrefix}pending-state`}
       data-state={prompt.state}
     >
-      {pendingLabel(prompt.state)}
+      {label ?? pendingLabel(prompt.state)}
     </p>
   );
 }

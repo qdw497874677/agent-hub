@@ -40,7 +40,7 @@ export interface WorkDirTerminalAccessOptions {
   readonly deps: Pick<Deps, 'projects' | 'tasks' | 'workspaces' | 'access'>;
   /** Must resolve the designated local machine only, not an arbitrary online worker. */
   readonly localWorkerId: () => string | null;
-  readonly grants: () => string | undefined;
+  readonly hasGrant: (userId: string, workerId: string) => boolean;
 }
 
 /** Re-run on every connection, output, input and resize, including replay and detached revocation. */
@@ -72,7 +72,7 @@ export async function workDirTerminalEligibility(
   const localWorkerId = options.localWorkerId();
   const workerId = workspace.workerId ?? localWorkerId;
   if (!workerId) return { ok: false, reason: 'unavailable' };
-  if (!workDirShellGranted(options.grants(), subject.user.id, workerId)) return { ok: false, reason: 'forbidden' };
+  if (!options.hasGrant(subject.user.id, workerId)) return { ok: false, reason: 'forbidden' };
   // Old null worker records have to use the policy's explicit local-machine rule.
   if (!(await authorizeWorker(deps.access, subject, workspace.workerId)).ok) return { ok: false, reason: 'forbidden' };
 

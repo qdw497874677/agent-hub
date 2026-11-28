@@ -173,6 +173,9 @@ export interface LoginActivity {
 }
 
 export type AuditAction =
+  | 'workdir_terminal.enabled'
+  | 'workdir_terminal.grant'
+  | 'workdir_terminal.revoke'
   | 'git.commit'
   | 'git.text'
   | 'git.push'
