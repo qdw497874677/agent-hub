@@ -46,6 +46,7 @@ test('团队工作目录：新建 → A 分配 → B 转移 → 之后只有 B �
     // 首页「工作目录」入口 → 团队页，未分配
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto('/');
+    await page.getByTestId('shell-more').click();
     await page.getByTestId('nav-workspaces').click();
     await expect(page.getByRole('heading', { name: '团队工作目录' })).toBeVisible();
     const row = page.getByTestId('team-ws-row').filter({ hasText: `shared-ws-${RUN}` });

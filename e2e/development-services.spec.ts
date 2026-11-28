@@ -97,7 +97,7 @@ async function fixture(page: Page, info: TestInfo, enabled: boolean) {
   }
 }
 
-for (const width of [1280, 390]) {
+for (const width of [1280, 390, 320]) {
   test.describe(`开发服务 ${width}px`, () => {
     test.use({ viewport: { width, height: 844 }, hasTouch: width < 640, isMobile: width < 640 });
     test('所有机器独立展开，归属精确，引用只写草稿并打开已验证服务', async ({ page }, info) => {
@@ -122,7 +122,12 @@ for (const width of [1280, 390]) {
         await composer.fill('保留草稿');
         let promptWrites = 0;
         page.on('request', (request) => { if (request.method() === 'POST' && new URL(request.url()).pathname === `/api/sessions/${world.session.id}/prompt`) promptWrites++; });
+        if (width < 768) {
+          await page.getByTestId('session-tab-trigger').click();
+          await expect(page.getByTestId('session-tab-picker').getByTestId('development-services-trigger')).toBeVisible();
+        }
         await page.getByTestId('development-services-trigger').click();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         const panel = page.getByTestId('development-services-panel');
         const workers = panel.getByTestId('development-services-worker');
         await expect(workers).toHaveCount(2);

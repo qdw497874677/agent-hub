@@ -92,42 +92,47 @@ for (const width of [1280, 390]) {
         });
         await page.goto(`${origin}/#/p/${projectId}/workdir/${workspaceId}`);
         const tabs = page.getByTestId('session-document-tabs');
-        const add = tabs.getByTestId('session-tab-add');
         const trigger = tabs.getByTestId('session-tab-trigger');
-        const unavailable = tabs.getByRole('status');
+        const picker = page.getByTestId('session-tab-picker');
+        const addMenu = touch ? page.getByTestId('session-tab-add-sheet') : tabs;
+        const unavailable = addMenu.getByRole('status');
+        const openAdd = async () => {
+          if (touch) await trigger.click();
+          await page.getByTestId('session-tab-add').click();
+        };
         const openExisting = async (id: string) => {
           await trigger.click();
           await page.getByTestId('session-tab-picker').locator(`[data-testid="session-tab-open-existing"][data-session-id="${id}"]`).click();
         };
-        await add.click();
+        await openAdd();
         await expect(unavailable).toContainText('终端');
-        await expect(tabs.getByTestId('session-tab-new-terminal')).toBeDisabled();
-        await expect(tabs.getByTestId('session-tab-new-session')).toBeEnabled();
-        await add.click();
+        await expect(addMenu.getByTestId('session-tab-new-terminal')).toBeDisabled();
+        await expect(addMenu.getByTestId('session-tab-new-session')).toBeEnabled();
+        await page.keyboard.press('Escape');
         await openExisting(first.id);
         await expect(page.getByTestId('focus-header')).toContainText('测试任务标题');
         const legacy = await page.request.get(`${origin}/api/sessions/${first.id}/terminal-availability`);
         expect(legacy.status(), await legacy.text()).toBe(200);
         expect(await legacy.json()).toEqual({ available: false });
-        await add.click();
-        await expect(tabs.getByTestId('session-tab-new-terminal')).toBeDisabled();
-        await add.click();
-        if (touch) await trigger.click();
-        const activeTab = page.locator(`[data-testid="session-tab-item"][data-session-id="${first.id}"]:visible`);
+        await openAdd();
+        await expect(addMenu.getByTestId('session-tab-new-terminal')).toBeDisabled();
+        await page.keyboard.press('Escape');
+        await trigger.click();
+        const activeTab = picker.locator(`[data-testid="session-tab-item"][data-session-id="${first.id}"]`);
         await expect(activeTab).toContainText('测试任务标题');
         await expect(activeTab).not.toContainText(first.id.slice(-4));
         await expect(unavailable).toBeHidden();
         await expect(page.getByText('工作目录不可用', { exact: true })).toHaveCount(0);
-        if (touch) await page.keyboard.press('Escape');
+        await page.keyboard.press('Escape');
 
         await openExisting(second.id);
-        if (touch) await trigger.click();
-        const options = page.locator('[data-testid="session-tab-item"][data-session-id]:visible');
+        await trigger.click();
+        const options = picker.locator('[data-testid="session-tab-item"][data-session-id]');
         await expect(options).toHaveCount(2);
         for (const session of [first, second]) {
           await expect(options.filter({ hasText: session.id.slice(-4) })).toContainText('测试任务标题');
         }
-        if (touch) await page.keyboard.press('Escape');
+        await page.keyboard.press('Escape');
         const renamed = '一个会话的自定义标题，名字很长也不能遮住右边的新增按钮';
         await api(`/api/sessions/${second.id}/title`, { title: renamed }, 200, 'PUT');
         // Measure across the old 3 s interval: the authoritative 403 is not a retry loop.
@@ -140,13 +145,11 @@ for (const width of [1280, 390]) {
         await page.reload();
         await expect(page.getByTestId('focus-header')).toContainText(renamed);
         if (touch) {
-          await expect(add).toBeInViewport({ ratio: 1 });
+          await expect(trigger).toBeInViewport({ ratio: 1 });
           expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
-          await trigger.click();
-          await expect(options.filter({ hasText: renamed })).toHaveCount(1);
-        } else {
-          await expect(options.filter({ hasText: renamed })).toHaveCount(1);
         }
+        await trigger.click();
+        await expect(options.filter({ hasText: renamed })).toHaveCount(1);
       } finally {
         stopFakeWorker();
         if (world) await world.stop();
@@ -187,10 +190,15 @@ for (const width of [1280, 390]) {
         if (shots) await page.screenshot({ path: join(shots, `registered-workdir-paths-${width}.png`) });
         await entry(workspaceId).click();
         const tabs = page.getByTestId('session-document-tabs');
-        const plus = tabs.getByTestId('session-tab-add');
         const trigger = tabs.getByTestId('session-tab-trigger');
-        await plus.click();
-        await tabs.getByTestId('session-tab-new-terminal').click();
+        const picker = page.getByTestId('session-tab-picker');
+        const addMenu = touch ? page.getByTestId('session-tab-add-sheet') : tabs;
+        const openAdd = async () => {
+          if (touch) await trigger.click();
+          await page.getByTestId('session-tab-add').click();
+        };
+        await openAdd();
+        await addMenu.getByTestId('session-tab-new-terminal').click();
         const status = page.getByTestId('terminal-status');
         await expect(status).toContainText('已连接');
         if (shots) await page.screenshot({ path: join(shots, `workdir-terminal-${width}.png`) });
@@ -230,8 +238,8 @@ for (const width of [1280, 390]) {
         await expect(page.getByRole('log').getByText('OK', { exact: true })).toBeVisible();
         await composer.fill('这个草稿随标签切换保留');
         const select = async (kind: 'session' | 'terminal') => {
-          if (touch) await trigger.click();
-          await page.locator(`[data-testid="session-tab-item"][data-${kind}-id]:visible`).click();
+          await trigger.click();
+          await picker.locator(`[data-testid="session-tab-item"][data-${kind}-id]`).click();
         };
         await select('terminal');
         await expect(status).toContainText('已连接');
@@ -242,8 +250,8 @@ for (const width of [1280, 390]) {
         await select('session');
         await expect(composer).toHaveValue('这个草稿随标签切换保留');
         if (shots) await page.screenshot({ path: join(shots, `workdir-session-${width}.png`) });
-        if (touch) await trigger.click();
-        await page.locator(`[data-testid="session-tab-close"][data-session-id="${session.id}"]:visible`).click();
+        await trigger.click();
+        await picker.locator(`[data-testid="session-tab-close"][data-session-id="${session.id}"]`).click();
         await expect(page.getByTestId('session-tab-close').and(page.locator('[data-session-id]'))).toHaveCount(0);
         expect((await api<{ sessions: Array<{ id: string }> }>(canvasPath)).sessions[0]?.id).toBe(session.id);
 
@@ -259,20 +267,20 @@ for (const width of [1280, 390]) {
         }
         await page.reload();
         if (!touch) {
-          await plus.click();
-          await expect(tabs.getByTestId('session-tab-new-terminal')).toBeDisabled();
-          await plus.click();
+          await openAdd();
+          await expect(addMenu.getByTestId('session-tab-new-terminal')).toBeDisabled();
+          await page.keyboard.press('Escape');
         }
         await select('terminal');
         await expect(status).toContainText('已连接');
         expect(alive()).toBe(true);
-        if (touch) await trigger.click();
-        await page.locator(`[data-testid="session-tab-close"][data-terminal-id="${first.id}"]:visible`).click();
+        await trigger.click();
+        await picker.locator(`[data-testid="session-tab-close"][data-terminal-id="${first.id}"]`).click();
         await expect.poll(async () => (await inventory()).find((row) => row.id === first.id)?.state).toBe('ended');
         await expect.poll(alive).toBe(false);
         await page.reload();
-        if (touch) await trigger.click();
-        await expect(page.locator('[data-testid="session-tab-item"][data-terminal-id]:visible')).toHaveCount(0);
+        await trigger.click();
+        await expect(picker.locator('[data-testid="session-tab-item"][data-terminal-id]')).toHaveCount(0);
         await api(`/api/workspaces/${other.id}/remove`, { deleteDirectory: true, force: true }, 200);
       } finally {
         stopFakeWorker();

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { ProjectDto } from '../../shell/api.ts';
 import type { StreamState } from '../../atoms/live.ts';
 import type { View } from '../../shell/route.ts';
@@ -52,15 +53,18 @@ export function ProjectBar({
   project,
   view,
   stream,
-  onView
+  onView,
+  projectNav
 }: {
   project: ProjectDto;
   view: View;
   stream: StreamState;
   onView: (view: View) => void;
+  projectNav?: ReactNode;
 }) {
   return (
     <div data-testid="project-bar" className="hidden h-11 shrink-0 items-center gap-3 border-b border-hair px-4 lg:flex">
+      {projectNav}
       <p className="min-w-0 truncate text-sub text-tertiary">
         <span className="text-secondary">{project.name}</span>
       </p>

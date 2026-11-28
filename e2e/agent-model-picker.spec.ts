@@ -112,7 +112,7 @@ for (const width of [1280, 390]) {
       await dialog.getByRole('button', { name: '取消' }).click();
       await expect(picker).toBeFocused();
       await expect(await showSessionHandoff(page, compact)).toBeVisible();
-      if (compact) await page.keyboard.press('Escape');
+      await page.keyboard.press('Escape');
       expect(posts).toBe(0);
       await expect(draft).toHaveValue('保留草稿');
       await picker.click();

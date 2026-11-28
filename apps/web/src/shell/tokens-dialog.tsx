@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { tokensApi, RequestFailed, type AccountDto, type ApiScopeDto, type ApiTokenDto } from './api.ts';
-import { DialogShell } from './dialog-shell.tsx';
 import { McpGuidePanel } from './mcp-guide.tsx';
 import { maskToken } from '../atoms/mcp-guide.ts';
 import { CopyButton, ManualCopy, useCopy } from '../atoms/copy.tsx';
@@ -42,15 +41,7 @@ const errorText = (error: unknown) => (error instanceof RequestFailed ? error.de
 const BTN = 'rounded-sm border border-hair px-3 py-2 text-sub text-secondary hover:border-strong hover:text-primary disabled:opacity-40';
 
 /** 访问令牌：给脚本、CI、外部 agent 调开放 API / MCP 用。新建、列表、吊销；明文只显示一次。 */
-export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => void }) {
-  return <DialogShell title="访问令牌" onClose={onClose}><TokenSettingsBody me={me} onClose={onClose} /></DialogShell>;
-}
-
 export function TokenSettings({ me }: { me: AccountDto }) {
-  return <TokenSettingsBody me={me} />;
-}
-
-function TokenSettingsBody({ me, onClose }: { me: AccountDto; onClose?: () => void }) {
   const queryClient = useQueryClient();
   const list = useQuery({ queryKey: ['api-tokens'], queryFn: tokensApi.list });
   const canService = me.role === 'owner' || me.clusterAdmin;
@@ -250,7 +241,7 @@ function TokenSettingsBody({ me, onClose }: { me: AccountDto; onClose?: () => vo
       {!fresh && (
         <details className="mt-5">
           <summary className="cursor-pointer text-meta text-secondary">外部智能体怎么接 MCP（Claude Code / Cursor / Codex / 提示词）</summary>
-          <a data-testid="tokens-open-access" className="mt-2 block text-meta text-primary underline underline-offset-2 hover:text-secondary" href="#/access" onClick={onClose}>
+          <a data-testid="tokens-open-access" className="mt-2 block text-meta text-primary underline underline-offset-2 hover:text-secondary" href="#/access">
             打开外部接入页：限定项目（含所在团队的资产）、测试连接、调用记录、轮换
           </a>
           <McpGuidePanel />

@@ -46,10 +46,20 @@ async function openProject(page: Page, projectId: string, view: 'list' | 'canvas
   if (view === 'list') await expect(page.getByTestId('list-view')).toBeVisible();
 }
 
-/** 桌面 project bar 与窄屏 header 可能各有一个视图切换，只点可见的那个。 */
+/** 项目页使用页头切换；会话详情使用项目树里的切换，手机上先打开项目树。 */
 async function switchView(page: Page, view: 'list' | 'canvas'): Promise<void> {
-  const bar = page.locator('[data-testid=view-switch]:visible').first();
-  await bar.getByRole('button', { name: view === 'canvas' ? '画布' : '列表', exact: true }).click();
+  const label = view === 'canvas' ? '画布' : '列表';
+  const bar = page.locator('[data-testid=view-switch]:visible');
+  if (await bar.count()) {
+    await bar.first().getByRole('button', { name: label, exact: true }).click();
+    return;
+  }
+  let sidebar = page.locator('[data-testid=project-sidebar]:visible');
+  if (!(await sidebar.count())) {
+    await page.getByRole('button', { name: '项目与全部会话' }).click();
+    sidebar = page.getByTestId('nav-sheet').getByTestId('project-sidebar');
+  }
+  await sidebar.getByLabel('项目视图').getByRole('button', { name: label, exact: true }).click();
 }
 
 interface Seeded {
@@ -174,9 +184,14 @@ test('从建项目到会话跑出第一段文字', async ({ page, baseURL }) => 
 
   await expect(run.getByRole('radio', { name: '新建持久工作目录' })).toBeVisible();
   await run.getByRole('radio', { name: '新建持久工作目录' }).click();
+  // 选择持久目录会立即打开模态目录选择器；先关闭它，再切换新建方式。
+  const picker = page.getByRole('dialog', { name: '目录选择器' });
+  await expect(picker).toBeVisible();
+  await picker.getByRole('button', { name: '关闭' }).click();
+  await expect(picker).toBeHidden();
   await run.getByRole('radio', { name: '选已有目录' }).click();
+  await expect(run.getByRole('radio', { name: '选已有目录' })).toHaveAttribute('aria-checked', 'true');
 
-  const picker = run.getByLabel('目录选择器');
   await expect(picker).toBeVisible();
   await picker.getByRole('button', { name: '输入路径' }).click();
   const pathInput = picker.getByRole('textbox', { name: '路径' });
@@ -298,7 +313,8 @@ test('节点在线状态可见，任务的收尾与放弃是两个动作', async
   await openProject(page, seeded.projectId, 'canvas');
 
   await expect(sessionNode(page)).toHaveCount(1);
-  await page.getByRole('link', { name: /^机器：/ }).click();
+  await page.getByTestId('shell-more').click();
+  await page.getByTestId('nav-machines').click();
   await expect(page.getByTestId('machines-summary')).toContainText('在线');
   // 假 ACP worker 是一台远程机器，标签由测试助手起名；按 agent 标签找到它。
   await expect(page.locator('[data-testid=machine-row]').filter({ hasText: '假 ACP' }).first()).toBeVisible();
@@ -444,6 +460,11 @@ test('侧栏：桌面常驻，窄屏抽屉可开合，列表视图可切换', as
   await expect(desktopSide).toBeVisible();
   await expect(desktopSide.getByRole('combobox', { name: '切换项目' })).toHaveValue(seeded.projectId);
   await expect(page.getByTestId('project-bar').getByTestId('view-switch')).toBeVisible();
+  await desktopSide.getByRole('button', { name: '收起侧栏' }).click();
+  await expect(desktopSide).toHaveCount(0);
+  await page.getByRole('button', { name: '展开项目树' }).click();
+  await expect(desktopSide).toBeVisible();
+  await expect(desktopSide.getByRole('combobox', { name: '切换项目' })).toHaveValue(seeded.projectId);
 
   await page.setViewportSize({ width: 390, height: 844 });
   // 窄屏侧栏是抽屉：用抽屉容器判断开合（页面上同时存在桌面侧栏节点）。

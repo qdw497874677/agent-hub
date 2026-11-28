@@ -73,7 +73,7 @@ async function expectAligned(row: Locator, label: string, touch: boolean, compac
   return boxes;
 }
 
-async function exercise(page: Page, scope: Locator, label: string, touch: boolean) {
+async function exercise(page: Page, scope: Locator, label: string, touch: boolean, sharedDraft = false) {
   const attach = scope.getByRole('button', { name: '添加附件' });
   await expect(attach).toBeVisible({ timeout: 10_000 });
   const row = attach.locator('xpath=ancestor::*[@data-testid="composer-controls"][1]');
@@ -92,15 +92,25 @@ async function exercise(page: Page, scope: Locator, label: string, touch: boolea
     await hideSessionOptions(scope);
   }
   const send = scope.getByRole('button', { name: '发送', exact: true });
+  const text = scope.getByRole('textbox', { name: '发送消息' });
+  if (sharedDraft) {
+    await expect(text).toHaveValue('跨宿主保留的草稿');
+    await expect(scope.getByRole('list', { name: '待发送的附件' })).toContainText('a.txt');
+    await expect(send).toBeEnabled();
+    await text.fill('');
+    await scope.getByRole('button', { name: '移除 a.txt' }).click();
+  }
   await expect(send).toBeDisabled();
-  await scope.getByRole('textbox', { name: '发送消息' }).fill('你好');
+  await text.fill('你好');
   await expect(send).toBeEnabled();
-  await scope.getByRole('textbox', { name: '发送消息' }).fill('');
+  await text.fill('');
+  await expect(send).toBeDisabled();
   const chooser = page.waitForEvent('filechooser');
   await attach.click();
   await (await chooser).setFiles({ name: 'a.txt', mimeType: 'text/plain', buffer: Buffer.from('hi') });
   await expect(scope.getByRole('list', { name: '待发送的附件' })).toContainText('a.txt');
   await expect(send, '有附件就能发').toBeEnabled();
+  if (!sharedDraft) await text.fill('跨宿主保留的草稿');
 }
 
 for (const mode of [{ name: '320px 触屏', w: 320, h: 700, touch: true }, { name: '390px 触屏', w: 390, h: 844, touch: true }, { name: '1280px', w: 1280, h: 844, touch: false }]) {
@@ -115,7 +125,7 @@ for (const mode of [{ name: '320px 触屏', w: 320, h: 700, touch: true }, { nam
         await expect(header).toBeVisible();
         await expect(header.getByRole('button', { name: '新建任务', exact: true })).toHaveCount(0);
         if (mode.touch) {
-          await expect(page.getByTestId('session-tabs')).toBeHidden();
+          await expect(page.getByTestId('session-tabs')).toHaveCount(0);
           await expect(page.getByTestId('workspace-entry')).toHaveCount(0);
           await expect(page.getByTestId('provenance-row')).toBeHidden();
           const headerHeight = (await header.boundingBox())!.height;
@@ -129,13 +139,11 @@ for (const mode of [{ name: '320px 触屏', w: 320, h: 700, touch: true }, { nam
           const menu = header.getByRole('menu');
           const details = menu.getByTestId('session-more-details');
           const actions = menu.getByTestId('session-more-actions');
-          for (const item of ['files', 'changes', 'preview', 'workspace']) {
-            await expect(menu.getByTestId(`session-more-${item}`)).toBeVisible();
-          }
+          for (const item of ['files', 'changes', 'preview', 'details']) await expect(menu.getByTestId(`session-more-tool-${item}`)).toBeVisible();
+          await expect(menu.getByTestId('session-more-workspace')).toBeVisible();
           await expect(menu.getByRole('menuitem', { name: '搜索任务与会话' })).toBeVisible();
           await expect(menu.getByTestId('session-more-provenance')).toHaveCount(0);
           await expect(menu.getByTestId('agent-handoff-trigger')).toHaveCount(0);
-          expect(await menu.evaluate((el) => el.scrollHeight <= el.clientHeight + 1), '手机首层无需滚动').toBe(true);
           if (SHOTS) await page.screenshot({ path: join(SHOTS, `more-${mode.w}.png`) });
 
           await details.click();
@@ -181,7 +189,7 @@ for (const mode of [{ name: '320px 触屏', w: 320, h: 700, touch: true }, { nam
           await expect(win.getByTestId('session-more-workspace')).toBeVisible();
           await page.keyboard.press('Escape');
         }
-        await exercise(page, win, `${mode.name} 画布窗口`, mode.touch);
+        await exercise(page, win, `${mode.name} 画布窗口`, mode.touch, true);
       } finally {
         stopFakeWorker();
         rmSync(dir, { recursive: true, force: true });

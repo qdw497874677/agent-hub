@@ -32,7 +32,7 @@ import { UndoToast } from '../atoms/undo-toast.tsx';
 import { splitArchivedTasks } from '../atoms/task-display.ts';
 import { patchCanvasTask } from './confirmed-patch.ts';
 import { clearOptionFeedback, optionFeedbackIsCurrent, setOptionFeedback } from '../atoms/option-feedback.tsx';
-import type { Route, View } from './route.ts';
+import { formatRoute, parseRoute, type Route, type View } from './route.ts';
 import { useAccount } from './account-context.ts';
 import { rememberPaletteRecent } from '../surfaces/workbench/palette-recent.ts';
 import { NewSessionWithModelContext } from './new-session-with-model.ts';
@@ -44,26 +44,86 @@ import { useWorkspaceViews } from '../surfaces/workbench/workspace-chooser.tsx';
 import { settingsBackgroundRoute, useRestoreSettingsFocus } from './settings-navigation.tsx';
 import { SettingsHost } from './settings-host.tsx';
 import { DisplayPreferences } from '../atoms/display-preferences.tsx';
-
-const LAST_PROJECT = 'agent-hub:last-project';
+import { WorkbenchDraftProvider, useWorkbenchDrafts } from '../atoms/workbench-drafts.tsx';
+import { ScrollPositionProvider } from '../atoms/scroll-position-context.tsx';
+import { createScrollPositionStore } from '../atoms/scroll-position-store.ts';
+import { GlobalMenuButton, WorkbenchShell } from './workbench-shell.tsx';
+import { Icon } from '../atoms/icons.tsx';
+import { forgetWorkbenchLocation, readWorkbenchLocation, rememberWorkbenchLocation, type ProjectLocation } from './workbench-location.ts';
 
 /** 运营后台与工作台互不相干：分开渲染，各自的数据各自拉。 */
 export function App() {
-  const [route] = useRoute();
+  const account = useAccount();
+  return <AccountWorkbench key={account?.id ?? 'anonymous'} accountId={account?.id} />;
+}
+
+function AccountWorkbench({ accountId }: { accountId: string | undefined }) {
+  const [route, navigate] = useRoute();
   const settings = route?.page === 'settings' ? route : null;
   const background = settings ? settingsBackgroundRoute() : route;
+  const scrollPositions = useMemo(createScrollPositionStore, []);
+  const restoring = useRef<string | null>(null);
+  const backgroundHash = background ? formatRoute(background) : null;
+
+  const returnToWorkbench = useCallback((mode: 'push' | 'replace' = 'push') => {
+    const remembered = accountId ? readWorkbenchLocation(accountId) : null;
+    restoring.current = remembered ? formatRoute(remembered) : null;
+    navigate(remembered ?? { page: 'home' }, mode);
+  }, [accountId, navigate]);
+
+  useEffect(() => {
+    if (settings) return;
+    if (restoring.current !== backgroundHash) restoring.current = null;
+    if (!route) returnToWorkbench('replace');
+  }, [backgroundHash, route, settings, returnToWorkbench]);
+
+  const verifiedLocation = useCallback((location: ProjectLocation) => {
+    const hash = formatRoute(location);
+    if (currentRouteHash() !== hash) return;
+    if (accountId) rememberWorkbenchLocation(accountId, location);
+    if (restoring.current === hash) restoring.current = null;
+  }, [accountId]);
+
+  const unavailableLocation = useCallback((location: ProjectLocation, projectAvailable: boolean) => {
+    const hash = formatRoute(location);
+    if (currentRouteHash() !== hash) return;
+    if (accountId) forgetWorkbenchLocation(accountId, location);
+    const wasRestored = restoring.current === hash;
+    if (wasRestored) restoring.current = null;
+    if (!projectAvailable) navigate({ page: 'home' }, 'replace');
+    else if (wasRestored) navigate({ ...location, view: 'list', sessionId: null }, 'replace');
+  }, [accountId, navigate]);
+
   useRestoreSettingsFocus(settings !== null);
   return (
     <DisplayPreferences>
-      <div className="h-full" inert={settings !== null}>
-        <AppPage route={background} settingsOpen={settings !== null} />
-      </div>
+      <WorkbenchDraftProvider>
+        <ScrollPositionProvider store={scrollPositions}>
+          <div className="h-full" inert={settings !== null}>
+            <WorkbenchShell route={background} onWorkbench={() => returnToWorkbench()}>
+              <AppPage route={background} settingsOpen={settings !== null} verifiedLocation={verifiedLocation} unavailableLocation={unavailableLocation} />
+            </WorkbenchShell>
+          </div>
+        </ScrollPositionProvider>
+      </WorkbenchDraftProvider>
       {settings ? <SettingsHost route={settings} projectId={background?.page === 'project' ? background.projectId : null} /> : null}
     </DisplayPreferences>
   );
 }
 
-function AppPage({ route, settingsOpen }: { route: Route | null; settingsOpen: boolean }) {
+function currentRouteHash(): string | null {
+  const route = parseRoute(window.location.hash);
+  return route ? formatRoute(route) : null;
+}
+
+type WorkbenchPageProps = {
+  route: Route | null;
+  settingsOpen: boolean;
+  verifiedLocation: (location: ProjectLocation) => void;
+  unavailableLocation: (location: ProjectLocation, projectAvailable: boolean) => void;
+};
+
+function AppPage({ route, ...workbench }: WorkbenchPageProps) {
   if (route?.page === 'machines') return <MachinesPage workerId={route.workerId} tab={route.tab} />;
   if (route?.page === 'workspaces') return <TeamWorkspacesPage />;
   if (route?.page === 'memory') return <MemoryPage scope={route.scope} />;
@@ -75,7 +135,7 @@ function AppPage({ route, settingsOpen }: { route: Route | null; settingsOpen: b
   // 「机器」以前在运营后台里（#/admin/workers）。老书签直接换到新家，且要赶在管理员门禁前面，
   // 否则非管理员会先撞上「只有 hub 管理员能进运营后台」。
   if (route?.page === 'admin' && route.tab === 'workers') return <RedirectToMachines />;
-  return route?.page === 'admin' ? <AdminPage tab={route.tab} /> : <Workspace route={route} settingsOpen={settingsOpen} />;
+  return route?.page === 'admin' ? <AdminPage tab={route.tab} /> : <Workspace route={route} {...workbench} />;
 }
 
 function RedirectToMachines() {
@@ -86,7 +146,7 @@ function RedirectToMachines() {
   return null;
 }
 
-function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen: boolean }) {
+function Workspace({ route, settingsOpen, verifiedLocation, unavailableLocation }: WorkbenchPageProps) {
   const [, navigate] = useRoute();
   const account = useAccount();
   const workdirWorkers = useWorkers();
@@ -96,22 +156,21 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
   const homeView: View = 'list';
   const [newTask, setNewTask] = useState(false);
   const [createdTask, setCreatedTask] = useState<TaskDto | null>(null);
-  // 新开主会话（不是任务）：入口在侧栏动作区，和新建任务并排。
+  // 新开主会话（不是任务）：从项目的「新建」菜单进入。
   const [newCoordinator, setNewCoordinator] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [windowFocus, setWindowFocus] = useState<string | null>(null);
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
-  const [workdirSession, setWorkdirSession] = useState<string | null>(null);
+  const [workdirSelection, setWorkdirSelection] = useState<{ host: string; sessionId: string | null } | null>(null);
+  const activeWorkdirSelection = useRef<typeof workdirSelection>(null);
   const [workdirOpenSession, setWorkdirOpenSession] = useState<string | null>(null);
   const [workdirDerive, setWorkdirDerive] = useState<{ id: string; workerId: string; createWorktree?: boolean } | null>(null);
   const [workdirTaskPicker, setWorkdirTaskPicker] = useState(false);
-  const selectWorkdirSession = useCallback((id: string | null) => { setWorkdirSession(id); if (id) setWorkdirOpenSession((current) => current === id ? null : current); }, []);
   const [newModelSession, setNewModelSession] = useState<{ projectId: string; source: SessionDto; model: string } | null>(null);
   const [taskDetail, setTaskDetail] = useState<string | null>(null);
   const [search, setSearch] = useState(false);
-  // 草稿存在 App 层而不是 Inspector 里：S6.4 要求切视图不丢草稿，
-  // 组件一卸载 useState 就没了，所以它必须活在两者之上。
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const { drafts, setDrafts } = useWorkbenchDrafts();
   // 跳到某个节点：nonce 让「同一条命中点第二次」也能重新居中。
   const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null);
   // 侧栏菜单「在画布中展开」：切到画布后由画布自己开窗口（窗口状态在画布里）。
@@ -122,6 +181,8 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
   const home = useQuery({ queryKey: ['home'], queryFn: api.home, refetchInterval: 10_000 });
   const projectRoute = route?.page === 'project' ? route : null;
+  const projectHash = projectRoute ? formatRoute(projectRoute) : null;
+  const isProjectRouteActive = () => projectHash !== null && currentRouteHash() === projectHash;
   // Workspace 在首页和项目之间复用；离开项目或切换项目时不要把旧抽屉带回来。
   useEffect(() => { setSidebarOpen(false); }, [projectRoute?.projectId]);
   // 切到有固定侧栏的宽屏时，不能让手机抽屉挡住桌面入口。
@@ -133,29 +194,20 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
   // 三种视图是同一份数据的三层分辨率（S6.4）：画布看关系，列表看清单，专注对话看内容。
   // 视图和选中的会话都住在地址栏里（route.ts），刷新、返回手势都不丢。
   const view: View = projectRoute?.view ?? homeView;
-  const selected = view === 'workdir' ? workdirSession : projectRoute?.sessionId ?? null;
+  const selected = view === 'workdir' ? (workdirSelection?.host === projectHash ? workdirSelection.sessionId : null) : projectRoute?.sessionId ?? null;
+  const selectWorkdirSession = useCallback((id: string | null) => {
+    if (projectHash === null || currentRouteHash() !== projectHash) return;
+    const selection = { host: projectHash, sessionId: id };
+    activeWorkdirSelection.current = selection;
+    setWorkdirSelection((current) => current?.host === projectHash && current.sessionId === id ? current : selection);
+    if (id) setWorkdirOpenSession((current) => current === id ? null : current);
+  }, [projectHash]);
   const workdirViews = useWorkspaceViews(project?.id ?? '');
   const workdirView = view === 'workdir' ? workdirViews.data?.find(({ workspace }) => workspace.id === projectRoute?.sessionId) : undefined;
   const workdirWorkspace = workdirView && project && eligibleWorkdir(workdirView.workspace, workdirView.ownerProjectId, project.id) ? workdirView.workspace : null;
 
-  useEffect(() => {
-    if (settingsOpen || !projects.data) return;
-    if (route === null) {
-      // 只认「上次打开的那个」。没有就停在首页——不替用户挑一个看起来像的项目。
-      const remembered = projects.data.find((candidate) => candidate.id === localStorage.getItem(LAST_PROJECT));
-      navigate(
-        remembered ? { page: 'project', projectId: remembered.id, view: homeView, sessionId: null } : { page: 'home' },
-        'replace'
-      );
-    } else if (projectRoute && !project && !projects.isFetching) {
-      // 刚建好的项目可能还没进缓存：等这轮拉取结束再判「不存在」，否则会被踢回首页。
-      navigate({ page: 'home' }, 'replace');
-    }
-  }, [route, projectRoute, project, projects.data, projects.isFetching, navigate, homeView, settingsOpen]);
-
   const goProject = useCallback(
     (picked: ProjectDto, next: View, sessionId: string | null, state?: unknown) => {
-      localStorage.setItem(LAST_PROJECT, picked.id);
       navigate({ page: 'project', projectId: picked.id, view: next, sessionId }, 'push', state);
     },
     [navigate]
@@ -163,9 +215,9 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
 
   const setView = useCallback(
     (next: View) => {
-      if (projectRoute) navigate({ ...projectRoute, view: next });
+      if (projectRoute) navigate({ ...projectRoute, view: next, sessionId: next === 'focus' ? selected : null });
     },
-    [projectRoute, navigate]
+    [projectRoute, navigate, selected]
   );
 
   const canvas = useQuery({
@@ -234,8 +286,7 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
     seedRef.current(data.sessions, data.previews ?? {});
   });
 
-  // 画布卡片上就地说话：发完清掉这张卡的草稿，不走「先选中再进对话」那条路。
-  // clientMessageId 由卡片自己的乐观气泡生成，重试沿用同一个；把它透传给服务端才能对账。
+  // 提交方认领本轮草稿；传输和使用同一 clientMessageId 的重试都不碰新输入。
   const sendPrompt = useCallback(
     async (
       sessionId: string,
@@ -243,16 +294,7 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
       clientMessageId: string,
       attachments: readonly AttachmentInputDto[] = []
     ): Promise<PromptAckDto> => {
-      // 先清草稿再等回复：等的这段时间卡片若被画布重新挂载，不该把刚发出去的话又填回输入框
-      // （e2e 偶发失败就是它：模型慢时输入框里又出现了原话，看着像没发出去）。没发出去再放回来。
-      setDrafts((current) => ({ ...current, [sessionId]: '' }));
-      let ack: PromptAckDto;
-      try {
-        ack = await api.prompt(sessionId, text, [...attachments], clientMessageId);
-      } catch (failure) {
-        setDrafts((current) => ({ ...current, [sessionId]: current[sessionId] || text }));
-        throw failure;
-      }
+      const ack = await api.prompt(sessionId, text, [...attachments], clientMessageId);
       refresh();
       return ack;
     },
@@ -475,10 +517,40 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
     queryKey: ['session', selected],
     queryFn: () => api.session(selected ?? ''),
     enabled: selected !== null && canvas.data !== undefined && inCanvas === null,
-    retry: false,
-    staleTime: 5_000
+    retry: false
   });
-  const selectedSession = inCanvas ?? sideSession.data ?? null;
+  const outsideSession = sideSession.isSuccess ? sideSession.data : null;
+  const outsideBelongsHere = outsideSession !== null && (
+    (outsideSession.taskId && canvas.data?.tasks.some((task) => task.id === outsideSession.taskId)) ||
+    (outsideSession.kind === 'side' && canvas.data?.sessions.some((session) => session.id === outsideSession.parentSessionId))
+  );
+  const selectedSession = inCanvas ?? (outsideBelongsHere ? outsideSession : null);
+  const sessionOutsideProject = Boolean(outsideSession && !outsideBelongsHere && !sideSession.isFetching && !canvas.isFetching);
+
+  useEffect(() => {
+    if (settingsOpen || !projectRoute || projects.isFetching || !projects.isSuccess) return;
+    if (!project) {
+      unavailableLocation(projectRoute, false);
+      return;
+    }
+    if (canvas.error instanceof RequestFailed && (canvas.error.status === 403 || canvas.error.status === 404)) {
+      unavailableLocation(projectRoute, false);
+      return;
+    }
+    if (!canvas.isSuccess || canvas.isFetching) return;
+    if (view === 'workdir') {
+      if (workdirViews.isFetching) return;
+      if (workdirViews.isSuccess && workdirWorkspace) verifiedLocation(projectRoute);
+      else if (workdirViews.isSuccess || (workdirViews.error instanceof RequestFailed && [403, 404].includes(workdirViews.error.status))) unavailableLocation(projectRoute, true);
+    } else if (view === 'focus' || (view === 'canvas' && selected)) {
+      if (inCanvas || (selectedSession && !sideSession.isFetching)) verifiedLocation(projectRoute);
+      else if (sessionOutsideProject || (sideSession.error instanceof RequestFailed && [403, 404].includes(sideSession.error.status))) unavailableLocation(projectRoute, true);
+    } else {
+      verifiedLocation(projectRoute);
+    }
+  }, [settingsOpen, projectRoute, projects.isFetching, projects.isSuccess, project, canvas.isSuccess, canvas.isFetching, canvas.error,
+    view, selected, workdirWorkspace, workdirViews.isFetching, workdirViews.isSuccess, workdirViews.error, inCanvas, selectedSession,
+    sideSession.isFetching, sideSession.error, sessionOutsideProject, verifiedLocation, unavailableLocation]);
 
   // 只在会话已获服务端确认、且真的进入对话时记一次；直链和首页入口也包含在内。
   useEffect(() => {
@@ -533,7 +605,12 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
   );
 
   if (projectRoute && !project) {
-    return <div className="flex h-full items-center justify-center text-meta text-tertiary">载入中…</div>;
+    return <div className="flex h-full flex-col">
+      <div className="flex justify-end lg:hidden"><GlobalMenuButton /></div>
+      <div className="flex flex-1 items-center justify-center gap-3 text-meta text-tertiary" role={projects.isError ? 'alert' : 'status'}>
+        {projects.isError ? <>项目读取失败<button type="button" className="min-h-11 underline" onClick={() => void projects.refetch()}>重试</button></> : '载入中…'}
+      </div>
+    </div>;
   }
 
   if (project === null) {
@@ -561,7 +638,7 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
     ...(selectedSession
       ? [{ id: 'view-focus', group: '操作', label: '切到会话', icon: 'message' as const, keywords: 'focus chat', run: () => setView('focus') }]
       : []),
-    ...(narrow
+    ...(!wide
       ? []
       : [
           {
@@ -589,6 +666,7 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
 
   const sidebar = (onClose?: () => void) => (
     <ProjectSidebar
+      key={project.id}
       project={project}
       shortcutsDisabled={settingsOpen}
       projects={projects.data ?? []}
@@ -603,13 +681,11 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
       }}
       onHome={() => {
         onClose?.();
-        setDrafts({});
         navigate({ page: 'home' });
       }}
       onSwitchProject={(picked) => {
         onClose?.();
-        setDrafts({});
-        goProject(picked, view === 'focus' ? homeView : view, null);
+        goProject(picked, view === 'canvas' ? 'canvas' : homeView, null);
       }}
       onOpenSession={(sessionId) => {
         onClose?.();
@@ -633,8 +709,20 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
         setNewCoordinator(true);
       }}
       onClose={onClose}
+      onCollapsedChange={onClose ? undefined : setSidebarCollapsed}
+      view={view}
+      onView={view === 'focus' || view === 'workdir' ? (next) => { onClose?.(); setView(next); } : undefined}
     />
   );
+
+  const reopenTree = wide && sidebarCollapsed ? <button type="button" data-testid="reopen-project-tree" aria-label="展开项目树" title="展开项目树"
+    className="flex size-9 shrink-0 items-center justify-center rounded-control text-tertiary hover:bg-hover hover:text-primary"
+    onClick={() => window.dispatchEvent(new Event(TOGGLE_SIDEBAR_EVENT))}><Icon name="panel" /></button> : null;
+  const openMobileTree = <button type="button" aria-label="项目与全部会话" title="项目与全部会话" className="flex size-11 shrink-0 items-center justify-center text-tertiary hover:text-primary lg:hidden"
+    onClick={() => setSidebarOpen(true)}><Icon name="panel" /></button>;
+  const globalMenu = <GlobalMenuButton />;
+  const workdirHost = workdirWorkspace ? `workdir:${workdirWorkspace.id}` : 'workdir';
+  const hasDocumentHeader = Boolean(canvas.data && account && (view === 'focus' || (view === 'workdir' && workdirWorkspace)));
 
   return (
     <NewSessionWithModelContext.Provider value={(source, model) => setNewModelSession({ projectId: project.id, source, model })}>
@@ -643,38 +731,52 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
       {/* 手机/平板侧栏走同一个抽屉：Esc、焦点陷阱、外部点按关闭、关掉把焦点还给汉堡按钮。
           以前是个普通 div，键盘用户按 Esc 关不掉，Tab 还能跑到被遮住的页面里。 */}
       {!wide && sidebarOpen ? (
-        <Sheet title="项目与导航" testId="nav-sheet" scroll={false} suspended={settingsOpen} onClose={() => setSidebarOpen(false)}>
+        <Sheet title="项目与全部会话" testId="nav-sheet" scroll={false} suspended={settingsOpen} onClose={() => setSidebarOpen(false)}>
           {sidebar(() => setSidebarOpen(false))}
         </Sheet>
       ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <ProjectBar project={project} view={view} stream={stream} onView={setView} />
-        <div className={view === 'focus' && canvas.data && selectedSession ? 'hidden md:block lg:hidden' : 'lg:hidden'}>
+        {!hasDocumentHeader ? <>
+        <ProjectBar project={project} view={view} stream={stream} onView={setView} projectNav={reopenTree} />
+        <div className="lg:hidden">
           <ProjectHeader
             project={project}
-            projects={projects.data ?? []}
             stream={stream}
             view={view}
             onView={setView}
             onMenu={() => setSidebarOpen(true)}
-            onSwitchProject={(picked) => {
-              setDrafts({});
-              goProject(picked, view === 'focus' ? homeView : view, null);
-            }}
-            onSearch={() => setSearch(true)}
-            onNewTask={() => setNewTask(true)}
+            globalNav={globalMenu}
           />
         </div>
+        </> : null}
 
       {view === 'workdir' ? canvas.data && account && workdirWorkspace ? (
-        <SessionDocumentTabs key={`${account.id}:${project.id}:${workdirWorkspace.id}`} accountId={account.id} scopeKey={`workdir:${workdirWorkspace.id}`} initialSessionId={workdirOpenSession} workspace={workdirWorkspace} canvas={canvas.data} onSession={selectWorkdirSession} onNewSessionCreated={retainCreatedSession} onRefresh={refresh} worktreeAction={home.data?.worktreePlansAvailable ? <button type="button" data-testid="workdir-create-worktree" className="min-h-[44px] px-2 text-meta text-secondary" disabled={!resolveWorker(workdirWorkers.list, workdirWorkspace.workerId)} onClick={() => { const worker = resolveWorker(workdirWorkers.list, workdirWorkspace.workerId); if (worker) { setWorkdirDerive({ id: workdirWorkspace.id, workerId: worker.workerId, createWorktree: true }); setWorkdirTaskPicker(true); } }}>创建 Worktree</button> : null}
-          onBack={() => navigate({ page: 'project', projectId: project.id, view: 'list', sessionId: null })}
-          renderSession={(id, navigation) => selectedSession?.id === id ? <FocusView key={id} documentTabs={navigation} independentWorkdir canvas={canvas.data!} session={selectedSession} live={resolveLive(selectedSession, canvas.data!.previews[id] ?? [], live[id])} historyState={history[id] ?? 'loading'} onRetryHistory={() => void loadHistory(selectedSession)} syncState={sync[id]} onRetrySync={() => retrySync(id)} draft={drafts[id] ?? ''} onDraftChange={(text) => setDrafts((current) => ({ ...current, [id]: text }))} onBack={() => navigate({ page: 'project', projectId: project.id, view: 'list', sessionId: null })} onProjectNavigation={() => setSidebarOpen(true)} onSearch={() => setSearch(true)} onChanged={refresh} onOpenSession={openSession} onSeedDraft={(sessionId, text) => setDrafts((current) => ({ ...current, [sessionId]: text }))} artifacts={canvas.data!.artifacts.filter((artifact) => artifact.sessionId === id)} onChangeOption={(optionId, value) => changeOption(id, optionId, value)} /> : null} sessionUnavailable={sideSession.isError ? '会话不可用或无法读取' : '正在读取会话…'}
+        <SessionDocumentTabs key={JSON.stringify([account.id, project.id, workdirHost])} accountId={account.id} scopeKey={workdirHost} initialSessionId={workdirOpenSession} workspace={workdirWorkspace} canvas={canvas.data} onSession={selectWorkdirSession} onNewSessionCreated={retainCreatedSession} onRefresh={refresh} worktreeAction={home.data?.worktreePlansAvailable ? <button type="button" data-testid="workdir-create-worktree" className="min-h-[44px] px-2 text-meta text-secondary" disabled={!resolveWorker(workdirWorkers.list, workdirWorkspace.workerId)} onClick={() => { const worker = resolveWorker(workdirWorkers.list, workdirWorkspace.workerId); if (worker) { setWorkdirDerive({ id: workdirWorkspace.id, workerId: worker.workerId, createWorktree: true }); setWorkdirTaskPicker(true); } }}>创建 Worktree</button> : null}
+          onBack={() => setView('list')}
+          standaloneGlobalNav={globalMenu}
+          standaloneProjectNav={<>{reopenTree}{openMobileTree}</>}
+          renderSession={(id, navigation) => selectedSession?.id === id ? <FocusView
+            key={id} documentTabs={navigation} independentWorkdir documentHost={workdirHost}
+            globalNav={globalMenu} projectNav={reopenTree} streamState={stream}
+            isOriginActive={() => isProjectRouteActive() && activeWorkdirSelection.current?.host === projectHash && activeWorkdirSelection.current?.sessionId === id}
+            canvas={canvas.data!} session={selectedSession}
+            live={resolveLive(selectedSession, canvas.data!.previews[id] ?? [], live[id])}
+            historyState={history[id] ?? 'loading'} onRetryHistory={() => void loadHistory(selectedSession)}
+            syncState={sync[id]} onRetrySync={() => retrySync(id)}
+            draft={drafts[id] ?? ''} onDraftChange={(text) => setDrafts((current) => ({ ...current, [id]: text }))}
+            onBack={() => setView('list')} onProjectNavigation={() => setSidebarOpen(true)} onSearch={() => setSearch(true)}
+            onChanged={refresh} onOpenSession={openSession}
+            onSeedDraft={(sessionId, text) => setDrafts((current) => ({ ...current, [sessionId]: text }))}
+            artifacts={canvas.data!.artifacts.filter((artifact) => artifact.sessionId === id)}
+            onChangeOption={(optionId, value) => changeOption(id, optionId, value)}
+          /> : null} sessionUnavailable={sideSession.isError || sessionOutsideProject ? '会话不可用或无法读取' : '正在读取会话…'}
         />
       ) : <div data-testid="workdir-state" role="status" className="p-6 text-sub text-tertiary">{workdirViews.isPending || canvas.isPending ? '正在读取工作目录…' : workdirViews.isError ? '工作目录读取失败' : '工作目录不可用或无权访问'}</div> : view === 'focus' ? canvas.data && account ? (
-        <SessionDocumentTabs accountId={account.id} canvas={canvas.data} scopeKey="focus" initialSessionId={selected} onSession={(id) => { if (id && id !== selected) openSession(id); }} onBack={backFromFocus} onNewSessionCreated={retainCreatedSession} onRefresh={refresh} sessionUnavailable={(id) => <div className="flex min-h-0 flex-1 items-center justify-center px-6" data-testid="session-route-state">
-          <div className="max-w-sm space-y-3 text-center" role={id === selected && sideSession.isError ? 'alert' : 'status'}>
-            <p className="text-body text-primary">{id !== selected || sideSession.isPending ? '正在读取会话…' : sideSession.error instanceof RequestFailed && sideSession.error.status === 403 ? '没有权限查看这条会话' : sideSession.error instanceof RequestFailed && sideSession.error.status === 404 ? '找不到这条会话' : '会话读取失败'}</p>
+        <SessionDocumentTabs key={JSON.stringify([account.id, project.id, 'focus'])} accountId={account.id} canvas={canvas.data} scopeKey="focus" initialSessionId={selected} onSession={(id) => { if (id && id !== selected) openSession(id); }} onBack={backFromFocus} onNewSessionCreated={retainCreatedSession} onRefresh={refresh}
+          standaloneGlobalNav={globalMenu} standaloneProjectNav={<>{reopenTree}{openMobileTree}</>}
+          sessionUnavailable={(id) => <div className="flex min-h-0 flex-1 items-center justify-center px-6" data-testid="session-route-state">
+          <div className="max-w-sm space-y-3 text-center" role={id === selected && (sideSession.isError || sessionOutsideProject) ? 'alert' : 'status'}>
+            <p className="text-body text-primary">{id !== selected || sideSession.isPending || sideSession.isFetching ? '正在读取会话…' : sideSession.error instanceof RequestFailed && sideSession.error.status === 403 ? '没有权限查看这条会话' : sessionOutsideProject || (sideSession.error instanceof RequestFailed && sideSession.error.status === 404) ? '找不到这条会话' : '会话读取失败'}</p>
             <p className="text-meta text-tertiary">确认会话后才能发送消息。</p>
             <div className="flex flex-wrap justify-center gap-3 text-sub">
               <button type="button" onClick={backFromFocus} className="min-h-11 text-tertiary hover:text-primary">返回</button>
@@ -682,7 +784,8 @@ function Workspace({ route, settingsOpen }: { route: Route | null; settingsOpen:
             </div>
           </div>
         </div>} renderSession={(id, navigation) => selectedSession?.id === id ? <FocusView
-          key={id} documentTabs={navigation}
+          key={id} documentTabs={navigation} documentHost="focus"
+          globalNav={globalMenu} projectNav={reopenTree} streamState={stream} isOriginActive={isProjectRouteActive}
           canvas={canvas.data}
           session={selectedSession}
           live={resolveLive(selectedSession, canvas.data.previews[selectedSession.id] ?? [], live[selectedSession.id])}

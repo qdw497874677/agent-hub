@@ -79,10 +79,11 @@ test('成员提交团队技能 → 自己批不了 → 主人逐行评论、要�
     await member.page.goto('/#/assets/mine');
     await member.page.reload();
     await expect(member.page.getByTestId('notification-unread')).toBeVisible();
-    await member.page.getByTestId('notification-bell').click();
+    await member.page.getByTestId('shell-inbox').click();
+    await member.page.getByRole('tab', { name: /站内通知/ }).click();
     await expect(member.page.getByTestId('notification').first()).toContainText('去掉 curl | sh 再提');
     await member.page.screenshot({ path: `${SHOTS}/notifications.png` });
-    await member.page.getByTestId('notification-bell').click();
+    await member.page.getByTestId('shell-panel-inbox').getByRole('button', { name: '关闭', exact: true }).click();
     await member.page.goto('/#/assets/mine');
     const again = member.page.getByTestId('market-asset').filter({ hasText: name });
     await again.getByTestId('revision-files').setInputFiles([{ name: 'SKILL.md', mimeType: 'text/markdown', buffer: skill(name, '第二版：只打招呼。') }]);

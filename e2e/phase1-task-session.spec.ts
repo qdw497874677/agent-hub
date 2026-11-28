@@ -181,56 +181,15 @@ test.describe('手机 390', () => {
     const { project } = await seed(page, baseURL!, '手机');
     await page.goto(`/#/p/${project.id}/list`);
     await expect(page.getByTestId('list-view')).toBeVisible();
-    // 手机抽屉把项目会话/任务放在前面；全局工具跟在列表后，共用滚动区。
+    // 项目抽屉只承载项目树，关闭后焦点回到入口。
     await page.getByRole('button', { name: '打开侧栏' }).click();
     const drawer = page.getByTestId('nav-sheet');
-    const drawerNav = page.getByTestId('drawer-global-nav');
-    const taskNav = page.getByRole('navigation', { name: '任务与会话' });
-    await expect(drawerNav).toBeVisible();
-    await expect(taskNav.getByTestId('sidebar-session-row').first()).toBeInViewport();
-    // 底部工具跟目录、任务共用滚动区，不要求全部首屏出现；滚到后必须实际可见并可用。
-    await drawerNav.scrollIntoViewIfNeeded();
-    await expect(drawerNav).toBeInViewport({ ratio: 0.99 });
-    await expect
-      .poll(async () => {
-        const box = await drawerNav.boundingBox();
-        return box === null ? 9999 : Math.round(box.y + box.height);
-      })
-      .toBeLessThanOrEqual(844);
-    const drawerNavBox = await drawerNav.boundingBox();
-    expect(drawerNavBox!.y).toBeGreaterThanOrEqual(0);
-    const taskNavBox = (await taskNav.boundingBox())!;
-    const drawerSheetBox = (await drawer.boundingBox())!;
-    const drawerAsideBox = (await drawer.getByTestId('project-sidebar').boundingBox())!;
-    expect(Math.abs(drawerSheetBox.width - drawerAsideBox.width), '抽屉内容填满 sheet 宽度').toBeLessThanOrEqual(1);
-    expect(drawerNavBox!.y, '全局工具在任务列表之后').toBeGreaterThanOrEqual(taskNavBox.y + taskNavBox.height - 1);
-    expect(drawerNavBox!.height, '全局工具页脚两行以内').toBeLessThan(120);
-    await expect(drawerNav.getByTestId('nav-home')).toBeVisible();
+    await expect(drawer.getByRole('navigation', { name: '任务与会话' })).toBeVisible();
+    await expect(drawer.getByTestId('drawer-global-nav')).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath('drawer-short-390.png') });
-    // 全局入口真实可达；关闭时 Esc 把焦点还给汉堡按钮。
-    await drawerNav.getByTestId('nav-home').focus();
     await page.keyboard.press('Escape');
-    await expect(page.getByTestId('nav-sheet')).toHaveCount(0);
+    await expect(drawer).toHaveCount(0);
     await expect(page.getByRole('button', { name: '打开侧栏' })).toBeFocused();
-    await page.getByRole('button', { name: '打开侧栏' }).click();
-    await drawerNav.getByTestId('nav-machines').click();
-    await expect(page).toHaveURL(/#\/machines$/);
-    await page.goBack();
-    await expect(page.getByTestId('list-view')).toBeVisible();
-    await expect(page.getByTestId('nav-sheet')).toHaveCount(0);
-    // 首页与项目共用 Workspace；无论通过链接还是浏览器返回离开，都不能残留抽屉。
-    await page.getByRole('button', { name: '打开侧栏' }).click();
-    await drawerNav.getByTestId('nav-home').click();
-    await expect(page).toHaveURL(/#\/$|#\/home$/);
-    await page.goBack();
-    await expect(page.getByTestId('list-view')).toBeVisible();
-    await expect(page.getByTestId('nav-sheet')).toHaveCount(0);
-    await page.getByRole('button', { name: '打开侧栏' }).click();
-    await page.goForward();
-    await expect(page).toHaveURL(/#\/$|#\/home$/);
-    await page.goBack();
-    await expect(page.getByTestId('list-view')).toBeVisible();
-    await expect(page.getByTestId('nav-sheet')).toHaveCount(0);
 
     // 先把列表滚到底：建完任务要自己滚回「未开始」，不能只让 toast 出现。
     await page.getByTestId('list-view').evaluate((element) => {
@@ -238,7 +197,9 @@ test.describe('手机 390', () => {
     });
     const title = `手机新建-${Date.now().toString(36)}`;
 
-    await page.getByRole('button', { name: '新建任务' }).click();
+    await page.getByRole('button', { name: '打开侧栏' }).click();
+    await page.getByTestId('nav-sheet').getByRole('button', { name: '新建', exact: true }).click();
+    await page.getByTestId('nav-sheet').getByRole('menuitem', { name: '新建任务' }).click();
     const dialog = page.getByRole('dialog', { name: '新建任务' });
     await dialog.getByLabel('标题').fill(title);
     await dialog.getByRole('button', { name: '创建任务' }).click();

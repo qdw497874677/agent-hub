@@ -81,8 +81,8 @@ test('待办状态标签即入口：进入会话回复后不再挂着等回答',
     await expect(page.getByTestId('answer-prompt')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '回复此问题' })).toHaveCount(0);
 
-    // 手机上的主要触控目标按实际盒模型算：返回和发送都至少 44×44，且返回不压住标题。
-    const back390 = page.getByRole('button', { name: '返回' });
+    // 手机上的主要触控目标按实际盒模型算：项目入口和发送都至少 44×44，且不压住标题。
+    const back390 = page.getByRole('button', { name: '项目与全部会话' });
     const send390 = page.getByRole('button', { name: '发送', exact: true });
     const backBox390 = await expectTouchTarget(back390, '会话返回', 390);
     const sendBox390 = await expectTouchTarget(send390, '发送', 390);
@@ -113,7 +113,8 @@ test('待办状态标签即入口：进入会话回复后不再挂着等回答',
     await expect(focusHeader.getByText('完成', { exact: true })).toBeVisible({ timeout: 30_000 });
 
     // 回首页：这条待办真的没了，不是只在会话里藏起来。
-    await page.getByRole('button', { name: '返回' }).click();
+    await page.getByTestId('session-more-trigger').click();
+    await page.getByRole('menuitem', { name: '返回', exact: true }).click();
     await expect(inbox).toBeVisible();
     await expect(inbox.getByTestId('attention-item').filter({ hasText: '待办·显式提问' })).toHaveCount(0, { timeout: 30_000 });
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/04-home-cleared-390.png` });
@@ -135,7 +136,7 @@ test('待办状态标签即入口：进入会话回复后不再挂着等回答',
 
     // 320：更窄也不能横滑，返回/发送的 44×44 仍完整落在视口内。
     await page.setViewportSize({ width: 320, height: 700 });
-    const back320 = page.getByRole('button', { name: '返回' });
+    const back320 = page.getByRole('button', { name: '项目与全部会话' });
     const send320 = page.getByRole('button', { name: '发送', exact: true });
     const backBox320 = await expectTouchTarget(back320, '320 会话返回', 320);
     const sendBox320 = await expectTouchTarget(send320, '320 发送', 320);
@@ -164,7 +165,8 @@ test('待办状态标签即入口：进入会话回复后不再挂着等回答',
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/06-session-possible-390.png` });
 
     // 进入会话不清待办：回来还有这一条。
-    await page.getByRole('button', { name: '返回' }).click();
+    await page.getByTestId('session-more-trigger').click();
+    await page.getByRole('menuitem', { name: '返回', exact: true }).click({ timeout: 10_000 });
     await expect(page.getByTestId('attention-item').filter({ hasText: '待办·问号结尾' })).toHaveCount(1);
 
     // 桌面：检查同一行入口在宽屏仍然成立。

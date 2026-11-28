@@ -55,6 +55,8 @@ test('来历：网页开的、分叉的都有一行来历，可展开；审计�
     const session = (await derived.json()) as { id: string };
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto(`/#/p/${project.id}/focus/${session.id}`);
+    await page.getByTestId('session-more-trigger').click();
+    await page.getByRole('menuitem', { name: '会话来历' }).click();
     const row = page.getByTestId('provenance-row');
     await expect(row).toContainText('来历');
     await expect(row).toContainText('网页创建');
@@ -71,6 +73,7 @@ test('来历：网页开的、分叉的都有一行来历，可展开；审计�
     expect(prov.actor.kind).toBe('user');
     const audit = (await (await page.request.get(`/api/admin/audit?action=session.created&target=${session.id}`)).json()) as unknown;
     expect(JSON.stringify(audit)).toContain(prov.id);
+    await page.keyboard.press('Escape');
 
     // 分叉：先说一句让来源有内容
     expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '第一句' }, headers })).ok()).toBe(true);
@@ -81,10 +84,13 @@ test('来历：网页开的、分叉的都有一行来历，可展开；审计�
     if (forked.ok()) {
       const child = (await forked.json()) as { id: string };
       await page.goto(`/#/p/${project.id}/focus/${child.id}`);
+      await page.getByTestId('session-more-trigger').click();
+      await page.getByRole('menuitem', { name: '会话来历' }).click();
       await expect(page.getByTestId('provenance-row')).toContainText(/从「.+」分叉/);
       const cp = (await (await page.request.get(`/api/sessions/${child.id}/provenance`)).json()) as { via: string; parent: { sessionId: string } };
       expect(cp.via).toBe('fork');
       expect(cp.parent.sessionId).toBe(session.id);
+      await page.keyboard.press('Escape');
       await page.setViewportSize({ width: 390, height: 844 });
       await expect(page.getByTestId('provenance-row')).toBeHidden();
       await page.getByTestId('session-more-trigger').click();

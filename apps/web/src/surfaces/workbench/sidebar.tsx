@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { CanvasDto, ProjectDto, SessionDto } from '../../shell/api.ts';
-import { AccountMenu } from '../../shell/auth.tsx';
-import { AttentionBadge } from '../../atoms/attention.tsx';
-import { GlobalNav } from '../../shell/global-nav.tsx';
+import { useAccount } from '../../shell/account-context.ts';
 import { Icon } from '../../atoms/icons.tsx';
-import { MessagesEntry } from '../../atoms/messages-entry.tsx';
-import { NotificationBell } from '../../shell/market/notifications.tsx';
-import { openSettings, SettingsEntry } from '../../shell/settings-navigation.tsx';
+import { openSettings } from '../../shell/settings-navigation.tsx';
+import type { View } from '../../shell/route.ts';
 import { useRoute } from '../../shell/use-route.ts';
-import { MachinesBadge, resolveWorker, useWorkers } from '../../shell/workers.tsx';
+import { resolveWorker, useWorkers } from '../../shell/workers.tsx';
 import { coarsePointer, modKeyLabel } from '../../shell/device.ts';
 import { PHASE_DOT, activeSessions, elapsedLabel, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
 import { waitingForReply, type LiveMap } from '../../atoms/live.ts';
@@ -18,8 +15,8 @@ import { DeleteSessionDialog } from '../../atoms/delete-session-dialog.tsx';
 import { SessionRowMenu } from './session-row-menu.tsx';
 import { COORDINATOR_TITLE } from '../../atoms/session-groups.ts';
 import { useCoordinators } from '../../shell/coordinators.ts';
-import { workspaceSessionGroups, workspaceWorkerLabel } from './list-workspaces.ts';
-import { WorkdirEntries } from './workdir-tabs.tsx';
+import { projectWorkspaceGroups, workspaceWorkerLabel } from './list-workspaces.ts';
+import { useWorkspaceViews } from './workspace-chooser.tsx';
 
 /** 平台修饰键（⌘ / Ctrl）：提示写对，快捷键本身两个都收。 */
 const MOD = modKeyLabel();
@@ -27,7 +24,7 @@ const MOD = modKeyLabel();
 /** 桌面侧栏的收起开关事件：⌘K 面板派发，侧栏监听。 */
 export const TOGGLE_SIDEBAR_EVENT = 'agent-hub:toggle-sidebar';
 
-/** 桌面侧栏收起成图标栏：记在本机，刷新后保持。 */
+/** 桌面项目树收起状态：记在本机，刷新后保持。 */
 const COLLAPSED_KEY = 'agent-hub.sidebar.collapsed';
 const COLLAPSED_WORKSPACES_KEY = 'agent-hub.sidebar.collapsed-workspaces';
 
@@ -83,14 +80,14 @@ interface Props {
   readonly onDerive: (taskId: string) => void;
   /** 新开主会话：和新建任务并排，因为它也是「从这条项目开始干活」。 */
   readonly onNewCoordinator: () => void;
+  readonly onCollapsedChange?: (collapsed: boolean) => void;
+  readonly view?: View;
+  readonly onView?: (view: View) => void;
   readonly onClose?: (() => void) | undefined;
 }
 
 /**
- * 项目侧栏：桌面常驻（可收起成 56px 图标栏，⌘/Ctrl+B），手机从左侧滑出。
- *
- * 自上而下只有四块：项目切换 → 动作（新建 / 搜索）→ 任务与会话 → 全站导航和账号。视图切换在页头。
- * 分块只靠留白和一条底线，不再每块都画边框；琥珀色只留给「在跑」的状态点。
+ * 项目树：桌面可完全收起（⌘/Ctrl+B），手机从左侧滑出。
  */
 export function ProjectSidebar({
   project,
@@ -109,13 +106,20 @@ export function ProjectSidebar({
   onNewTask,
   onDerive,
   onNewCoordinator,
+  onCollapsedChange,
+  view,
+  onView,
   onClose
 }: Props) {
   const drawer = onClose !== undefined;
   const [, navigate] = useRoute();
+  const account = useAccount();
   const [showSettled, setShowSettled] = useState(false);
+  const [newOpen, setNewOpen] = useState(false);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
+  const newMenuRef = useRef<HTMLDivElement>(null);
   const [collapsed, setCollapsed] = useState(() => !drawer && readFlag(COLLAPSED_KEY));
-  const workspaceScope = `${COLLAPSED_WORKSPACES_KEY}:${project.id}`;
+  const workspaceScope = `${COLLAPSED_WORKSPACES_KEY}:${JSON.stringify([account?.id ?? null, project.id])}`;
   const [workspaceState, setWorkspaceState] = useState(() => ({ scope: workspaceScope, keys: readSet(workspaceScope) }));
   const foldedWorkspaces = workspaceState.scope === workspaceScope ? workspaceState.keys : readSet(workspaceScope);
   const tasks = useMemo(() => (canvas?.tasks ?? []).filter((task) => task.archivedAt == null), [canvas?.tasks]);
@@ -129,7 +133,8 @@ export function ProjectSidebar({
    */
   const { ids: coordinatorIds } = useCoordinators(project.id);
   const workers = useWorkers();
-  const workspaceGroups = useMemo(() => canvas ? workspaceSessionGroups({ ...canvas, sessions: active.filter((session) => session.taskId === null || tasks.some((task) => task.id === session.taskId)) }, coordinatorIds) : [], [canvas, active, coordinatorIds, tasks]);
+  const workspaceViews = useWorkspaceViews(project.id);
+  const workspaceGroups = useMemo(() => canvas ? projectWorkspaceGroups({ ...canvas, sessions: active.filter((session) => session.taskId === null || tasks.some((task) => task.id === session.taskId)) }, workspaceViews.data ?? [], coordinatorIds, project.id) : [], [canvas, active, coordinatorIds, tasks, workspaceViews.data, project.id]);
   const emptyTasks = tasks.filter((task) => !(canvas?.sessions ?? []).some((session) => session.taskId === task.id) && task.status !== 'done' && task.status !== 'abandoned');
   const now = Date.now();
 
@@ -229,9 +234,15 @@ export function ProjectSidebar({
     void runAction(session, () => actions.rename(session, value));
   };
 
+  const forkHint = (session: SessionDto): string | null => {
+    if (session.origin.kind !== 'fork') return null;
+    const source = allSessions.find((item) => item.id === (session.origin.kind === 'fork' ? session.origin.fromSessionId : null));
+    return `分叉自「${source ? titleOf(source) : '来源会话'}」`;
+  };
   const rowProps = (session: SessionDto) => ({
     session,
     title: titleOf(session),
+    forkHint: forkHint(session),
     active: selectedId === session.id,
     now,
     onOpen: onOpenSession,
@@ -263,6 +274,19 @@ export function ProjectSidebar({
       return !current;
     });
   }, []);
+
+  useEffect(() => {
+    if (!drawer) onCollapsedChange?.(collapsed);
+  }, [collapsed, drawer, onCollapsedChange]);
+
+  useEffect(() => {
+    if (!newOpen) return;
+    const onPointer = (event: PointerEvent) => { if (!newMenuRef.current?.contains(event.target as Node)) setNewOpen(false); };
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setNewOpen(false); newMenuRef.current?.querySelector('button')?.focus(); } };
+    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('pointerdown', onPointer); document.removeEventListener('keydown', onKey); };
+  }, [newOpen]);
 
   // ⌘/Ctrl+B 收起 / 展开（只有桌面那份侧栏挂这个快捷键；输入框里不拦截）。
   useEffect(() => {
@@ -329,60 +353,26 @@ export function ProjectSidebar({
     rows[next]?.focus();
   };
 
-  if (collapsed) {
-    return (
-      <aside className="flex h-full min-h-0 w-14 shrink-0 flex-col items-center gap-1 border-r border-hair bg-panel py-2" aria-label="项目导航" data-testid="project-sidebar" data-collapsed="true">
-        <button className={GHOST_ICON} aria-label="展开侧栏" title={`展开侧栏（${MOD}B）`} onClick={toggleCollapsed}>
-          <Icon name="panel" />
-        </button>
-        <button
-          className="mt-1 flex size-8 items-center justify-center rounded-md bg-selected text-sub text-primary"
-          title={project.name}
-          aria-label={`当前项目：${project.name}`}
-          onClick={toggleCollapsed}
-        >
-          {project.name.slice(0, 1).toUpperCase()}
-        </button>
-        <div className="my-1 h-px w-6 bg-hair" />
-        <button className={GHOST_ICON} aria-label="新建任务" title="新建任务" onClick={onNewTask}>
-          <Icon name="plus" />
-        </button>
-        <button className={GHOST_ICON} aria-label="新开主会话" title="新开主会话" onClick={onNewCoordinator}>
-          <Icon name="message" />
-        </button>
-        <button className={GHOST_ICON} aria-label="搜索" title={`搜索（${MOD}K）`} onClick={onSearch}>
-          <Icon name="search" />
-        </button>
-        <div className="my-1 h-px w-6 bg-hair" />
-        <GlobalNav layout="rail" />
-        <div className="mt-auto flex flex-col items-center gap-1">
-          <a
-            href="#/machines"
-            className={GHOST_ICON}
-            aria-label="机器"
-            title="机器：跑 agent 的机器"
-            data-testid="machines-rail"
-          >
-            <Icon name="server" />
-          </a>
-          <button className={GHOST_ICON} title="项目设置" aria-label="项目设置" onClick={(event) => openSettings(navigate, { scope: 'project', id: project.id, section: 'general' }, event.currentTarget)}>
-            <Icon name="settings" />
-          </button>
-          <SettingsEntry className={GHOST_ICON} />
-          <AccountMenu placement="up" />
-        </div>
-      </aside>
-    );
-  }
+  if (collapsed && !drawer) return null;
 
   const projectActions = (
-    <div className={`space-y-0.5 px-2 pb-2 ${drawer ? 'border-t border-hair pt-2' : ''}`}>
-      <button className={ROW} onClick={onNewTask}><Icon name="plus" className="text-tertiary" />新建任务</button>
-      <button className={ROW} data-testid="sidebar-new-coordinator" onClick={onNewCoordinator}><Icon name="message" className="text-tertiary" />新开主会话</button>
-      <button className={ROW} onClick={onSearch} title="搜索任务与会话">
+    <div className="space-y-1 px-3 pb-3">
+      <button className={ROW} onClick={onHome}><Icon name="home" className="text-tertiary" />总览</button>
+      <div ref={newMenuRef} className="relative">
+        <button type="button" className="flex min-h-[44px] w-full items-center gap-2 rounded-md border border-strong bg-selected px-2 text-left text-sub font-medium text-primary lg:min-h-9" aria-expanded={newOpen} aria-haspopup="menu" onClick={() => setNewOpen((open) => !open)}><Icon name="plus" /><span className="flex-1">新建</span><Icon name="chevron-down" size={14} /></button>
+        {newOpen ? <div role="menu" className="absolute left-0 right-0 top-full z-30 mt-1 rounded-md border border-hair bg-panel p-1 shadow-lg">
+          <button role="menuitem" className={ROW} onClick={() => { setNewOpen(false); onNewTask(); }}>新建任务</button>
+          <button role="menuitem" className={ROW} data-testid="sidebar-new-coordinator" onClick={() => { setNewOpen(false); onNewCoordinator(); }}>新开主会话</button>
+        </div> : null}
+      </div>
+      <button className={ROW} onClick={onSearch} title="搜索任务与会话" aria-label="搜索" aria-keyshortcuts="Control+K Meta+K">
         <Icon name="search" className="text-tertiary" /><span className="flex-1">搜索</span>
-        {coarsePointer() ? null : <kbd className="font-sans text-meta text-tertiary">{MOD}K</kbd>}
+        {coarsePointer() ? null : <kbd aria-hidden className="font-sans text-meta text-tertiary">{MOD}K</kbd>}
       </button>
+      {onView ? <div className="flex gap-1 pt-1" aria-label="项目视图">
+        <button type="button" aria-pressed={view === 'canvas'} className={`min-h-[44px] flex-1 rounded-md text-sub lg:min-h-8 ${view === 'canvas' ? 'bg-selected text-primary' : 'text-tertiary hover:bg-hover'}`} onClick={() => onView('canvas')}>画布</button>
+        <button type="button" aria-pressed={view === 'list'} className={`min-h-[44px] flex-1 rounded-md text-sub lg:min-h-8 ${view === 'list' ? 'bg-selected text-primary' : 'text-tertiary hover:bg-hover'}`} onClick={() => onView('list')}>列表</button>
+      </div> : null}
     </div>
   );
 
@@ -395,7 +385,7 @@ export function ProjectSidebar({
             {project.name.slice(0, 1).toUpperCase()}
           </span>
           <select
-            className="min-h-9 min-w-0 flex-1 cursor-pointer appearance-none truncate bg-transparent pr-5 text-body font-medium text-primary outline-none lg:min-h-0"
+            className="min-h-[44px] min-w-0 flex-1 cursor-pointer appearance-none truncate bg-transparent pr-5 text-body font-medium text-primary outline-none lg:min-h-0"
             value={project.id}
             aria-label="切换项目"
             onChange={(event) => {
@@ -426,11 +416,12 @@ export function ProjectSidebar({
       </div>
 
       <div className={drawer ? 'flex min-h-0 flex-1 flex-col overflow-y-auto' : 'contents'}>
-      {!drawer ? projectActions : null}
+      {projectActions}
 
       <nav ref={listRef} onKeyDown={onListKey} className={drawer ? 'shrink-0 border-t border-hair px-2 py-0.5' : 'min-h-0 flex-1 overflow-y-auto border-t border-hair px-2 py-2'} aria-label="任务与会话">
-        <WorkdirEntries projectId={project.id} onOpen={onOpenWorkdir} compact />
-        <p className="sr-only px-2 pb-1 text-meta text-tertiary lg:not-sr-only">工作空间</p>
+        <p className="px-2 pb-1 text-meta text-tertiary">工作空间</p>
+        {workspaceViews.isLoading ? <p role="status" className="px-2 py-2 text-meta text-tertiary">正在读取工作目录…</p> : null}
+        {workspaceViews.isError ? <p role="alert" className="px-2 py-2 text-meta text-rust">工作目录读取失败 <button type="button" className="underline" onClick={() => void workspaceViews.refetch()}>重试</button></p> : null}
         {workspaceGroups.map((workspace) => {
           const expanded = !foldedWorkspaces.has(workspace.key);
           const worker = resolveWorker(workers.list, workspace.workerId);
@@ -447,7 +438,10 @@ export function ProjectSidebar({
                 </span>
                 <span className="shrink-0 text-meta text-tertiary">{workspace.sessions.length}</span>
               </button>
+              {workspace.detail ? <button type="button" className="ml-5 min-h-[44px] rounded-md px-1 text-meta text-tertiary hover:text-primary lg:min-h-6" aria-expanded={expandedPaths.has(workspace.key)} onClick={() => setExpandedPaths((current) => { const next = new Set(current); if (next.has(workspace.key)) next.delete(workspace.key); else next.add(workspace.key); return next; })}>{expandedPaths.has(workspace.key) ? '收起路径' : '查看完整路径'}</button> : null}
+              {expandedPaths.has(workspace.key) && workspace.detail ? <p className="ml-5 px-1 pb-1 text-meta text-tertiary [overflow-wrap:anywhere]">{workspace.detail}</p> : null}
               {expanded ? <div className="ml-2 border-l border-hair pl-1">
+                {workspace.openWorkspaceId ? <button type="button" data-testid="workdir-entry" data-workspace-id={workspace.openWorkspaceId} className="min-h-[44px] w-full rounded-md px-2 text-left text-meta text-secondary hover:bg-hover lg:min-h-7" onClick={() => onOpenWorkdir(workspace.openWorkspaceId!)}>打开目录 ↗</button> : null}
                 {workspace.groups.map((group) => {
                   const rows = group.sessions.map(({ session }) => session);
                   if (group.taskless) return tasklessSection(group.taskId, group.kind === 'coordinator' ? 'sidebar-coordinators' : 'sidebar-unassigned', group.title, rows);
@@ -491,7 +485,7 @@ export function ProjectSidebar({
             data-nav-row
             aria-expanded={settled.length > 0 ? showSettled : undefined}
             disabled={settled.length === 0}
-            className="flex min-h-10 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-meta text-tertiary hover:bg-hover hover:text-secondary disabled:opacity-60 disabled:hover:bg-transparent lg:min-h-7"
+            className="flex min-h-[44px] w-full items-center gap-1.5 rounded-md px-1.5 text-left text-meta text-tertiary hover:bg-hover hover:text-secondary disabled:opacity-60 disabled:hover:bg-transparent lg:min-h-7"
             onClick={() => setShowSettled((open) => !open)}
           >
             <Icon name={showSettled ? 'chevron-down' : 'chevron-right'} size={13} className={settled.length > 0 ? '' : 'opacity-0'} />
@@ -506,29 +500,6 @@ export function ProjectSidebar({
           ) : null}
         </div>
       </nav>
-      {drawer ? projectActions : null}
-
-      {drawer ? (
-        // 移动抽屉：全局工具跟在任务列表和项目动作之后，共用滚动区。
-        <div className="shrink-0 border-t border-hair px-2 py-2" data-testid="drawer-global-nav">
-          <GlobalNav columns={5} onNavigate={onClose} />
-        </div>
-      ) : (
-        <div className="border-t border-hair px-2 py-2">
-          <GlobalNav />
-        </div>
-      )}
-
-      <div className={`flex items-center gap-0.5 border-t border-hair px-2 py-1.5 ${drawer ? 'shrink-0' : ''}`}>
-        <div className="min-w-0 flex-1">
-          <MachinesBadge />
-        </div>
-        <AttentionBadge onClick={onHome} compact />
-        <MessagesEntry />
-        <NotificationBell placement="up" />
-        <SettingsEntry className={GHOST_ICON} />
-        <AccountMenu placement="up" />
-      </div>
       </div>
       {menu && menuSession ? (
         <SessionRowMenu
@@ -568,6 +539,7 @@ export function ProjectSidebar({
 function SessionRow({
   session,
   title,
+  forkHint,
   active,
   muted = false,
   now,
@@ -581,6 +553,7 @@ function SessionRow({
 }: {
   readonly session: SessionDto;
   readonly title: string;
+  readonly forkHint: string | null;
   readonly active: boolean;
   readonly muted?: boolean;
   readonly now: number;
@@ -649,7 +622,7 @@ function SessionRow({
           data-phase={phase}
           data-settled={muted ? 'true' : undefined}
           aria-busy={busy || undefined}
-          className={`flex min-h-[44px] w-full items-center gap-2 rounded-md py-1 pl-6 pr-[52px] text-left text-sub pointer-fine:pr-2 lg:min-h-7 ${
+          className={`flex min-h-[44px] w-full items-center gap-2 rounded-md py-1 pl-6 pr-[52px] text-left text-sub lg:pointer-fine:pr-2 lg:min-h-7 ${
             active
               ? 'bg-selected text-primary'
               : muted
@@ -657,7 +630,7 @@ function SessionRow({
                 : 'text-secondary hover:bg-hover hover:text-primary'
           } ${menuOpen ? 'bg-hover' : ''}`}
           aria-current={active ? 'page' : undefined}
-          title={`${title} · #${session.id.slice(-4)} · ${session.agentId} · ${phaseLabel(phase)}`}
+          title={`${title} · #${session.id.slice(-4)} · ${session.agentId} · ${phaseLabel(phase)}${forkHint ? ` · ${forkHint}` : ''}`}
           onClick={() => onOpen(session.id)}
           onContextMenu={(event) => {
             event.preventDefault();
@@ -676,9 +649,10 @@ function SessionRow({
         >
           {dot}
           <span className="min-w-0 flex-1 truncate">{title}</span>
+          {forkHint ? <span className="shrink-0 text-meta text-tertiary" aria-label={forkHint} title={forkHint}>分叉</span> : null}
           <span
             className={`shrink-0 text-meta text-tertiary ${
-              menuOpen ? 'pointer-fine:invisible' : 'pointer-fine:group-focus-within:invisible pointer-fine:group-hover:invisible'
+              menuOpen ? 'lg:pointer-fine:invisible' : 'lg:pointer-fine:group-focus-within:invisible lg:pointer-fine:group-hover:invisible'
             }`}
           >
             {elapsedLabel(session.updatedAt, now)}
@@ -691,8 +665,8 @@ function SessionRow({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           title="会话操作"
-          className={`absolute right-0 top-1/2 flex size-[44px] -translate-y-1/2 items-center justify-center rounded-md text-tertiary hover:bg-hover hover:text-primary focus-visible:opacity-100 pointer-fine:size-6 ${
-            menuOpen ? 'opacity-100' : 'pointer-fine:opacity-0 pointer-fine:group-focus-within:opacity-100 pointer-fine:group-hover:opacity-100'
+          className={`absolute right-0 top-1/2 flex size-[44px] -translate-y-1/2 items-center justify-center rounded-md text-tertiary hover:bg-hover hover:text-primary focus-visible:opacity-100 lg:pointer-fine:size-6 ${
+            menuOpen ? 'opacity-100' : 'lg:pointer-fine:opacity-0 lg:pointer-fine:group-focus-within:opacity-100 lg:pointer-fine:group-hover:opacity-100'
           }`}
           onClick={(event) => {
             const box = event.currentTarget.getBoundingClientRect();

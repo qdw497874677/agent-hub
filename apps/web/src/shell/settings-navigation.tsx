@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import { Icon } from '../atoms/icons.tsx';
 import { parseRoute, type Route } from './route.ts';
 import { SETTINGS_DIRECTORY, type SettingsRoute, type SettingsTarget } from './settings-route.ts';
 import { useRoute } from './use-route.ts';
@@ -60,23 +59,4 @@ export function closeSettings(navigate: Navigate) {
   const state = settingsHistory();
   if (state && window.history.state?.settingsFromStandaloneDirectory !== true) window.history.go(-state.depth);
   else navigate({ page: 'home' }, 'replace');
-}
-
-export function SettingsEntry({ className, label, onOpen }: { className?: string; label?: boolean; onOpen?: () => void }) {
-  const [, navigate] = useRoute();
-  return (
-    <button
-      type="button"
-      aria-label="设置"
-      title="设置"
-      className={className ?? 'flex size-9 shrink-0 items-center justify-center rounded-md text-tertiary hover:bg-hover hover:text-primary'}
-      onClick={(event) => {
-        openSettings(navigate, null, event.currentTarget);
-        onOpen?.();
-      }}
-    >
-      <Icon name="settings" size={16} />
-      {label ? <span>设置</span> : null}
-    </button>
-  );
 }

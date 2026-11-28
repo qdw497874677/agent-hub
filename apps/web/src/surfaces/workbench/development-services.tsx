@@ -12,20 +12,20 @@ interface ContextValue { open: boolean; setOpen: (open: boolean) => void; regist
 const Context = createContext<ContextValue | null>(null);
 export const useDevelopmentServices = () => useContext(Context);
 
-export function DevelopmentServicesHost({ accountId, workspaceId, workspacePath, workerId, sessionId, children }: { accountId: string; workspaceId?: string | null; workspacePath?: string | null; workerId?: string | null; sessionId?: string | null; children: ReactNode }) {
+export function DevelopmentServicesHost({ accountId, workspaceId, workspacePath, workerId, sessionId, forceSheet = false, children }: { forceSheet?: boolean; accountId: string; workspaceId?: string | null; workspacePath?: string | null; workerId?: string | null; sessionId?: string | null; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [handler, setHandler] = useState<ReferenceHandler | null>(null);
   const register = useCallback((value: ReferenceHandler | null) => setHandler(value), []);
   useEffect(() => { setOpen(false); }, [accountId, workspaceId, workerId]);
   const onReference = handler && handler.workspaceId === workspaceId && handler.sessionId === sessionId ? handler.append : undefined;
-  return <DevelopmentLaunchScope.Provider value={JSON.stringify([accountId, workspaceId, workerId])}><Context.Provider value={{ open, setOpen, register, workspaceId }}><div className="flex min-h-0 min-w-0 flex-1">{children}{open ? <DevelopmentServicesPanel key={`${accountId}:${workspaceId}:${workerId}`} accountId={accountId} workspaceId={workspaceId} workspacePath={workspacePath} workerId={workerId} onReference={onReference} onClose={() => setOpen(false)} /> : null}</div></Context.Provider></DevelopmentLaunchScope.Provider>;
+  return <DevelopmentLaunchScope.Provider value={JSON.stringify([accountId, workspaceId, workerId])}><Context.Provider value={{ open, setOpen, register, workspaceId }}><div className="flex min-h-0 min-w-0 flex-1">{children}{open ? <DevelopmentServicesPanel key={`${accountId}:${workspaceId}:${workerId}`} accountId={accountId} workspaceId={workspaceId} workspacePath={workspacePath} workerId={workerId} onReference={onReference} forceSheet={forceSheet} onClose={() => setOpen(false)} /> : null}</div></Context.Provider></DevelopmentLaunchScope.Provider>;
 }
-export function DevelopmentServicesButton() {
+export function DevelopmentServicesButton({ onOpen, inPicker = false }: { onOpen?: () => void; inPicker?: boolean }) {
   const context = useDevelopmentServices();
   if (!context) return null;
-  return <button type="button" data-testid="development-services-trigger" aria-expanded={context.open} onClick={() => context.setOpen(!context.open)} onPointerDown={(event) => event.stopPropagation()} className="min-h-[44px] shrink-0 rounded-sm px-2 text-meta text-sage hover:bg-hover">开发服务</button>;
+  return <button type="button" data-testid="development-services-trigger" aria-expanded={context.open} onClick={() => { context.setOpen(!context.open); onOpen?.(); }} onPointerDown={(event) => event.stopPropagation()} className={inPicker ? "min-h-[44px] w-full border-b border-hair px-3 text-left text-sub text-link hover:bg-hover" : "min-h-[44px] shrink-0 rounded-sm px-2 text-meta text-sage hover:bg-hover"}>开发服务</button>;
 }
-function DevelopmentServicesPanel({ accountId, workspaceId, workspacePath, workerId, onReference, onClose }: { accountId: string; workspaceId?: string | null; workspacePath?: string | null; workerId?: string | null; onReference?: (id: string) => void; onClose: () => void }) {
+function DevelopmentServicesPanel({ accountId, workspaceId, workspacePath, workerId, onReference, forceSheet, onClose }: { forceSheet: boolean; accountId: string; workspaceId?: string | null; workspacePath?: string | null; workerId?: string | null; onReference?: (id: string) => void; onClose: () => void }) {
   const narrow = useNarrow();
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(workerId ? [workerId] : []));
   const [opening, setOpening] = useState<string | null>(null);
@@ -86,6 +86,6 @@ function DevelopmentServicesPanel({ accountId, workspaceId, workspacePath, worke
     {workspaceId && workerId ? <section className="mt-4 border-t border-hair pt-2">{manualAvailable ? <><button type="button" aria-expanded={manualOpen} data-testid="development-service-manual-toggle" className="min-h-[44px] text-left text-sub text-link" onClick={() => setManualOpen(!manualOpen)}>手动输入端口 {manualOpen ? '⌃' : '⌄'}</button>{manualOpen ? <div className="space-y-2"><p className="break-all text-meta text-tertiary">只检查当前工作目录 {workspacePath ?? workspaceId} 在其所属机器上可确认的监听端口，不支持任意主机。</p><label className="block text-meta text-secondary">端口<input data-testid="development-service-manual-port" type="number" min="1024" max="65535" value={port} onChange={(event) => setPort(event.target.value)} className="mt-1 min-h-[44px] w-full rounded border border-hair bg-card px-2 text-body text-primary" /></label><label className="block text-meta text-secondary">页面路径<input data-testid="development-service-manual-path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="/" className="mt-1 min-h-[44px] w-full rounded border border-hair bg-card px-2 text-body text-primary" /></label><button type="button" data-testid="development-service-manual-open" className="min-h-[44px] text-sub text-link disabled:opacity-50" disabled={!!opening} onClick={() => void openManual()}>确认并打开 ↗</button></div> : null}</> : <p data-testid="development-service-manual-unavailable" className="py-2 text-meta text-tertiary">{!expanded.has(workerId) ? '展开当前机器以确认手动打开是否可用。' : currentDetail?.isPending && currentWorker?.state === 'online' ? '正在确认手动打开是否可用…' : '当前机器暂不支持手动打开，仅可查看服务。'}</p>}</section> : null}
     {notice ? <p role="status" className="mt-3 text-meta text-secondary">{notice}</p> : null}
   </div>;
-  if (narrow) return <Sheet title="开发服务" testId="development-services-panel" onClose={onClose}>{content}</Sheet>;
+  if (narrow || forceSheet) return <Sheet title="开发服务" testId="development-services-panel" onClose={onClose}>{content}</Sheet>;
   return <aside aria-label="开发服务" data-testid="development-services-panel" className="flex w-[350px] max-w-[45%] min-w-0 shrink-0 flex-col border-l border-hair bg-panel"><div className="flex min-h-[52px] items-center border-b border-hair px-4"><h2 className="flex-1 text-body font-semibold text-primary">开发服务</h2><button type="button" aria-label="关闭开发服务" className="min-h-[44px] min-w-[44px] text-xl text-secondary" onClick={onClose}>×</button></div>{content}</aside>;
 }

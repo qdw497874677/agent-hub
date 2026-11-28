@@ -181,6 +181,7 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRe
           artifacts={canvas.artifacts.filter((artifact) => artifact.sessionId === session.id)}
           onChangeOption={(optionId, value) => onChangeOption(session.id, optionId, value)}
           documentTabs={navigation}
+          documentHost={`canvas:${window.windowId}`}
           windowChrome={{ actions, onSwipe }}
         />;
       }}

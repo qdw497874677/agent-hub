@@ -164,6 +164,7 @@ test('桌面改动页：左边列表右边正文，没选文件先说清范围�
   const diffs = watchDiffs(page);
   await page.goto(`/#/p/${projectId}/focus/${sid}`);
   await page.getByTestId('session-tab-changes').click();
+  await page.getByTestId('changes-split-toggle').click();
   const changes = page.getByTestId('files-panel-changes');
   // 分栏：列表和正文同时在，正文空着时先交代范围
   await expect(changes.getByTestId('files-list')).toBeVisible();

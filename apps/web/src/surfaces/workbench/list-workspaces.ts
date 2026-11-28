@@ -1,6 +1,7 @@
-import type { CanvasDto, SessionDto } from '@agent-hub/contract';
+import type { CanvasDto, SessionDto, WorkspaceViewDto } from '@agent-hub/contract';
 import { groupSessions, type SessionGroup } from '../../atoms/session-groups.ts';
 import { workspaceName } from '../../atoms/workspace-format.ts';
+import { eligibleWorkdir } from './workdir-model.ts';
 
 export interface ListWorkspaceGroup {
   readonly key: string;
@@ -9,6 +10,65 @@ export interface ListWorkspaceGroup {
   readonly workerId: string | null;
   readonly sessions: readonly SessionDto[];
   readonly groups: readonly SessionGroup[];
+}
+
+export interface ProjectWorkspaceGroup extends ListWorkspaceGroup {
+  /** Only an explicitly owned, eligible standalone directory can be opened. */
+  readonly openWorkspaceId: string | null;
+}
+
+/**
+ * Union session buckets with registered project directories without inferring ownership.
+ * Session bucket order is retained; registered-only buckets follow in registration order.
+ * The caller supplies the appropriately filtered canvas and authorized workspace views.
+ */
+export function projectWorkspaceGroups(
+  canvas: CanvasDto,
+  registered: readonly WorkspaceViewDto[],
+  coordinatorIds: ReadonlySet<string> = new Set(),
+  projectId?: string
+): ProjectWorkspaceGroup[] {
+  const result = new Map<string, ProjectWorkspaceGroup>(
+    workspaceSessionGroups(canvas, coordinatorIds).map((group) => [group.key, { ...group, openWorkspaceId: null }])
+  );
+  const members = new Map<string, WorkspaceViewDto[]>();
+  for (const view of registered) {
+    const workspace = view.workspace;
+    if (workspace.state === 'removed') continue;
+    const type = workspace.groupId ? 'group' : 'workspace';
+    const id = workspace.groupId || workspace.id;
+    const key = JSON.stringify([workspace.workerId, type, id]);
+    const bucket = members.get(key) ?? [];
+    // A duplicate response row must not duplicate a combination member.
+    if (!bucket.some((item) => item.workspace.id === workspace.id)) bucket.push(view);
+    members.set(key, bucket);
+  }
+
+  for (const [key, views] of members) {
+    const first = views[0]!;
+    const workspace = first.workspace;
+    const existing = result.get(key);
+    const isGroup = Boolean(workspace.groupId);
+    const groupMembers = new Map(views.map((view) => [view.workspace.id, view.workspace]));
+    if (isGroup) {
+      for (const item of canvas.workspaces) {
+        if (item.workerId === workspace.workerId && item.groupId === workspace.groupId && !groupMembers.has(item.id)) groupMembers.set(item.id, item);
+      }
+    }
+    const names = [...new Set([...groupMembers.values()].map(workspaceName))];
+    const registeredTitle = isGroup ? `组合工作空间 · ${names.join(' + ')}` : workspaceName(workspace);
+    const registeredDetail = isGroup
+      ? [...groupMembers.values()].map((item) => item.path).filter(Boolean).join(' · ') || undefined
+      : workspace.path || undefined;
+    const currentProjectId = projectId ?? canvas.project?.id;
+    const openWorkspaceId = !isGroup && currentProjectId && eligibleWorkdir(workspace, first.ownerProjectId, currentProjectId)
+      ? workspace.id : null;
+    result.set(key, {
+      key, title: registeredTitle, detail: registeredDetail, workerId: workspace.workerId,
+      sessions: existing?.sessions ?? [], groups: existing?.groups ?? [], openWorkspaceId
+    });
+  }
+  return [...result.values()];
 }
 
 /** 身份仅由会话的机器与真实 workspaceId / groupId 决定，任务不拥有工作空间。 */

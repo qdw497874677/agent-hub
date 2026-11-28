@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { openDocumentNewMenu } from './document-tabs.ts';
 import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 
 const SHOTS = process.env['E2E_SCREENSHOTS'];
@@ -39,7 +40,7 @@ async function seedSession(
 }
 
 async function openTerminalTab(page: Page) {
-  await page.getByTestId('session-document-tabs').getByTestId('session-tab-add').click();
+  await openDocumentNewMenu(page, page.getByTestId('session-document-tabs'), { compact: (page.viewportSize()?.width ?? 1280) < 420 });
   await connectTerminalTab(page);
 }
 
@@ -50,7 +51,7 @@ async function connectTerminalTab(page: Page) {
 }
 
 function newTerminal(page: Page) {
-  return page.getByTestId('session-document-tabs').getByTestId('session-tab-new-terminal');
+  return page.getByTestId('session-tab-new-terminal');
 }
 
 test.describe('触摸设备', () => {
@@ -66,8 +67,10 @@ test.describe('触摸设备', () => {
     await loginByApi(page);
     const { id, projectId } = await seedSession(page, baseURL, 'term-mobile');
     await page.goto(`/#/p/${projectId}/focus/${id}`);
-    await page.getByTestId('session-more-trigger').click();
-    await expect(page.getByTestId('session-more-terminal')).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: '发送消息' })).toBeVisible({ timeout: 10_000 });
+    await page.getByTestId('session-more-trigger').click({ timeout: 10_000 });
+    await expect(page.getByRole('menu')).toBeVisible();
+    await expect(page.getByRole('menu').getByRole('menuitem', { name: /终端/ })).toHaveCount(0);
     await page.keyboard.press('Escape');
     const tabs = page.getByTestId('session-document-tabs');
     let release!: () => void;
@@ -84,7 +87,7 @@ test.describe('触摸设备', () => {
       if (new URL(socket.url()).pathname === `/api/sessions/${id}/terminal`) sockets++;
     });
     try {
-      await tabs.getByTestId('session-tab-add').click();
+      await openDocumentNewMenu(page, tabs, { touch: true, compact: true });
       await expect.poll(() => reads).toBe(1);
       await expect(newTerminal(page)).toBeDisabled();
       await expect(page.getByTestId('terminal-pane')).toHaveCount(0);
@@ -116,7 +119,7 @@ test.describe('触摸设备', () => {
     await tabs.getByTestId('session-tab-trigger').click();
     const legacy = page.getByTestId('session-tab-picker').locator(`[data-testid="session-tab-item"][data-legacy-session-id="${id}"]`);
     await expect(legacy).toHaveText('会话终端');
-    await page.getByRole('button', { name: '断开会话终端' }).click();
+    await page.getByTestId('session-tab-picker').getByRole('button', { name: '断开会话终端' }).click();
     await expect(page.getByTestId('terminal-pane')).toHaveCount(0);
     await expect(page.getByRole('textbox', { name: '发送消息' })).toBeVisible();
   });
@@ -161,7 +164,11 @@ test('桌面画布只从标签打开旧终端，使用原会话目录且刷新�
   expect(sockets).toBe(0);
   await openTerminalTab(page);
   await expect(window).toHaveAttribute('data-window-id', windowId!);
-  await expect(window.locator(`[data-testid="session-tab-item"][data-legacy-session-id="${id}"]`)).toBeVisible();
+  await window.getByTestId('session-tab-trigger').click({ timeout: 10_000 });
+  const picker = page.getByTestId('session-tab-picker');
+  await expect(picker.locator(`[data-testid="session-tab-item"][data-legacy-session-id="${id}"]`)).toHaveAttribute('aria-current', 'page');
+  await page.keyboard.press('Escape');
+  await expect(picker).toHaveCount(0);
   await page.locator('.xterm-helper-textarea').focus();
   await page.keyboard.insertText('printf "%s\\n" "$PWD" >legacy-terminal-cwd');
   await page.keyboard.press('Enter');
@@ -172,8 +179,10 @@ test('桌面画布只从标签打开旧终端，使用原会话目录且刷新�
   await expect(window).toHaveAttribute('data-window-id', windowId!);
   await expect(window.getByRole('textbox', { name: '发送消息' })).toBeVisible();
   await expect(window.getByTestId('terminal-pane')).toHaveCount(0);
-  await expect(window.locator('[data-legacy-session-id]')).toHaveCount(0);
-  await window.getByTestId('session-tab-add').click();
+  await window.getByTestId('session-tab-trigger').click({ timeout: 10_000 });
+  await expect(picker.locator('[data-legacy-session-id]')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await openDocumentNewMenu(page, window);
   await expect(newTerminal(page)).toBeEnabled();
   expect(sockets).toBe(1);
 });

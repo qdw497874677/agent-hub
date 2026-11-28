@@ -13,9 +13,10 @@ test('令牌与 MCP：原生可用才显示已复制；不可用或被拒时改�
   await page.setViewportSize({ width: 390, height: 844 });
   await loginByApi(page);
   await page.goto('/');
-  await page.getByRole('button', { name: '账号' }).click();
-  await page.getByRole('button', { name: '访问令牌' }).click();
-  const dialog = page.getByRole('dialog', { name: '访问令牌' });
+  await page.getByTestId('global-menu-button').click();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByTestId('settings-surface').getByRole('link', { name: '访问令牌', exact: true }).click();
+  const dialog = page.getByTestId('settings-surface');
   await dialog.getByTestId('token-name').fill(`e2e-clip-${Date.now().toString(36)}`);
   await dialog.getByTestId('token-create').click();
 

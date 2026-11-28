@@ -223,13 +223,13 @@ async function seedRichHome(page: Page, baseURL: string): Promise<{
   }
 }
 
-test('手机首页：一个滚动源、角标直达标题、末条可达、视口收窄后搜索可见', async ({ page, baseURL }) => {
+test('手机首页：一个滚动源、收件箱打开不抢滚动、末条可达、视口收窄后搜索可见', async ({ page, baseURL }) => {
   test.setTimeout(300_000);
   const seed = await seedRichHome(page, baseURL!);
   try {
     // —— 390×844：结构 = 外层滚，侧栏和内容区都不滚
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto('/');
+    await page.goto('/#/home');
     await expect(page.getByTestId('home-root')).toBeVisible();
 
     let shot = await structure(page);
@@ -247,18 +247,19 @@ test('手机首页：一个滚动源、角标直达标题、末条可达、视�
     expect(shot.root!.scrollTop, '在上段区域划手指，滚的是同一个容器').toBeGreaterThan(50);
     expect(shot.docScrollY).toBe(0);
 
-    // —— 角标直达标题：收件箱本来就在首屏时不再乱滚，但整块必须可见
-    await page.goto('/');
-    const badge = page.getByTestId('attention-badge');
-    await expect(badge).toContainText('7');
+    // —— 重新加载一个文档，避免同 hash 导航沿用刚才手势后的滚动位置。
+    await page.goto('about:blank');
+    await page.goto('/#/home');
+    // 首页收件箱初始在首屏，标题及预览数量与服务端一致。
     const inbox = page.getByTestId('attention-inbox');
-    await expect(inbox).toContainText('等我处理 · 7');
-    // 窄屏只铺 3 条，剩下的折进「还有 4 条」：首屏不能摊 7 条把会话全顶下去。
+    const total = ((await (await page.request.get('/api/attention')).json()) as { items: unknown[] }).items.length;
+    expect(total).toBeGreaterThanOrEqual(seed.attentionTitles.length);
+    await expect(inbox.getByTestId('attention-title')).toContainText(`等我处理 · ${total}`);
+    // 窄屏只铺 3 条，其余折起；总数可能包括其他用例留下的独立数据。
     await expect(page.getByTestId('attention-item')).toHaveCount(3);
-    await expect(page.getByTestId('attention-more')).toContainText('还有 4 条');
-    await badge.click();
+    await expect(page.getByTestId('attention-more')).toHaveText(`还有 ${total - 3} 条`);
     await expect(inbox).toBeInViewport();
-    expect((await structure(page)).root!.scrollTop, '收件箱已在首屏，角标不应把页面挪走').toBe(0);
+    expect((await structure(page)).root!.scrollTop, '首页初始不应自动滚动').toBe(0);
 
     // —— 首屏：搜索在上，第一条会话也在 844 里（手机上先看见「接着干哪条」）
     await expect(page.getByTestId('home-session-row').first()).toBeVisible();
@@ -269,10 +270,7 @@ test('手机首页：一个滚动源、角标直达标题、末条可达、视�
 
     // —— 关键点击目标：手指按得住（≥44 CSS px）
     const targets: Array<[string, ReturnType<Page['locator']>]> = [
-      ['待办角标', page.getByTestId('attention-badge')],
-      ['消息', page.getByTestId('messages-entry')],
-      ['通知', page.getByTestId('notification-bell')],
-      ['账号', page.getByRole('button', { name: '账号' })],
+      ['全局菜单', page.getByTestId('global-menu-button')],
       ['待办「⋯」', page.getByTestId('attention-menu').first()],
       ['新建项目', page.getByTitle('新建项目')]
     ];
@@ -320,31 +318,38 @@ test('手机首页：一个滚动源、角标直达标题、末条可达、视�
     await expect(titleDialog).toHaveCount(0);
     await expect(fullTitle).toBeFocused();
     // 没截断的短标题不该多出这个按钮（不占宽度、不进 Tab 序）
-    const shortWrap = page.getByTestId('home-session-row').filter({ hasText: '首页近会话 01' }).first().locator('xpath=..');
+    const shortRow = page.getByTestId('home-session-row').filter({ hasText: seed.lastSessionTitle });
+    await expect(shortRow).toHaveCount(1);
+    const shortWrap = shortRow.locator('xpath=..');
     await expect(shortWrap.getByTestId('home-session-full-title')).toHaveCount(0);
 
     // —— 点会话仍然进项目会话页
     await page.getByTestId('home-session-row').first().click();
     await expect(page).toHaveURL(/#\/p\/[^/]+\/focus\//);
 
-    // 视口被软键盘压矮、收件箱掉到折叠线以下时：角标把它顶到眼前，滚的还是 home-root
+    // 视口被软键盘压矮时，菜单仍能打开待办，且不重复挂载首页待办。
     await page.setViewportSize({ width: 390, height: 360 });
     await page.goto('/#/home');
-    const inboxTall = await page.getByTestId('attention-inbox').boundingBox();
-    expect(inboxTall!.y + inboxTall!.height, '矮视口下收件箱确实掉到折叠线以下').toBeGreaterThan(360);
-    await page.getByTestId('attention-badge').click();
-    await expect
-      .poll(async () => (await structure(page)).root!.scrollTop, { message: '角标点下去滚的是 home-root' })
-      .toBeGreaterThan(0);
-    expect((await structure(page)).docScrollY, '文档自己没滚').toBe(0);
-    await expect
-      .poll(async () => (await inbox.getByText('等我处理 · 7').first().boundingBox())?.y ?? 999, { message: '收件箱标题被顶到视口上方，不是「刚好在视口里」' })
-      .toBeLessThan(120);
+    expect((await structure(page)).root!.clientHeight, '矮视口下首页滚动容器高度').toBe(360);
+    await expect(page.getByTestId('home-root').getByTestId('attention-inbox')).toBeVisible();
+    const scrollBeforeInbox = (await structure(page)).root!.scrollTop;
+    await page.getByTestId('global-menu-button').click();
+    await page.getByTestId('shell-panel-more').getByRole('button', { name: /收件箱/ }).click();
+    await expect(page.getByTestId('shell-panel-inbox')).toHaveAttribute('aria-modal', 'true');
+    await expect(page.getByTestId('attention-inbox')).toHaveCount(1);
+    await expect(page.getByTestId('shell-panel-inbox').getByTestId('attention-title')).toContainText(`等我处理 · ${total}`);
+    expect((await structure(page)).root!.scrollTop, '打开收件箱不移动首页滚动位置').toBe(scrollBeforeInbox);
+    expect((await structure(page)).docScrollY, '打开收件箱不会滚动文档').toBe(0);
+    await page.getByTestId('shell-panel-inbox').getByRole('button', { name: '关闭' }).click();
+    await expect(page.getByTestId('shell-panel-inbox')).toHaveCount(0);
 
     // —— 最后一条待办 / 最后一条会话都能滚到；滚到底时上段招牌已经离开视口
     await page.goto('/#/home');
     await page.getByTestId('attention-more').click();
-    await expect(page.getByTestId('attention-item')).toHaveCount(7);
+    await expect(page.getByTestId('attention-item')).toHaveCount(total);
+    for (const title of seed.attentionTitles) {
+      await expect(page.getByTestId('attention-item').filter({ hasText: title })).toHaveCount(1);
+    }
     expect(await page.getByTestId('attention-more').count(), '展开后不再有「还有」').toBe(0);
     const lastItem = page.getByTestId('attention-item').last();
     await lastItem.scrollIntoViewIfNeeded();
@@ -353,39 +358,46 @@ test('手机首页：一个滚动源、角标直达标题、末条可达、视�
     const brandBox = await brand.boundingBox();
     expect(brandBox!.y + brandBox!.height, '单滚动：上段不再常驻').toBeLessThanOrEqual(1);
 
-    const lastRow = page.getByRole('button', { name: new RegExp(seed.lastSessionTitle) });
+    // 最近会话接口有数量上限：检查自己的会话存在，同时真正滚到当前列表的末行。
+    await expect(page.getByTestId('home-session-row').filter({ hasText: seed.lastSessionTitle })).toHaveCount(1);
+    const lastRow = page.getByTestId('home-session-row').last();
     await lastRow.scrollIntoViewIfNeeded();
     await expect(lastRow).toBeInViewport();
     const rowBox = await lastRow.boundingBox();
     expect(rowBox!.y + rowBox!.height, '最后一条近会话整个落在视口里').toBeLessThanOrEqual(845);
 
-    // 再往下是回收站和机器徽标：同一个容器还能继续滚到底，滚动条也夹在最大值上
+    // 同一个容器还能继续滚到底，滚动条也夹在最大值上
     await page.getByTestId('home-root').evaluate((root) => root.scrollTo(0, root.scrollHeight));
     const bottom = await structure(page);
     expect(bottom.root!.scrollTop + bottom.root!.clientHeight, '滚到底就真的到底了').toBeGreaterThanOrEqual(bottom.root!.scrollHeight - 2);
     expect(bottom.docScrollY, '滚的始终是 home-root，不是文档').toBe(0);
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'home-mobile-390-bottom.png') });
 
-    // —— 320×667：不横向溢出，角标不压招牌，导航仍然点得到
+    // —— 320×667：不横向溢出，菜单不压招牌，导航仍然点得到
     await page.setViewportSize({ width: 320, height: 667 });
+    // 上一步已滚到底；新文档让首屏布局检查不依赖同 hash 的滚动保留。
+    await page.goto('about:blank');
     await page.goto('/#/home');
     const narrow = await structure(page);
     expect(narrow.root!.clientHeight).toBe(667);
     const overflowX = await page.getByTestId('home-root').evaluate((root) => root.scrollWidth - root.clientWidth);
     expect(overflowX, '320 下不该有横向滚动').toBeLessThanOrEqual(0);
     const brandBox320 = await page.getByRole('heading', { level: 1 }).boundingBox();
-    const badgeBox320 = await page.getByTestId('attention-badge').boundingBox();
-    expect(brandBox320!.x + brandBox320!.width).toBeLessThanOrEqual(badgeBox320!.x + 1);
-    for (const nav of await page.locator('[data-testid^="nav-"]').all()) {
-      const box = await nav.boundingBox();
-      // min-h-12 在 13px 根字号下量出来是 39px：比 44 的标准触控目标小一点，但不是这次改出来的问题。
-      expect(box!.height, '导航是手指能点的块').toBeGreaterThanOrEqual(36);
-      expect(box!.x).toBeGreaterThanOrEqual(0);
-      expect(box!.x + box!.width).toBeLessThanOrEqual(321);
-    }
-    await page.getByTestId('attention-badge').click();
-    await expect(page.getByTestId('attention-inbox').getByText('等我处理 · 7').first()).toBeInViewport();
+    const menuBox320 = await page.getByTestId('global-menu-button').boundingBox();
+    expect(brandBox320!.x + brandBox320!.width).toBeLessThanOrEqual(menuBox320!.x + 1);
+    await expect(page.getByTestId('app-rail')).toHaveCount(0);
+    expect(menuBox320!.width).toBeGreaterThanOrEqual(44);
+    expect(menuBox320!.height).toBeGreaterThanOrEqual(44);
+    expect(menuBox320!.x).toBeGreaterThanOrEqual(0);
+    expect(menuBox320!.x + menuBox320!.width).toBeLessThanOrEqual(321);
+    await page.getByTestId('global-menu-button').click();
+    await expect(page.getByTestId('shell-panel-more')).toBeVisible();
+    await page.getByTestId('shell-panel-more').getByRole('button', { name: /收件箱/ }).click();
+    await expect(page.getByTestId('shell-panel-inbox').getByTestId('attention-title')).toContainText(`等我处理 · ${total}`);
+    await expect(page.getByTestId('shell-panel-inbox').getByTestId('attention-title')).toBeInViewport();
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'home-mobile-320-inbox.png') });
+    await page.getByTestId('shell-panel-inbox').getByRole('button', { name: '关闭' }).click();
+    await expect(page.getByTestId('shell-panel-inbox')).toHaveCount(0);
 
     // —— 视口收窄（软键盘）：搜索框聚焦后能滚进可见区，不会被上段挤没
     await page.setViewportSize({ width: 390, height: 430 });
@@ -404,18 +416,19 @@ test('手机首页：一个滚动源、角标直达标题、末条可达、视�
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/#/home');
     const target = seed.extraProjectNames[4]!;
-    // 项目清单是异步来的：等它真的在 DOM 里再 Tab，否则前几格焦点会落到还没渲染的空白上。
-    await expect(page.getByText(seed.extraProjectNames.at(-1)!)).toBeAttached();
-    // 窄屏预览只铺 3 个：先点「全部 N 个项目」把它展开成抽屉。
-    const allProjects = page.getByRole('button', { name: /^全部 \d+ 个项目$/ });
+    // 异步项目清单载入后，从页头入口打开抽屉，不依赖首页预览行。
+    const allProjects = page.getByRole('button', { name: /^所有项目（[1-9]\d*）$/ });
+    await expect(allProjects).toBeVisible();
     await allProjects.click();
     await expect(page.getByTestId('project-sheet')).toBeVisible();
     await expect(page.getByTestId('project-sheet-row').filter({ hasText: seed.extraProjectNames.at(-1)! })).toBeVisible();
+    await expect(page.getByTestId('project-sheet-row').filter({ hasText: target })).toHaveCount(1);
     // 项目顺序按最近活动排，不按名字：从清单第一行往后 Tab，第 5 个 extra 项目必须落在序列里。
     const firstProjectRow = page.getByTestId('project-sheet-row').first().getByRole('button').first();
     await firstProjectRow.focus();
     let focused = '';
-    for (let i = 0; i < 20; i++) {
+    const tabLimit = (await page.getByTestId('project-sheet-row').count()) * 2 + 4;
+    for (let i = 0; i < tabLimit; i++) {
       await page.keyboard.press('Tab');
       focused = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? '');
       if (focused.includes(target)) break;
@@ -432,7 +445,7 @@ test('手机首页：一个滚动源、角标直达标题、末条可达、视�
     expect(focus.top, '焦点元素被滚进可见区，不是被夹在上段').toBeGreaterThanOrEqual(-4);
     expect(focus.bottom).toBeLessThanOrEqual(848);
 
-    // —— 抽屉是对话框：Esc 关掉，焦点还给「全部 N 个项目」，Tab 不会跑到遮罩后面
+    // —— 抽屉是对话框：Esc 关掉，焦点还给「所有项目」，Tab 不会跑到遮罩后面
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('project-sheet')).toHaveCount(0);
     await expect(allProjects, '关掉抽屉把焦点还给触发它的按钮').toBeFocused();
@@ -464,7 +477,7 @@ test('桌面断点：md 起恢复「侧栏 + 内容区」双栏，桌面仍是 m
   shot = await structure(page);
   const asideBox = await page.getByRole('complementary', { name: '首页侧栏' }).boundingBox();
   expect(Math.round(asideBox!.width)).toBe(220);
-  // 左栏是网格第一列：招牌 / 导航 / 项目 / 回收站 / 机器都在 220px 里，main 在第二列。
+  // 左栏是网格第一列：招牌 / 项目 / 回收站都在 220px 里，main 在第二列。
   const columns = await page.getByTestId('home-root').evaluate((el) => getComputedStyle(el).gridTemplateColumns);
   expect(columns.split(' ')[0], '侧栏 = 网格第一列 220px').toBe('220px');
   const mainBox = await page.locator('main').boundingBox();
@@ -475,19 +488,22 @@ test('桌面断点：md 起恢复「侧栏 + 内容区」双栏，桌面仍是 m
   expect(shot.main!.overflowY).toBe('auto');
   const separator = await page.locator('main').evaluate((el) => getComputedStyle(el).borderLeftWidth);
   expect(separator, '两栏之间有一条分隔线').toBe('1px');
-  // 768–1023 侧栏只有 220px：导航两列，标签之间留得下缝
-  const navGrid = await page.getByTestId('global-nav').evaluate((el) => ({
-    cols: getComputedStyle(el).gridTemplateColumns.split(' ').length,
-    widths: [...el.querySelectorAll('a')].map((a) => Math.round(a.getBoundingClientRect().width))
-  }));
-  expect(navGrid.cols, '平板侧栏导航两列').toBe(2);
-  expect(navGrid.widths.every((w) => w > 90), '每格够宽，标签不会互相贴住').toBe(true);
+  // 768–1023 仍使用全局菜单，桌面导航栏不出现。
+  await expect(page.getByTestId('global-menu-button')).toBeVisible();
+  await expect(page.getByTestId('app-rail')).toHaveCount(0);
+  await page.getByTestId('global-menu-button').click();
+  await expect(page.getByTestId('shell-panel-more').getByRole('button', { name: /收件箱/ })).toBeVisible();
+  await page.keyboard.press('Escape');
 
-  // 1024 / 1280：导航成竖列，桌面布局与改造前一致
+  // 1024 起显示桌面导航栏，不再显示全局菜单按钮。
   await page.setViewportSize({ width: 1024, height: 800 });
   await page.goto('/#/home');
-  const navDirection = await page.getByTestId('global-nav').evaluate((el) => getComputedStyle(el).flexDirection);
-  expect(navDirection).toBe('column');
+  await expect(page.getByTestId('global-menu-button')).toHaveCount(0);
+  const rail = page.getByTestId('app-rail');
+  await expect(rail).toBeVisible();
+  for (const id of ['shell-workbench', 'shell-inbox', 'messages-entry', 'shell-more']) {
+    await expect(rail.getByTestId(id)).toBeVisible();
+  }
   shot = await structure(page);
   expect(shot.main!.overflowY).toBe('auto');
   expect(shot.aside!.overflowY).toBe('auto');

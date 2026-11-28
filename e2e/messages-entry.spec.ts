@@ -28,8 +28,7 @@ for (const vp of [{ name: 'mobile', width: 390, height: 844 }, { name: 'desktop'
     await page.setViewportSize({ width: vp.width, height: vp.height });
     const w = await setup(page, baseURL!);
     await page.goto(`/#/p/${w.project}`);
-    if (vp.width < 1024) await page.getByRole('button', { name: '打开侧栏' }).click();
-    const entry = page.locator('[data-testid="project-sidebar"]:visible').getByTestId('messages-entry');
+    const entry = page.getByTestId(vp.width < 1024 ? 'global-menu-button' : 'messages-entry');
     await expect(entry).toBeVisible();
     await expect(page.getByTestId('messages-unread')).toHaveCount(0);
     const box = await entry.boundingBox();
@@ -40,17 +39,28 @@ for (const vp of [{ name: 'mobile', width: 390, height: 844 }, { name: 'desktop'
     expect(g.ok(), await g.text()).toBe(true);
     const group = ((await g.json()) as { id: string }).id;
     // 轮询兜底 10s；切回页面也会刷，这里直接等
-    await expect(entry.getByTestId('messages-unread')).toBeVisible({ timeout: 20_000 });
-    await expect(entry).toHaveAttribute('aria-label', /未读/);
+    if (vp.width < 1024) {
+      await entry.click();
+      await expect(page.getByTestId('shell-panel-more').getByRole('button', { name: /消息.*未读/ })).toBeVisible({ timeout: 20_000 });
+      await page.getByTestId('shell-panel-more').getByRole('button', { name: '关闭', exact: true }).click();
+    } else {
+      await expect(entry.getByTestId('messages-unread')).toBeVisible({ timeout: 20_000 });
+      await expect(entry).toHaveAttribute('aria-label', /未读/);
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(vp.width);
     await page.screenshot({ path: `${SHOTS}/${vp.name}-unread.png` });
 
     // 首页也有入口
     await page.goto('/#/');
-    const homeEntry = page.getByTestId('messages-entry');
-    await expect(homeEntry.getByTestId('messages-unread')).toBeVisible();
-
-    await homeEntry.click();
+    if (vp.width < 1024) {
+      await page.getByTestId('global-menu-button').click();
+      await page.getByTestId('shell-panel-more').getByRole('button', { name: /消息/ }).click();
+    } else {
+      const homeEntry = page.getByTestId('messages-entry');
+      await expect(homeEntry.getByTestId('messages-unread')).toBeVisible();
+      await homeEntry.click();
+    }
+    await page.getByTestId('nav-messages').click();
     await expect(page).toHaveURL(/#\/messages/);
     await page.goto(`/#/messages/${w.project}`);
     if (vp.width >= 768) await expect(page.getByTestId('group-unread')).toBeVisible();
@@ -62,6 +72,10 @@ for (const vp of [{ name: 'mobile', width: 390, height: 844 }, { name: 'desktop'
     // 侧栏全局导航里的「消息」入口还在（账号菜单里不再重复这一项）
     await page.goto(`/#/p/${w.project}`);
     await expect(page.getByTestId('messages-unread')).toHaveCount(0);
+    if (vp.width < 1024) {
+      await page.getByTestId('global-menu-button').click();
+      await page.getByTestId('shell-panel-more').getByRole('button', { name: /消息/ }).click();
+    } else await page.getByTestId('messages-entry').click();
     const navMessages = page.getByTestId('nav-messages');
     await expect(navMessages).toBeAttached();
     await expect(navMessages).toHaveAttribute('href', '#/messages');

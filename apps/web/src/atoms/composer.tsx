@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent } from 'react';
 import type { AttachmentInputDto, CapabilityDto, SessionDto } from '../shell/api.ts';
 import { api } from '../shell/api.ts';
-import { checkAdd, filterCommands, formatBytes, mentionDraft, toInput, triggerAt, type Draft, type SlashCommand } from './attachments.ts';
+import { checkAdd, filterCommands, formatBytes, mentionDraft, toInput, triggerAt, type SlashCommand } from './attachments.ts';
 import { readDraft } from './commands.ts';
 import { growField } from './composer-grow.ts';
 import { OptionControls, OptionFeedbackNotice } from './options.tsx';
@@ -11,6 +11,7 @@ import { useOfflineNotice } from '../shell/workers.tsx';
 import { ActionDot, OfflineNotice } from './composer-parts.tsx';
 import { Icon } from './icons.tsx';
 import { composerKeyAction, currentPlatform, sendKeyHint } from './composer-keys.ts';
+import { useWorkbenchDraft } from './workbench-drafts.tsx';
 
 /** 输入框长到 200px 就停住、自己滚：再高就开始吃对话区了，窄屏尤其明显。 */
 const AREA_MAX = 200;
@@ -85,14 +86,17 @@ export function Composer({
   const area = useRef<HTMLTextAreaElement>(null);
   const filePicker = useRef<HTMLInputElement>(null);
   const camera = useRef<HTMLInputElement>(null);
-  const [initial] = useState(draft);
+  const { store, entry } = useWorkbenchDraft(session.id);
+  const [initial] = useState(entry.text);
   const [filled, setFilled] = useState(initial.trim() !== '');
-  const [items, setItems] = useState<readonly Draft[]>([]);
+  const items = entry.items;
   const [notice, setNotice] = useState<string | null>(null);
   const [trigger, setTrigger] = useState<ReturnType<typeof triggerAt>>(null);
   const [files, setFiles] = useState<readonly string[]>([]);
   const [active, setActive] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const originRef = useRef({ store, sessionId: session.id });
+  originRef.current = { store, sessionId: session.id };
   const denied = capability.state === 'denied';
 
   /**
@@ -127,18 +131,14 @@ export function Composer({
 
   useEffect(() => {
     const element = area.current;
-    if (element && draft === '' && element.value !== '') {
-      element.value = '';
-      setFilled(false);
+    if (element && store.getEntry(session.id) === entry && element.value !== entry.text) {
+      element.value = entry.text;
+      setFilled(entry.text.trim() !== '');
       fitArea();
     }
-  }, [draft]);
+  }, [entry.text, session.id]);
 
-  // 换了会话，没发出去的附件不该跟过去。
-  useEffect(() => {
-    setItems([]);
-    setNotice(null);
-  }, [session.id]);
+  useEffect(() => { setNotice(null); }, [session.id]);
 
   // diff 里引用了段代码：草稿由宿主拼好（保住原有文字、末尾补空格），这里把它推回不受控的输入框。
   // 顺带把 `@` 菜单收掉——引用里本来就带 `@`，菜单再浮着会让人以为还要挑文件。
@@ -196,7 +196,7 @@ export function Composer({
 
   const running = awaiting;
   const offline = useOfflineNotice(session.workerId);
-  const canSend = (filled || items.length > 0) && !busy && (allowOfflineSend || offline === null);
+  const canSend = (filled || items.length > 0) && !busy && !entry.pending && (allowOfflineSend || offline === null);
 
   function refreshTrigger(): void {
     const element = area.current;
@@ -213,6 +213,7 @@ export function Composer({
     element.value = element.value.slice(0, trigger.start) + insert + element.value.slice(caret);
     element.selectionStart = element.selectionEnd = trigger.start + insert.length;
     setFilled(element.value.trim() !== '');
+    store.setText(session.id, element.value);
     onDraftChange(element.value);
     setTrigger(null);
     fitArea();
@@ -221,13 +222,7 @@ export function Composer({
 
   function pickFile(path: string): void {
     replaceTrigger('');
-    if (items.length >= 8) {
-      setNotice('最多 8 个附件');
-      return;
-    }
-    if (!items.some((item) => item.kind === 'mention' && item.path === path)) {
-      setItems((current) => [...current, mentionDraft(path)]);
-    }
+    setNotice(store.addItem(session.id, mentionDraft(path)));
   }
 
   function runCommand(command: SlashCommand): void {
@@ -249,19 +244,20 @@ export function Composer({
       setNotice(capability.reason ?? `${agentLabel} 不接收附件`);
       return;
     }
-    let current = items;
+    const origin = session.id;
     let problem: string | null = null;
     for (const file of list) {
       const kind = file.type.startsWith('image/') ? 'image' : 'file';
-      const reason = checkAdd(current, { kind, name: file.name, bytes: file.size });
-      if (reason) {
-        problem = reason;
-        continue;
+      const reason = checkAdd(store.getEntry(origin).items, { kind, name: file.name, bytes: file.size });
+      if (reason) { problem = reason; continue; }
+      try {
+        const item = await readDraft(file);
+        problem = store.addItem(origin, item) ?? problem;
+      } catch (failure) {
+        problem = (failure as Error).message;
       }
-      current = [...current, await readDraft(file)];
     }
-    setItems(current);
-    setNotice(problem);
+    if (originRef.current.store === store && originRef.current.sessionId === origin) setNotice(problem);
   }
 
   async function send(): Promise<void> {
@@ -289,24 +285,24 @@ export function Composer({
 
   /** 发出去的那一下：清空输入框与附件；没发出去就原样还回去。 */
   async function dispatch(action: (text: string, attachments: readonly AttachmentInputDto[]) => Promise<boolean>): Promise<boolean> {
-    const element = area.current;
-    const value = element?.value.trim() ?? '';
-    if ((value === '' && items.length === 0) || busy || (!allowOfflineSend && offline !== null)) return false;
-    if (element) element.value = '';
-    onDraftChange('');
+    if (busy || (!allowOfflineSend && offline !== null)) return false;
+    const claim = store.claim(session.id);
+    if (!claim) return false;
+    if (area.current) area.current.value = '';
     setFilled(false);
+    fitArea();
     setTrigger(null);
-    const sent = await action(value, items.map(toInput));
-    if (sent) {
-      setItems([]);
-      setNotice(null);
-    } else if (element && element.value === '') {
-      element.value = value;
-      setFilled(value !== '');
-      onDraftChange(value);
-      fitArea();
+    let sent = false;
+    try {
+      sent = await action(claim.text.trim(), claim.items.map(toInput));
+      if (sent) setNotice(null);
+      return sent;
+    } catch (failure) {
+      setNotice((failure as Error).message);
+      return false;
+    } finally {
+      store.finish(claim, sent);
     }
-    return sent;
   }
 
   function onPaste(event: ClipboardEvent<HTMLTextAreaElement>): void {
@@ -331,6 +327,7 @@ export function Composer({
   return (
     <div className="relative">
       {error ? <p className="mb-1 text-meta text-rust">{error}</p> : null}
+      {entry.recovery.length > 0 ? <p className="mb-1 text-meta text-rust">发送失败的草稿已保留。请先清空当前草稿，<button type="button" className="underline" onClick={() => store.recover(session.id)}>恢复旧草稿</button>（{entry.recovery.length}）</p> : null}
       <OfflineNotice text={allowOfflineSend ? null : offline} />
       <OptionFeedbackNotice sessionId={session.id} options={session.optionSpec} savedModel={session.model} />
       {options.length > 0 ? (
@@ -392,7 +389,7 @@ export function Composer({
                   type="button"
                   aria-label={`移除 ${item.kind === 'mention' ? item.path : item.name}`}
                   className="grid size-7 shrink-0 place-items-center rounded-sm text-tertiary hover:bg-card hover:text-primary md:size-5"
-                  onClick={() => setItems((current) => current.filter((other) => other.id !== item.id))}
+                  onClick={() => store.setItems(session.id, (current) => current.filter((other) => other.id !== item.id))}
                 >
                   ×
                 </button>
@@ -413,9 +410,10 @@ export function Composer({
           }`}
           placeholder={coarsePointer() ? '接着说…（@ 引用文件，/ 命令）' : `接着说…（@ 引用文件，/ 命令，${sendKeyHint(currentPlatform())}）`}
           ref={area}
-          defaultValue={draft}
+          defaultValue={initial}
           onChange={(event) => {
             setFilled(event.target.value.trim() !== '');
+            store.setText(session.id, event.target.value);
             onDraftChange(event.target.value);
             refreshTrigger();
             fitArea();

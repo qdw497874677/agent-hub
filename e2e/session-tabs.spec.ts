@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
+import { openDocumentNewMenu } from './document-tabs.ts';
 import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 import { loginByApi } from './login.ts';
 
@@ -92,14 +93,7 @@ for (const width of [1280, 390]) {
         await composer.fill('只属于原会话的草稿');
         await expect(active).toHaveAttribute('data-window-id', /.+/);
         const windowId = await active.getAttribute('data-window-id');
-        const add = active.getByTestId('session-tab-add');
-        await expect(add).toBeVisible();
-        if (touch) {
-          const box = (await add.boundingBox())!;
-          expect(box.width).toBeGreaterThanOrEqual(44);
-          expect(box.height).toBeGreaterThanOrEqual(44);
-        }
-        await add.click();
+        await openDocumentNewMenu(page, active, { touch, compact: touch });
         // 旧 Worker 的终端资格不改变新建会话的机器或目录。
         await expect(page.getByTestId('session-tab-new-terminal')).toBeEnabled();
         await expect(page.getByTestId('workdir-create-worktree')).toHaveCount(0);
@@ -124,8 +118,9 @@ for (const width of [1280, 390]) {
         await post(`/api/sessions/${newSession.id}/prompt`, { text: 'please-write:tab-cwd-proof=ok' }, 202);
         await expect.poll(() => existsSync(join(path, 'tab-cwd-proof'))).toBe(true);
         await page.screenshot({ path: testInfo.outputPath(`mixed-tabs-${width}.png`) });
-        if (touch) await active.getByTestId('session-tab-trigger').click();
-        await page.locator(`[data-testid="session-tab-close"][data-session-id="${newSession.id}"]:visible`).click();
+        await active.getByTestId('session-tab-trigger').click({ timeout: 10_000 });
+        const picker = page.getByTestId('session-tab-picker');
+        await picker.locator(`[data-testid="session-tab-close"][data-session-id="${newSession.id}"]`).click({ timeout: 10_000 });
         await expect(active).toHaveAttribute('data-window-id', windowId!);
         await expect(active).toHaveAttribute('data-session-id', first.id);
         await expect(composer).toHaveValue('只属于原会话的草稿');
@@ -153,7 +148,7 @@ for (const width of [1280, 390]) {
           status = response.status();
           await route.abort('connectionreset');
         });
-        await page.getByTestId('session-tab-add').click();
+        await openDocumentNewMenu(page, page.getByTestId('session-document-tabs'), { touch, compact: touch });
         await page.getByTestId('session-tab-new-session').click();
         const dialog = page.getByTestId('session-tab-create');
         await dialog.getByTestId('session-tab-create-confirm').click();

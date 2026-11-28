@@ -1,7 +1,7 @@
 import type { AccountDto, ProviderModelDto } from './api.ts';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_BUTTON } from './dialog-shell.tsx';
+import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_BUTTON } from './dialog-shell.tsx';
 import { providersApi, type ProviderDto, type ProviderInputDto } from './api.ts';
 import { useWorkers } from './workers.tsx';
 import { ModelEditor } from './provider-model-editor.tsx';
@@ -28,10 +28,6 @@ const blank: ProviderInputDto & { scope: 'personal' | 'team' | 'hub'; apiKey: st
 
 function errorText(error: unknown): string | null {
   return error ? (error instanceof Error ? error.message : String(error)) : null;
-}
-
-export function ProvidersDialog({ onClose, me }: { onClose: () => void; me: AccountDto | null }) {
-  return <DialogShell title="模型提供商" onClose={onClose} wide><ProviderSettings me={me} /></DialogShell>;
 }
 
 export function ProviderSettings({ me }: { me: AccountDto | null }) {

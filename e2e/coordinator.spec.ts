@@ -154,6 +154,7 @@ test('侧栏「新开主会话」从界面走同一条 POST：选长期目录 �
   await page.goto(`/#/p/${seeded.projectId}`);
   // 手机上侧栏是抽屉：先打开导航再点动作（桌面也渲染一份侧栏，所以限定在抽屉里点）
   await page.getByRole('button', { name: '打开侧栏' }).click();
+  await page.getByTestId('nav-sheet').getByRole('button', { name: '新建', exact: true }).click();
   await page.getByTestId('nav-sheet').getByTestId('sidebar-new-coordinator').click();
 
   const dialog = page.getByTestId('coordinator-dialog');

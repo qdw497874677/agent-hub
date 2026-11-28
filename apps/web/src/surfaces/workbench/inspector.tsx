@@ -76,6 +76,8 @@ interface Props {
   readonly onBrowseFiles: () => void;
   /** 宽屏停靠在对话右边（17.5–20rem），不加遮罩、不压住对话；窄屏照旧是底部抽屉。 */
   readonly docked?: boolean;
+  /** 状态已在外层标题栏显示时不重复。 */
+  readonly hideStatus?: boolean;
 }
 
 /**
@@ -97,7 +99,7 @@ const ACTION_LABEL: Record<string, string> = {
   'session.continue': '换机继续'
 };
 
-export function SessionDetails({ canvas, session, artifacts, live, onClose, onBrowseFiles, docked = false }: Props) {
+export function SessionDetails({ canvas, session, artifacts, live, onClose, onBrowseFiles, docked = false, hideStatus = false }: Props) {
   const [showJournal, setShowJournal] = useState(false);
   const [journal, setJournal] = useState<readonly JournalEntryDto[]>([]);
   const [activity, setActivity] = useState<readonly SessionActivityDto[]>([]);
@@ -139,7 +141,7 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
         data-docked={docked ? 'true' : undefined}
         className={
           docked
-            ? 'flex h-full w-[17.5rem] shrink-0 flex-col border-l border-hair bg-surface-1 xl:w-80'
+            ? 'flex h-full w-full min-w-0 shrink-0 flex-col bg-surface-1'
             : 'flex max-h-[85vh] w-full flex-col rounded-t-[var(--radius-overlay)] border-t border-strong bg-overlay pb-[env(safe-area-inset-bottom)] shadow-overlay md:h-full md:max-h-none md:w-[360px] md:rounded-none md:border-l md:border-t-0 md:pb-0'
         }
         onClick={(event) => event.stopPropagation()}
@@ -147,9 +149,9 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
         <header className="shrink-0 border-b border-hair px-3 pb-2 pt-2">
           <div className="flex min-w-0 items-center gap-2">
             <p className="shrink-0 text-head text-primary">会话详情</p>
-            <span className="inline-flex min-w-0 items-center rounded-sm border border-hair px-1.5 py-px">
+            {!hideStatus ? <span className="inline-flex min-w-0 items-center rounded-sm border border-hair px-1.5 py-px">
               <StatusPill status={status} reason={live?.reason ?? null} lastSeq={live?.lastSeq ?? session.lastSeq} />
-            </span>
+            </span> : null}
             <button className="ml-auto h-9 shrink-0 px-2 text-meta text-tertiary hover:text-primary" onClick={onClose}>
               关闭
             </button>

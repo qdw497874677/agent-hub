@@ -1,4 +1,3 @@
-import { modelLabel } from '../../atoms/model-label.ts';
 import { DeliveryContext, useDeliveries } from '../../atoms/delivery-note.tsx';
 import { ProvenanceRow } from '../../atoms/provenance-row.tsx';
 import { COORDINATOR_TITLE, UNASSIGNED_TITLE } from '../../atoms/session-groups.ts';
@@ -10,7 +9,7 @@ import { AttentionAutoAck } from '../../atoms/attention.tsx';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
 import { api, sessionGroupId, sessionStartupApi } from '../../shell/api.ts';
-import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, questionOf } from '../../atoms/chat-blocks.tsx';
+import { ChatBlock, Dropdown, MenuItem, WorkGroup, questionOf } from '../../atoms/chat-blocks.tsx';
 import { useDisplaySettings } from '../../atoms/display-preferences.tsx';
 import { groupTimeline } from '../../atoms/timeline-groups.ts';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
@@ -18,7 +17,7 @@ import { Composer } from '../../atoms/composer.tsx';
 import { HandoffGate } from '../../atoms/agent-handoff.tsx';
 import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './continue-elsewhere.tsx';
 import { SessionDetails } from './inspector.tsx';
-import { useNarrow, useWide } from '../../shell/device.ts';
+import { useNarrow } from '../../shell/device.ts';
 import { localTime } from '../../shell/local-time.ts';
 import { StatusPill } from '../../atoms/status.tsx';
 import { attachmentsCapability } from '../../atoms/attachments.ts';
@@ -41,12 +40,12 @@ import { useAddRepository } from './use-add-repository.ts';
 import { WorkspaceSheet } from './workspace-sheet.tsx';
 import { gitApi } from '../../shell/api.ts';
 import { FileLinksContext, type FileLinks } from '../../atoms/file-links.tsx';
-import { SESSION_TABS, readChangesSplit, readStoredTab, sessionTabLabel, stepTab, storeChangesSplit, storeTab, type SessionTab } from '../../atoms/session-tabs.ts';
+import { SESSION_TABS, readStoredTab, sessionTabLabel, storeTab, type SessionTab } from '../../atoms/session-tabs.ts';
 import { PreviewPanel } from '../../atoms/preview-panel.tsx';
 import { PreviewWorkflowAction } from '../../atoms/preview-workflow.tsx';
 import { useDevelopmentServices } from './development-services.tsx';
 import { RewindDialog } from '../../atoms/rewind-dialog.tsx';
-import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from '../../atoms/live.ts';
+import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession, type StreamState } from '../../atoms/live.ts';
 import { ContextMeter } from '../../atoms/context-meter.tsx';
 import { PinnedMark } from '../../atoms/pinned-mark.tsx';
 import { SessionLinksDialog } from '../../atoms/session-links-dialog.tsx';
@@ -73,6 +72,10 @@ import { Sheet } from '../../shell/dialog-shell.tsx';
 import { useHandoffCandidates } from '../../atoms/agent-handoff.tsx';
 import { ModelPicker } from '../../atoms/model-picker.tsx';
 import { SessionSwitcher } from './session-switcher.tsx';
+import { useAccount } from '../../shell/account-context.ts';
+import { useScrollPositionStore } from '../../atoms/scroll-position-context.tsx';
+import { HandoffEntryInSessionMenu } from '../../atoms/handoff-entry-context.ts';
+import { workspaceSetup } from './worktree-config.ts';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -101,6 +104,11 @@ interface Props {
   readonly independentWorkdir?: boolean;
   /** The host owns the open-view tabs; this does not change external session links. */
   readonly documentTabs?: ReactNode;
+  readonly globalNav?: ReactNode;
+  readonly projectNav?: ReactNode;
+  readonly streamState?: StreamState;
+  readonly documentHost?: string;
+  readonly isOriginActive?: () => boolean;
 }
 
 /**
@@ -145,15 +153,20 @@ export function FocusView({
   onChangeOption,
   windowChrome,
   independentWorkdir = false,
-  documentTabs
+  documentTabs, globalNav, projectNav, streamState, documentHost, isOriginActive
 }: Props) {
+  const account = useAccount();
+  const originLife = useRef<object | null>(null);
+  const originToken = useMemo(() => ({}), [account?.id, canvas.project.id, documentHost, session.id]);
+  useLayoutEffect(() => {
+    originLife.current = originToken;
+    return () => { if (originLife.current === originToken) originLife.current = null; };
+  }, [originToken]);
   const [busy, setBusy] = useState(false);
   // 组合工作目录（多仓库项目）：只有这种会话才有 groupId
   const groupId = sessionGroupId(session);
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [details, setDetails] = useState(false);
-  const wide = useWide();
   // 只有手机上会用到这个对话框：桌面的「Aa」是内嵌的 DisplayMenu。
   const [displayOpen, setDisplayOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -188,12 +201,11 @@ export function FocusView({
     setFindOpen(false);
   }, [session.id]);
   const queries = useQueryClient();
-  const [tab, setTab] = useState<SessionTab>(() => readStoredTab(session.id) ?? 'chat');
-  const [preferSplit, setPreferSplit] = useState(() => !windowChrome && readChangesSplit(session.id));
+  const [tab, setTab] = useState<SessionTab>(() => readStoredTab(documentHost ? `${documentHost}:${session.id}` : session.id) ?? 'chat');
+  const [expandedChanges, setExpandedChanges] = useState(false);
+  const tabStorageKey = documentHost ? `${documentHost}:${session.id}` : session.id;
   const [viewWidth, setViewWidth] = useState(0);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
-  const splitHeadingRef = useRef<HTMLDivElement | null>(null);
-  const wasSplit = useRef(false);
   useEffect(() => {
     const node = viewRef.current;
     if (!node) return;
@@ -201,25 +213,21 @@ export function FocusView({
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
-  const splitAvailable = wide && !windowChrome && viewWidth >= 1000;
-  const splitChanges = preferSplit && splitAvailable && tab === 'chat' && !details;
-  useEffect(() => {
-    if (wasSplit.current && !splitAvailable && tab === 'chat') setTab('changes');
-    wasSplit.current = splitChanges;
-  }, [splitAvailable, splitChanges, tab]);
+  const splitAvailable = viewWidth >= 900;
+  const veryNarrow = viewWidth > 0 && viewWidth < 420;
+  const splitChanges = splitAvailable && tab === 'changes' && !expandedChanges;
   // 访问过的页签保持挂载；单独记住并排偏好，窄屏暂时无法并排时也不清除它。
   const [visited, setVisited] = useState<ReadonlySet<SessionTab>>(() => new Set(['chat', tab]));
   const [reveal, setReveal] = useState<Reveal | null>(null);
   const [changesJump, setChangesJump] = useState<ChangesJump | null>(null);
   const showChanges = useCallback((jump: ChangesJump | null) => {
     setChangesJump(jump);
-    if (preferSplit && splitAvailable) setDetails(false);
-    else setTab('changes');
-  }, [preferSplit, splitAvailable]);
+    setTab('changes');
+  }, []);
   // 刷新 / 重进时回到上次那一页；记不住的存储（隐私模式）就按默认走。
   useEffect(() => {
-    storeTab(session.id, tab);
-  }, [session.id, tab]);
+    storeTab(tabStorageKey, tab);
+  }, [tabStorageKey, tab]);
   /**
    * 会话内搜索的入口：只接管这条会话视图里的 ⌘F / Ctrl+F。
    * - 输入框里不拦：用户可能正在 composer 里改字，那里的 ⌘F 该留给浏览器。
@@ -288,15 +296,14 @@ export function FocusView({
     quoteSeq.current += 1;
     setQuote({ text, nonce: quoteSeq.current, focus: !window.matchMedia('(any-pointer: coarse)').matches });
   };
-  const previewFeedbackToChat = (feedback: string) => {
-    const base = draftRef.current;
-    const text = base + (base === '' ? '' : base.endsWith('\n\n') ? '' : base.endsWith('\n') ? '\n' : '\n\n') + feedback;
-    draftRef.current = text;
-    onDraftChange(text);
-    quoteSeq.current += 1;
-    setQuote({ text, nonce: quoteSeq.current, focus: false });
-    setTab('chat');
-  };
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || tab === 'chat' || event.defaultPrevented || !viewRef.current?.contains(document.activeElement) || document.querySelector('[role="dialog"]')) return;
+      event.preventDefault(); setTab('chat'); (viewRef.current?.querySelector<HTMLButtonElement>(`#session-tab-${tab}`) ?? moreRef.current)?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tab]);
   // 换会话：上一条会话的引用不该再往新草稿里写
   useEffect(() => {
     setQuote(null);
@@ -312,7 +319,7 @@ export function FocusView({
     openChanges: () => showChanges(null)
   }), [workspaceRoot, showChanges]);
   useEffect(() => {
-    const opened = splitChanges ? 'changes' : tab;
+    const opened = tab;
     setVisited((current) => current.has(opened) ? current : new Set([...current, opened]));
   }, [tab, splitChanges]);
   // 组合会话按当前选中的成员仓库取 git / 文件；单仓 member 为 null，行为与原来一样。
@@ -365,7 +372,8 @@ export function FocusView({
     predicate: (q) => q.queryKey[0] === 'files' && (q.queryKey[1] === fileKeys.dir[1] || q.queryKey[1] === session.id)
   }) > 0;
   const [settings, changeSettings] = useDisplaySettings();
-  const { nearEnd, ref: scroller, scrollToEnd } = useStickToBottom<HTMLDivElement>(session.id);
+  const scrollStore = useScrollPositionStore();
+  const { nearEnd, ref: scroller, scrollToEnd } = useStickToBottom<HTMLDivElement>(session.id, scrollStore && account ? { store: scrollStore, key: [account.id, canvas.project.id, documentHost ?? (windowChrome ? 'canvas' : 'focus'), session.id], historyReady: historyState === undefined || historyState === 'loaded' } : undefined);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
   // 主会话要在标题上认得出自己；没有登记的无任务会话（bot / 群）不留空标题。
@@ -423,7 +431,7 @@ export function FocusView({
   const settle = settleGate({ settled, status });
   // 改名、分叉、收起、常驻、删除后的缓存改写：和侧栏行菜单是同一份（atoms/use-session-actions.ts）。
   const actions = useSessionActions(canvas.project.id);
-  const tabs = SESSION_TABS;
+  const tabs = SESSION_TABS.filter((item) => item !== 'chat');
   const agentLabel = agent?.label ?? session.agentId;
   const lastSeq = live?.lastSeq ?? session.lastSeq;
   // 这一轮结束了、后台还在跑（会话保活）：块序列里还在陆续有东西来，就低调说一句。
@@ -553,7 +561,7 @@ export function FocusView({
   const turnRunning = waitingForReply(live, status);
   // 窄屏：进度收成对话末尾一条、工作区收成一个入口。桌面布局一点不动。
   const deviceNarrow = useNarrow();
-  const narrow = deviceNarrow || Boolean(windowChrome && viewWidth > 0 && viewWidth < 640);
+  const narrow = deviceNarrow || (viewWidth > 0 && viewWidth < 768);
   // 只有这一轮已经结束、会话也不在跑时，才把待答项当成「现在可以回」；
   // 正在跑的时候列表里可能还留着上一轮的线索，不能顺手说成当前阻塞。
   const answerItem =
@@ -799,8 +807,10 @@ export function FocusView({
    */
   async function sendAndNew(): Promise<void> {
     const taskId = session.taskId;
-    if (taskId === null) return;
+    const active = () => originLife.current === originToken && (isOriginActive?.() ?? true);
+    if (taskId === null || !active()) return;
     await run(async () => {
+      if (!active()) return;
       const created = await api.derive({
         taskId,
         agentId: session.agentId,
@@ -810,7 +820,7 @@ export function FocusView({
       });
       // 先把画布缓存换成含新会话的那一份再跳：专注页按 id 在画布里找会话，找不到会退回画布。
       await queries.invalidateQueries({ queryKey: ['canvas', canvas.project.id] });
-      onOpenSession(created.id);
+      if (active()) onOpenSession(created.id);
     });
   }
 
@@ -825,35 +835,23 @@ export function FocusView({
     }
   }
 
-  // 宽屏的详情停靠在对话右边，不压住对话；画布里的浮窗太窄，照旧用抽屉
-  const docked = wide && !windowChrome;
-  const detailsPanel = details ? (
-    <SessionDetails
-      canvas={canvas}
-      session={session}
-      artifacts={artifacts}
-      live={live}
-      docked={docked}
-      onClose={() => setDetails(false)}
-      onBrowseFiles={() => { setDetails(false); setTab('files'); }}
-    />
-  ) : null;
   return (
     <div ref={viewRef} data-focus-view className="flex min-h-0 flex-1 bg-canvas">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header
-        className={`flex h-[48px] shrink-0 items-center gap-2 border-b border-hair px-2 md:h-12 md:px-3 ${windowChrome ? 'window-drag cursor-move select-none' : ''}`}
+        className={`flex h-[48px] min-w-0 shrink-0 items-center gap-0 border-b border-hair px-1 sm:gap-1 md:h-12 md:px-3 ${windowChrome ? 'window-drag cursor-move select-none' : ''}`}
         style={windowChrome?.onSwipe ? { touchAction: 'pan-y' } : undefined}
         data-testid={windowChrome?.onSwipe ? 'window-swipe-strip' : windowChrome ? 'window-titlebar' : 'focus-header'}
         onPointerDown={windowChrome?.onSwipe ? (event) => { swipeStart.current = { x: event.clientX, y: event.clientY }; } : undefined}
         onPointerUp={windowChrome?.onSwipe ? (event) => { const from = swipeStart.current; swipeStart.current = null; if (!from) return; const dx = event.clientX - from.x; if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(event.clientY - from.y)) windowChrome.onSwipe?.(dx < 0 ? 1 : -1); } : undefined}
       >
-        {onBack ? (
+        {projectNav}{globalNav}
+        {onBack && !narrow ? (
           <button className="flex h-[44px] min-w-[44px] shrink-0 items-center justify-center px-1 text-meta text-tertiary hover:text-primary md:h-9 md:min-w-0" onClick={onBack} aria-label="返回">
             ←<span className="hidden sm:inline">&nbsp;返回</span>
           </button>
         ) : null}
-        {onProjectNavigation ? <button type="button" className="flex size-[44px] shrink-0 items-center justify-center text-tertiary hover:text-primary md:hidden" aria-label="项目与全部会话" title="项目与全部会话" onClick={onProjectNavigation}>☰</button> : null}
+        {onProjectNavigation ? <button type="button" className="flex size-[44px] shrink-0 items-center justify-center text-tertiary hover:text-primary lg:hidden" aria-label="项目与全部会话" title="项目与全部会话" onClick={onProjectNavigation}>☰</button> : null}
         <div className="min-w-0 flex-1">
           {renaming ? (
             <input
@@ -881,16 +879,9 @@ export function FocusView({
               onClick={startRename}
             >
               {session.title || task?.title || (coordinatorIds.has(session.id) ? COORDINATOR_TITLE : UNASSIGNED_TITLE)}
-            </button>{pinned ? <PinnedMark testId="session-pinned-mobile" className="size-3 text-secondary md:hidden" /> : null}</div>
+            </button>{pinned ? <PinnedMark testId="session-pinned-mobile" className="size-3 shrink-0 text-secondary" /> : null}</div>
           )}
-          <p className={`${narrow ? 'hidden' : 'hidden md:flex'} min-w-0 items-center gap-1 font-mono text-meta text-tertiary`}>
-            <span className="truncate">
-              {session.title && task ? `${task.title} · ` : ''}{agentLabel} · 配置模型：{modelLabel(session.model)}
-              {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
-            </span>
-            {/* 常驻标记放在状态行里：窄屏标题被截断时这一枚也不会换行 */}
-            {pinned ? <PinnedMark testId="session-pinned" className="size-3 text-secondary" /> : null}
-          </p>
+
         </div>
         <StatusPill
           status={status}
@@ -898,31 +889,18 @@ export function FocusView({
           lastSeq={live?.lastSeq ?? session.lastSeq}
           attention={status === 'done' && answerItem ? { possible: answerItem.possible } : null}
         />
+        {streamState === 'reconnecting' ? <span role="status" className="shrink-0 text-meta text-tertiary">重新连接中…</span> : null}
         {documentTabs ?? (narrow && !independentWorkdir ? <SessionSwitcher canvas={canvas} session={session} compact status={status} lastSeq={live?.lastSeq ?? session.lastSeq} onOpen={onOpenSession} /> : null)}
+        {!veryNarrow ? <div role="toolbar" aria-label="会话工具" data-testid="session-tabs" className="flex min-w-7 shrink items-center gap-0.5 overflow-x-auto">
+          {tabs.map((t) => <button key={t} type="button" id={`session-tab-${t}`} data-testid={`session-tab-${t}`} aria-pressed={tab === t} aria-label={sessionTabLabel(t, t === 'changes' ? changeCount : undefined)} title={sessionTabLabel(t, t === 'changes' ? changeCount : undefined)} onClick={() => { setExpandedChanges(false); setTab(tab === t ? 'chat' : t); }} className={`min-h-[44px] rounded-sm text-meta ${narrow ? 'min-w-7 px-1' : 'px-2'} ${tab === t ? 'border-b-2 border-sage text-primary' : 'text-tertiary hover:text-primary'}`}>{narrow ? <span aria-hidden>{t === 'files' ? '▤' : t === 'changes' ? '◫' : t === 'preview' ? '◉' : 'ⓘ'}</span> : sessionTabLabel(t, t === 'changes' ? changeCount : undefined)}</button>)}
+        </div> : null}
         <span className="flex shrink-0 items-center">
-          <button
-            className={`${narrow ? 'hidden' : 'hidden md:flex'} h-11 shrink-0 items-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary md:px-2 md:h-9`}
-            aria-label={`连接 ${linkedSessions.length}`}
-            onClick={() => setLinksOpen(true)}
-            title="连接同项目的其他会话"
-          >
-            连接 {linkedSessions.length}
-          </button>
-          <button
-            className={`${narrow ? 'hidden' : 'hidden md:flex'} h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary md:h-9`}
-            aria-pressed={details}
-            onClick={() => setDetails((open) => !open)}
-          >
-            详情
-          </button>
-          <span className={narrow ? 'hidden' : 'hidden md:flex'}>
-            <DisplayMenu settings={settings} onChange={changeSettings} />
-          </span>
           <Dropdown key={session.id} label="更多" icon="⋯" triggerRef={moreRef} testId="session-more-trigger" menuClassName="max-h-[min(75dvh,640px)] overflow-y-auto overscroll-contain">
             {(close) => (
               <SessionMenuPages narrow={narrow}>{(page, navigate) => <>
                 {narrow && page === 'home' ? <MenuGroup label="工具">
-                  {tabs.filter((t) => t !== 'chat').map((t) => <MenuItem key={t} className="min-h-[44px]" title={sessionTabLabel(t, t === 'changes' ? changeCount : undefined)} testId={`session-more-${t}`} onClick={() => { close(); setTab(t); }} />)}
+                  {onBack ? <MenuItem className="min-h-[44px]" title="返回" onClick={() => { close(); onBack(); }} /> : null}
+                  {veryNarrow ? tabs.map((t) => <MenuItem key={t} className="min-h-[44px]" title={sessionTabLabel(t, t === 'changes' ? changeCount : undefined)} testId={`session-more-tool-${t}`} onClick={() => { close(); moreRef.current?.focus(); setExpandedChanges(false); setTab(tab === t ? 'chat' : t); }} />) : null}
                   <MenuItem className="min-h-[44px]" title="工作区" testId="session-more-workspace" onClick={() => { close(); setWorkspaceOpen(true); }} />
                   {onSearch ? <MenuItem className="min-h-[44px]" title="搜索任务与会话" onClick={() => { close(); onSearch(); }} /> : null}
                   <MenuItem className="min-h-[44px] border-t border-hair" title="会话与显示 ›" testId="session-more-details" onClick={() => navigate('details')} />
@@ -935,7 +913,7 @@ export function FocusView({
                     hint="查看会话、工作目录和用量"
                     onClick={() => {
                       close();
-                      setDetails(true);
+                      setTab('details');
                     }}
                   />
                   <MenuItem
@@ -956,7 +934,8 @@ export function FocusView({
                   />
                 </MenuGroup> : null}
                 {!narrow || page === 'actions' ? <>
-                {narrow ? <MenuGroup label="继续会话"><MenuItem title="交给其他 Agent 继续" hint="新建会话，带上下文继续" testId="agent-handoff-trigger" onClick={() => { close(); moreRef.current?.focus(); setMobileHandoffSession(session.id); }} /></MenuGroup> : null}
+                {<MenuGroup label="继续会话"><MenuItem title="交给其他 Agent 继续" hint="新建会话，带上下文继续" testId="agent-handoff-trigger" onClick={() => { close(); moreRef.current?.focus(); setMobileHandoffSession(session.id); }} /></MenuGroup>}
+                {!narrow ? <MenuGroup label="会话与显示"><MenuItem title="会话来历" onClick={() => { close(); setProvenanceOpen(true); }} /><MenuItem title="连接会话…" onClick={() => { close(); setLinksOpen(true); }} /><MenuItem title="显示设置…" onClick={() => { close(); setDisplayOpen(true); }} /><MenuItem title="重命名" onClick={() => { close(); startRename(); }} /></MenuGroup> : null}
                 <MenuGroup label="这次会话" className="border-t border-hair md:border-t-0">
                   <MenuItem
                     title="分叉"
@@ -1078,7 +1057,7 @@ export function FocusView({
         </span>
       </header>
       {!narrow && !independentWorkdir && !documentTabs ? <SessionSwitcher canvas={canvas} session={session} compact={false} status={status} lastSeq={live?.lastSeq ?? session.lastSeq} onOpen={onOpenSession} /> : null}
-      {narrow ? <MobileHandoff key={session.id} session={session} projectId={canvas.project.id} open={mobileHandoffSession === session.id} onClose={() => setMobileHandoffSession(null)} restoreFocusRef={moreRef} /> : null}
+      {<MobileHandoff key={session.id} session={session} projectId={canvas.project.id} open={mobileHandoffSession === session.id} onClose={() => setMobileHandoffSession(null)} restoreFocusRef={moreRef} />}
       {session.kind === 'side' ? (
         <button
           type="button"
@@ -1091,10 +1070,9 @@ export function FocusView({
           <span className="shrink-0 text-link">返回主会话</span>
         </button>
       ) : null}
-      <div className={narrow ? 'hidden' : 'hidden md:contents'}><ProvenanceRow sessionId={session.id} />
-      <WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} />
-      {groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}</div>
-      {narrow && provenanceOpen ? <Sheet title="会话来历" testId="session-provenance-sheet" onClose={() => setProvenanceOpen(false)}><ProvenanceRow sessionId={session.id} /><WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} />{groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}</Sheet> : null}
+      {['running', 'failed'].includes(workspaceSetup(workspace)?.state ?? '') ? <WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} /> : null}
+      {!provenanceOpen && groupId !== null ? <SessionGroupLine groupId={groupId} attentionOnly /> : null}
+      {provenanceOpen ? <Sheet title="会话来历" testId="session-provenance-sheet" onClose={() => setProvenanceOpen(false)}><ProvenanceRow sessionId={session.id} />{!['running', 'failed'].includes(workspaceSetup(workspace)?.state ?? '') ? <WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} /> : null}{groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}</Sheet> : null}
       <AttentionAutoAck sessionId={session.id} />
       {isCoordinatorSession ? (
         <DelegationPanel
@@ -1152,72 +1130,6 @@ export function FocusView({
         <RewindDialog sessionId={session.id} workspaceId={session.workspaceId} promptSeq={rewindAt} onClose={() => setRewindAt(null)}
           onDone={(id, prompt) => { setRewindAt(null); onSeedDraft?.(id, prompt); onChanged(); onOpenSession(id); }} />
       ) : null}
-      {/* 右侧 pr 是给绝对定位的刷新指示器留的固定位置：它永远占这么宽，指示器出现或消失都不会让页签重排 */}
-      <div className={`relative shrink-0 items-center border-b border-hair pr-6 ${narrow ? 'hidden' : 'hidden md:flex'}`}>
-      <div role="tablist" aria-label="会话视图" className="flex gap-1 py-1.5 pl-3" data-testid="session-tabs">
-        {tabs.map((t) => (
-          <button
-            key={t}
-            role="tab"
-            id={`session-tab-${t}`}
-            aria-selected={tab === t}
-            tabIndex={tab === t ? 0 : -1}
-            onClick={() => setTab(t)}
-            onKeyDown={(e) => {
-              if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-              const delta = e.key === 'ArrowRight' ? 1 : -1;
-              const next = stepTab(tab, delta);
-              setTab(next);
-              (e.currentTarget.parentElement?.querySelector(`#session-tab-${next}`) as HTMLElement | null)?.focus();
-            }}
-            className={`flex h-11 flex-1 items-center justify-center rounded-sm px-3 text-sub md:h-8 md:flex-none ${tab === t ? 'bg-card-raised text-primary' : 'text-tertiary hover:text-secondary'}`}
-            data-testid={`session-tab-${t}`}
-          >
-            {sessionTabLabel(t, t === 'changes' ? changeCount : undefined)}
-          </button>
-        ))}
-      </div>
-        {splitAvailable ? <button type="button" data-testid="changes-split-toggle" className={`ml-2 rounded-sm px-2 py-1.5 text-meta ${splitChanges ? 'bg-card-raised text-primary' : 'text-secondary hover:bg-card-raised hover:text-primary'}`} onClick={() => {
-          const enabled = !splitChanges;
-          storeChangesSplit(session.id, enabled);
-          setPreferSplit(enabled);
-          setTab('chat');
-          if (enabled) {
-            setDetails(false);
-            requestAnimationFrame(() => splitHeadingRef.current?.focus());
-          }
-        }}>{splitChanges ? '关闭并排改动' : preferSplit && tab === 'changes' ? '返回并排' : '并排查看改动'}</button> : null}
-        {tab !== 'chat' && tab !== 'preview' && refreshing ? (
-          <span
-            role="status"
-            aria-live="polite"
-            aria-label="正在刷新文件列表"
-            title="正在刷新文件列表"
-            data-testid="files-refreshing"
-            className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-tertiary md:right-3"
-          >
-            {/* 6px 圆环转圈；系统开了「减少动态效果」就停转、变成实心小点，别让指示彻底消失 */}
-            <span
-              aria-hidden
-              className="block size-1.5 animate-spin rounded-full border-[1.5px] border-tertiary/35 border-t-tertiary motion-reduce:animate-none motion-reduce:border-transparent motion-reduce:bg-tertiary"
-            />
-          </span>
-        ) : null}
-      </div>
-      {tab === 'chat' && !developmentServices?.workspaceId ? <PreviewWorkflowAction conversationRow key={session.id} sessionId={session.id} onManage={() => setTab('preview')} onFeedback={previewFeedbackToChat} /> : null}
-      {tab !== 'chat' && narrow ? <div className="flex min-h-[44px] shrink-0 items-center gap-3 border-b border-hair px-3"><button type="button" data-testid="session-back-to-chat" className="min-h-[44px] text-sub text-link" onClick={() => setTab('chat')}>← 返回对话</button><span className="text-sub text-secondary">{sessionTabLabel(tab, tab === 'changes' ? changeCount : undefined)}</span></div> : null}
-      {visited.has('files') ? (
-        <div key={`${session.id}-files`} className={tab === 'files' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-          <FilesBrowser tab="files" sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} status={status} reveal={reveal} onQuote={quoteToChat} switcher={switcher} members={repo.members} />
-        </div>
-      ) : null}
-      {/* 预览和终端一样：首访后保持挂载（hidden 不卸载），切回来表单里没提交的内容还在 */}
-      {visited.has('preview') ? (
-        <div key={`${session.id}-preview`} className={tab === 'preview' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-          {developmentServices?.workspaceId && tab === 'preview' ? <PreviewWorkflowAction conversationRow key={`workflow-${session.id}`} sessionId={session.id} onManage={() => setTab('preview')} onFeedback={previewFeedbackToChat} /> : null}
-          <PreviewPanel key={session.id} sessionId={session.id} active={tab === 'preview'} defaultPort={canvas.project.previewPort ?? null} />
-        </div>
-      ) : null}
       {profileOpen ? (
         <SaveAgentProfileDialog
           session={session}
@@ -1247,7 +1159,6 @@ export function FocusView({
         />
       ) : null}
       {displayOpen ? <DisplaySettingsDialog settings={settings} onChange={changeSettings} onClose={() => setDisplayOpen(false)} /> : null}
-      {docked ? null : detailsPanel}
       {continuing ? (
         <ContinueDialog
           canvas={canvas}
@@ -1280,8 +1191,8 @@ export function FocusView({
       ) : null}
 
       {/* 会话内搜索：夹在页签和对话区之间，只有对话页签用得上；命中数由它直接写在下面这个滚动容器上 */}
-      <div className={`flex min-h-0 min-w-0 flex-1 ${tab === 'chat' || tab === 'changes' ? '' : 'hidden'}`}>
-      <div className={`flex min-h-0 min-w-0 flex-1 flex-col ${tab === 'chat' ? '' : 'hidden'}`}>
+      <div className="flex min-h-0 min-w-0 flex-1">
+      <div className={`flex min-h-0 min-w-0 flex-1 flex-col ${tab === 'chat' || (splitAvailable && !expandedChanges) ? '' : 'hidden'}`}>
       <FindInSession open={findOpen && tab === 'chat'} onOpenChange={setFindOpen} scrollerRef={scroller} resetKey={session.id} />
 
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -1544,7 +1455,7 @@ export function FocusView({
               <span className="min-w-0">{envNotice.text}</span>
             </p>
           ) : null}
-          <HandoffGate key={session.id} session={session} projectId={canvas.project.id} draft={draft} onDraftChange={onDraftChange}><Composer
+          <HandoffEntryInSessionMenu.Provider value><HandoffGate key={session.id} session={session} projectId={canvas.project.id} draft={draft} onDraftChange={onDraftChange}><Composer
             large
             allowOfflineSend
             session={{ ...session, status }}
@@ -1564,19 +1475,22 @@ export function FocusView({
             commands={sessionCommands(session, runtimeCommands, forkHint)}
             projectId={canvas.project.id}
             quote={quote}
-          /></HandoffGate>
+          /></HandoffGate></HandoffEntryInSessionMenu.Provider>
         </div>
       </div>
       </div>
-      {splitChanges || tab === 'changes' || visited.has('changes') ? (
-        <section aria-label="改动" data-testid="changes-workspace" className={`${tab === 'changes' || splitChanges ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-col ${splitChanges ? 'w-1/2 shrink-0 border-l border-hair' : 'flex-1'}`}>
-          {splitChanges ? <div ref={splitHeadingRef} tabIndex={-1} className="flex min-h-9 shrink-0 items-center justify-between gap-2 border-b border-hair px-3 text-sub font-medium text-secondary outline-none focus-visible:outline-2 focus-visible:outline-ring">
-            <span>改动</span>
-            <button type="button" className="shrink-0 rounded-sm px-2 py-1 text-meta text-link hover:bg-card-raised" onClick={() => {
-              setTab('changes');
-              viewRef.current?.querySelector<HTMLButtonElement>('#session-tab-changes')?.focus();
-            }}>展开改动</button>
-          </div> : null}
+      {tab !== 'chat' || visited.size > 1 ? <div className={`${tab === 'chat' ? 'hidden' : 'flex'} min-h-0 min-w-0 flex-col ${splitAvailable && !expandedChanges ? 'w-1/2 shrink-0 border-l border-hair' : 'flex-1'}`} data-testid="session-tool-panel" data-active-tool={tab}>
+        <div className="flex min-h-10 shrink-0 items-center gap-2 border-b border-hair px-3">
+          <button type="button" data-testid="session-back-to-chat" className="min-h-10 text-sub text-link" onClick={() => { setTab('chat'); (viewRef.current?.querySelector<HTMLButtonElement>(`#session-tab-${tab}`) ?? moreRef.current)?.focus(); }}>← 返回对话</button>
+          <span className="flex-1 text-sub text-secondary">{sessionTabLabel(tab, tab === 'changes' ? changeCount : undefined)}</span>
+          {refreshing && (tab === 'files' || tab === 'changes') ? <span role="status" data-testid="files-refreshing" className="text-meta text-tertiary">刷新中…</span> : null}
+          {tab === 'changes' && splitAvailable ? <button type="button" data-testid="changes-split-toggle" className="min-h-10 text-meta text-link" onClick={() => setExpandedChanges((v) => !v)}>{expandedChanges ? '返回并排' : '展开改动'}</button> : null}
+        </div>
+        {visited.has('files') ? <div key={`${session.id}-files`} className={tab === 'files' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}><FilesBrowser tab="files" sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} status={status} reveal={reveal} onQuote={quoteToChat} switcher={switcher} members={repo.members} /></div> : null}
+        {visited.has('preview') ? <div key={`${session.id}-preview`} className={tab === 'preview' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}><PreviewWorkflowAction conversationRow sessionId={session.id} onFeedback={(feedback) => { const base = draftRef.current; const text = base + (base === '' ? '' : base.endsWith('\n\n') ? '' : base.endsWith('\n') ? '\n' : '\n\n') + feedback; draftRef.current = text; onDraftChange(text); quoteSeq.current += 1; setQuote({ text, nonce: quoteSeq.current, focus: false }); setTab('chat'); }} /><PreviewPanel sessionId={session.id} active={tab === 'preview'} defaultPort={canvas.project.previewPort ?? null} /></div> : null}
+        {visited.has('details') ? <div className={tab === 'details' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}><SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} docked hideStatus onClose={() => setTab('chat')} onBrowseFiles={() => setTab('files')} /></div> : null}
+      {visited.has('changes') ? (
+        <section aria-label="改动" data-testid="changes-workspace" className={`${tab === 'changes' ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 flex-col`}>
           <FilesBrowser tab="changes" sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} status={status} jump={changesJump} onQuote={quoteToChat} switcher={switcher} members={repo.members} compact={splitChanges} sourceControl={{
             branch: groupId !== null && repo.selected === null ? '全部仓库' :
               gitStateQuery.error ? '分支未知' : gitState ? (gitState.isGit ? gitState.branch ?? '分离 HEAD' : '非 Git 目录') :
@@ -1597,9 +1511,9 @@ export function FocusView({
           }} />
         </section>
       ) : null}
+      </div> : null}
       </div>
     </div>
-    {docked ? detailsPanel : null}
     </div>
   );
 }

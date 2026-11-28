@@ -115,12 +115,13 @@ async function enrollStaleMachine(
   return workerId ?? '';
 }
 
-test('机器只有一个入口：侧栏、折叠侧栏、全站导航都到 #/machines，老后台地址换到新家', async ({ page }) => {
+test('机器入口：项目侧栏展开或收起时均从更多进入，老后台地址换到新家', async ({ page }) => {
   await loginByApi(page);
   await page.goto('/');
 
-  // 首页侧栏底部与折叠侧栏都能进；全站导航的「机器」也在
+  // 首页的机器概览和全站导航都指向同一个机器页面
   await expect(page.getByRole('link', { name: /^机器：/ }).first()).toBeVisible();
+  await page.getByTestId('shell-more').click();
   await expect(page.getByTestId('nav-machines')).toHaveAttribute('href', '#/machines');
 
   await page.getByTestId('nav-machines').click();
@@ -159,7 +160,7 @@ test('机器只有一个入口：侧栏、折叠侧栏、全站导航都到 #/ma
   await expect(page).toHaveURL(/#\/machines$/);
   await expect(page.getByTestId('machines-page')).toBeVisible();
 
-  // 折叠侧栏（56px 轨道）里也留着一个机器入口；轨道只在项目里出现，首页给的是底部的机器徽标
+  // 项目侧栏的展开状态不改变全站「更多」中的唯一机器导航
   await page.goto('/#/home');
   await expect(page.getByTestId('machines-badge')).toBeVisible();
   const csrf = await csrfOf(page.context());
@@ -173,11 +174,18 @@ test('机器只有一个入口：侧栏、折叠侧栏、全站导航都到 #/ma
   await page.reload();
   await page.goto(`/#/p/${id}/list`);
   await expect(page.getByTestId('project-sidebar')).toBeVisible();
+  await page.getByTestId('shell-more').click();
+  await expect(page.getByTestId('nav-machines')).toHaveCount(1);
+  await expect(page.locator('a[href="#/machines"]')).toHaveCount(1);
+  await expect(page.getByTestId('nav-machines')).toHaveAttribute('href', '#/machines');
+  await page.keyboard.press('Escape');
   // 真按一下「收起侧栏」，不是直接改 localStorage
   await page.getByRole('button', { name: '收起侧栏' }).click();
-  const rail = page.getByTestId('machines-rail');
-  await expect(rail).toBeVisible();
-  await rail.click();
+  await page.getByTestId('shell-more').click();
+  await expect(page.getByTestId('nav-machines')).toHaveCount(1);
+  await expect(page.locator('a[href="#/machines"]')).toHaveCount(1);
+  await expect(page.getByTestId('nav-machines')).toHaveAttribute('href', '#/machines');
+  await page.getByTestId('nav-machines').click();
   await expect(page).toHaveURL(/#\/machines$/);
   await page.evaluate(() => localStorage.removeItem('agent-hub.sidebar.collapsed'));
 });

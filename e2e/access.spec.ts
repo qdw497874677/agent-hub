@@ -42,7 +42,7 @@ test('外部接入页：限项目令牌、只显示一次、测试连接、调�
   // —— 1. 从账号菜单进页面 ——
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/');
-  await page.getByRole('button', { name: '账号' }).click();
+  await page.getByTestId('shell-more').click();
   await page.getByTestId('menu-access').click();
   await expect(page.getByRole('heading', { name: '外部接入（MCP）' })).toBeVisible();
   await expect(page.getByTestId('access-endpoint')).toContainText('/openapi/v1/mcp');

@@ -68,7 +68,7 @@ test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新
   await page.getByTestId('open-files').click();
   // 详情 → 浏览文件：关掉详情，切到会话的「文件」标签页（不再是全屏浮层）
   await expect(page.getByTestId('session-back-to-chat')).toBeVisible();
-  await expect(page.getByTestId('open-files')).toHaveCount(0);
+  await expect(page.getByTestId('open-files')).toBeHidden();
   const browser = page.getByTestId('files-panel-files');
   await expect(browser.locator('[data-path="src"]')).toBeVisible();
   await expect(browser.locator('[data-path=".env"]')).toHaveCount(0);
@@ -140,7 +140,7 @@ test('文件浏览（桌面）：根目录完整、列表宽度可拖动并记�
   expect(await page.evaluate(() => localStorage.getItem('agent-hub:files-list-width'))).toBe(String(Math.round(after)));
 
   await page.reload();
-  await page.getByTestId('session-tab-files').click();
+  await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-pressed', 'true');
   const reloaded = (await page.getByTestId('files-panel-files').locator('aside').boundingBox())!.width;
   expect(Math.abs(reloaded - after)).toBeLessThan(2);
   await page.screenshot({ path: `${SHOTS}/file-1280.png` });

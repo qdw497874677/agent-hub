@@ -1,25 +1,32 @@
 import { expect, type Page } from '@playwright/test';
 
-type Tool = 'files' | 'changes' | 'preview';
+type Tool = 'files' | 'changes' | 'preview' | 'details';
 
 /** Choose the currently visible navigation, including after a viewport resize. */
 export async function openSessionTool(page: Page, tool: Tool) {
-  if ((page.viewportSize()?.width ?? 0) < 768) {
-    await page.getByTestId('session-more-trigger').click();
-    await page.getByTestId(`session-more-${tool}`).click();
-    await expect(page.getByTestId('session-back-to-chat')).toBeVisible();
+  const host = page.locator('[data-focus-view]');
+  await expect(host).toBeVisible({ timeout: 10_000 });
+  const button = page.getByTestId(`session-tab-${tool}`);
+  // ResizeObserver may not have applied the compact navigation on the first render.
+  await expect.poll(async () => {
+    const width = await host.evaluate((element) => element.getBoundingClientRect().width);
+    return width > 0 && (await button.count()) === (width < 420 ? 0 : 1);
+  }, { timeout: 10_000 }).toBe(true);
+  if (await button.count()) {
+    if (await button.getAttribute('aria-pressed', { timeout: 10_000 }) !== 'true') await button.click({ timeout: 10_000 });
+    await expect(button).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 });
   } else {
-    await page.getByTestId(`session-tab-${tool}`).click();
-    await expect(page.getByTestId(`session-tab-${tool}`)).toHaveAttribute('aria-selected', 'true');
+    const panel = page.getByTestId('session-tool-panel');
+    const active = await panel.count() ? await panel.getAttribute('data-active-tool', { timeout: 10_000 }) : null;
+    if (active !== tool) {
+      await page.getByTestId('session-more-trigger').click({ timeout: 10_000 });
+      await page.getByTestId(`session-more-tool-${tool}`).click({ timeout: 10_000 });
+    }
   }
+  await expect(page.getByTestId('session-back-to-chat')).toBeVisible({ timeout: 10_000 });
 }
 
 export async function backToChat(page: Page) {
-  if ((page.viewportSize()?.width ?? 0) < 768) {
-    await page.getByTestId('session-back-to-chat').click();
-  } else {
-    await page.getByTestId('session-tab-chat').click();
-    await expect(page.getByTestId('session-tab-chat')).toHaveAttribute('aria-selected', 'true');
-  }
+  await page.getByTestId('session-back-to-chat').click();
   await expect(page.getByRole('log', { name: '会话记录' })).toBeVisible();
 }

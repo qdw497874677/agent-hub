@@ -83,12 +83,21 @@ test('手机窗口选择、滑动和项目全部会话不影响草稿或运行',
     await expect(page.getByRole('button', { name: '窗口 2/2' })).toBeFocused();
     await page.getByRole('button', { name: '窗口 2/2' }).click();
     await page.getByRole('button', { name: /查看项目全部会话/ }).click();
-    const workspaces = drawer.getByTestId('sidebar-workspace-group');
-    await expect(workspaces).toHaveCount(1);
-    const workspaceToggle = workspaces.getByTestId('sidebar-workspace-toggle');
+    // 登记的空目录也在树中；只折叠当前会话所属的工作空间。
+    const selectedWorkspace = drawer.getByTestId('sidebar-workspace-group').filter({ has: page.locator(`[data-testid="sidebar-session-row"][data-session-id="${b}"]`) });
+    await expect(selectedWorkspace).toHaveCount(1);
+    // 折叠后会话行不再渲染，用稳定的工作空间 key 定位同一个组以便重新展开。
+    const workspaceKey = await selectedWorkspace.getAttribute('data-workspace-key');
+    expect(workspaceKey).not.toBeNull();
+    const workspace = drawer.locator(`[data-testid="sidebar-workspace-group"][data-workspace-key=${JSON.stringify(workspaceKey)}]`);
+    const workspaceToggle = workspace.getByTestId('sidebar-workspace-toggle');
+    await expect(workspaceToggle).toHaveAttribute('aria-expanded', 'true');
     await workspaceToggle.click();
+    await expect(workspaceToggle).toHaveAttribute('aria-expanded', 'false');
     await expect(drawer.locator(`[data-testid="sidebar-session-row"][data-session-id="${b}"]`)).toHaveCount(0);
     await workspaceToggle.click();
+    await expect(workspaceToggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(workspace.locator(`[data-testid="sidebar-session-row"][data-session-id="${b}"] [aria-current="page"]`)).toBeVisible();
     await drawer.locator(`[data-testid="sidebar-session-row"][data-session-id="${c}"] [data-testid="sidebar-session"]`).click();
     await expect(page).toHaveURL(new RegExp(c));
     expect(existsSync(join(root, 'hold-navigation.go'))).toBe(false);
@@ -107,6 +116,8 @@ test('手机窗口选择、滑动和项目全部会话不影响草稿或运行',
     await expect(page.getByRole('button', { name: /^窗口 \d/ })).toHaveCount(0);
     const desktopSidebar = page.getByTestId('project-sidebar');
     await expect(desktopSidebar).toBeVisible();
+    await desktopSidebar.getByRole('button', { name: '新建', exact: true }).click();
+    await expect(desktopSidebar.getByRole('menuitem', { name: '新开主会话' })).toBeVisible();
     expect(await desktopSidebar.getByTestId('sidebar-new-coordinator').evaluate((action) => Boolean(action.compareDocumentPosition(action.closest('aside')!.querySelector('nav[aria-label="任务与会话"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
   } finally {
     stopFakeWorker();

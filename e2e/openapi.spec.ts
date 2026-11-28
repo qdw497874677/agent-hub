@@ -36,7 +36,7 @@ test('开放 API：令牌、对话事件投影、MCP、权限拒绝、本机永�
   // —— 1. 设置里建令牌：明文只显示一次（手机宽度） ——
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
-  await page.getByRole('button', { name: '账号' }).click();
+  await page.getByTestId('global-menu-button').click();
   await page.getByTestId('menu-access').click();
   await expect(page.getByRole('heading', { name: '外部接入（MCP）' })).toBeVisible();
   const name = `e2e-bot-${Date.now().toString(36)}`;
@@ -170,7 +170,7 @@ test('开放 API：令牌、对话事件投影、MCP、权限拒绝、本机永�
   // —— 6. 吊销：立刻 401（在 UI 里点） ——
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
-  await page.getByRole('button', { name: '账号' }).click();
+  await page.getByTestId('global-menu-button').click();
   await page.getByTestId('menu-access').click();
   page.once('dialog', (confirm) => void confirm.accept());
   await page.locator(`[data-token-name="${name}"]`).getByTestId('token-revoke').click();

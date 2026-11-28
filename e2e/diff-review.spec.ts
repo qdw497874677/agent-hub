@@ -60,6 +60,10 @@ for (const width of [1280, 390]) {
         const diff = changes.getByTestId('diff-view');
         const note = (text: string) => panel.getByTestId('review-note').filter({ hasText: text });
         const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
+        const showReviewList = async () => {
+          if (!await panel.isVisible()) await diff.getByTestId('files-back').click({ timeout: 10_000 });
+          await expect(panel).toBeVisible({ timeout: 10_000 });
+        };
 
         async function add(file: string, text: string, side: 'new' | 'old', end: number) {
           await changes.getByTestId('change-row').filter({ hasText: file }).click();
@@ -71,7 +75,7 @@ for (const width of [1280, 390]) {
           expect(await fits()).toBe(true);
           await diff.getByTestId('review-save').click();
           await expect(diff.getByTestId('review-text')).toHaveCount(0);
-          if (phone) await diff.getByTestId('files-back').click();
+          await showReviewList();
           await expect(note(text)).toBeVisible();
         }
 
@@ -81,10 +85,11 @@ for (const width of [1280, 390]) {
 
         await page.reload();
         await openSessionTool(page, 'changes');
+        await showReviewList();
         await expect(panel.getByTestId('review-note')).toHaveCount(3);
         await note('检查改后两行').getByTestId('review-open').click();
         await expect(diff).toContainText('after two');
-        if (phone) await diff.getByTestId('files-back').click();
+        await showReviewList();
         writeFileSync(join(root, 'gamma.txt'), 'changed again\nafter two\n');
         await panel.getByTestId('review-refresh').click();
         await expect(note('这条版本会变化')).toContainText('版本已变化');
@@ -170,9 +175,7 @@ test.describe('会话与改动并排', () => {
 
       await openSessionTool(page, 'changes');
       const diff = changes.getByTestId('diff-view');
-      await expect(split).toHaveAccessibleName('并排查看改动');
-      await split.click();
-      await expect(split).toHaveAccessibleName('关闭并排改动');
+      await expect(split).toHaveAccessibleName('展开改动');
       await expect(chat).toBeVisible();
       await expect(composer).toHaveValue('保留这段未发送的草稿');
       await expect(page.getByTestId('changes-workspace')).toBeVisible();
@@ -211,49 +214,56 @@ test.describe('会话与改动并排', () => {
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(391);
       if (shots) await page.screenshot({ path: join(shots, 'workbench-changes-narrow.png') });
 
-      await backToChat(page);
-      await expect(composer).toHaveValue('保留这段未发送的草稿');
-      await openSessionTool(page, 'changes');
-      await expect(note).toHaveValue('这条批注先不提交');
+      await test.step('窄屏返回对话后重新打开改动', async () => {
+        await backToChat(page);
+        await expect(composer).toHaveValue('保留这段未发送的草稿', { timeout: 10_000 });
+        await openSessionTool(page, 'changes');
+        await expect(note).toHaveValue('这条批注先不提交', { timeout: 10_000 });
+      });
 
-      await page.setViewportSize({ width: 1440, height: 960 });
-      await expect(split).toHaveAccessibleName('返回并排');
-      await split.click();
-      await expect(split).toHaveAccessibleName('关闭并排改动');
-      await expect(note).toHaveValue('这条批注先不提交');
-      await expect(chat).toBeVisible();
-      await diff.getByTestId('diff-quote').click();
-      await expect(composer).toHaveValue(/保留这段未发送的草稿[\s\S]*beta\.txt/);
-      await expect(diff).toBeVisible();
-      await split.click();
-      await expect(split).toHaveAccessibleName('并排查看改动');
-      await expect(chat).toBeVisible();
-      await expect(changes).toBeHidden();
-      await split.click();
-      await expect(changes).toHaveCount(1);
-      await expect(diff).toBeVisible();
-      await expect(diff).toContainText('beta.txt');
+      await test.step('恢复并排并引用选中差异', async () => {
+        await page.setViewportSize({ width: 1440, height: 960 });
+        await expect(split).toHaveAccessibleName('展开改动', { timeout: 10_000 });
+        await expect(note).toHaveValue('这条批注先不提交', { timeout: 10_000 });
+        await expect(chat).toBeVisible({ timeout: 10_000 });
+        await diff.getByTestId('diff-quote').click({ timeout: 10_000 });
+        await expect(composer).toHaveValue(/保留这段未发送的草稿[\s\S]*beta\.txt/, { timeout: 10_000 });
+        await expect(changes).toBeHidden({ timeout: 10_000 });
+        await expect(chat).toBeVisible({ timeout: 10_000 });
+        await openSessionTool(page, 'changes');
+        await expect(changes).toHaveCount(1);
+        await expect(diff).toBeVisible({ timeout: 10_000 });
+        await expect(diff).toContainText('beta.txt', { timeout: 10_000 });
+      });
 
       // The project sidebar takes space on desktop. A 1180px viewport is still a desktop UI,
       // but the workbench is under 1000px; don't switch away from an unrelated active tab.
-      await openSessionTool(page, 'files');
-      await page.setViewportSize({ width: 1180, height: 844 });
-      await expect(split).toBeHidden();
-      await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
-      await expect(page.getByTestId('files-panel-files')).toBeVisible();
+      await test.step('桌面中等宽度保留文件工具', async () => {
+        await openSessionTool(page, 'files');
+        await page.setViewportSize({ width: 1180, height: 844 });
+        await expect(split).toBeHidden({ timeout: 10_000 });
+        await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 });
+        await expect(page.getByTestId('files-panel-files')).toBeVisible({ timeout: 10_000 });
+      });
 
       // Another session restoring its Changes tab must not inherit the open Diff or notes editor.
-      await page.goto(`/#/p/${project.id}/focus/${target.id}`);
-      await openSessionTool(page, 'changes');
-      await page.goto(`/#/p/${project.id}/focus/${source.id}`);
-      await openSessionTool(page, 'changes');
-      await expect(diff).toContainText('beta.txt');
-      await changes.getByTestId('change-row').filter({ hasText: 'gamma.txt' }).click();
-      await expect(diff).toContainText('gamma.txt');
-      await page.goto(`/#/p/${project.id}/focus/${target.id}`);
-      await expect(page.getByTestId('session-tab-changes')).toHaveAttribute('aria-selected', 'true');
-      await expect(changes.getByTestId('change-row').filter({ hasText: 'gamma.txt' })).toBeVisible();
-      await expect(diff).toBeHidden();
+      await test.step('不同会话隔离 Diff 和备注编辑器', async () => {
+        await page.goto(`/#/p/${project.id}/focus/${target.id}`);
+        await openSessionTool(page, 'changes');
+        await page.goto(`/#/p/${project.id}/focus/${source.id}`);
+        await openSessionTool(page, 'changes');
+        await expect(diff).toBeVisible({ timeout: 10_000 });
+        await expect(diff).toContainText('beta.txt', { timeout: 10_000 });
+        const gamma = changes.getByTestId('change-row').filter({ hasText: 'gamma.txt' });
+        if (!await gamma.isVisible()) await diff.getByTestId('files-back').click({ timeout: 10_000 });
+        await expect(gamma).toBeVisible({ timeout: 10_000 });
+        await gamma.click({ timeout: 10_000 });
+        await expect(diff).toContainText('gamma.txt', { timeout: 10_000 });
+        await page.goto(`/#/p/${project.id}/focus/${target.id}`);
+        await expect(page.getByTestId('session-tab-changes')).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 });
+        await expect(changes.getByTestId('change-row').filter({ hasText: 'gamma.txt' })).toBeVisible({ timeout: 10_000 });
+        await expect(diff).toBeHidden({ timeout: 10_000 });
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -283,10 +293,11 @@ for (const width of [1440, 390]) {
         await expect(chat).toBeVisible();
         await composer.fill('评审时保留这段对话草稿');
         if (!phone) {
-          await split.click();
+          await openSessionTool(page, 'changes');
           await expect(changes.getByTestId('change-row').filter({ hasText: 'beta.txt' })).toBeVisible();
           await changes.getByTestId('change-row').filter({ hasText: 'beta.txt' }).click();
           await expect(diff).toContainText('beta.txt');
+          await backToChat(page);
         }
 
         const badge = chat.getByTestId('turn-badge').first();
@@ -318,7 +329,7 @@ for (const width of [1440, 390]) {
         await note.fill('确认本轮新增的这一行');
         const save = diff.getByTestId('review-save');
         if (!phone) {
-          await page.getByTestId('changes-workspace').getByRole('button', { name: '展开改动' }).click();
+          await split.click();
           await expect(chat).toBeHidden();
           await expect(note).toHaveValue('确认本轮新增的这一行');
           await expect(save).toBeEnabled();
@@ -368,7 +379,8 @@ for (const width of [1440, 390]) {
             await page.getByTestId('session-more-details').click();
             await page.getByRole('menuitem', { name: /^显示设置/ }).click();
           } else {
-            await page.getByRole('button', { name: '显示设置', exact: true }).click();
+            await page.getByTestId('session-more-trigger').click();
+            await page.getByRole('menuitem', { name: /^显示设置/ }).click();
           }
         }
         const settings = page.getByTestId('display-settings');

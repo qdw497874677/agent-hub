@@ -41,7 +41,8 @@ test('等我处理：四种要人的状态上榜，角标和标题带数，稍�
       if (workers.find((x) => (x.workerId ?? x.id) === workerId)?.state === 'online') break;
       await page.waitForTimeout(500);
     }
-    const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 待办 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
+    const projectName = `e2e 待办 ${Date.now().toString(36)}`;
+    const project = (await (await page.request.post('/api/projects', { data: { name: projectName, rootPath: dir, workerId }, headers })).json()) as { id: string };
     const run = async (title: string, text: string) => {
       const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title }, headers })).json()) as { id: string };
       const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: 'fakeacp', model: '' }, headers });
@@ -71,7 +72,7 @@ test('等我处理：四种要人的状态上榜，角标和标题带数，稍�
     expect(phase(ids.quiet)).toBeUndefined();
 
     await page.setViewportSize({ width: 1280, height: 800 });
-    await page.goto('/');
+    await page.goto('/#/home');
     const inbox = page.getByTestId('attention-inbox');
     await expect(inbox).toContainText('等我处理');
     await expect(inbox).toContainText('等回答');
@@ -79,7 +80,7 @@ test('等我处理：四种要人的状态上榜，角标和标题带数，稍�
     await expect(inbox).toContainText('等审查');
     await expect(inbox).toContainText('失败了');
     const n = att.items.length;
-    await expect(page.getByTestId('attention-badge')).toContainText(String(n));
+    await expect(page.getByTestId('attention-count')).toContainText(String(n));
     await expect.poll(() => page.title()).toMatch(new RegExp(`^\\(${n}\\) `));
 
     // 刷新：点一下立刻去拉这一屏的四个接口（首页 / 待办 / 派发 / 连接器提示），
@@ -118,21 +119,24 @@ test('等我处理：四种要人的状态上榜，角标和标题带数，稍�
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/attention-390.png` });
 
     // 稍后：收起这一条
-    const laterItem = inbox.getByTestId('attention-item').filter({ hasText: '待办·问号结尾' });
+    // 手机首页仅预览前三条；展开后再操作本用例创建的条目。
+    const more = inbox.getByTestId('attention-more');
+    if (await more.count()) await more.click();
+    const laterItem = inbox.getByTestId('attention-item').filter({ hasText: projectName }).filter({ hasText: '待办·问号结尾' });
     await laterItem.getByTestId('attention-menu').click();
     await page.getByTestId('attention-row-menu').getByRole('menuitem', { name: '稍后处理' }).click();
     await expect(laterItem).toHaveCount(0);
     // 打开会话停几秒 = 看过
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto(`/#/p/${project.id}/focus/${ids.review}`);
-    await expect(page.getByTestId('attention-badge')).toContainText(String(n - 1));
-    await expect(page.getByTestId('attention-badge')).toContainText(String(n - 2), { timeout: 15_000 });
+    await expect(page.getByTestId('attention-count')).toContainText(String(n - 1));
+    await expect(page.getByTestId('attention-count')).toContainText(String(n - 2), { timeout: 15_000 });
     // 需要人回答的条目打开后仍然留着：不能靠「看过」替用户把问题吞掉。
     await page.goto(`/#/p/${project.id}/focus/${ids.answer}`);
     await page.waitForTimeout(4_500);
-    await expect(page.getByTestId('attention-badge')).toContainText(String(n - 2));
-    await page.goto('/');
-    await expect(page.getByTestId('attention-item').filter({ hasText: '待办·显式提问' })).toHaveCount(1);
+    await expect(page.getByTestId('attention-count')).toContainText(String(n - 2));
+    await page.goto('/#/home');
+    await expect(page.getByTestId('attention-item').filter({ hasText: projectName }).filter({ hasText: '待办·显式提问' })).toHaveCount(1);
     // 阶段变了重新上榜：失败那条再说一句提问
     await page.request.post(`/api/sessions/${ids.maybe}/prompt`, { data: { text: 'please-asktool' }, headers });
     await expect.poll(async () => {

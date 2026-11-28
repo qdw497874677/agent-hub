@@ -1,15 +1,16 @@
 /**
  * 会话页工具标签：会话 / 文件 / 改动 / 预览。纯函数，不依赖 React。
  */
-export type SessionTab = 'chat' | 'files' | 'changes' | 'preview';
+export type SessionTab = 'chat' | 'files' | 'changes' | 'preview' | 'details';
 
-export const SESSION_TABS: readonly SessionTab[] = ['chat', 'files', 'changes', 'preview'];
+export const SESSION_TABS: readonly SessionTab[] = ['chat', 'files', 'changes', 'preview', 'details'];
 
 /** 标签文字；改动数未知（还没读到 / 机器离线）时不显示数字。 */
 export function sessionTabLabel(tab: SessionTab, changeCount?: number): string {
   if (tab === 'chat') return '会话';
   if (tab === 'files') return '文件';
   if (tab === 'preview') return '预览';
+  if (tab === 'details') return '详情';
   return changeCount === undefined ? '改动' : `改动 ${changeCount}`;
 }
 

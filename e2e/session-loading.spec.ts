@@ -159,6 +159,11 @@ for (const width of [1280, 390]) {
       await expect(log.getByText(oldText, { exact: true })).toHaveCount(0);
       const ackGate = deferred(); releases.push(ackGate.release);
       const ackReached = deferred();
+      let continuations = 0;
+      await page.route('**/api/sessions/derive', (route) => {
+        if (route.request().method() === 'POST') continuations++;
+        return route.continue();
+      });
       await page.route(`**/api/sessions/${session.id}/prompt`, async (route) => {
         const response = await route.fetch();
         ackReached.release();
@@ -166,10 +171,21 @@ for (const width of [1280, 390]) {
         await route.fulfill({ response });
       });
       await composer.fill('实时到达的新消息');
-      await page.getByRole('button', { name: '发送', exact: true }).click();
+      await composer.press('ControlOrMeta+Shift+Enter');
       await ackReached.promise;
       await expect(page.locator('html')).toHaveAttribute('data-live-prompt-received', 'true');
       await composer.fill('回执期间写的草稿');
+      // 切到全站页面会真正卸载专注会话；锁和新草稿不能随组件消失。
+      await page.getByTestId(width < 1024 ? 'global-menu-button' : 'shell-more').click();
+      await page.getByTestId('shell-panel-more').getByTestId('nav-memory').click();
+      await expect(page).toHaveURL(/#\/memory$/);
+      if (width < 1024) {
+        await page.getByTestId('global-menu-button').click();
+        await page.getByTestId('shell-panel-more').getByRole('button', { name: '工作台', exact: true }).click();
+      } else await page.getByTestId('shell-workbench').click();
+      await expect(page).toHaveURL(new RegExp(`#/p/${project.id}/focus/${session.id}$`));
+      await expect(composer).toHaveValue('回执期间写的草稿');
+      await expect(page.getByRole('button', { name: /^(发送|排队发送|发送中.*)$/ })).toBeDisabled();
       ackGate.release();
       await expect(history).toContainText('正在读取会话记录');
       await expect(composer).toHaveValue('回执期间写的草稿');
@@ -179,6 +195,8 @@ for (const width of [1280, 390]) {
       await expect(log.getByText('实时到达的新消息', { exact: true })).toHaveCount(1);
       await expect(page.getByRole('button', { name: /^(发送|排队发送)$/ })).toBeEnabled();
       await expect(composer).toHaveValue('回执期间写的草稿');
+      expect(continuations).toBe(0);
+      await expect(page).toHaveURL(new RegExp(`#/p/${project.id}/focus/${session.id}$`));
 
       // 断线时遗漏的记录以真实 journal 为准；失败不能伪装成没有新消息。
       snapshotCaptured = null;

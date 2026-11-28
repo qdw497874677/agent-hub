@@ -75,7 +75,7 @@ for (const viewport of [{ width: 390, height: 844, tag: 'mobile-390' }, { width:
 
     await links.nth(0).click();
     if (viewport.width < 768) await expect(page.getByTestId('session-back-to-chat')).toBeVisible();
-    else await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
+    else await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-pressed', 'true');
     const panel = page.getByTestId('files-panel-files');
     await expect(panel.getByTestId('file-content')).toContainText('v80 = 80');
     const target = panel.locator('[data-target-line="80"]');
@@ -94,7 +94,7 @@ for (const viewport of [{ width: 390, height: 844, tag: 'mobile-390' }, { width:
     }
     await links.nth(1).click();
     if (viewport.width < 768) await expect(page.getByTestId('session-back-to-chat')).toBeVisible();
-    else await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
+    else await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-pressed', 'true');
     await expect(panel.getByTestId('file-content')).toContainText('说明');
   });
 }

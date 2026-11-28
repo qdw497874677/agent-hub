@@ -24,8 +24,9 @@ test('模型提供商：添加 → 直连测试 → 改成经 hub 中转再测 �
   const slug = `gw${currentRun().replace(/[^a-z0-9]/gi, '').slice(-6).toLowerCase()}`;
   await loginByApi(page);
   await page.goto('/');
-  await page.getByRole('button', { name: '账号' }).click();
-  await page.getByRole('button', { name: '模型提供商' }).click();
+  await page.getByTestId('shell-more').click();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByTestId('settings-surface').getByRole('link', { name: '模型供应商', exact: true }).click();
   await page.getByRole('button', { name: '添加模型提供商' }).click();
   await page.getByLabel('名称').fill('测试网关');
   await page.getByLabel(/^标识/).fill(slug);

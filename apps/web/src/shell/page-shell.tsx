@@ -1,16 +1,12 @@
 import type { ReactNode } from 'react';
 import { Icon } from '../atoms/icons.tsx';
-import { MessagesEntry } from '../atoms/messages-entry.tsx';
-import { AccountMenu } from './auth.tsx';
-import { GlobalNav } from './global-nav.tsx';
-import { NotificationBell } from './market/notifications.tsx';
 import { formatRoute } from './route.ts';
-import { SettingsEntry } from './settings-navigation.tsx';
+import { GlobalMenuButton } from './workbench-shell.tsx';
 
 /**
  * 全站页面骨架（项目工作台以外的页面：记忆、资产、Bot、群、运行记录、工作目录、运营后台）。
  *
- * - 桌面左边一条常驻图标栏：品牌 + 全站导航 + 消息 / 通知 / 账号。离开项目也随时能跳。
+ * - 全局导航由 WorkbenchShell 提供，这里只负责页面排版。
  * - 统一的 PageHeader：标题（可带一级面包屑）在左，主操作在右；页签固定在页头下方。
  * - 内容区居中、限宽，自己滚动。
  * 只管排版，不拉数据；各页把自己的东西塞进 actions / tabs / children。
@@ -18,27 +14,6 @@ import { SettingsEntry } from './settings-navigation.tsx';
 export function AppShell({ children, testId }: { children: ReactNode; testId?: string }) {
   return (
     <div className="flex h-full" data-testid={testId}>
-      <aside
-        aria-label="全站"
-        data-testid="app-rail"
-        className="hidden w-14 shrink-0 flex-col items-center gap-2 border-r border-hair bg-panel py-2.5 lg:flex"
-      >
-        <a
-          href={formatRoute({ page: 'home' })}
-          aria-label="agent-hub 首页"
-          title="agent-hub"
-          className="mb-1 flex size-8 items-center justify-center rounded-md bg-fg text-[13px] font-semibold text-bg"
-        >
-          A
-        </a>
-        <GlobalNav layout="rail" />
-        <div className="mt-auto flex flex-col items-center gap-1.5">
-          <MessagesEntry />
-          <NotificationBell placement="up" />
-          <SettingsEntry />
-          <AccountMenu placement="up" />
-        </div>
-      </aside>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
     </div>
   );
@@ -91,10 +66,7 @@ export function PageHeader({
         <h1 className="min-w-0 truncate text-head font-medium text-primary">{title}</h1>
         <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
           {actions}
-          <span className="flex items-center gap-1.5 lg:hidden">
-            <SettingsEntry />
-            <AccountMenu />
-          </span>
+          <GlobalMenuButton />
         </div>
       </header>
       {tabs && tabs.length > 0 ? (

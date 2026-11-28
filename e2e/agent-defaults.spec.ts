@@ -61,8 +61,12 @@ async function fakeWorkers(page: Page, workers: unknown[] = FAKE_WORKERS): Promi
 }
 
 async function openTeam(page: Page): Promise<void> {
-  await page.getByRole('button', { name: '账号' }).click();
-  await page.getByRole('button', { name: '我的团队' }).click();
+  if (await page.getByTestId('settings-surface').isVisible()) await page.getByTestId('settings-surface').getByRole('button', { name: '返回应用' }).click();
+  const mobile = page.getByTestId('global-menu-button');
+  if (await mobile.isVisible()) await mobile.click();
+  else await page.getByTestId('shell-more').click();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByTestId('settings-surface').getByRole('link', { name: '团队默认模型', exact: true }).click();
 }
 
 const row = (page: Page, runtime: string) => page.locator(`[data-testid="agent-defaults-row"][data-runtime="${runtime}"]`);

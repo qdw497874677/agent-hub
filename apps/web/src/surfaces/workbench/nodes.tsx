@@ -358,34 +358,18 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
     .filter((item) => uncertainSending(item, live?.uncertainDeliveryIds ?? []))
     .map((item) => item.seq));
 
-  async function send(text: string): Promise<void> {
+  async function send(text: string, attachments: readonly AttachmentInputDto[]): Promise<boolean> {
     setBusy(true);
     setError(null);
     try {
-      await delivery.deliver(text);
+      await delivery.deliver(text, attachments);
+      return true;
     } catch (failure) {
       setError((failure as Error).message);
+      return false;
     } finally {
       setBusy(false);
     }
-  }
-
-  /**
-   * 发送并新开：这一句先走同一条发送路径（乐观气泡、回执、失败就地报错），
-   * 真的发出去了才请画布再开一张卡（复用现有的「新建会话」入口，派生逻辑只有一份）。
-   */
-  async function sendAndNew(text: string): Promise<void> {
-    setBusy(true);
-    setError(null);
-    try {
-      await delivery.deliver(text);
-    } catch (failure) {
-      setError((failure as Error).message);
-      return;
-    } finally {
-      setBusy(false);
-    }
-    onSendAndNew?.();
   }
 
   async function retry(pending: PendingPrompt): Promise<void> {
@@ -626,7 +610,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         draft={draft}
         onDraftChange={onDraftChange}
         onSend={send}
-        onSendAndNew={onSendAndNew === undefined ? undefined : sendAndNew}
+        onSendAndNew={onSendAndNew}
         onInterrupt={() => void run(onInterrupt)}
         busy={busy}
         error={error}

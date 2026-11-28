@@ -1,15 +1,25 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { TEST_EMAIL, loginByApi, mailedLink, testPassword } from './login.ts';
 import { currentRun } from './run-id.ts';
 
 const PASSWORD = 'invited pw 12345';
 
+async function menu(page: Page) {
+  const mobile = page.getByTestId('global-menu-button');
+  if (await mobile.isVisible()) await mobile.click();
+  else await page.getByTestId('shell-more').click();
+}
+async function setting(page: Page, label: string) {
+  await menu(page);
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByTestId('settings-surface').getByRole('link', { name: label, exact: true }).click();
+}
+
 test('团队主人邀请成员 → 点信里的链接设密码加入 → 主人在团队里删掉 TA', async ({ page, browser }) => {
   const email = `invitee-${currentRun()}@example.com`;
   await loginByApi(page);
   await page.goto('/');
-  await page.getByRole('button', { name: '账号' }).click();
-  await page.getByRole('button', { name: '我的团队' }).click();
+  await setting(page, '成员与权限');
   await page.getByLabel('邀请成员').fill(email);
   await page.getByRole('button', { name: '发送邀请' }).click();
   await expect(page.getByText('邀请已发出。')).toBeVisible();
@@ -25,14 +35,14 @@ test('团队主人邀请成员 → 点信里的链接设密码加入 → 主人�
   await invitee.getByLabel('再输一遍').fill(PASSWORD);
   await invitee.screenshot({ path: '/tmp/opencode/shots/users/invite-accept.png' });
   await invitee.getByRole('button', { name: '加入并登录' }).click();
-  await invitee.getByRole('button', { name: '账号' }).click();
+  await menu(invitee);
   await expect(invitee.getByText('受邀者').first()).toBeVisible();
   await expect(invitee.getByText('成员', { exact: true })).toBeVisible();
 
   // 主人刷新团队，删掉 TA：对方掉线、不能再登录
   await page.reload();
-  await page.getByRole('button', { name: '账号' }).click();
-  await page.getByRole('button', { name: '我的团队' }).click();
+  await page.getByTestId('settings-surface').getByRole('button', { name: '返回应用' }).click();
+  await setting(page, '成员与权限');
   const row = page.getByTestId('team-member').filter({ hasText: email });
   await expect(row).toBeVisible();
   page.once('dialog', (dialog) => void dialog.accept());
@@ -58,8 +68,7 @@ test('个人设置：改显示名；改密码要原密码，其他设备掉线',
 
   const tab = await me.newPage();
   await tab.goto('/');
-  await tab.getByRole('button', { name: '账号' }).click();
-  await tab.getByRole('button', { name: '个人设置' }).click();
+  await setting(tab, '账号资料与密码');
   await tab.getByLabel('显示名').fill('新名字');
   await tab.getByRole('button', { name: '保存显示名' }).click();
   await expect(tab.getByText('已保存。')).toBeVisible();

@@ -1,8 +1,5 @@
-import { MessagesEntry } from '../../atoms/messages-entry.tsx';
-import { AccountMenu } from '../../shell/auth.tsx';
-import { SettingsEntry } from '../../shell/settings-navigation.tsx';
-import { NotificationBell } from '../../shell/market/notifications.tsx';
-import { AttentionBadge, AttentionInbox } from '../../atoms/attention.tsx';
+import { AttentionInbox } from '../../atoms/attention.tsx';
+import { GlobalMenuButton, useShellInboxOpen } from '../../shell/workbench-shell.tsx';
 import { TaskQueue } from './task-queue.tsx';
 import { RefreshButton, useRefresh } from '../../atoms/refresh-button.tsx';
 import {
@@ -25,7 +22,6 @@ import type {
 import { api } from '../../shell/api.ts';
 import { MachinesBadge } from '../../shell/workers.tsx';
 import { DeleteProjectDialog, TrashList } from './delete-project.tsx';
-import { GlobalNav } from '../../shell/global-nav.tsx';
 import { ProjectListSheet, ProjectRow } from './project-list.tsx';
 import { UndoToast } from '../../atoms/undo-toast.tsx';
 import { Icon } from '../../atoms/icons.tsx';
@@ -59,6 +55,7 @@ export function HomePage({
   onOpen: (project: ProjectDto, sessionId?: string) => void;
   onOpenTask: (project: ProjectDto, taskId: string) => void;
 }) {
+  const inboxOpen = useShellInboxOpen();
   const [creating, setCreating] = useState(false);
   const [filter, setFilter] = useState(() => {
     try {
@@ -275,30 +272,9 @@ export function HomePage({
           >
             <Icon name="folder" />
           </button>
-          <AttentionBadge
-            compact
-            onClick={() => {
-              // 收件箱已经整块在屏上就别动（点一下角标把页面甩走很烦）；露出半截或整块在下面才滚过去。
-              const inbox = document.querySelector<HTMLElement>('[data-testid="attention-inbox"]');
-              if (!inbox) return;
-              const rect = inbox.getBoundingClientRect();
-              const visible = rect.top >= 0 && rect.bottom <= window.innerHeight;
-              if (!visible) inbox.scrollIntoView({ block: 'start', behavior: 'smooth' });
-              // 滚完把焦点也交过去：读屏用户点角标后应该从收件箱标题念起，而不是留在顶栏。
-              const heading = inbox.querySelector<HTMLElement>('[data-testid="attention-title"]');
-              (heading ?? inbox).focus({ preventScroll: true });
-            }}
-          />
-          <MessagesEntry />
-          <NotificationBell />
-          <SettingsEntry />
-          <AccountMenu />
+          <GlobalMenuButton />
         </div>
       </header>
-
-      <div className="order-2 mb-3 px-3 md:col-start-1 md:row-start-2 md:px-3 md:pb-2">
-        <GlobalNav />
-      </div>
 
       <main
         id="home-main"
@@ -311,7 +287,7 @@ export function HomePage({
         <div className="mx-auto w-full max-w-[760px] px-4 py-6 md:px-8">
           {creating ? null : (
             <div className="mb-1">
-              <AttentionInbox
+              {!inboxOpen ? <AttentionInbox
                 headerAction={
                   <RefreshButton
                     testId="home-refresh"
@@ -325,7 +301,7 @@ export function HomePage({
                   const project = projectById.get(item.projectId);
                   if (project) onOpen(project, item.sessionId);
                 }}
-              />
+              /> : null}
               {refresh.error ? (
                 <p role="alert" data-testid="home-refresh-error" className="mb-3 text-meta text-rust">
                   刷新没成功：{refresh.error}

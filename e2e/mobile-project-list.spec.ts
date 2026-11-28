@@ -167,44 +167,35 @@ test.describe('手机上的项目列表（窄屏 320）', () => {
 test.describe('手机抽屉：长任务列表（320/390）', () => {
   test.use({ viewport: { width: 320, height: 700 } });
 
-  test('任务内容优先，全局工具在列表后可达，不横溢', async ({ page, baseURL }, testInfo) => {
+  test('项目树只含项目操作，320/390 不横溢', async ({ page, baseURL }, testInfo) => {
     const { project } = await seed(page, baseURL, 20);
     await openList(page, project.id);
-
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 700 });
       await page.getByRole('button', { name: '打开侧栏' }).click();
       const drawer = page.getByTestId('nav-sheet');
-      await expect(drawer).toBeVisible();
-      const taskNav = page.getByRole('navigation', { name: '任务与会话' });
-      await expect(taskNav).toBeVisible();
-      expect(await taskNav.evaluate((nav) => Boolean(nav.compareDocumentPosition(nav.parentElement!.querySelector('[data-testid="sidebar-new-coordinator"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
-      const globalNav = drawer.getByTestId('drawer-global-nav');
-      await expect(globalNav).toBeVisible();
-
-      await settleSheet(page);
-      const listBox = (await taskNav.boundingBox())!;
-      const sheetBox = (await drawer.boundingBox())!;
-      const asideBox = (await drawer.getByTestId('project-sidebar').boundingBox())!;
-      expect(Math.abs(sheetBox.width - asideBox.width), '抽屉内容填满 sheet 宽度').toBeLessThanOrEqual(1);
-      expect(listBox.y).toBeLessThan(sheetBox.y + sheetBox.height / 2);
-      await globalNav.scrollIntoViewIfNeeded();
-      const navBox = (await globalNav.boundingBox())!;
-      const scrolledListBox = (await taskNav.boundingBox())!;
-      expect(navBox.y).toBeGreaterThanOrEqual(scrolledListBox.y + scrolledListBox.height - 1);
-      expect(navBox.y + navBox.height).toBeLessThanOrEqual(width === 390 ? 844 : 700);
-      expect(navBox.height, '全局工具页脚两行以内').toBeLessThan(120);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
-
-      await expect(globalNav.getByTestId('nav-home')).toBeVisible();
-      await page.screenshot({ path: testInfo.outputPath(`drawer-long-${width}.png`) });
-      if (width === 390) {
-        await page.keyboard.press('Escape');
-        await expect(page.getByTestId('nav-sheet')).toHaveCount(0);
+      await expect(drawer.getByRole('navigation', { name: '任务与会话' })).toBeVisible();
+      await expect(drawer.getByTestId('drawer-global-nav')).toHaveCount(0);
+      await expect(drawer.getByRole('button', { name: '搜索', exact: true })).toBeVisible();
+      await drawer.getByRole('button', { name: '新建', exact: true }).click();
+      await expect(drawer.getByTestId('sidebar-new-coordinator')).toBeVisible();
+      await expect(drawer.getByRole('menuitem', { name: '新建任务' })).toBeVisible();
+      await page.keyboard.press('Escape');
+      for (const target of [
+        drawer.getByRole('combobox', { name: '切换项目' }),
+        drawer.getByRole('button', { name: '搜索', exact: true }),
+        drawer.getByTestId('sidebar-session-more').first(),
+        drawer.getByTestId('sidebar-settled-toggle')
+      ]) {
+        await target.scrollIntoViewIfNeeded();
+        const box = await target.boundingBox();
+        expect(box).not.toBeNull();
+        expect(box!.width).toBeGreaterThanOrEqual(44);
+        expect(box!.height).toBeGreaterThanOrEqual(44);
       }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
+      await page.screenshot({ path: testInfo.outputPath(`drawer-long-${width}.png`) });
+      await drawer.getByRole('button', { name: '关闭侧栏' }).click();
     }
-
-    await page.getByTestId('nav-sheet').getByTestId('nav-machines').click();
-    await expect(page).toHaveURL(/#\/machines$/);
   });
 });

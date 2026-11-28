@@ -117,8 +117,10 @@ test('隔离 worktree：准备命令跑完才起 agent，状态落在空间上',
   expect(workspace?.setup?.exitCode).toBe(0);
   expect(workspace?.setup?.output).toContain('setup-ok-2');
 
-  // 会话页上看得见「准备完成 / 准备日志」，不只是一行数据库状态。
+  // 会话来历里看得见「准备完成 / 准备日志」，不只是一行数据库状态。
   await page.goto(`/#/p/${project.id}/focus/${session.id}`);
+  await page.getByTestId('session-more-trigger').click();
+  await page.getByRole('menuitem', { name: '会话来历' }).click();
   const status = page.getByTestId('worktree-status');
   await expect(status).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('worktree-output-toggle')).toBeVisible();

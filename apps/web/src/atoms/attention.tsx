@@ -123,6 +123,11 @@ function LiveCount({ text }: { text: string }) {
   );
 }
 
+/** 壳只播报一次待办变化，不把角标按钮重复放进页面。 */
+export function AttentionAnnouncement({ count }: { count: number }) {
+  return <LiveCount text={useDebouncedCount(count)} />;
+}
+
 /** 待办先说会话自己：任务名不能区分同一任务下的多条会话。 */
 export function attentionTitle(item: Pick<AttentionItemDto, 'sessionId' | 'sessionTitle'>): string {
   const named = item.sessionTitle?.trim();

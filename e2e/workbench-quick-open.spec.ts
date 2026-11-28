@@ -52,7 +52,10 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await page.goto(`/#/p/${project.id}/list`);
     await expect(page.getByTestId('list-view')).toBeVisible();
     if (viewport.width > 640) await page.keyboard.press('Control+k');
-    else await page.getByRole('button', { name: '搜索', exact: true }).first().click();
+    else {
+      await page.getByRole('button', { name: '打开侧栏' }).click();
+      await page.getByTestId('nav-sheet').getByRole('button', { name: '搜索', exact: true }).click();
+    }
     const dialog = page.getByRole('dialog', { name: '命令面板' });
     const attention = dialog.getByTestId('palette-attention');
     const recent = dialog.getByTestId('palette-recent');

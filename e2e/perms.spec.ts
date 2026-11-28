@@ -31,8 +31,9 @@ async function invite(owner: Page, browser: Browser, tag: string, role: string):
 
 async function openTeam(page: Page) {
   await page.goto('/');
-  await page.getByRole('button', { name: '账号' }).click();
-  await page.getByRole('button', { name: '我的团队' }).click();
+  await page.getByTestId('global-menu-button').click();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByTestId('settings-surface').getByRole('link', { name: '成员与权限', exact: true }).click();
 }
 
 test('自定义角色：主人在矩阵里看内置角色、新建「评审员」、分给成员；成员按新角色生效', async ({ page, browser }) => {
@@ -84,10 +85,12 @@ test('viewer 只读：能看项目和团队，不能建 / 改 / 删，也看不�
   expect((await viewer.page.request.get('/api/admin/settings')).status()).toBe(403);
   expect((await viewer.page.request.get('/api/fs/directories?path=/')).status()).toBe(403);
   await viewer.page.goto('/');
-  await viewer.page.getByRole('button', { name: '账号' }).click();
+  await viewer.page.getByTestId('global-menu-button').click();
   await expect(viewer.page.getByText('只读', { exact: true }).first()).toBeVisible();
   await viewer.page.screenshot({ path: `${SHOTS}/viewer-menu.png`, fullPage: true });
-  await viewer.page.getByRole('button', { name: '我的团队' }).click();
+  await expect(viewer.page.getByTestId('nav-admin')).toHaveCount(0);
+  await viewer.page.getByRole('button', { name: '设置', exact: true }).click();
+  await viewer.page.getByTestId('settings-surface').getByRole('link', { name: '成员与权限', exact: true }).click();
   await expect(viewer.page.getByTestId('member-role')).toHaveCount(0);
   await viewer.page.screenshot({ path: `${SHOTS}/viewer-team.png`, fullPage: true });
   await viewer.context.close();

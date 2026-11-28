@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import type { RuntimeOptionDto } from '../shell/api.ts';
 import { ModelPicker } from './model-picker.tsx';
 import type { ModelItem } from './model-list.ts';
@@ -9,6 +9,7 @@ import { useHandoffCandidates } from './agent-handoff.tsx';
 import type { SessionDto } from '../shell/api.ts';
 import { useNewSessionWithModel } from '../shell/new-session-with-model.ts';
 import { useNarrow } from '../shell/device.ts';
+import { HandoffEntryInSessionMenu } from './handoff-entry-context.ts';
 
 interface Props {
   readonly options: readonly RuntimeOptionDto[];
@@ -47,6 +48,7 @@ export function currentOf(
 const CHIP = 'rounded-full border border-hair bg-transparent px-2.5 hover:bg-hover';
 
 export function OptionControls({ options, values, onChange, sessionId, agentLabel, session, projectId, compact = false, mobileLayout = false, disabled = false }: Props) {
+  const handoffInMenu = useContext(HandoffEntryInSessionMenu);
   const feedback = useOptionFeedback(sessionId);
   const handoff = useHandoffCandidates(session, projectId);
   const openNewSession = useNewSessionWithModel();
@@ -193,7 +195,7 @@ export function OptionControls({ options, values, onChange, sessionId, agentLabe
       onKeyDown={(event) => { if (event.key === 'Escape' && settingsOpen) { event.stopPropagation(); setSettingsOpen(false); root.current?.querySelector<HTMLButtonElement>('[data-testid="session-options-trigger"]')?.focus(); } }}>
       {mobile ? controls.filter((_, index) => visible[index]?.category === 'model') : controls}
       {mobile && settingsOpen ? <div data-testid="session-options-panel" className="absolute bottom-full right-0 z-20 mb-2 flex w-64 max-w-[80vw] flex-col gap-1 rounded-lg border border-strong bg-overlay p-3 shadow-overlay">{controls.filter((_, index) => visible[index]?.category !== 'model')}{visible.every((option) => option.category === 'model') ? <p className="text-meta text-tertiary">当前会话没有其他可调选项</p> : null}</div> : null}
-      {!mobile ? <ModelPicker
+      {!mobile && !handoffInMenu ? <ModelPicker
         label="换 Agent"
         dialogTitle="选择要换的 Agent"
         deferPick

@@ -1,48 +1,32 @@
-import { useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { marketApi } from '../api.ts';
 import { at } from '../admin/shared.tsx';
 
-/** 站内通知铃铛：审核请求 / 结果、评论、下架、安装申请。每分钟拉一次，打开即标已读。 */
-export function NotificationBell({ placement = 'down' }: { placement?: 'down' | 'up' } = {}) {
+export function useNotifications() {
+  return useQuery({ queryKey: ['notifications'], queryFn: marketApi.notifications, refetchInterval: 60_000 });
+}
+
+/** 仅在用户打开站内通知时标读；加载慢时也要处理随后到达的未读。 */
+export function NotificationList({ onNavigate }: { onNavigate?: () => void }) {
   const client = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const notes = useQuery({ queryKey: ['notifications'], queryFn: marketApi.notifications, refetchInterval: 60_000 });
+  const notes = useNotifications();
   const read = useMutation({ mutationFn: () => marketApi.markRead(null), onSuccess: () => client.invalidateQueries({ queryKey: ['notifications'] }) });
-  const unread = notes.data?.unread ?? 0;
-  return (
-    <div className="relative">
-      <button
-        aria-label={unread ? `通知（${unread} 条未读）` : '通知'}
-        aria-expanded={open}
-        data-testid="notification-bell"
-        className="relative flex h-[44px] w-[44px] items-center justify-center rounded-md text-meta text-tertiary hover:bg-hover hover:text-primary md:h-7 md:w-7"
-        onClick={() => {
-          setOpen(!open);
-          if (!open && unread) read.mutate();
-        }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-          <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0" />
-        </svg>
-        {unread ? (
-          <span data-testid="notification-unread" className="absolute -right-1 -top-1 rounded-full bg-rust px-1 text-[10px] leading-[14px] text-canvas">
-            {unread}
-          </span>
-        ) : null}
-      </button>
-      {open ? (
-        <div className={`absolute z-40 max-h-[60vh] w-[min(320px,calc(100vw-24px))] overflow-y-auto rounded-lg border border-strong bg-overlay p-1 text-meta shadow-overlay ${placement === 'up' ? 'bottom-9 right-0 lg:left-0 lg:right-auto' : 'right-0 top-9'}`}>
-          {(notes.data?.items ?? []).map((n) => (
-            <a key={n.id} href={n.link} data-testid="notification" className="block rounded-sm px-2 py-1.5 hover:bg-card" onClick={() => setOpen(false)}>
-              <p className={n.readAt ? 'text-secondary' : 'text-primary'}>{n.title}</p>
-              <p className="text-tertiary">{n.body}</p>
-              <p className="text-[11px] text-tertiary">{at(n.at)}</p>
-            </a>
-          ))}
-          {!notes.data?.items.length ? <p className="px-2 py-3 text-tertiary">没有通知</p> : null}
-        </div>
-      ) : null}
-    </div>
-  );
+  const { mutate, isPending, isError } = read;
+  const started = useRef(false);
+  useEffect(() => {
+    if ((notes.data?.unread ?? 0) > 0 && !started.current) {
+      started.current = true;
+      mutate();
+    }
+  }, [notes.data?.unread, isPending, isError, mutate]);
+  return <div>
+    {notes.isPending ? <p className="px-2 py-3 text-tertiary">正在加载通知…</p> : notes.isError ? <p role="alert" className="px-2 py-3 text-rust">通知加载失败，请稍后重试</p> : null}
+    {(notes.data?.items ?? []).map((n) => <a key={n.id} href={n.link} data-testid="notification" className="block rounded-sm px-2 py-2 hover:bg-card" onClick={onNavigate}>
+      <p className={n.readAt ? 'text-secondary' : 'text-primary'}>{n.title}</p>
+      <p className="text-tertiary">{n.body}</p><p className="text-[11px] text-tertiary">{at(n.at)}</p>
+    </a>)}
+    {notes.data && !notes.data.items.length ? <p className="px-2 py-3 text-tertiary">没有通知</p> : null}
+    {isError ? <p role="alert" className="px-2 text-rust">未能标记已读</p> : null}
+  </div>;
 }

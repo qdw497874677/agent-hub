@@ -298,7 +298,7 @@ test('组合会话界面：仓库切换、按仓提交、cwd 是主仓库', asyn
   await expect(page.getByTestId('changes-group-web')).toBeVisible();
   await expect(page.getByTestId('changes-group-api')).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('combo-changes.png') });
-  await page.getByTestId('session-tab-chat').click();
+  await page.getByTestId('session-back-to-chat').click();
   await expect(switcher.getByTestId('repo-switcher-web')).toBeVisible();
   await expect(switcher.getByTestId('repo-switcher-api')).toBeVisible();
   await expect(switcher.getByTestId('repo-switcher-one')).toBeVisible();
@@ -310,7 +310,7 @@ test('组合会话界面：仓库切换、按仓提交、cwd 是主仓库', asyn
   await page.screenshot({ path: testInfo.outputPath('combo-files-api.png') });
 
   // 分支药丸在会话页的输入框状态行里，文件页会把输入框藏起来。
-  await page.getByTestId('session-tab-chat').click();
+  await page.getByTestId('session-back-to-chat').click();
   await expect(page.getByTestId('composer-status').getByTestId('git-branch')).toBeVisible();
   await page.getByTestId('composer-status').getByTestId('git-branch').click();
   const dialog = page.getByTestId('git-dialog');

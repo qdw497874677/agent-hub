@@ -20,7 +20,10 @@ async function post<T>(page: Page, url: string, data: unknown, headers: Record<s
 }
 
 async function openSettings(page: Page) {
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  const menu = page.getByTestId('global-menu-button');
+  if (await menu.isVisible()) await menu.click();
+  else await page.getByTestId('shell-more').click();
+  await page.getByTestId('shell-panel-more').getByRole('button', { name: '设置', exact: true }).click();
   await expect(page.getByTestId('settings-surface')).toBeVisible();
   await expect(page).toHaveURL(/#\/settings$/);
 }
@@ -35,15 +38,12 @@ for (const width of [1280, 390]) {
     expect(teamResponse.ok()).toBe(true);
     const team = await teamResponse.json() as { id: string };
     await page.goto(`/#/p/${project.id}`);
-    if (width === 390) await page.getByRole('button', { name: '打开侧栏' }).click();
-    const sidebar = page.getByTestId('project-sidebar').filter({ visible: true });
-    const sidebarElement = await sidebar.elementHandle();
-    expect(sidebarElement).not.toBeNull();
-    await sidebar.getByRole('button', { name: '设置', exact: true }).click();
+    const shellElement = await page.getByTestId('workbench-shell').elementHandle();
+    await openSettings(page);
     const surface = page.getByTestId('settings-surface');
     await expect(surface).toBeVisible();
     await expect(page).toHaveURL(/#\/settings$/);
-    await expect.poll(() => sidebarElement!.evaluate((element) => ({
+    await expect.poll(() => shellElement!.evaluate((element) => ({
       mounted: element.isConnected,
       hidden: element.getClientRects().length === 0 || Boolean(element.closest('[inert], [aria-hidden="true"]'))
     }))).toEqual({ mounted: true, hidden: true });
@@ -79,7 +79,7 @@ for (const width of [1280, 390]) {
     await surface.getByRole('button', { name: '返回应用' }).click();
     await expect(surface).toBeHidden();
     await expect(page).toHaveURL(new RegExp(`#\/p/${project.id}`));
-    if (width === 1280) await expect(sidebar.getByRole('button', { name: '设置', exact: true })).toBeFocused();
+    await expect(page.getByTestId(width === 1280 ? 'shell-more' : 'global-menu-button')).toBeFocused();
 
     await page.goto('/');
     await openSettings(page);
@@ -113,8 +113,7 @@ test('手机浏览器返回：会话草稿经设置目录和详情往返保留',
     if (initialCompact) await compact.uncheck();
     else await compact.check();
     await localDisplay.getByRole('button', { name: '关闭' }).click();
-    await page.getByRole('button', { name: '项目与全部会话' }).click();
-    await page.getByTestId('nav-sheet').getByRole('button', { name: '设置', exact: true }).click();
+    await openSettings(page);
     const surface = page.getByTestId('settings-surface');
     await expect(surface).toBeVisible();
     await expect(page).toHaveURL(/#\/settings$/);

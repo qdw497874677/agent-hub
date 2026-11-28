@@ -143,7 +143,7 @@ export function PreviewWorkflowAction({ sessionId, service, onManage, onFeedback
     onFeedback(`预览：${title}\n页面路径：${path}${feedbackDescription.trim() ? `\n复现说明：${feedbackDescription.trim()}` : ''}`);
     close();
   };
-  if (!workflow.data?.available) return null;
+  if (!workflow.data?.available && !conversationRow) return null;
   const content = <>
     {directUrl && !directLimited ? <a data-testid={service ? 'service-open-preview' : 'workflow-open-preview'} className={triggerClass} href={directUrl} target="_blank" rel="noopener noreferrer">打开预览</a> :
       <button type="button" data-testid={service ? 'service-open-preview' : 'workflow-open-preview'} className={triggerClass} onClick={() => { setOpen(true); const target = targets[0]; if (workflow.data?.available && targets.length === 1 && target?.mapping === 'pending' && target.linkId === null) void register(target); }}>打开预览</button>}

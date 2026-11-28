@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { previewsApi, type PreviewLinkDto } from '../shell/api.ts';
 import { sessionKeys } from '../shell/query-keys.ts';
-import { InlineSheet, SMALL_BUTTON } from '../shell/dialog-shell.tsx';
+import { SMALL_BUTTON } from '../shell/dialog-shell.tsx';
 import { useNarrow } from '../shell/device.ts';
 import { copyText } from './clipboard.ts';
 import {
@@ -554,12 +554,5 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
     </div>
   );
 
-  if (!narrow) return panel;
-  // 窄屏：预览在会话页签里，不能当模态挡住整个会话 —— 用贴底但不遮罩的内联抽屉。
-  // 填端口、分享这些控件就在手边，收起把手还能把页签空间让出来。
-  return (
-    <InlineSheet title="预览" testId="preview-sheet">
-      {panel}
-    </InlineSheet>
-  );
+  return panel;
 }

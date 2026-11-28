@@ -10,7 +10,7 @@ import { groupHeadline, groupStateNote, memberStateLabel, workspaceGroupFrom } f
  * 只有多仓库派生的会话才有 groupId；单仓库会话整行不出现（和 worktree-status 同一个思路：
  * 常态不占屏）。准备中的组每 3 秒刷新一次，ready / failed 之后不再轮询。
  */
-export function SessionGroupLine({ groupId }: { groupId: string }) {
+export function SessionGroupLine({ groupId, attentionOnly = false }: { groupId: string; attentionOnly?: boolean }) {
   const [open, setOpen] = useState(false);
   const query = useQuery({
     queryKey: ['workspace-group', groupId],
@@ -26,6 +26,7 @@ export function SessionGroupLine({ groupId }: { groupId: string }) {
       </p>
     ) : null;
   }
+  if (attentionOnly && group.state !== 'preparing' && group.state !== 'failed') return null;
   const note = groupStateNote(group);
   const tone = group.state === 'failed' ? 'text-rust' : group.state === 'preparing' ? 'text-secondary' : 'text-tertiary';
   return (

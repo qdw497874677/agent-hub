@@ -91,6 +91,19 @@ test('长对话：画布卡片和专注对话默认在最后；翻上去时新�
   await expect.poll(() => gap(chatScroll), { message: '专注对话默认停在最后' }).toBeLessThan(4);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/chat-desktop.png` });
 
+  // 从全局导航离开会话再返回，恢复实际读到的位置，而不是回到最新。
+  await chatScroll.evaluate((node) => { node.scrollTop = Math.round((node.scrollHeight - node.clientHeight) / 3); });
+  await expect(page.getByTestId('scroll-to-end')).toBeVisible();
+  const readingTop = await chatScroll.evaluate((node) => node.scrollTop);
+  expect(readingTop).toBeGreaterThan(0);
+  await page.getByTestId('shell-more').click();
+  await page.getByTestId('shell-panel-more').getByTestId('nav-memory').click();
+  await expect(page).toHaveURL(/#\/memory$/);
+  await expect(log).toHaveCount(0);
+  await page.getByTestId('shell-workbench').click();
+  await expect(log).toContainText(`第 ${n} 句`);
+  await expect.poll(() => chatScroll.evaluate((node, top) => Math.abs(node.scrollTop - top), readingTop)).toBeLessThan(8);
+
   // 390 手机宽度
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();

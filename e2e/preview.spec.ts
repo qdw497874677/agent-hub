@@ -6,6 +6,7 @@ import { test, expect, type APIResponse, type Page } from '@playwright/test';
 import { readHubLog, reservePort, spawnHub, stop } from '../apps/server/src/test-support/spawn.ts';
 import { ensureFakeWorker, FAKE_AGENT_ID, stopFakeWorker } from './fake-worker.ts';
 import { TEST_EMAIL } from './login.ts';
+import { openSessionTool } from './session-tools.ts';
 
 type Target = {
   port: number; workerId: string; label: string | null; linkId: string | null; url: string | null;
@@ -139,7 +140,7 @@ test('停用新流程不影响现有私有预览管理', async ({ page }) => {
     expect(workflow).toEqual({ available: false, targets: [] });
     await expect(page.getByTestId('focus-header')).toBeVisible();
     await expect(page.getByTestId('workflow-open-preview')).toHaveCount(0);
-    await page.getByRole('tab', { name: '预览', exact: true }).click();
+    await openSessionTool(page, 'preview');
     const panel = page.getByTestId('preview-panel');
     await expect(panel.getByTestId('preview-row')).toContainText('手动入口');
     const popupPromise = page.waitForEvent('popup');
@@ -183,20 +184,8 @@ for (const width of [1280, 390]) {
         expect((await anonymous.get(`${origin}${workflow}`, { maxRedirects: 0 })).status()).toBe(401);
 
         await page.goto(`${origin}/#/p/${project.id}/focus/${session.id}`);
-        const showPreviewTab = async () => {
-          const panel = page.getByTestId('preview-panel');
-          const chat = page.getByRole('textbox', { name: '发送消息' });
-          await expect.poll(async () => (await panel.isVisible()) || (await chat.isVisible())).toBe(true);
-          if (await panel.isVisible()) return;
-          if (touch) {
-            await page.getByTestId('session-more-trigger').click();
-            await page.getByTestId('session-more-preview').click();
-          } else {
-            await page.getByTestId('session-tab-preview').click();
-          }
-        };
         const workflowLoads = page.waitForResponse((response) => new URL(response.url()).pathname === workflow && response.request().method() === 'GET');
-        await showPreviewTab();
+        await openSessionTool(page, 'preview');
         expect((await workflowLoads).ok()).toBe(true);
         let registrationPosts = 0;
         await page.route(`**${workflow}`, async (route) => {
@@ -295,16 +284,15 @@ for (const width of [1280, 390]) {
         await expect(direct.getByText('真实上游页面')).toBeVisible();
         await direct.close();
 
-        if (touch) await page.getByTestId('session-back-to-chat').click();
-        else await page.getByTestId('session-tab-chat').click();
         const composer = page.getByRole('textbox', { name: '发送消息' });
         const originalDraft = '原有草稿不能丢';
+        await page.getByTestId('session-back-to-chat').click();
         await composer.fill(originalDraft);
+        await openSessionTool(page, 'preview');
         let promptWrites = 0;
         page.on('request', (request) => {
           if (request.method() === 'POST' && new URL(request.url()).pathname === `/api/sessions/${session.id}/prompt`) promptWrites++;
         });
-        await showPreviewTab();
         await page.getByRole('button', { name: '更多预览选项' }).click();
         await dialog.getByTestId('preview-feedback-open').click();
         const form = dialog.getByTestId('preview-feedback-form');
@@ -319,7 +307,7 @@ for (const width of [1280, 390]) {
         await expect(composer).toHaveValue(`${originalDraft}\n\n预览：${links[0]!.label}\n页面路径：/catalog/item\n复现说明：商品页的布局需要检查`);
         expect(promptWrites).toBe(0);
         await expect(page).toHaveURL(new RegExp(`/focus/${session.id}$`));
-        await showPreviewTab();
+        await openSessionTool(page, 'preview');
         await page.getByRole('button', { name: '更多预览选项' }).click();
         await dialog.getByTestId('preview-feedback-open').click();
         await expect(routePath).toHaveValue('/catalog/item');
@@ -330,7 +318,7 @@ for (const width of [1280, 390]) {
         await expect.poll(async () => (await inventory()).targets.map(({ port }) => port).sort()).toEqual([frontend.port, second.port].sort());
         const reloadInventory = page.waitForResponse((response) => new URL(response.url()).pathname === workflow && response.request().method() === 'GET');
         await page.reload();
-        await showPreviewTab();
+        await openSessionTool(page, 'preview');
         expect((await reloadInventory).ok()).toBe(true);
         await open.click();
         await expect(dialog.getByTestId('preview-workflow-target')).toHaveCount(2);

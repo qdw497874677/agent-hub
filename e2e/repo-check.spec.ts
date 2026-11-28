@@ -299,8 +299,9 @@ test('项目设置 · 已保存但没改过的行也能检查：带 id、不带�
 
   await page.goto(`/#/p/${project.id}`);
   await page.reload();
-  await expect(page.getByRole('button', { name: '新建任务' }).first()).toBeVisible();
-  await page.getByTitle('项目设置').first().click();
+  const projectTree = page.getByTestId('project-sidebar');
+  await expect(projectTree.getByRole('button', { name: '新建', exact: true })).toBeVisible();
+  await projectTree.getByRole('button', { name: '项目设置' }).click();
   await page.getByRole('link', { name: '代码与工作目录', exact: true }).click();
   const settings = page.getByTestId('project-repos');
   await expect(settings.getByTestId('repo-row')).toHaveCount(1);
@@ -620,8 +621,7 @@ test('手机触控目标 · 项目页头与仓库检查/删除是分开的 44×4
     ['打开侧栏', mobileHeader.getByRole('button', { name: '打开侧栏' })],
     ['画布', viewSwitch.getByRole('button', { name: '画布', exact: true })],
     ['列表', viewSwitch.getByRole('button', { name: '列表', exact: true })],
-    ['搜索', mobileHeader.getByRole('button', { name: '搜索' })],
-    ['新建任务', mobileHeader.getByRole('button', { name: '新建任务' })]
+    ['全局菜单', mobileHeader.getByRole('button', { name: '全局菜单' })]
   ] as const;
   const boxes: Array<{ label: string; box: Box }> = [];
   for (const [label, target] of targets) {
@@ -657,6 +657,23 @@ test('手机触控目标 · 项目页头与仓库检查/删除是分开的 44×4
   }
   await expectNoHorizontalOverflow(page);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/project-header-320.png` });
+
+  // 搜索与新建移入项目抽屉；在两种窄屏下仍能触达且不横溢。
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: width === 320 ? 700 : 844 });
+    await mobileHeader.getByRole('button', { name: '打开侧栏' }).click();
+    const drawer = page.getByTestId('nav-sheet');
+    await expect(drawer).toBeVisible();
+    await expectTouchTarget(drawer.getByRole('button', { name: '搜索', exact: true }), '项目搜索', width);
+    await expectTouchTarget(drawer.getByRole('button', { name: '新建', exact: true }), '新建菜单', width);
+    await expectTouchTarget(drawer.getByRole('button', { name: '项目设置' }), '项目设置', width);
+    await drawer.getByRole('button', { name: '新建', exact: true }).click();
+    await expect(drawer.getByRole('menuitem', { name: '新建任务' })).toBeVisible();
+    await expect(drawer.getByRole('menuitem', { name: '新开主会话' })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await drawer.getByRole('button', { name: '关闭侧栏' }).click();
+    await expect(drawer).toHaveCount(0);
+  }
 
   // 从手机抽屉进项目设置；已保存仓库行上的检查和删除各自是 44×44。
   await page.setViewportSize({ width: 390, height: 844 });

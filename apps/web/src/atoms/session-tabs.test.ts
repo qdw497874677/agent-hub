@@ -8,13 +8,15 @@ test('会话标签文字', () => {
   assert.equal(sessionTabLabel('changes'), '改动');
   assert.equal(sessionTabLabel('changes', 0), '改动 0');
   assert.equal(sessionTabLabel('preview'), '预览');
+  assert.equal(sessionTabLabel('details'), '详情');
 });
 
 test('左右切换首尾循环', () => {
   assert.equal(stepTab('chat', 1), 'files');
   assert.equal(stepTab('changes', 1), 'preview');
-  assert.equal(stepTab('preview', 1), 'chat');
-  assert.equal(stepTab('chat', -1), 'preview');
+  assert.equal(stepTab('preview', 1), 'details');
+  assert.equal(stepTab('details', 1), 'chat');
+  assert.equal(stepTab('chat', -1), 'details');
   assert.equal(stepTab('preview', -1), 'changes');
 });
 

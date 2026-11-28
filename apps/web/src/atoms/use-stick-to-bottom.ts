@@ -5,6 +5,7 @@ import {
   createFollowState,
   endProbeTarget,
   holdsScroll,
+  isFollowing,
   maxScrollOf,
   nearEndOf,
   nextFollowReserve,
@@ -19,6 +20,7 @@ import {
   type ScrollGeometry,
   type ScrollMetrics,
 } from './stick-to-bottom.ts';
+import { canRestorePosition, type ScrollPositionKey, type ScrollPositionStore } from './scroll-position-store.ts';
 
 /** 滚动停下来多久算「停」：触屏松手后惯性还在滑，这段时间用来等它真的停。 */
 const IDLE_MS = 120;
@@ -37,31 +39,45 @@ export interface StickToBottom<T extends HTMLElement> {
 
 /**
  * 对话区跟着最新消息走（专注对话页、画布卡片、子代理面板共用）。
- * - 打开 / 换会话（resetKey 变了）：直接滚到最后，从跟随重新开始。
+ * - 打开 / 换会话：默认跟随最新；提供 restoration 时恢复该会话的阅读位置。
  * - 流式输出、新消息：只有在「跟随」里才贴底；读者往上翻着看历史时一律不抢。
  * - 状态判定全在 stick-to-bottom.ts 的纯状态机里，这里只做接线：事件 → 动作，状态 → 要不要写 scrollTop。
  * 内容变化用 MutationObserver 盯，不靠调用方传依赖——流式追加文字时块数和 seq 都可能不变。
  *
  * `nearEnd` 复用同一个 scroll 监听（不额外加监听器），只在布尔值变化时 setState。
  */
-export function useStickToBottom<T extends HTMLElement>(resetKey: string): StickToBottom<T> {
+export interface ScrollRestoration {
+  readonly store: ScrollPositionStore;
+  readonly key: ScrollPositionKey;
+  readonly historyReady: boolean;
+}
+
+export function useStickToBottom<T extends HTMLElement>(resetKey: string, restoration?: ScrollRestoration): StickToBottom<T> {
   const ref = useRef<T | null>(null);
   const requestEnd = useRef<((smooth: boolean) => void) | null>(null);
+  const refresh = useRef<(() => void) | null>(null);
+  const historyReady = useRef(restoration?.historyReady ?? true);
+  historyReady.current = restoration?.historyReady ?? true;
   const [nearEnd, setNearEnd] = useState(true);
+  const store = restoration?.store;
+  const positionKey = restoration ? JSON.stringify(restoration.key) : undefined;
 
   // 换会话时先清理旧的尾部预留，再定位并接上新状态机，避免旧清理晚于新会话定位。
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    setNearEnd(nearEndOf(measureOf(el)));
-    const follow = attachFollow(el, setNearEnd);
+    const saved = store && positionKey ? { store, key: JSON.parse(positionKey) as ScrollPositionKey } : undefined;
+    const follow = attachFollow(el, setNearEnd, saved, () => historyReady.current);
     requestEnd.current = follow.requestEnd;
+    refresh.current = follow.refresh;
     return () => {
       requestEnd.current = null;
+      refresh.current = null;
       follow.dispose();
     };
-  }, [resetKey]);
+  }, [resetKey, store, positionKey]);
+
+  useLayoutEffect(() => { refresh.current?.(); }, [restoration?.historyReady]);
 
   const scrollToEnd = useCallback((smooth = true) => {
     const reduced =
@@ -77,9 +93,12 @@ function measureOf(el: HTMLElement): ScrollGeometry {
 }
 
 /** 把状态机接到一个真实滚动区上；返回卸载函数。 */
-function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): { requestEnd: (smooth: boolean) => void; dispose: () => void } {
+function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void, saved: { store: ScrollPositionStore; key: ScrollPositionKey } | undefined, historyReady: () => boolean): { requestEnd: (smooth: boolean) => void; refresh: () => void; dispose: () => void } {
   let state: FollowState = createFollowState();
   let last: ScrollGeometry = measureOf(el);
+  const previous = saved?.store.read(saved.key);
+  let pending = previous && !previous.following ? previous : undefined;
+  let lastValid: { scrollTop: number; following: boolean } | undefined;
   // 只有显式提供尾部空间的视图启用：收起活动行时避免整段记录向下弹。
   const spacer = el.querySelector<HTMLElement>('[data-follow-spacer]');
   let reserve = 0;
@@ -116,6 +135,23 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): { r
 
   function dispatch(action: FollowAction): void {
     state = transitionFollow(state, action, metrics());
+  }
+
+  function remember(): void {
+    if (pending || el.clientHeight === 0) return;
+    lastValid = { following: isFollowing(state), scrollTop: el.scrollTop };
+    saved?.store.write(saved.key, lastValid);
+  }
+
+  function restore(): boolean {
+    if (!pending) return false;
+    if (!canRestorePosition(pending, measure(), historyReady())) return true;
+    el.scrollTop = pending.scrollTop;
+    pending = undefined;
+    last = measure();
+    reportNear();
+    remember();
+    return true;
   }
 
   function overflowing(): boolean {
@@ -178,16 +214,24 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): { r
   }
 
   function onScroll(): void {
+    if (el.clientHeight === 0) return;
     lastScrollAt = Date.now();
+    if (pending) {
+      if (!contact) return;
+      pending = undefined;
+    }
     dispatch({ type: 'scroll' });
     last = measure();
     reportNear();
+    remember();
     scheduleIdle();
   }
 
   function onWheel(event: WheelEvent): void {
+    pending = undefined;
     smoothReturn = false;
     dispatch({ overflow: overflowing(), trigger: 'wheel', type: 'scroll.intent', upward: event.deltaY < 0 });
+    remember();
   }
 
   function onKeyDown(event: KeyboardEvent): void {
@@ -196,6 +240,7 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): { r
     // 输入框里的翻页键是给输入框的，不是给列表的。
     if (event.target !== el && isTextEntry(event.target)) return;
 
+    pending = undefined;
     smoothReturn = false;
 
     dispatch({
@@ -204,11 +249,13 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): { r
       type: 'scroll.intent',
       upward: direction === 'up'
     });
+    remember();
   }
 
   function onContent(): void {
     // 隐藏页签没有可用的布局尺寸，别把它当成内容清空。
     if (el.clientHeight === 0) return;
+    if (restore()) return;
     const effect = contentEffect(state, contact);
     const current = measure();
     const nextHeight = current.scrollHeight - reserve;
@@ -228,6 +275,7 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): { r
       // 停在读者放下的地方：只记住新的尺寸，等下一次滚动再判定。
       last = measure();
       reportNear();
+      remember();
       return;
     }
 
@@ -241,6 +289,7 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): { r
 
     snap();
     if (state.type === 'returning') dispatch({ attempt: state.attempt, type: 'return.run' });
+    remember();
   }
 
   function onPointerDown(event: PointerEvent): void {
@@ -305,17 +354,29 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): { r
   document.addEventListener('visibilitychange', onVisibilityChange);
 
   dispatch({ type: 'attach' });
-  snap();
+  if (pending) dispatch({ type: 'detach' });
+  if (!restore() && el.clientHeight > 0) snap();
+  onNearEnd(nearEndOf(last));
   reportNear();
+  remember();
 
   function requestEnd(smooth: boolean): void {
+    const prior = pending;
+    pending = undefined;
     dispatch({ type: 'follow.request' });
     smoothReturn = smooth;
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+    if (el.clientHeight > 0) remember();
+    else if (lastValid || prior) {
+      lastValid = { following: true, scrollTop: (lastValid ?? prior)!.scrollTop };
+      saved?.store.write(saved.key, lastValid);
+    }
     if (smooth) scheduleIdle();
   }
 
   function dispose(): void {
+    // React may already have replaced or hidden the old session's DOM at cleanup.
+    if (!pending && lastValid) saved?.store.write(saved.key, lastValid);
     if (frame !== null) cancelAnimationFrame(frame);
     if (idle !== null) clearTimeout(idle);
     observer?.disconnect();
@@ -333,7 +394,7 @@ function attachFollow(el: HTMLElement, onNearEnd: (value: boolean) => void): { r
     window.removeEventListener('blur', onContactLost);
     document.removeEventListener('visibilitychange', onVisibilityChange);
   }
-  return { dispose, requestEnd };
+  return { dispose, refresh: onContent, requestEnd };
 }
 
 /** 输入类元素：它们自己会用翻页键。 */

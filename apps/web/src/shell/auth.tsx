@@ -1,15 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ThemeSwitch } from './theme-switch.tsx';
-import { ProvidersDialog } from './providers-dialog.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { accessApi, authApi, teamApi, RequestFailed, type RoleKey, UNAUTHORIZED_EVENT, type AccountDto, type AuthState, type LoginDeviceDto } from './api.ts';
-import { DialogShell } from './dialog-shell.tsx';
 import { AuditView } from './admin/audit.tsx';
-import { TokensDialog } from './tokens-dialog.tsx';
 import { TeamGrants, TeamRoles, roleName } from './team-roles.tsx';
 import { AgentDefaultsSection } from './agent-defaults.tsx';
 import { GitHostTokenPanel } from '../surfaces/workbench/git-dialog.tsx';
-import { SettingsEntry } from './settings-navigation.tsx';
 
 /**
  * 登录闸门：没登录只渲染登录/注册页；登录后把当前账号放进 context。
@@ -397,10 +392,6 @@ function describeDevice(ua: string | null): string {
 const when = (ms: number) => new Date(ms).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 /** 我的登录设备：逐台登出，或一键登出其他所有设备。 */
-function DevicesDialog({ onClose }: { onClose: () => void }) {
-  return <DialogShell title="登录设备" onClose={onClose}><DeviceSettings /></DialogShell>;
-}
-
 export function DeviceSettings() {
   const queryClient = useQueryClient();
   const list = useQuery({ queryKey: ['auth', 'logins'], queryFn: authApi.logins });
@@ -456,137 +447,22 @@ export function DeviceSettings() {
   );
 }
 
-/** 头部的账号按钮：显示首字，点开是个人 / 组织两组入口和退出登录。 */
-const MENU_ROW = 'w-full rounded-sm px-2 py-1.5 text-left text-secondary hover:bg-card-raised hover:text-primary';
-
-export function AccountMenu({ placement = 'down' }: { placement?: 'down' | 'up' } = {}) {
-  const account = useAccount();
+export function useLogout() {
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const [devices, setDevices] = useState(false);
-  const [team, setTeam] = useState(false);
-  const [settings, setSettings] = useState(false);
-  const [providers, setProviders] = useState(false);
-  const [tokens, setTokens] = useState(false);
-  const leave = useMutation({
+  return useMutation({
     mutationFn: authApi.logout,
     onSettled: () => {
       queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== 'auth' });
       queryClient.setQueryData<AuthState | undefined>(STATE_KEY, (old) => (old ? { ...old, user: null } : old));
     }
   });
-  if (!account) return null;
-  return (
-    <div className="relative">
-      <button
-        aria-label="账号"
-        aria-expanded={open}
-        className="flex h-[44px] w-[44px] items-center justify-center text-meta text-secondary md:h-7 md:w-7"
-        onClick={() => setOpen((value) => !value)}
-      >
-        <span className="flex h-[26px] w-[26px] items-center justify-center rounded-full bg-selected hover:text-primary md:h-[22px] md:w-[22px]">
-          {account.displayName.slice(0, 1).toUpperCase()}
-        </span>
-      </button>
-      {open && (
-        <div className={`absolute z-40 w-56 rounded-lg border border-strong bg-overlay p-3 text-meta shadow-overlay ${placement === 'up' ? 'bottom-9 right-0 lg:left-0 lg:right-auto' : 'right-0 top-9'}`} data-testid="account-menu">
-          <p className="truncate text-primary">{account.displayName}</p>
-          <p className="truncate text-tertiary">{account.email}</p>
-          <p className="mt-1 text-tertiary">{account.clusterAdmin ? '集群管理员' : roleLabel(account.role)}</p>
-          <div className="mt-3">
-            <ThemeSwitch />
-          </div>
-
-          <div className="mt-3 border-t border-hair pt-1.5">
-            <SettingsEntry label onOpen={() => setOpen(false)} className={`${MENU_ROW} flex items-center gap-2`} />
-            <p className="px-2 pb-0.5 text-meta text-tertiary">个人</p>
-            <button
-              className={MENU_ROW}
-              data-testid="menu-settings"
-              onClick={() => {
-                setOpen(false);
-                setSettings(true);
-              }}
-            >
-              个人设置
-            </button>
-            <button
-              className={MENU_ROW}
-              data-testid="menu-devices"
-              onClick={() => {
-                setOpen(false);
-                setDevices(true);
-              }}
-            >
-              登录设备
-            </button>
-            <button
-              className={MENU_ROW}
-              data-testid="menu-tokens"
-              onClick={() => {
-                setOpen(false);
-                setTokens(true);
-              }}
-            >
-              访问令牌
-            </button>
-            <a className={`block ${MENU_ROW}`} data-testid="menu-access" href="#/access" onClick={() => setOpen(false)}>
-              外部接入（MCP）
-            </a>
-          </div>
-
-          <div className="mt-2 border-t border-hair pt-1.5">
-            <p className="px-2 pb-0.5 text-meta text-tertiary">组织</p>
-            <button
-              className={MENU_ROW}
-              data-testid="menu-team"
-              onClick={() => {
-                setOpen(false);
-                setTeam(true);
-              }}
-            >
-              我的团队
-            </button>
-            <button
-              className={MENU_ROW}
-              data-testid="menu-providers"
-              onClick={() => {
-                setOpen(false);
-                setProviders(true);
-              }}
-            >
-              模型提供商
-            </button>
-          </div>
-
-          <button
-            className="mt-2 w-full border-t border-hair px-2 pb-0.5 pt-2 text-left text-secondary hover:text-rust disabled:opacity-40"
-            data-testid="menu-logout"
-            onClick={() => leave.mutate()}
-            disabled={leave.isPending}
-          >
-            退出登录
-          </button>
-        </div>
-      )}
-      {devices && <DevicesDialog onClose={() => setDevices(false)} />}
-      {team && <TeamDialog onClose={() => setTeam(false)} />}
-      {settings && <SettingsDialog onClose={() => setSettings(false)} />}
-      {tokens && <TokensDialog me={account} onClose={() => setTokens(false)} />}
-      {providers && <ProvidersDialog me={account} onClose={() => setProviders(false)} />}
-    </div>
-  );
 }
 
 const BUILTIN_LABEL: Record<string, string> = { owner: '主人', admin: '管理员', member: '成员', viewer: '只读' };
-const roleLabel = (role: string, custom?: ReadonlyMap<string, string>) => BUILTIN_LABEL[role] ?? custom?.get(role) ?? '自定义角色';
+export const roleLabel = (role: string, custom?: ReadonlyMap<string, string>) => BUILTIN_LABEL[role] ?? custom?.get(role) ?? '自定义角色';
 const SMALL_DANGER = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-rust hover:text-rust disabled:opacity-40';
 
 /** 我的团队：人人能看成员；团队 owner（和 hub 管理员）能邀请、撤销邀请、改角色、删人。 */
-function TeamDialog({ onClose }: { onClose: () => void }) {
-  return <DialogShell title="我的团队" onClose={onClose}><TeamSettings /></DialogShell>;
-}
-
 export function TeamSettings({ modelsOnly = false, hideDefaults = false }: { modelsOnly?: boolean; hideDefaults?: boolean }) {
   const queryClient = useQueryClient();
   const me = useAccount();
@@ -766,10 +642,6 @@ export function TeamSettings({ modelsOnly = false, hideDefaults = false }: { mod
 }
 
 /** 个人设置：改显示名；改密码要原密码，改完其他设备都会退出。 */
-function SettingsDialog({ onClose }: { onClose: () => void }) {
-  return <DialogShell title="个人设置" onClose={onClose}><ProfileSettings /></DialogShell>;
-}
-
 export function ProfileSettings() {
   const queryClient = useQueryClient();
   const me = useAccount();

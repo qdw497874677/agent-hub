@@ -115,7 +115,10 @@ for (const width of [1280, 320]) {
         if (width < 640) await page.getByRole('button', { name: '项目与全部会话' }).tap();
         const nav = width < 640 ? page.getByTestId('nav-sheet') : page.getByTestId('project-sidebar');
         const navGroups = nav.getByTestId('sidebar-workspace-group');
-        await expect(navGroups).toHaveCount(2);
+        await expect(navGroups).toHaveCount(3);
+        const emptyHome = navGroups.filter({ hasText: home });
+        await expect(emptyHome).toHaveCount(1);
+        await expect(emptyHome.getByTestId('workdir-entry')).toBeVisible();
         const navLeft = navGroups.filter({ hasText: leftPath });
         const navRight = navGroups.filter({ hasText: rightPath });
         await expect(navLeft.getByTestId('sidebar-workspace-toggle')).toContainText(leftPath);
@@ -133,37 +136,15 @@ for (const width of [1280, 320]) {
         await expect(navGroups.getByText(unstartedTitle, { exact: true })).toHaveCount(0);
         await expect(nav.getByRole('button', { name: `为${unstartedTitle}开始会话` })).toBeVisible();
         await page.screenshot({ path: testInfo.outputPath(`sidebar-workspaces-${width}.png`) });
-        const sidebarDirs = nav.getByRole('region', { name: '登记的工作目录' });
-        const sidebarEntry = (id: string) => sidebarDirs.locator(`[data-testid="workdir-entry-row"][data-workspace-id="${id}"]`);
+        const sidebarEntry = (id: string) => nav.locator(`[data-testid="workdir-entry"][data-workspace-id="${id}"]`);
         const focusHash = `#/p/${project.id}/focus/${third.id}`;
-        // The deliberately long parent of `home` must not clip the basename on the right.
-        const homeTail = sidebarDirs.getByTestId('workdir-entry-path-tail').filter({ hasText: /\/home$/ });
-        await expect(homeTail).toBeVisible();
-        const tailBounds = await homeTail.evaluate((viewport) => {
-          const outer = viewport.getBoundingClientRect();
-          const text = viewport.firstElementChild!.getBoundingClientRect();
-          return { overflow: text.width - outer.width, rightOverflow: text.right - outer.right };
-        });
-        if (width >= 640) expect(tailBounds.overflow).toBeGreaterThan(0);
-        expect(tailBounds.rightOverflow).toBeLessThanOrEqual(1);
-        for (const [workspace, path, tail] of [[a, leftPath, 'left/shared'], [b, rightPath, 'right/shared']] as const) {
-          const entry = sidebarEntry(workspace.id);
-          const toggle = entry.getByTestId('workdir-entry-path-toggle');
-          const fullPath = entry.getByTestId('workdir-entry-path');
-          await expect(entry).toContainText('e2e 假 ACP 机器');
-          await expect(entry).toContainText(tail);
-          await expect(toggle).toHaveText('查看路径');
-          await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-          await expect(fullPath).toBeHidden();
-          if (width < 640) await toggle.tap();
-          else { await toggle.focus(); await toggle.press('Enter'); }
-          await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-          await expect(fullPath).toBeVisible();
-          await expect(fullPath).toHaveText(path);
-          expect(new URL(page.url()).hash).toBe(focusHash);
-          if (workspace.id === a.id) await page.screenshot({ path: testInfo.outputPath(`sidebar-expanded-path-${width}.png`) });
+        for (const [group, path] of [[navLeft, leftPath], [navRight, rightPath]] as const) {
+          await expect(group).toContainText('e2e 假 ACP 机器');
+          const toggle = group.getByRole('button', { name: '查看完整路径' });
           await toggle.click();
-          await expect(fullPath).toBeHidden();
+          await expect(group.getByText(path, { exact: true }).last()).toBeVisible();
+          expect(new URL(page.url()).hash).toBe(focusHash);
+          await group.getByRole('button', { name: '收起路径' }).click();
         }
 
         if (width < 640) {
@@ -186,7 +167,7 @@ for (const width of [1280, 320]) {
         await row(first).getByTestId('list-session-label').click();
         await expect.poll(() => new URL(page.url()).hash).toBe(`#/p/${project.id}/focus/${first.id}`);
         if (width < 640) await page.getByRole('button', { name: '项目与全部会话' }).tap();
-        const directory = sidebarEntry(b.id).getByTestId('workdir-entry');
+        const directory = sidebarEntry(b.id);
         if (width < 640) await directory.tap();
         else await directory.click();
         await expect.poll(() => new URL(page.url()).hash).toBe(`#/p/${project.id}/workdir/${b.id}`);
