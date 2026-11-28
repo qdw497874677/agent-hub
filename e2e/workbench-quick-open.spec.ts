@@ -39,16 +39,19 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     const item = (sessionId: string, projectId = project.id) => ({ sessionId, taskId: task.id, taskTitle: '快捷任务', sessionTitle: sessionId === third ? '第三条' : '其他项目', projectId, projectName: '快捷项目', agentId: 'fakeacp', phase, since: 1, reason: '等待处理', possible: false, expiresAt: null });
     // 在首次进入页面前拦截：focus 页面也会订阅 attention，换 hash 不会清空 Query 缓存。
     await page.route('**/api/attention', (route) => route.fulfill({ json: { items: showAttention ? [item(third), item(first, 'other-project'), ...(includeLate ? [item(second)] : [])] : [], working: 0 } }));
+    const reloadWithAttention = async () => {
+      await page.reload();
+      // 等新文档显示已加载的待办，不读取可能已被导航淘汰的响应。
+      if (viewport.width > 640) await expect(page.getByTestId('attention-count')).toHaveText('2');
+      else await expect(page.getByTestId('global-menu-button')).toHaveAccessibleDescription(/待处理 2，/);
+    };
     // 实际进入会话才产生最近记录，时间先后与创建顺序不同。
     for (const id of [second, first]) {
       await page.goto(`/#/p/${project.id}/focus/${id}`);
       await expect(page.getByLabel('发送消息')).toBeVisible();
     }
     // 验证真实浏览器请求命中 fixture，再以 focus 页新建查询缓存后切到列表。
-    const attentionResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/attention' && response.request().method() === 'GET');
-    await page.reload();
-    const payload = await (await attentionResponse).json() as { items: Array<{ sessionId: string }> };
-    expect(payload.items.map((entry) => entry.sessionId)).toContain(third);
+    await reloadWithAttention();
     await page.goto(`/#/p/${project.id}/list`);
     await expect(page.getByTestId('list-view')).toBeVisible();
     if (viewport.width > 640) await page.keyboard.press('Control+k');
@@ -85,9 +88,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       phase = 'needs_approval';
       // 切到 focus 后重载并确认 fixture 已返回，避免下一次快照与请求竞赛。
       await page.goto(`/#/p/${project.id}/focus/${first}`);
-      const restoredResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/attention' && response.request().method() === 'GET');
-      await page.reload();
-      expect(((await (await restoredResponse).json()) as { items: Array<{ sessionId: string }> }).items.map((entry) => entry.sessionId)).toContain(third);
+      await reloadWithAttention();
       await page.goto(`/#/p/${project.id}/list`);
       await expect(page.getByTestId('list-view')).toBeVisible();
       await page.keyboard.press('Control+k');

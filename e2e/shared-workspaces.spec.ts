@@ -25,6 +25,9 @@ test('团队工作目录：新建 → A 分配 → B 转移 → 之后只有 B �
   await loginByApi(page);
   const headers = await csrfHeaders(page, baseURL!);
   const workerId = await ensureFakeWorker(page, baseURL!);
+  const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ workerId?: string; id?: string; label: string }>;
+  const worker = workers.find((candidate) => (candidate.workerId ?? candidate.id) === workerId);
+  expect(worker).toBeDefined();
   const dir = join(tmpdir(), `shared-ws-${RUN}`);
   mkdirSync(dir, { recursive: true });
   const mk = async (name: string) => {
@@ -111,6 +114,19 @@ test('团队工作目录：新建 → A 分配 → B 转移 → 之后只有 B �
       const agentSection = run.getByTestId('derive-agent-section');
       if (!(await run.locator('#derive-agent').isVisible())) await agentSection.locator('summary').click();
       await run.getByRole('combobox', { name: 'agent' }).selectOption(FAKE_AGENT_ID);
+      const machineGroup = run.getByRole('radiogroup', { name: '机器', exact: true });
+      const alternative = run.getByTestId('machine-select-alternative');
+      if (await machineGroup.isVisible()) {
+        const machine = machineGroup.getByRole('radio').filter({ has: page.getByText(worker!.label, { exact: true }) });
+        await machine.click();
+        await expect(machine).toHaveAttribute('aria-checked', 'true');
+      } else if (await alternative.isVisible()) {
+        await expect(alternative).toHaveText(worker!.label);
+        await alternative.click();
+      } else {
+        await expect(run.getByTestId('derive-workspace-region').getByText(worker!.label, { exact: true })).toBeVisible();
+      }
+      await expect(run.getByTestId('machine-selected-incompatible')).toHaveCount(0);
       const radio = run.getByRole('radio', { name: new RegExp(`shared-ws-${RUN}`) });
       await expect(radio).toBeVisible();
       await radio.click();

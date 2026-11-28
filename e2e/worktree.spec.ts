@@ -195,6 +195,9 @@ test('UI：明确准备仓库后才可选隔离 worktree，机器照样能选', 
   test.setTimeout(120_000);
   const headers = await login(page, baseURL ?? '');
   const workerId = await ensureFakeWorker(page, baseURL!);
+  const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ workerId?: string; id?: string; label: string }>;
+  const worker = workers.find((candidate) => (candidate.workerId ?? candidate.id) === workerId);
+  expect(worker).toBeDefined();
 
   const dir = mkdtempSync(join(tmpdir(), 'e2e-worktree-ui-'));
   try {
@@ -223,8 +226,19 @@ test('UI：明确准备仓库后才可选隔离 worktree，机器照样能选', 
   const worktree = run.getByTestId('ws-new-worktree');
   if (!(await run.locator('#derive-agent').isVisible())) await run.getByTestId('derive-agent-section').locator('summary').click();
   await run.locator('#derive-agent').selectOption(FAKE_AGENT_ID);
-  const switchMachine = run.getByTestId('machine-select-alternative');
-  if (await switchMachine.isVisible()) await switchMachine.click();
+  const machineGroup = run.getByRole('radiogroup', { name: '机器', exact: true });
+  const alternative = run.getByTestId('machine-select-alternative');
+  if (await machineGroup.isVisible()) {
+    const machine = machineGroup.getByRole('radio').filter({ has: page.getByText(worker!.label, { exact: true }) });
+    await machine.click();
+    await expect(machine).toHaveAttribute('aria-checked', 'true');
+  } else if (await alternative.isVisible()) {
+    await expect(alternative).toHaveText(worker!.label);
+    await alternative.click();
+  } else {
+    await expect(run.getByTestId('derive-workspace-region').getByText(worker!.label, { exact: true })).toBeVisible();
+  }
+  await expect(run.getByTestId('machine-selected-incompatible')).toHaveCount(0);
   const prepare = run.getByTestId('ws-download-repo');
   await expect(prepare).toHaveAccessibleName('准备仓库');
   await expect(prepare).not.toBeChecked();
