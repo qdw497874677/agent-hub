@@ -218,15 +218,15 @@ for (const width of [1280, 390]) {
       }).toBe('done');
       await expect(log.getByTestId('msg-assistant')).toHaveCount(3);
       await expect(log.getByTestId('msg-assistant').last()).toContainText('session/prompt,session/prompt,session/prompt');
-      const position = () => page.evaluate((text) => {
-        const history = document.querySelector('[role="log"][aria-label="会话记录"]');
-        const message = [...(history?.querySelectorAll('[data-testid="msg-user"]') ?? [])].find((node) => node.textContent?.includes(text));
-        const composer = document.querySelector('textarea[aria-label="发送消息"]');
-        return [message?.getBoundingClientRect().top ?? -1, composer?.getBoundingClientRect().top ?? -1];
-      }, oldText);
+      // 在跟随底部时，最早的消息可能已经滚出手机视口。以仍在阅读区的正文为锚点。
+      const visibleMessage = log.getByText(missedText, { exact: true });
+      await expect(visibleMessage).toBeInViewport();
+      await expect(composer).toBeInViewport();
+      const position = () => Promise.all([
+        visibleMessage.evaluate((node) => node.getBoundingClientRect().top),
+        composer.evaluate((node) => node.getBoundingClientRect().top)
+      ]);
       const beforeSync = await position();
-      expect(beforeSync[0]).toBeGreaterThanOrEqual(0);
-      expect(beforeSync[1]).toBeGreaterThan(0);
       const quietGate = deferred(); releases.push(quietGate.release);
       await page.route((url) => url.pathname === `/api/sessions/${session.id}/events` && url.searchParams.has('after'), async (route) => {
         await quietGate.promise;

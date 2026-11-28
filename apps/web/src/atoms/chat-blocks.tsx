@@ -2,6 +2,7 @@ import { DeliveryNote } from './delivery-note.tsx';
 import { AuthorTag } from './author.tsx';
 import { ProvenanceView } from './message-provenance-view.tsx';
 import { projectMessage } from './message-provenance.ts';
+import { MessageActions } from './message-actions.tsx';
 
 /**
  * agent 明确用提问工具问的那一句。只认工具名和输入里的字段，不从回复语气、
@@ -948,7 +949,8 @@ export function ChatBlock({
   queued = false,
   recovered = false,
   stale = false,
-  searchOpen = false
+  searchOpen = false,
+  onQuoteMessage
 }: {
   block: Block;
   sessionId: string;
@@ -967,6 +969,7 @@ export function ChatBlock({
   stale?: boolean;
   /** 搜索时开放工具输出，退出后恢复用户的展开状态。 */
   searchOpen?: boolean;
+  onQuoteMessage?: (text: string) => void;
 }) {
   if (block.kind === 'subagent') {
     const label = block.agent ?? '子代理';
@@ -1020,7 +1023,7 @@ export function ChatBlock({
     const others = block.attachments.filter((item) => item.kind !== 'image');
     const provenance = projectMessage(block);
     return (
-      <div className="flex flex-col items-end gap-1.5" data-testid="msg-user">
+      <div className="group/message flex flex-col items-end gap-1.5" data-testid="msg-user">
         {block.handoff ? <HandoffBar handoff={block.handoff} /> : null}
         {showAuthor && provenance.kind === 'ordinary' ? <AuthorTag author={block.author} /> : null}
         {images.length > 0 ? (
@@ -1053,6 +1056,7 @@ export function ChatBlock({
             {block.text}
           </p>
         ) : null}
+        {onQuoteMessage && !queued && provenance.kind === 'ordinary' && block.text.trim() ? <MessageActions key={sessionId} text={block.text} onQuote={onQuoteMessage} align="end" /> : null}
         <DeliveryNote seq={block.seq} />
       </div>
     );
@@ -1086,8 +1090,9 @@ export function ChatBlock({
   if (block.kind === 'thinking') return <ThinkingBlock text={block.text} settings={settings} live={last && running && !stale} />;
   if (block.kind === 'text') {
     return (
-      <div data-testid="msg-assistant">
+      <div data-testid="msg-assistant" className="group/message">
         <LogMarkdown body={block.text} className="text-chat text-primary/90" />
+        {onQuoteMessage && block.text.trim() ? <MessageActions key={sessionId} text={block.text} onQuote={onQuoteMessage} /> : null}
       </div>
     );
   }
@@ -1265,12 +1270,12 @@ export function WorkGroup({
       data-testid="work-group"
       data-live={live && !stale ? 'true' : undefined}
     >
-      <button type="button" data-testid="work-group-toggle" aria-expanded={open} disabled={forceOpen} title={forceOpen ? '搜索时展开工作过程' : undefined} onClick={() => { setVisited(true); setUserOpen(!open); }} className="flex min-h-[44px] w-full min-w-0 cursor-pointer items-center gap-2 text-left text-meta text-tertiary hover:text-secondary focus-visible:outline-2 focus-visible:outline-ring">
+      <button type="button" data-testid="work-group-toggle" aria-expanded={open} disabled={forceOpen} title={forceOpen ? '搜索时展开工作过程' : undefined} onClick={() => { setVisited(true); setUserOpen(!open); }} className="flex min-h-[44px] w-full min-w-0 cursor-pointer flex-wrap items-center gap-x-2 gap-y-0 py-1 text-left text-meta text-tertiary hover:text-secondary focus-visible:outline-2 focus-visible:outline-ring">
         <span aria-hidden className={`inline-block w-2.5 transition-transform motion-reduce:transition-none ${open ? 'rotate-90' : ''}`}>›</span>
         <Icon name="wrench" size={13} className={live && !stale ? 'text-live' : ''} />
         <span className="shrink-0 text-secondary">工作过程</span>
         <span className="shrink-0 tabular-nums">{summary.steps + summary.thinking} 项</span>
-        {counts ? <span className="min-w-0 truncate">· {counts}</span> : null}
+        {counts ? <span data-testid="work-group-types" className="flex min-w-0 flex-wrap gap-x-1">{counts.split(' · ').map((count, index) => <span key={index} className="whitespace-nowrap">· {count}</span>)}</span> : null}
         {summary.failed > 0 ? (
           <span className="flex shrink-0 items-center gap-1 text-danger">
             · <Icon name="alert" size={12} /> {summary.failed} 处失败

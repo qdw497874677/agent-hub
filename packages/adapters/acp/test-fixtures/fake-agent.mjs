@@ -174,6 +174,10 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
         process.stderr.write('Error: 401 Unauthorized from provider, api_key=sk-livesecret1234567890 Authorization: Bearer abcdefghijklmnop\n');
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }
+      if (all.includes('please-test-message-actions')) {
+        say(msg.params.sessionId, '**第一行**\n\n`第二行`');
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
       // 对话活动折叠 E2E：真实 ACP → Hub → SSE；先停在思考中，测试决定何时继续。
       if (GATE_DIR && all.includes('please-turn-activity')) {
         const sessionId = msg.params.sessionId;

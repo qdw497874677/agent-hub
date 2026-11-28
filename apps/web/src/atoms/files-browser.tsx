@@ -10,6 +10,8 @@ import { ReviewEditor, ReviewPanel, useReview } from './review-panel.tsx';
 import type { ReviewDraftDto, ReviewNoteDto } from '../shell/api/files.ts';
 import { useAccount } from '../shell/auth.tsx';
 import { readChangesPosition, storeChangesPosition } from './session-tabs.ts';
+import { Dropdown, MenuItem } from './chat-blocks.tsx';
+import type { PullRequestDto } from '../shell/api/git.ts';
 
 /**
  * 工作目录文件浏览（ADR 0025 · P1，只读）。嵌在会话的「文件 / 改动」标签页里（页签由会话头部管）：
@@ -68,10 +70,20 @@ type Props = {
   members?: readonly FilesContextMemberDto[];
   /** 并排工作区中，列表与正文顺序展示，给差异留足宽度。 */
   compact?: boolean;
+  sourceControl?: {
+    branch: string;
+    taskId: string | null;
+    prs: readonly PullRequestDto[];
+    prsLoading: boolean;
+    prsError: boolean;
+    canOpenGit: boolean;
+    onOpenGit: () => void;
+    onRefresh: () => void;
+  };
 };
 
 /** 会话「文件 / 改动」标签页的内容（详情 → 浏览文件 也是切到这里，旧的全屏浮层已去掉）。 */
-export function FilesBrowser({ sessionId, workspaceId, member = null, status, tab, reveal = null, jump = null, onQuote, switcher = null, members = [], compact = false }: Props) {
+export function FilesBrowser({ sessionId, workspaceId, member = null, status, tab, reveal = null, jump = null, onQuote, switcher = null, members = [], compact = false, sourceControl }: Props) {
   const client = useQueryClient();
   const keys = filesKeys(workspaceId, sessionId);
   const viewportWide = useWide();
@@ -85,6 +97,9 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
   const [lastRead, setLastRead] = useState<LastRead | null>(restored?.file ?? null);
   const [showSensitive, setShowSensitive] = useState(false);
   const [query, setQuery] = useState('');
+  const [sourceTab, setSourceTab] = useState<'changes' | 'pr'>('changes');
+  const sourceMenuRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => setSourceTab('changes'), [sessionId]);
   const previousMember = useRef(member);
 
   useEffect(() => {
@@ -102,6 +117,7 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
   useEffect(() => {
     if (!jump || appliedJump.current === jump) return;
     appliedJump.current = jump;
+    setSourceTab('changes');
     if (jump.base !== base) {
       // A turn badge links to that turn's list, not the previous range's file.
       setOpened(null);
@@ -308,6 +324,15 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
     window.addEventListener('pointerup', stop);
     window.addEventListener('pointercancel', stop);
   };
+  const compactReader = !wide && reading && sourceTab === 'changes';
+  const sourceMenu = sourceControl ? <div className="[&>div>button]:!h-[44px] [&>div>button]:!min-w-[44px]">
+    <Dropdown label="源代码控制更多操作" icon="⋯" width="w-48" testId="source-control-menu" triggerRef={sourceMenuRef}>
+      {(close) => <>
+        <MenuItem title="刷新源代码控制" testId="source-control-refresh" className="min-h-[44px]" onClick={() => { close(); sourceControl.onRefresh(); requestAnimationFrame(() => sourceMenuRef.current?.focus()); }} />
+        <MenuItem title="提交与推送…" className="min-h-[44px]" disabled={!sourceControl.canOpenGit} onClick={() => { close(); sourceControl.onOpenGit(); }} />
+      </>}
+    </Dropdown>
+  </div> : null;
   return (
     <div
       className="flex min-h-0 flex-1 flex-col bg-canvas"
@@ -316,11 +341,42 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
       data-testid={`files-panel-${tab}`}
       onKeyDown={(event) => {
         // 手机上「返回」也是 Esc：只在读正文时生效，桌面左右并排不需要。
-        if (event.key !== 'Escape' || wide || opened === null) return;
+        if (event.defaultPrevented || event.key !== 'Escape' || wide || opened === null || sourceTab !== 'changes') return;
         event.preventDefault();
         back();
       }}
     >
+      {tab === 'changes' && sourceControl ? (
+        <div data-testid="source-control-panel" className="shrink-0 border-b border-hair bg-canvas">
+          {!compactReader ? <div className="flex min-w-0 items-center gap-2 px-3">
+            <div className="min-w-0 flex-1 py-2">
+              <p className="text-sub font-medium text-primary">源代码控制</p>
+              <p data-testid="source-control-branch" className="truncate font-mono text-meta text-tertiary" title={sourceControl.branch}>{sourceControl.branch}</p>
+            </div>
+            {sourceMenu}
+          </div> : null}
+          <div className="flex items-center gap-1 px-3 pb-2 pt-1"><div role="tablist" aria-label="源代码控制" className="flex min-w-0 flex-1 gap-1" onKeyDown={(event) => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            const next = event.key === 'Home' ? 'changes' : event.key === 'End' ? 'pr' : sourceTab === 'changes' ? 'pr' : 'changes';
+            setSourceTab(next);
+            event.currentTarget.querySelector<HTMLButtonElement>(`[data-testid="source-control-tab-${next}"]`)?.focus();
+          }}>
+            {([['changes', '改动'], ['pr', 'PR']] as const).map(([value, label]) => <button key={value} type="button" role="tab" tabIndex={sourceTab === value ? 0 : -1} aria-selected={sourceTab === value} data-testid={`source-control-tab-${value}`} onClick={() => setSourceTab(value)} className={`min-h-[44px] min-w-0 flex-1 rounded-md px-3 text-sub font-medium focus-visible:outline-2 focus-visible:outline-ring ${sourceTab === value ? 'bg-card-raised text-primary' : 'text-tertiary hover:bg-card hover:text-primary'}`}>{label}</button>)}
+          </div>{compactReader ? sourceMenu : null}</div>
+        </div>
+      ) : null}
+      {tab === 'changes' && sourceControl && sourceTab === 'pr' ? (
+        <div role="tabpanel" aria-label="PR" data-testid="source-control-pr-content" className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          <p className="text-sub font-medium text-primary">此任务已记录的 PR</p>
+          {sourceControl.taskId === null ? <p className="mt-3 text-sub text-tertiary">此会话没有关联任务，无法查看任务 PR。</p> :
+            sourceControl.prsError ? <p role="alert" className="mt-3 text-sub text-rust">无法读取任务 PR，请刷新重试。</p> :
+            sourceControl.prsLoading ? <p role="status" className="mt-3 text-sub text-tertiary">正在读取任务 PR…</p> :
+            sourceControl.prs.length === 0 ? <p className="mt-3 text-sub text-tertiary">此任务尚未记录 PR。</p> :
+            <div className="mt-3 divide-y divide-hair">{sourceControl.prs.map((pr) => <a key={pr.id} href={pr.url} target="_blank" rel="noreferrer" data-testid="source-control-pr-item" data-state={pr.state} className="flex min-h-[44px] items-center gap-3 py-2 text-sub hover:text-primary focus-visible:outline-2 focus-visible:outline-ring"><span className="min-w-0 flex-1 truncate text-link">{pr.repo} #{pr.number} ↗</span><span className={`shrink-0 text-meta ${pr.state === 'merged' ? 'text-info' : pr.state === 'closed' ? 'text-tertiary' : 'text-sage'}`}>{pr.state === 'merged' ? '已合并' : pr.state === 'closed' ? '已关闭' : '进行中'}</span></a>)}</div>}
+        </div>
+      ) : null}
+      <div className={`${tab === 'changes' && sourceControl && sourceTab === 'pr' ? 'hidden' : 'flex'} min-h-0 flex-1 flex-col`}>
       {switcher ? <div className="shrink-0 border-b border-hair px-3 py-1.5">{switcher}</div> : null}
       {others > 0 ? (
         <p data-testid="files-other-projects" className="shrink-0 border-b border-hair px-3 py-1 text-meta text-rust">
@@ -494,6 +550,7 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
             </div>
           )}
         </main>
+      </div>
       </div>
     </div>
   );

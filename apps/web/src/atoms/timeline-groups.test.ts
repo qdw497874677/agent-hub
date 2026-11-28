@@ -20,6 +20,7 @@ test('单个工具或思考也形成默认收起的活动', () => {
     assert.ok(group.type === 'work');
     assert.equal(group.open, false);
     assert.equal(group.summary.steps + group.summary.thinking, 1);
+    assert.equal(summaryCounts(group.summary), block.kind === 'thinking' ? '思考 1' : '读取 1');
   }
 });
 
@@ -34,6 +35,7 @@ test('正文交错保持原序、同轮一个摘要，下一轮独立', () => {
   assert.deepEqual(groups.map((group) => group.open), [false, false]);
   assert.equal(groups[0]!.summary.thinking, 1);
   assert.equal(groups[0]!.summary.steps, 2);
+  assert.equal(summaryCounts(groups[0]!.summary), '思考 1 · 读取 2');
 });
 
 test('审批、问题、错误及明确显示的活动都是不可跨越的边界', () => {

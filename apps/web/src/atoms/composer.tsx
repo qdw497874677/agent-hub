@@ -48,7 +48,7 @@ interface Props {
    * 从 diff 里「引用到对话」：宿主已经算好了新草稿（原有文字一个字没动），
    * 这里负责写回输入框、收起还开着的 `@` 菜单、光标落到末尾。nonce 变了才做一次。
    */
-  readonly quote?: { readonly text: string; readonly nonce: number } | null;
+  readonly quote?: { readonly text: string; readonly nonce: number; readonly focus?: boolean } | null;
 }
 
 /**
@@ -146,6 +146,7 @@ export function Composer({
   const appliedQuote = useRef(quote?.nonce ?? null);
   const quoteNonce = quote?.nonce ?? null;
   const quoted = quote?.text;
+  const focusQuote = quote?.focus ?? true;
   useEffect(() => {
     const element = area.current;
     if (!element || quoted === undefined || quoteNonce === null || appliedQuote.current === quoteNonce) return;
@@ -155,8 +156,8 @@ export function Composer({
     setFilled(quoted.trim() !== '');
     setTrigger(null);
     fitArea();
-    element.focus();
-  }, [quoteNonce, quoted]);
+    if (focusQuote) element.focus();
+  }, [quoteNonce, quoted, focusQuote]);
 
   // `@` 选择器：每次查询变了就去问服务端；慢的旧回答不能盖掉新的。
   const mentionQuery = trigger?.kind === '@' ? trigger.query : null;

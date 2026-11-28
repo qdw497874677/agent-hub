@@ -133,7 +133,7 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRe
   }, [narrow, area, top, byId]);
   if (!area || open.length === 0) return null;
 
-  const pane = (sessionId: string, actions: ReactNode) => {
+  const pane = (sessionId: string, actions: ReactNode, onSwipe?: (step: number) => void) => {
     const session = byId.get(sessionId)!;
     return (
       <FocusView
@@ -152,7 +152,7 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRe
         onSeedDraft={onDraftChange}
         artifacts={canvas.artifacts.filter((artifact) => artifact.sessionId === session.id)}
         onChangeOption={(optionId, value) => onChangeOption(session.id, optionId, value)}
-        windowChrome={{ actions }}
+        windowChrome={{ actions, onSwipe }}
       />
     );
   };
@@ -187,15 +187,11 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, history, onRe
     };
     return (
       <div className="absolute inset-0 z-30 flex flex-col bg-canvas" data-testid="canvas-window" data-session-id={shown.sessionId} data-mobile="true">
-        <SwipeStrip
-          onSwipe={go}
-          title={sessionTitle(canvas, byId.get(shown.sessionId)!)}
-          count={`${index + 1}/${open.length}`}
-          onChoose={() => setChooser(true)}
-          onBack={() => act((current) => minimizeWindow(current, shown.sessionId))}
-          onClose={() => act((current) => closeWindow(current, shown.sessionId))}
-        />
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{pane(shown.sessionId, null)}</div>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{pane(shown.sessionId, <>
+          <button className="min-h-[44px] min-w-[44px] shrink-0 text-sub text-tertiary hover:text-primary" aria-label="‹ 画布" onClick={() => act((current) => minimizeWindow(current, shown.sessionId))}>‹</button>
+          <button className="min-h-[44px] min-w-[44px] shrink-0 text-meta text-secondary hover:text-primary" aria-label={`窗口 ${index + 1}/${open.length}`} aria-haspopup="dialog" onClick={() => setChooser(true)}><span className="font-mono" data-testid="window-count">{index + 1}/{open.length}</span></button>
+          <button className="min-h-[44px] min-w-[44px] shrink-0 text-meta text-tertiary hover:text-primary" aria-label="关闭窗口" onClick={() => act((current) => closeWindow(current, shown.sessionId))}>×</button>
+        </>, go)}</div>
         {chooser ? (
           <Sheet title="已打开的窗口" testId="window-chooser" onClose={() => setChooser(false)} footer={
             <button className="min-h-[44px] w-full rounded-md border border-hair px-3 text-left text-sub text-primary hover:bg-hover" onClick={() => { setChooser(false); onProjectSessions(shown.sessionId); }}>
@@ -336,37 +332,5 @@ function WaitingDot({ sessionId, blocks, agentLabel }: { sessionId: string; bloc
       aria-label="正在回复"
       title={progress ? `${agentLabel} 正在回复` : undefined}
     />
-  );
-}
-
-/** 手机：顶部一条，左右滑切换打开的窗口（只在这条上滑，不和对话区的滚动、选字抢）。 */
-function SwipeStrip({ title, count, onSwipe, onBack, onClose, onChoose }: { title: string; count: string; onSwipe: (step: number) => void; onBack: () => void; onClose: () => void; onChoose: () => void }) {
-  const start = useRef<{ x: number; y: number } | null>(null);
-  return (
-    <div
-      data-testid="window-swipe-strip"
-      className="flex h-[44px] shrink-0 touch-none items-center gap-2 border-b border-hair bg-card px-2"
-      onPointerDown={(event) => {
-        start.current = { x: event.clientX, y: event.clientY };
-      }}
-      onPointerUp={(event) => {
-        const from = start.current;
-        start.current = null;
-        if (!from) return;
-        const dx = event.clientX - from.x;
-        if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(event.clientY - from.y)) onSwipe(dx < 0 ? 1 : -1);
-      }}
-    >
-      <button className="flex h-11 shrink-0 items-center px-1 text-meta text-tertiary hover:text-primary" onClick={onBack}>
-        ‹ 画布
-      </button>
-      <span className="min-w-0 flex-1 truncate text-center text-meta text-secondary">{title}</span>
-      <button className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center gap-1 px-1 text-meta text-secondary hover:text-primary" aria-label={`窗口 ${count}`} aria-haspopup="dialog" onClick={onChoose}>
-        窗口 <span className="font-mono" data-testid="window-count">{count}</span>
-      </button>
-      <button className="flex h-11 w-9 shrink-0 items-center justify-center text-meta text-tertiary hover:text-primary" aria-label="关闭窗口" onClick={onClose}>
-        ×
-      </button>
-    </div>
   );
 }

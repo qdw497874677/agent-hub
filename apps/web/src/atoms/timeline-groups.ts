@@ -121,11 +121,14 @@ const KIND_LABEL: Readonly<Record<ToolRowKind, string>> = {
 
 const ORDER: readonly ToolRowKind[] = ['edit', 'shell', 'read', 'grep', 'list', 'fetch', 'agent', 'plan', 'other'];
 
-/** 组头的分类计数：「改动 2 · 命令 4 · 读取 3」。 */
+/** 组头的分类计数：「思考 1 · 改动 2 · 命令 4 · 读取 3」。 */
 export function summaryCounts(summary: WorkSummary): string {
-  return ORDER.filter((kind) => (summary.counts[kind] ?? 0) > 0)
-    .map((kind) => `${KIND_LABEL[kind]} ${summary.counts[kind]}`)
-    .join(' · ');
+  const parts = summary.thinking > 0 ? [`思考 ${summary.thinking}`] : [];
+  for (const kind of ORDER) {
+    const count = summary.counts[kind] ?? 0;
+    if (count > 0) parts.push(`${KIND_LABEL[kind]} ${count}`);
+  }
+  return parts.join(' · ');
 }
 
 /** 1.2s / 45s / 3m12s。 */

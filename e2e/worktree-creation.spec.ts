@@ -168,6 +168,7 @@ for (const width of [1280, 390]) {
       try {
         const { api, workerId, project, task, first, second, workspaces } = await setup(page, baseURL!, root);
         const planRoot = `/api/projects/${project.id}/tasks/${task.id}/worktree-plans`;
+        let otherScopeSessionId: string | null = null;
         for (const group of [false, true]) {
           const creation = await openFromDirectory(page, baseURL!, project.id, workspaces[0]!.id);
           if (group) await creation.getByTestId('worktree-add-member').selectOption(workspaces[1]!.id);
@@ -220,6 +221,22 @@ for (const width of [1280, 390]) {
             expect(plan.members[1]!.targetPath).toContain('/repos/');
             expect(existsSync(join(plan.members[1]!.targetPath, 'cwd-proof-group'))).toBe(false);
           } else expect(plan.workspaceId).toBeTruthy();
+
+          // 临时目录没有项目登记链接；组合内的会话也不能和同任务的单目录会话混用。
+          const peer = await api<{ id: string }>('/api/sessions/derive', {
+            taskId: task.id, workerId, agentId: FAKE_AGENT_ID, model: '',
+            ...(group ? { groupId: plan.groupId } : { workspaceId: plan.workspaceId })
+          });
+          await page.goto(`/#/p/${project.id}/focus/${session.id}`);
+          const trigger = page.getByTestId('session-scope-trigger');
+          await expect(trigger).toHaveAccessibleName(/2/);
+          await trigger.click();
+          const picker = page.getByTestId('session-scope-picker');
+          await expect(picker.getByTestId('session-scope-item')).toHaveCount(2);
+          if (otherScopeSessionId) await expect(picker.locator(`[data-session-id="${otherScopeSessionId}"]`)).toHaveCount(0);
+          await picker.locator(`[data-session-id="${peer.id}"]`).click();
+          await expect(page).toHaveURL(new RegExp(`/focus/${peer.id}$`));
+          otherScopeSessionId = session.id;
         }
       } finally {
         stopFakeWorker();

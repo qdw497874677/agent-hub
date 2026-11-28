@@ -36,6 +36,7 @@ for (const width of [1280, 390]) {
         const group = log.getByTestId('work-group');
         const toggle = group.getByTestId('work-group-toggle');
         await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        await expect(toggle.getByTestId('work-group-types')).toHaveText('· 思考 1');
         await expect(log.getByText('先看目录思路', { exact: true })).toBeHidden();
         if (width < 600) await toggle.tap();
         else { await toggle.focus(); await page.keyboard.press('Enter'); }
@@ -55,6 +56,7 @@ for (const width of [1280, 390]) {
 
         await page.reload();
         await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        await expect(toggle.getByTestId('work-group-types')).toHaveText(/思考 1.*命令 1.*读取 1/);
         await expect(middle).toBeVisible();
         await expect(log.getByText('这一轮正常结束', { exact: true })).toBeVisible();
         await expect(log.getByTestId('tool-card').first()).toBeHidden();
@@ -82,6 +84,7 @@ for (const width of [1280, 390]) {
         await expect(question.getByText('暂停', { exact: true })).toBeVisible();
         await expect(group).toHaveCount(2);
         await expect(group.last().getByTestId('work-group-toggle')).toHaveAttribute('aria-expanded', 'false');
+        await expect(group.last().getByTestId('work-group-types')).toHaveText('· 思考 1');
         await expect(question.locator('xpath=ancestor::*[@data-testid="work-group"]')).toHaveCount(0);
         for (const disclosure of await toggle.all()) await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
       } finally {
