@@ -46,7 +46,12 @@ function headerValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value.join(', ') : value;
 }
 
-function requestHeaders(request: IncomingMessage, link: PreviewLink, proto: string, upgrade: boolean): Array<[string, string]> {
+function isServiceWorkerScript(request: IncomingMessage): boolean {
+  return headerValue(request.headers['service-worker']).trim().toLowerCase() === 'script'
+    || headerValue(request.headers['sec-fetch-dest']).trim().toLowerCase() === 'serviceworker';
+}
+
+function requestHeaders(request: IncomingMessage, link: PreviewDestination, proto: string, upgrade: boolean): Array<[string, string]> {
   // RFC 9110：Connection 里列出的字段也是逐跳的，必须跟着一起丢（不只看固定名单）。
   const connectionTokens = previewConnectionTokens(request.headers.connection);
   const out: Array<[string, string]> = [];
@@ -70,11 +75,13 @@ function requestHeaders(request: IncomingMessage, link: PreviewLink, proto: stri
 }
 
 /** 响应的头：剥 `x-frame-options` / CSP `frame-ancestors` / 共享的逐跳、私头、动态 Connection 字段，其余原样。 */
-function responseHeaders(head: PreviewHead, keepUpgradeHeaders: boolean): Array<[string, string]> {
+function responseHeaders(head: PreviewHead, keepUpgradeHeaders: boolean, exclusivePorts = false): Array<[string, string]> {
   const connectionTokens = previewConnectionTokensFromPairs(head.headers);
   const out: Array<[string, string]> = [];
   for (const [name, value] of head.headers) {
     const lower = name.toLowerCase();
+    if (exclusivePorts && lower.startsWith('access-control-')) continue;
+    if (exclusivePorts && (lower === 'cache-control' || lower === 'expires')) continue;
     // 101 的协商结果必须留下：即使上游把 Connection 写成这两项，也不能把握手结果剥掉。
     if (keepUpgradeHeaders && (lower === 'sec-websocket-protocol' || lower === 'sec-websocket-accept')) {
       out.push([name, value]);
@@ -96,6 +103,8 @@ function responseHeaders(head: PreviewHead, keepUpgradeHeaders: boolean): Array<
   // 分享令牌在查询串里（`?share=`），别让它通过 Referer 漏给页面里的第三方资源。
   // 101 握手上不加（不是页面响应，加了也没意义）。
   if (!keepUpgradeHeaders) out.push(['referrer-policy', PREVIEW_REFERRER_POLICY]);
+  if (exclusivePorts) out.push(['cache-control', 'no-store']);
+  if (exclusivePorts) out.push(['content-security-policy', "frame-ancestors 'none'"]);
   if (keepUpgradeHeaders) {
     const names = new Set(out.map(([name]) => name.toLowerCase()));
     if (!names.has('connection')) out.push(['connection', 'Upgrade']);
@@ -199,19 +208,30 @@ function writeRaw(
   socket.end(lines.join('\r\n'));
 }
 
-export interface PreviewProxyOptions {
+export interface PreviewDestination {
+  readonly id: string;
+  readonly workerId: string;
+  readonly port: number;
+  readonly hubPort: number;
+  readonly listenerIdentity?: string;
+}
+
+export interface PreviewProxyOptions<Link extends PreviewDestination = PreviewLink> {
   /** 按预览端口找链接；找不到就是 404。 */
-  readonly resolve: (hubPort: number) => Promise<PreviewLink | null>;
+  readonly resolve: (hubPort: number) => Promise<Link | null>;
   /** 未登录 / 无权访问 → false（反代 302 到登录页）。 */
-  readonly authorize: (request: IncomingMessage, link: PreviewLink) => Promise<boolean>;
+  readonly authorize: (request: IncomingMessage, link: Link) => Promise<boolean>;
+  readonly beforeAuthorize?: (request: IncomingMessage, response: ServerResponse, link: Link) => void | Promise<void>;
   /**
    * `?share=<令牌>` 校验（公开分享）。命中即放行、跳过 cookie；失败不否决 cookie，
    * 继续走 `authorize`。不传 = 只认 cookie。
    */
-  readonly matchShare?: (link: PreviewLink, token: string) => boolean | Promise<boolean>;
+  readonly matchShare?: (link: Link, token: string) => boolean | Promise<boolean>;
   readonly channel: PreviewChannel;
   /** 与 hub 相同的绑定地址（HUB_HOST），默认 127.0.0.1。 */
   readonly host?: string;
+  /** Reject port collisions instead of replacing an existing listener. */
+  readonly exclusivePorts?: boolean;
   readonly onLog?: (message: string) => void;
   /** `EADDRINUSE`：端口被占，装配方去把这条 link 标 stale。 */
   readonly onConflict?: (linkId: string) => void;
@@ -222,45 +242,51 @@ export interface PreviewProxyOptions {
   /** 拼 `x-forwarded-proto`，默认 http。 */
   readonly proto?: string;
   /** 未授权时的跳转地址；默认相对 `/login?next=<原地址>`。 */
-  readonly loginUrl?: (request: IncomingMessage, link: PreviewLink, target: string) => string;
+  readonly loginUrl?: (request: IncomingMessage, link: Link, target: string) => string;
 }
 
-export interface PreviewProxy {
-  listen(link: PreviewLink): Promise<void>;
+export interface PreviewProxy<Link extends PreviewDestination = PreviewLink> {
+  listen(link: Link): Promise<void>;
   unlisten(linkId: string): Promise<void>;
-  listenAll(links: readonly PreviewLink[]): Promise<void>;
+  listenAll(links: readonly Link[]): Promise<void>;
   /** 正在监听 / 冲突过的端口 → link id（诊断与测试用）。 */
   listening(): ReadonlyArray<{ readonly linkId: string; readonly hubPort: number }>;
   close(): Promise<void>;
 }
 
-interface Listener {
-  readonly link: PreviewLink;
+interface Listener<Link extends PreviewDestination> {
+  readonly link: Link;
   readonly server: Server;
   /** upgrade 之后的裸 socket 已从 http 解析器摘除，closeAllConnections() 管不到它们。 */
   readonly upgraded: Set<Duplex>;
 }
 
-export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
+export function createPreviewProxy<Link extends PreviewDestination = PreviewLink>(options: PreviewProxyOptions<Link>): PreviewProxy<Link> {
   const log = options.onLog ?? (() => {});
   const host = options.host ?? DEFAULT_HOST;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const headerTimeoutMs = options.headerTimeoutMs ?? DEFAULT_HEADER_TIMEOUT_MS;
   const proto = options.proto ?? 'http';
-  const listeners = new Map<string, Listener>();
-  const byPort = new Map<number, Listener>();
+  const listeners = new Map<string, Listener<Link>>();
+  const byPort = new Map<number, Listener<Link>>();
   const closed = { value: false };
 
-  async function lookup(hubPort: number): Promise<PreviewLink | null> {
+  function isCurrent(listener: Listener<Link>): boolean {
+    return listeners.get(listener.link.id) === listener && byPort.get(listener.link.hubPort) === listener;
+  }
+
+  async function lookup(listener: Listener<Link>): Promise<Link | null> {
+    const { hubPort, id } = listener.link;
     try {
-      return await options.resolve(hubPort);
+      const resolved = await options.resolve(hubPort);
+      return isCurrent(listener) && resolved?.id === id && resolved.hubPort === hubPort ? resolved : null;
     } catch (error) {
       log(`预览链接解析失败（端口 ${hubPort}）：${messageOf(error)}`);
       return null;
     }
   }
 
-  async function allowed(request: IncomingMessage, link: PreviewLink): Promise<boolean> {
+  async function allowed(request: IncomingMessage, link: Link): Promise<boolean> {
     if (options.matchShare !== undefined) {
       const token = shareTokenOf(request);
       if (token !== null) {
@@ -285,12 +311,12 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
     return `${origin}${request.url ?? '/'}`;
   }
 
-  function loginLocation(request: IncomingMessage, link: PreviewLink): string {
+  function loginLocation(request: IncomingMessage, link: Link): string {
     const target = loginTarget(request);
     return options.loginUrl?.(request, link, target) ?? `/login?next=${encodeURIComponent(target)}`;
   }
 
-  function redirectToLogin(request: IncomingMessage, response: ServerResponse, link: PreviewLink): void {
+  function redirectToLogin(request: IncomingMessage, response: ServerResponse, link: Link): void {
     if (response.headersSent) {
       response.destroy();
       return;
@@ -300,7 +326,7 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
   }
 
   function writeUpstreamHead(response: ServerResponse, head: PreviewHead): void {
-    const headers = toHeaderObject(responseHeaders(head, false));
+    const headers = toHeaderObject(responseHeaders(head, false, options.exclusivePorts));
     const contentType = String(headers['content-type'] ?? '').toLowerCase();
     if (contentType.includes('text/html') && headers['cache-control'] === undefined) headers['cache-control'] = 'no-cache';
     const statusText = sanitizeStatusText(head.statusText);
@@ -310,14 +336,31 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
     if (contentType.includes('text/event-stream')) response.flushHeaders();
   }
 
-  async function handleHttp(request: IncomingMessage, response: ServerResponse, hubPort: number): Promise<void> {
-    const link = await lookup(hubPort);
+  async function handleHttp(request: IncomingMessage, response: ServerResponse, listener: Listener<Link>): Promise<void> {
+    if (options.exclusivePorts) {
+      response.setHeader('cache-control', 'no-store');
+      if (isServiceWorkerScript(request)) {
+        sendText(response, 403, '不允许注册 Service Worker');
+        return;
+      }
+    }
+    const link = await lookup(listener);
     if (!link) {
+      sendText(response, 404, '预览链接不存在');
+      return;
+    }
+    await options.beforeAuthorize?.(request, response, link);
+    if (response.headersSent || response.writableEnded) return;
+    if (!isCurrent(listener)) {
       sendText(response, 404, '预览链接不存在');
       return;
     }
     if (!(await allowed(request, link))) {
       redirectToLogin(request, response, link);
+      return;
+    }
+    if (!isCurrent(listener)) {
+      sendText(response, 404, '预览链接不存在');
       return;
     }
 
@@ -328,7 +371,8 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
         port: link.port,
         method,
         path: stripShareParam(request.url ?? '/'),
-        headers: requestHeaders(request, link, proto, false)
+        headers: requestHeaders(request, link, proto, false),
+        ...(link.listenerIdentity !== undefined ? { listenerIdentity: link.listenerIdentity } : {})
       });
     } catch (error) {
       const failure = failureText(error);
@@ -427,19 +471,30 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
     request: IncomingMessage,
     socket: Duplex,
     head: Buffer,
-    hubPort: number
+    listener: Listener<Link>
   ): Promise<void> {
-    const link = await lookup(hubPort);
+    const reply = (status: number, reason: string, headers: ReadonlyArray<readonly [string, string]>, body = ''): void => {
+      writeRaw(socket, status, reason, options.exclusivePorts ? [...headers, ['cache-control', 'no-store']] : headers, body);
+    };
+    if (options.exclusivePorts && isServiceWorkerScript(request)) {
+      reply(403, 'Forbidden', [], '不允许注册 Service Worker');
+      return;
+    }
+    const link = await lookup(listener);
     if (!link) {
-      writeRaw(socket, 404, 'Not Found', [['content-type', 'text/plain; charset=utf-8']], '预览链接不存在');
+      reply(404, 'Not Found', [['content-type', 'text/plain; charset=utf-8']], '预览链接不存在');
       return;
     }
     if (!(await allowed(request, link))) {
-      writeRaw(socket, 302, 'Found', [
+      reply(302, 'Found', [
         ['location', loginLocation(request, link)],
         ['content-length', '0'],
-        ['cache-control', 'no-store']
+        ...(!options.exclusivePorts ? [['cache-control', 'no-store'] as const] : [])
       ]);
+      return;
+    }
+    if (!isCurrent(listener)) {
+      reply(404, 'Not Found', [['content-type', 'text/plain; charset=utf-8']], '预览链接不存在');
       return;
     }
     const protocol = request.headers['sec-websocket-protocol'];
@@ -450,12 +505,12 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
         method: request.method ?? 'GET',
         path: stripShareParam(request.url ?? '/'),
         headers: requestHeaders(request, link, proto, true),
+        ...(link.listenerIdentity !== undefined ? { listenerIdentity: link.listenerIdentity } : {}),
         upgrade: { protocol: typeof protocol === 'string' ? protocol : null }
       });
     } catch (error) {
       const failure = failureText(error);
-      writeRaw(
-        socket,
+      reply(
         failure.status,
         failure.status === 504 ? 'Gateway Timeout' : 'Bad Gateway',
         [['content-type', 'text/plain; charset=utf-8']],
@@ -469,8 +524,7 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
     const timer = setTimeout(() => {
       if (responded) return;
       responded = true;
-      writeRaw(
-        socket,
+      reply(
         504,
         'Gateway Timeout',
         [['content-type', 'text/plain; charset=utf-8']],
@@ -486,7 +540,7 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
       if (upstream.status !== 101) {
         // 上游拒绝升级（或直接回了个普通响应）：把状态码和头原样交给浏览器，然后收尾。
         const lines = [`HTTP/1.1 ${upstream.status} ${sanitizeStatusText(upstream.statusText) || 'Error'}`];
-        for (const [name, value] of responseHeaders(upstream, false)) lines.push(`${name}: ${value}`);
+        for (const [name, value] of responseHeaders(upstream, false, options.exclusivePorts)) lines.push(`${name}: ${value}`);
         lines.push('connection: close', '');
         socket.write(lines.join('\r\n') + '\r\n');
         stream.onData((chunk) => {
@@ -502,7 +556,7 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
       }
 
       const lines = ['HTTP/1.1 101 Switching Protocols'];
-      for (const [name, value] of responseHeaders(upstream, true)) lines.push(`${name}: ${value}`);
+      for (const [name, value] of responseHeaders(upstream, true, options.exclusivePorts)) lines.push(`${name}: ${value}`);
       socket.write(lines.join('\r\n') + '\r\n\r\n');
       raw.setNoDelay?.(true);
       // 浏览器可能等 101 之前就发了帧；握手里剩下的 head 先补给 worker。
@@ -528,8 +582,7 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
       if (responded) return; // 101 之后由上面的回调处理
       clearTimeout(timer);
       const failure = failureText(error);
-      writeRaw(
-        socket,
+      reply(
         failure.status,
         failure.status === 504 ? 'Gateway Timeout' : 'Bad Gateway',
         [['content-type', 'text/plain; charset=utf-8']],
@@ -540,25 +593,31 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
     // WS 隧道没有请求体：不发 `preview_body{end:true}`（worker 会把它当成隧道关闭）。
   }
 
-  async function listen(link: PreviewLink): Promise<void> {
+  async function listen(link: Link): Promise<void> {
     if (closed.value) return;
     if (listeners.has(link.id)) return;
     const existing = byPort.get(link.hubPort);
-    if (existing) await unlisten(existing.link.id);
+    if (existing) {
+      if (options.exclusivePorts) {
+        options.onConflict?.(link.id);
+        return;
+      }
+      await unlisten(existing.link.id);
+    }
     if (closed.value) return;
 
     const server = createServer((request, response) => {
-      void handleHttp(request, response, link.hubPort).catch((error: unknown) => {
+      void handleHttp(request, response, listener).catch((error: unknown) => {
         log(`预览请求处理失败（${link.id}）：${messageOf(error)}`);
         if (!response.headersSent) sendText(response, 502, PREVIEW_DOWN_TEXT);
         else response.destroy();
       });
     });
-    const listener: Listener = { link, server, upgraded: new Set<Duplex>() };
+    const listener: Listener<Link> = { link, server, upgraded: new Set<Duplex>() };
     server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
       listener.upgraded.add(socket);
       socket.once('close', () => listener.upgraded.delete(socket));
-      void handleUpgrade(request, socket, head, link.hubPort).catch((error: unknown) => {
+      void handleUpgrade(request, socket, head, listener).catch((error: unknown) => {
         log(`预览 WS 处理失败（${link.id}）：${messageOf(error)}`);
         if (!socket.destroyed) socket.destroy();
       });
@@ -601,7 +660,7 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
   return {
     listen,
     unlisten,
-    async listenAll(links: readonly PreviewLink[]): Promise<void> {
+    async listenAll(links: readonly Link[]): Promise<void> {
       await Promise.all(links.map((link) => listen(link)));
     },
     listening(): ReadonlyArray<{ readonly linkId: string; readonly hubPort: number }> {

@@ -12,7 +12,7 @@ import {
   type PreviewOpenRequest,
   type PreviewStream
 } from './preview-channel.ts';
-import { PREVIEW_DOWN_TEXT, createPreviewProxy, type PreviewProxy, type PreviewProxyOptions } from './preview-proxy.ts';
+import { PREVIEW_DOWN_TEXT, createPreviewProxy, type PreviewDestination, type PreviewProxy, type PreviewProxyOptions } from './preview-proxy.ts';
 
 class FakeStream implements PreviewStream {
   readonly streamId: string;
@@ -254,6 +254,186 @@ function request(
     req.end();
   });
 }
+
+test('minimal destinations forward listener identity on HTTP and WebSocket', async (t) => {
+  const fake = new FakeChannel();
+  const port = await freePort();
+  const link: PreviewDestination = { id: 'app-a', workerId: 'w1', port: 3000, hubPort: port, listenerIdentity: 'listener-a' };
+  const proxy = createPreviewProxy<PreviewDestination>({ resolve: async () => link, authorize: async () => true, channel: fake });
+  t.after(() => proxy.close());
+  await proxy.listen(link);
+  fake.onOpen = (stream, opened) => {
+    if (!opened.upgrade) {
+      stream.emitHead({ status: 200, statusText: 'OK', headers: [] });
+      stream.emitEnd();
+      return;
+    }
+    const key = opened.headers.find(([name]) => name.toLowerCase() === 'sec-websocket-key')?.[1] ?? '';
+    const accept = createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+    stream.emitHead({ status: 101, statusText: 'Switching Protocols', headers: [['sec-websocket-accept', accept]] });
+  };
+  assert.equal((await request(port, '/')).status, 200);
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/socket`);
+  t.after(() => socket.terminate());
+  await once(socket, 'open');
+  assert.deepEqual(fake.calls.map((call) => call.request.listenerIdentity), ['listener-a', 'listener-a']);
+});
+
+test('bound listener rejects a different resolved id for HTTP and WebSocket', async (t) => {
+  const fake = new FakeChannel();
+  const port = await freePort();
+  const bound: PreviewDestination = { id: 'app-a', workerId: 'w1', port: 3000, hubPort: port };
+  let beforeCalled = false;
+  const proxy = createPreviewProxy<PreviewDestination>({
+    resolve: async () => ({ ...bound, id: 'app-b' }), authorize: async () => true, channel: fake,
+    beforeAuthorize: () => { beforeCalled = true; }
+  });
+  t.after(() => proxy.close());
+  await proxy.listen(bound);
+  assert.equal((await request(port, '/')).status, 404);
+  const status = await new Promise<number>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/socket`);
+    ws.on('unexpected-response', (_request, response) => { resolve(response.statusCode ?? 0); response.resume(); });
+    ws.on('error', reject);
+  });
+  assert.equal(status, 404);
+  assert.equal(fake.calls.length, 0);
+  assert.equal(beforeCalled, false);
+});
+
+test('beforeAuthorize can complete HTTP response without authorizing or opening', async (t) => {
+  let authorized = false;
+  const { fake, port } = await setup(t, {
+    beforeAuthorize: (_request, response) => { response.writeHead(302, { location: '/' }); response.end(); },
+    authorize: async () => { authorized = true; return true; }
+  });
+  const response = await request(port, '/launch');
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.location, '/');
+  assert.equal(authorized, false);
+  assert.equal(fake.calls.length, 0);
+});
+
+test('a lookup pending when its listener closes cannot open a stream', async (t) => {
+  const fake = new FakeChannel();
+  const port = await freePort();
+  const link: PreviewDestination = { id: 'app-a', workerId: 'w1', port: 3000, hubPort: port };
+  let release!: (link: PreviewDestination) => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const lookup = new Promise<PreviewDestination>((resolve) => { release = resolve; });
+  const proxy = createPreviewProxy<PreviewDestination>({
+    resolve: async () => { entered(); return lookup; }, authorize: async () => true, channel: fake
+  });
+  t.after(() => proxy.close());
+  await proxy.listen(link);
+  const pending = request(port, '/').catch(() => null);
+  await started;
+  await proxy.unlisten(link.id);
+  release(link);
+  await pending;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(fake.calls.length, 0);
+});
+
+test('exclusivePorts preserves the first listener and reports collision', async (t) => {
+  const fake = new FakeChannel();
+  const port = await freePort();
+  const link: PreviewDestination = { id: 'app-a', workerId: 'w1', port: 3000, hubPort: port };
+  const conflicts: string[] = [];
+  const proxy = createPreviewProxy<PreviewDestination>({
+    resolve: async () => link, authorize: async () => true, channel: fake,
+    exclusivePorts: true, onConflict: (id) => conflicts.push(id)
+  });
+  t.after(() => proxy.close());
+  await proxy.listen(link);
+  await proxy.listen({ ...link, id: 'app-b' });
+  assert.deepEqual(conflicts, ['app-b']);
+  assert.deepEqual(proxy.listening(), [{ linkId: 'app-a', hubPort: port }]);
+});
+
+test('exclusivePorts strips CORS and proxy request headers and denies framing', async (t) => {
+  const fake = new FakeChannel();
+  const port = await freePort();
+  const link: PreviewDestination = { id: 'app-a', workerId: 'w1', port: 3000, hubPort: port };
+  const proxy = createPreviewProxy<PreviewDestination>({
+    resolve: async () => link, authorize: async () => true, channel: fake, exclusivePorts: true
+  });
+  t.after(() => proxy.close());
+  await proxy.listen(link);
+  fake.onOpen = (stream) => {
+    stream.emitHead({ status: 200, statusText: 'OK', headers: [
+      ['access-control-allow-origin', '*'], ['access-control-allow-credentials', 'true'],
+      ['content-security-policy', "default-src 'self'; frame-ancestors *"]
+    ] });
+    stream.emitEnd();
+  };
+  const response = await request(port, '/', { headers: { 'proxy-custom': 'private' } });
+  assert.equal(response.headers['access-control-allow-origin'], undefined);
+  assert.equal(response.headers['access-control-allow-credentials'], undefined);
+  assert.match(String(response.headers['content-security-policy']), /frame-ancestors 'none'/);
+  assert.match(String(response.headers['content-security-policy']), /default-src 'self'/);
+  assert.equal(fake.calls[0]!.request.headers.some(([name]) => name.startsWith('proxy-')), false);
+});
+
+test('exclusivePorts denies service worker scripts and disables upstream caching', async (t) => {
+  const fake = new FakeChannel();
+  const port = await freePort();
+  const link: PreviewDestination = { id: 'app-a', workerId: 'w1', port: 3000, hubPort: port };
+  let permitted = true;
+  let resolved = true;
+  const proxy = createPreviewProxy<PreviewDestination>({
+    resolve: async () => resolved ? link : null,
+    authorize: async () => permitted,
+    channel: fake,
+    exclusivePorts: true
+  });
+  t.after(() => proxy.close());
+  await proxy.listen(link);
+  fake.onOpen = (stream) => {
+    stream.emitHead({ status: 200, statusText: 'OK', headers: [
+      ['cache-control', 'public, max-age=86400'], ['expires', 'Wed, 21 Oct 2037 07:28:00 GMT']
+    ] });
+    stream.emitEnd();
+  };
+  const serviceWorkerHeaders: Record<string, string>[] = [
+    { 'service-worker': 'script' },
+    { 'sec-fetch-dest': 'serviceworker' }
+  ];
+  for (const headers of serviceWorkerHeaders) {
+    const denied = await request(port, '/worker.js', { headers });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.headers['cache-control'], 'no-store');
+  }
+  assert.equal(fake.calls.length, 0);
+  const forwarded = await request(port, '/');
+  assert.equal(forwarded.status, 200);
+  assert.equal(forwarded.headers['cache-control'], 'no-store');
+  assert.equal(forwarded.headers.expires, undefined);
+  permitted = false;
+  const redirect = await request(port, '/');
+  assert.equal(redirect.status, 302);
+  assert.equal(redirect.headers['cache-control'], 'no-store');
+  resolved = false;
+  const missing = await request(port, '/');
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers['cache-control'], 'no-store');
+});
+
+test('legacy proxy leaves service worker requests and cache headers unchanged', async (t) => {
+  const { fake, port } = await setup(t);
+  fake.onOpen = (stream) => {
+    stream.emitHead({ status: 200, statusText: 'OK', headers: [
+      ['cache-control', 'public, max-age=120'], ['expires', 'Wed, 21 Oct 2037 07:28:00 GMT']
+    ] });
+    stream.emitEnd();
+  };
+  const response = await request(port, '/worker.js', { headers: { 'service-worker': 'script' } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers['cache-control'], 'public, max-age=120');
+  assert.equal(response.headers.expires, 'Wed, 21 Oct 2037 07:28:00 GMT');
+  assert.equal(fake.calls.length, 1);
+});
 
 test('GET 正常：改 Host、补 x-forwarded-*、删逐跳头、剥 x-frame-options', async (t) => {
   const { fake, port } = await setup(t);

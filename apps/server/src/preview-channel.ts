@@ -55,6 +55,7 @@ export interface PreviewHead {
 export interface PreviewOpenRequest {
   /** worker 上的回环端口。 */
   readonly port: number;
+  readonly listenerIdentity?: string;
   readonly method: string;
   /** 含 query，原样透传。 */
   readonly path: string;
@@ -103,6 +104,7 @@ export interface PreviewChannel {
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   open(workerId: string, request: PreviewOpenRequest): Promise<PreviewStream>;
   hasWorker(workerId: string): boolean;
+  supportsListenerIdentity?(workerId: string): boolean;
   /** Identity changes on every preview-channel reconnect. */
   connectionToken?(workerId: string): object | null;
   /** 该机器上开着的流数量（诊断 / 测试用）。 */
@@ -113,6 +115,7 @@ export interface PreviewChannel {
 interface WorkerConnection {
   readonly workerId: string;
   readonly socket: WebSocket;
+  readonly supportsListenerIdentity: boolean;
   readonly streams: Map<string, Stream>;
   alive: boolean;
   misses: number;
@@ -434,9 +437,9 @@ export function createPreviewChannel(options: PreviewChannelOptions): PreviewCha
     options.onWorkerDown?.(conn.workerId);
   }
 
-  function attach(socket: WebSocket, workerId: string): void {
+  function attach(socket: WebSocket, workerId: string, supportsListenerIdentity: boolean): void {
     const previous = connections.get(workerId);
-    const conn: WorkerConnection = { workerId, socket, streams: new Map(), alive: true, misses: 0 };
+    const conn: WorkerConnection = { workerId, socket, supportsListenerIdentity, streams: new Map(), alive: true, misses: 0 };
     connections.set(workerId, conn);
 
     socket.on('pong', () => {
@@ -475,7 +478,7 @@ export function createPreviewChannel(options: PreviewChannelOptions): PreviewCha
           return;
         }
         try {
-          wss.handleUpgrade(request, socket, head, (ws) => attach(ws, worker.workerId));
+          wss.handleUpgrade(request, socket, head, (ws) => attach(ws, worker.workerId, request.headers['x-hub-preview-listener-identity'] === '1'));
         } catch (error) {
           log(`预览通道握手失败：${messageOf(error)}`);
           deny(socket, 400, '无法升级到 WebSocket');
@@ -491,6 +494,9 @@ export function createPreviewChannel(options: PreviewChannelOptions): PreviewCha
   function open(workerId: string, request: PreviewOpenRequest): Promise<PreviewStream> {
     const conn = connections.get(workerId);
     if (!conn) return Promise.reject(new PreviewStreamError(502, '机器不在线'));
+    if (request.listenerIdentity !== undefined && !conn.supportsListenerIdentity) {
+      return Promise.reject(new PreviewStreamError(502, '机器不支持预览监听身份校验'));
+    }
     if (conn.streams.size >= MAX_STREAMS_PER_WORKER) {
       return Promise.reject(new PreviewStreamError(429, '预览并发流太多，稍后再试'));
     }
@@ -510,6 +516,7 @@ export function createPreviewChannel(options: PreviewChannelOptions): PreviewCha
       method: request.method,
       path: request.path,
       headers: request.headers.map(([name, value]) => [name, value] as [string, string]),
+      ...(request.listenerIdentity !== undefined ? { listenerIdentity: request.listenerIdentity } : {}),
       ...(request.upgrade ? { upgrade: { protocol: request.upgrade.protocol } } : {})
     };
     // 不等 head：带 body 的请求要先把 body 推给 worker，上游才可能回响应头。
@@ -551,6 +558,10 @@ export function createPreviewChannel(options: PreviewChannelOptions): PreviewCha
     open,
     hasWorker(workerId: string): boolean {
       return connections.has(workerId);
+    },
+    supportsListenerIdentity(workerId: string): boolean {
+      const conn = connections.get(workerId);
+      return conn?.socket.readyState === WebSocket.OPEN && conn.supportsListenerIdentity;
     },
     connectionToken(workerId: string): object | null {
       return connections.get(workerId) ?? null;

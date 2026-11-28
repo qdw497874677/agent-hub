@@ -139,7 +139,10 @@ export interface ProcessInfo {
   readonly ppid: number;
   readonly cmd: string;
   readonly cwd: string;
+  readonly cwdVerified?: true;
   readonly ports: readonly number[];
+  /** Opaque Worker-only evidence; absent on legacy Workers, never expose to the UI. */
+  readonly listeners?: readonly { readonly port: number; readonly identity: string }[];
 }
 
 export interface NodeGateway {
@@ -185,6 +188,7 @@ export interface NodeGateway {
    * 可选：老网关没有；离线 / 没有 `service` 能力时返回 unavailable。
    */
   processes?(workerId: string): Promise<Result<readonly ProcessInfo[], DomainError>>;
+  developmentRoots?(workerId: string, paths: readonly string[]): Promise<Result<readonly (string | null)[], DomainError>>;
   /**
    * 「重新检测」：让那台 Worker 立刻重新探测各 harness 是否可用，结果异步经它的 agent 清单回来。
    * 不在线返回 false。可选：不支持的网关 = 无从检测。

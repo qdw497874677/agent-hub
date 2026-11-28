@@ -1,9 +1,10 @@
-import { request as httpRequest, type ClientRequest, type IncomingMessage } from 'node:http';
+import { Agent, request as httpRequest, type ClientRequest, type IncomingMessage } from 'node:http';
 import { connect as netConnect, type Socket } from 'node:net';
 import { WebSocket } from 'ws';
 import {
   PREVIEW_FRAME_BYTES,
   PREVIEW_MAX_PAYLOAD,
+  PREVIEW_LISTENER_IDENTITY_HEADER,
   previewConnectionTokensFromPairs,
   previewRequestHeaderDropped,
   previewResponseHeaderDropped,
@@ -12,6 +13,7 @@ import {
   type PreviewUpFrame
 } from '@agent-hub/contract';
 import { portsInOutput, scanListeningPorts } from './preview-scan.ts';
+import { verifyConnectedListener, verifyListenerIdentity } from './process-scan.ts';
 
 /**
  * 预览通道（docs/design/preview.md §6）：worker 主动连 hub 的 `/preview`，
@@ -149,6 +151,7 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
   /** 握手头：设计和 `/worker` 一样用 Bearer；本机 Worker 额外带 localSecret。 */
   function authHeaders(): Record<string, string> {
     const headers: Record<string, string> = {};
+    headers[PREVIEW_LISTENER_IDENTITY_HEADER] = '1';
     if (options.credential !== null && options.credential !== '') headers['authorization'] = `Bearer ${options.credential}`;
     if (options.localSecret !== undefined && options.localSecret !== '') headers['x-hub-local-secret'] = options.localSecret;
     if (options.workerId !== undefined && options.workerId !== '') headers['x-hub-worker-id'] = options.workerId;
@@ -260,6 +263,10 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
       return;
     }
     const port = frame.port;
+    if (frame.listenerIdentity !== undefined && !verifyListenerIdentity(port, frame.listenerIdentity)) {
+      send({ kind: 'preview_failed', streamId: frame.streamId, code: 'forbidden', message: '监听服务已变化' });
+      return;
+    }
     const used = perPort.get(port) ?? 0;
     if (streams.size >= maxStreams || used >= PER_PORT_LIMIT) {
       send({ kind: 'preview_failed', streamId: frame.streamId, code: 'forbidden', message: '预览流太多了' });
@@ -284,8 +291,38 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
     streams.set(stream.streamId, stream);
     perPort.set(port, used + 1);
 
-    if (frame.upgrade !== undefined) openTunnel(stream, frame);
-    else openHttp(stream, frame);
+    if (frame.listenerIdentity === undefined) {
+      if (frame.upgrade !== undefined) openTunnel(stream, frame);
+      else openHttp(stream, frame);
+      return;
+    }
+    const socket = netConnect({ host: '127.0.0.1', port });
+    stream.socket = socket;
+    const pending: Buffer[] = [];
+    let pendingBytes = 0;
+    let pendingEnd = false;
+    stream.writeUpstream = (chunk) => {
+      if ((pendingBytes += chunk.length) > PREVIEW_MAX_PAYLOAD) fail(stream, 'forbidden', '预览请求过大');
+      else pending.push(chunk);
+    };
+    stream.endUpstream = () => { pendingEnd = true; };
+    stream.headerTimer = setTimeout(() => fail(stream, 'timeout', '连接监听服务超时'), headerTimeoutMs);
+    stream.headerTimer.unref?.();
+    socket.on('error', (error: NodeJS.ErrnoException) => {
+      if (!stream.closed && !stream.headersSent) fail(stream, failureCode(error), '连接监听服务失败');
+    });
+    socket.once('connect', () => {
+      void verifyConnectedListener(socket, port, frame.listenerIdentity!).then((valid) => {
+        if (stream.closed) return;
+        if (!valid) { fail(stream, 'forbidden', '监听服务已变化或无法验证'); return; }
+        if (stream.headerTimer) clearTimeout(stream.headerTimer);
+        stream.headerTimer = undefined;
+        if (frame.upgrade !== undefined) openTunnel(stream, frame, socket);
+        else openHttp(stream, frame, socket);
+        for (const chunk of pending) stream.writeUpstream(chunk);
+        if (pendingEnd) stream.endUpstream();
+      }).catch(() => fail(stream, 'forbidden', '无法验证监听服务'));
+    });
   }
 
   /**
@@ -337,17 +374,21 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
     return error.code === 'ETIMEDOUT' ? 'timeout' : 'refused';
   }
 
-  function openHttp(stream: StreamState, frame: Extract<PreviewUpFrame, { kind: 'preview_open' }>): void {
+  function openHttp(stream: StreamState, frame: Extract<PreviewUpFrame, { kind: 'preview_open' }>, connected?: Socket): void {
     const headers = rewriteHeaders(frame.headers, frame.port, 'http', false);
     let req: ClientRequest;
     try {
+      const agent = connected === undefined ? false : new Agent({ keepAlive: false });
+      if (agent !== false) {
+        agent.createConnection = () => connected!;
+      }
       req = httpRequest({
         host: '127.0.0.1',
         port: frame.port,
         method: frame.method,
         path: frame.path,
         headers: toNodeHeaders(headers),
-        agent: false,
+        agent,
         setHost: false,
         timeout: headerTimeoutMs
       });
@@ -421,7 +462,7 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
     return pairs.filter(([name]) => !previewResponseHeaderDropped(name, { connectionTokens }));
   }
 
-  function openTunnel(stream: StreamState, frame: Extract<PreviewUpFrame, { kind: 'preview_open' }>): void {
+  function openTunnel(stream: StreamState, frame: Extract<PreviewUpFrame, { kind: 'preview_open' }>, connected?: Socket): void {
     // `frame.upgrade.protocol` 是浏览器的 Sec-WebSocket-Protocol（子协议），不是 Upgrade 令牌。
     // 拿它当升级令牌会发出 `upgrade: graphql-ws` 这种非法握手；升级令牌固定 websocket，
     // 子协议本身随 `sec-websocket-protocol` 头原样转给上游。
@@ -434,14 +475,23 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
       '',
       ''
     ];
-    const socket = netConnect({ host: '127.0.0.1', port: frame.port });
+    const socket = connected ?? netConnect({ host: '127.0.0.1', port: frame.port });
     stream.socket = socket;
     socket.setNoDelay(true);
+    let verified = frame.listenerIdentity === undefined;
+    let pendingBytes = 0;
+    const pending: Buffer[] = [];
+    let pendingEnd = false;
     stream.writeUpstream = (chunk) => {
-      if (!socket.destroyed) socket.write(chunk);
+      if (socket.destroyed) return;
+      if (verified) socket.write(chunk);
+      else if ((pendingBytes += chunk.length) <= PREVIEW_MAX_PAYLOAD) pending.push(chunk);
+      else fail(stream, 'forbidden', '预览请求过大');
     };
     stream.endUpstream = () => {
-      if (!socket.destroyed) socket.end();
+      if (socket.destroyed) return;
+      if (verified) socket.end();
+      else pendingEnd = true;
     };
     stream.pauseSource = () => socket.pause();
     stream.resumeSource = () => socket.resume();
@@ -454,9 +504,16 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
 
     let buffered = Buffer.alloc(0);
 
-    socket.on('connect', () => {
-      if (!socket.destroyed) socket.write(lines.join('\r\n'));
-    });
+    const sendHead = (): void => {
+      verified = true;
+      if (!socket.destroyed) {
+        socket.write(lines.join('\r\n'));
+        for (const chunk of pending) socket.write(chunk);
+        if (pendingEnd) socket.end();
+      }
+    };
+    if (connected) sendHead();
+    else socket.on('connect', sendHead);
 
     socket.on('data', (chunk: Buffer) => {
       if (stream.closed) return;
@@ -664,4 +721,3 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
     }
   };
 }
-

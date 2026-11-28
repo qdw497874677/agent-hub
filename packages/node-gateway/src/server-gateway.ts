@@ -30,6 +30,7 @@ import {
   fsMakeDirectory,
   fsReadFile,
   procList,
+  developmentRoots as developmentRootsMethod,
   serviceList,
   serviceLogs,
   serviceStart,
@@ -442,6 +443,7 @@ export interface ServerGateway {
   services(workerId: string): ServiceGateway;
   /** 那台 Worker 上 cwd 落在允许目录里的进程 / 监听端口（只读，`proc.list`）。 */
   processes(workerId: string): Promise<Result<readonly ProcessInfo[], DomainError>>;
+  developmentRoots(workerId: string, paths: readonly string[]): Promise<Result<readonly (string | null)[], DomainError>>;
   /** worker 重连后对账：hub 记着在跑、worker 上却没有的服务（机器重启后没拉起来）。 */
   reconcileServices(workerId: string): Promise<void>;
   /** 远端 Worker 上的工作空间文件浏览（ADR 0025）。 */
@@ -887,8 +889,26 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     const gate = serviceGate(workerId);
     if (!gate.ok) return gate;
     const outcome = await gate.value.request(procList, {}, { timeoutMs: 15_000 });
+    const current = serviceGate(workerId);
+    if (!current.ok || current.value !== gate.value) return { ok: false, error: unavailable('机器连接已变化，请重新查看进程清单') };
     if (!outcome.ok) return toDomain(outcome, '查看进程清单', workerId);
     return { ok: true, value: outcome.value.processes };
+  }
+
+  async function developmentRoots(workerId: string, paths: readonly string[]): Promise<Result<readonly (string | null)[], DomainError>> {
+    const gate = serviceGate(workerId);
+    if (!gate.ok) return gate;
+    if (paths.length > 256 || paths.some((path) => typeof path !== 'string' || path.length > 8192)) return { ok: false, error: unavailable('目录验证请求无效') };
+    const entry = online(workerId);
+    if (!entry?.socket || !entry.observationIdentity || entry.channel !== gate.value || entry.socket.readyState !== WebSocket.OPEN)
+      return { ok: false, error: unavailable('机器未认证或连接不可用') };
+    const { socket, channel, observationIdentity } = entry;
+    const outcome = await channel.request(developmentRootsMethod, { paths: [...paths] }, { timeoutMs: 15_000 });
+    if (registry.get(workerId) !== entry || entry.socket !== socket || entry.channel !== channel || entry.observationIdentity !== observationIdentity || socket.readyState !== WebSocket.OPEN)
+      return { ok: false, error: unavailable('机器连接已变化，请重新验证目录') };
+    if (!outcome.ok) return toDomain(outcome, '验证目录', workerId);
+    if (outcome.value.paths.length !== paths.length) return { ok: false, error: unavailable('机器返回的目录验证结果无效') };
+    return { ok: true, value: outcome.value.paths };
   }
 
   /**
@@ -1829,6 +1849,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     },
     services,
     processes,
+    developmentRoots,
     reconcileServices,
     workers(): WorkerStatus[] {
       return statuses();

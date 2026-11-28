@@ -109,6 +109,7 @@ export interface WorkerLinkOptions {
    * 不给 = 一律回 unsupported，hub 侧当作这台 Worker 不支持。
    */
   readonly processes?: () => readonly ProcessInfo[];
+  readonly developmentRoots?: (paths: readonly string[]) => Promise<readonly (string | null)[]>;
   /**
    * 终端原始输出旁路（docs/design/preview.md §5）：组合根拿它做预览端口发现。
    * 不给 = 什么都不做（老调用方 / 测试）。

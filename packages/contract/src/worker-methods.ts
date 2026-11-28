@@ -643,9 +643,17 @@ export const procList = method(
           /** 已过 scrubCredentials，长度 ≤ 200。 */
           cmd: z.string().max(200),
           cwd: z.string().max(8192),
-          ports: z.array(z.number().int().min(1).max(65535)).max(256)
+          cwdVerified: z.literal(true).optional(),
+          ports: z.array(z.number().int().min(1).max(65535)).max(256),
+          listeners: z.array(z.object({ port: z.number().int().min(1).max(65535), identity: z.string().regex(/^[0-9a-f]{64}$/) })).max(256).optional()
         })
       )
       .max(200)
   })
+);
+
+export const developmentRoots = method(
+  'development.roots', 'service',
+  z.object({ paths: z.array(z.string().max(8192)).max(256) }),
+  z.object({ paths: z.array(z.string().max(8192).nullable()).max(256) })
 );

@@ -7,6 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { PreviewDownFrame, PreviewUpFrame } from '@agent-hub/contract';
 import { createPreviewClient, type PreviewClient } from './preview-client.ts';
+import { scanProcesses } from './process-scan.ts';
 
 /**
  * 预览客户端的行为测试：本地起一个假 hub（ws）+ 一个假上游（http / 裸 tcp），
@@ -56,6 +57,7 @@ interface FakeHub {
   readonly frames: PreviewDownFrame[];
   readonly ready: Promise<void>;
   readonly authorization: () => string | null;
+  readonly identityCapability: () => string | null;
   send(frame: PreviewUpFrame): void;
   close(): Promise<void>;
 }
@@ -67,6 +69,7 @@ async function startHub(): Promise<FakeHub> {
   const port = (wss.address() as AddressInfo).port;
   const frames: PreviewDownFrame[] = [];
   let header: string | null = null;
+  let capability: string | null = null;
   let socket: WebSocket | null = null;
   const queued: string[] = [];
   let markReady: () => void = () => undefined;
@@ -75,6 +78,7 @@ async function startHub(): Promise<FakeHub> {
   });
   wss.on('connection', (next: WebSocket, request: IncomingMessage) => {
     header = request.headers.authorization ?? null;
+    capability = (request.headers['x-hub-preview-listener-identity'] as string | undefined) ?? null;
     socket = next;
     next.on('message', (raw: Buffer) => {
       frames.push(JSON.parse(raw.toString()) as PreviewDownFrame);
@@ -87,6 +91,7 @@ async function startHub(): Promise<FakeHub> {
     frames,
     ready,
     authorization: () => header,
+    identityCapability: () => capability,
     send: (frame) => {
       const text = JSON.stringify(frame);
       if (socket === null) queued.push(text);
@@ -163,6 +168,7 @@ interface OpenOptions {
   path?: string;
   headers?: Array<[string, string]>;
   upgrade?: { protocol: string | null };
+  listenerIdentity?: string;
 }
 
 function openFrame(port: number, overrides: OpenOptions = {}): PreviewUpFrame {
@@ -173,6 +179,7 @@ function openFrame(port: number, overrides: OpenOptions = {}): PreviewUpFrame {
     method: overrides.method ?? 'GET',
     path: overrides.path ?? '/',
     headers: overrides.headers ?? [['host', 'preview.example:17901']],
+    ...(overrides.listenerIdentity !== undefined ? { listenerIdentity: overrides.listenerIdentity } : {}),
     ...(overrides.upgrade !== undefined ? { upgrade: overrides.upgrade } : {})
   };
 }
@@ -180,6 +187,59 @@ function openFrame(port: number, overrides: OpenOptions = {}): PreviewUpFrame {
 async function stopClient(client: PreviewClient): Promise<void> {
   await client.stop();
 }
+
+test('conditioned HTTP and websocket opens accept current listener and reject stale identity', async () => {
+  const upstream = await startHttp((_req, res) => res.end('ok'));
+  const hub = await startHub();
+  const client = createPreviewClient({ url: hub.url, credential: null });
+  client.start();
+  try {
+    await hub.ready;
+    assert.equal(hub.identityCapability(), '1');
+    const identity = scanProcesses({ roots: [process.cwd()] }).find((p) => p.pid === process.pid)?.listeners?.find((l) => l.port === upstream.port)?.identity;
+    assert.ok(identity, 'current listener must be observable');
+    const current = openFrame(upstream.port, { listenerIdentity: identity });
+    hub.send(current);
+    await waitForFrame(hub.frames, (f) => f.kind === 'preview_end' && f.streamId === current.streamId, 'conditioned HTTP');
+    assert.equal(upstream.requests.length, 1);
+    for (const upgrade of [undefined, { protocol: null }]) {
+      const stale = openFrame(upstream.port, { listenerIdentity: '0'.repeat(64), upgrade });
+      hub.send(stale);
+      const failure = await waitForFrame(hub.frames, (f) => f.kind === 'preview_failed' && f.streamId === stale.streamId, 'stale identity');
+      assert.equal(failure.kind === 'preview_failed' && failure.code, 'forbidden');
+    }
+    assert.equal(upstream.requests.length, 1);
+  } finally {
+    await stopClient(client);
+    await hub.close();
+    await upstream.close();
+  }
+});
+
+test('conditioned websocket verifies accepted peer before sending upgrade bytes', async () => {
+  let heads = 0;
+  const upstream = await startRaw((_head, socket) => {
+    heads++;
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n');
+  });
+  const hub = await startHub();
+  const client = createPreviewClient({ url: hub.url, credential: null });
+  client.start();
+  try {
+    await hub.ready;
+    const identity = scanProcesses({ roots: [process.cwd()] }).find((p) => p.pid === process.pid)?.listeners?.find((l) => l.port === upstream.port)?.identity;
+    assert.ok(identity);
+    const frame = openFrame(upstream.port, { listenerIdentity: identity, upgrade: { protocol: null } });
+    hub.send(frame);
+    const head = await waitForFrame(hub.frames, (f) => f.kind === 'preview_head' && f.streamId === frame.streamId, 'conditioned upgrade');
+    assert.equal(head.kind === 'preview_head' && head.status, 101);
+    assert.equal(heads, 1);
+  } finally {
+    await stopClient(client);
+    await hub.close();
+    await upstream.close();
+  }
+});
 
 test('普通 GET：回包、状态头，Host 被改写且原 connection 不透传', async () => {
   const upstream = await startHttp((_req, res) => {

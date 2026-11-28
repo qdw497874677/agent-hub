@@ -182,8 +182,21 @@ for (const width of [1280, 390]) {
         expect((await api<{ links: Link[] }>(previews)).links).toHaveLength(0);
         expect((await anonymous.get(`${origin}${workflow}`, { maxRedirects: 0 })).status()).toBe(401);
 
-        const workflowLoads = page.waitForResponse((response) => new URL(response.url()).pathname === workflow && response.request().method() === 'GET');
         await page.goto(`${origin}/#/p/${project.id}/focus/${session.id}`);
+        const showPreviewTab = async () => {
+          const panel = page.getByTestId('preview-panel');
+          const chat = page.getByRole('textbox', { name: '发送消息' });
+          await expect.poll(async () => (await panel.isVisible()) || (await chat.isVisible())).toBe(true);
+          if (await panel.isVisible()) return;
+          if (touch) {
+            await page.getByTestId('session-more-trigger').click();
+            await page.getByTestId('session-more-preview').click();
+          } else {
+            await page.getByTestId('session-tab-preview').click();
+          }
+        };
+        const workflowLoads = page.waitForResponse((response) => new URL(response.url()).pathname === workflow && response.request().method() === 'GET');
+        await showPreviewTab();
         expect((await workflowLoads).ok()).toBe(true);
         let registrationPosts = 0;
         await page.route(`**${workflow}`, async (route) => {
@@ -282,6 +295,8 @@ for (const width of [1280, 390]) {
         await expect(direct.getByText('真实上游页面')).toBeVisible();
         await direct.close();
 
+        if (touch) await page.getByTestId('session-back-to-chat').click();
+        else await page.getByTestId('session-tab-chat').click();
         const composer = page.getByRole('textbox', { name: '发送消息' });
         const originalDraft = '原有草稿不能丢';
         await composer.fill(originalDraft);
@@ -289,6 +304,7 @@ for (const width of [1280, 390]) {
         page.on('request', (request) => {
           if (request.method() === 'POST' && new URL(request.url()).pathname === `/api/sessions/${session.id}/prompt`) promptWrites++;
         });
+        await showPreviewTab();
         await page.getByRole('button', { name: '更多预览选项' }).click();
         await dialog.getByTestId('preview-feedback-open').click();
         const form = dialog.getByTestId('preview-feedback-form');
@@ -303,6 +319,7 @@ for (const width of [1280, 390]) {
         await expect(composer).toHaveValue(`${originalDraft}\n\n预览：${links[0]!.label}\n页面路径：/catalog/item\n复现说明：商品页的布局需要检查`);
         expect(promptWrites).toBe(0);
         await expect(page).toHaveURL(new RegExp(`/focus/${session.id}$`));
+        await showPreviewTab();
         await page.getByRole('button', { name: '更多预览选项' }).click();
         await dialog.getByTestId('preview-feedback-open').click();
         await expect(routePath).toHaveValue('/catalog/item');
@@ -313,6 +330,7 @@ for (const width of [1280, 390]) {
         await expect.poll(async () => (await inventory()).targets.map(({ port }) => port).sort()).toEqual([frontend.port, second.port].sort());
         const reloadInventory = page.waitForResponse((response) => new URL(response.url()).pathname === workflow && response.request().method() === 'GET');
         await page.reload();
+        await showPreviewTab();
         expect((await reloadInventory).ok()).toBe(true);
         await open.click();
         await expect(dialog.getByTestId('preview-workflow-target')).toHaveCount(2);

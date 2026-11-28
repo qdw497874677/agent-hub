@@ -4,6 +4,7 @@ import type { ServerToWorker, WorkerToServer } from '@agent-hub/contract';
 import {
   RpcFailure,
   procList,
+  developmentRoots,
   serviceList,
   serviceLogs,
   serviceStart,
@@ -153,6 +154,11 @@ export function installChannels(ctx: LinkCtx, transport: Transport): Channels {
   channel.handle(procList, async () => {
     if (!options.processes) throw new RpcFailure('unsupported', '这台 Worker 不支持进程清单');
     return { processes: [...options.processes()] };
+  });
+
+  channel.handle(developmentRoots, async ({ paths }) => {
+    if (!options.developmentRoots) throw new RpcFailure('unsupported', '这台 Worker 不支持目录验证');
+    return { paths: [...await options.developmentRoots(paths)] };
   });
 
   return {

@@ -19,8 +19,8 @@ class WorkerClient {
   readonly socket: WebSocket;
   readonly frames: Frame[] = [];
 
-  constructor(url: string, workerId: string) {
-    this.socket = new WebSocket(url, { headers: { authorization: `Bearer ahw_${workerId}` } });
+  constructor(url: string, workerId: string, capable = false) {
+    this.socket = new WebSocket(url, { headers: { authorization: `Bearer ahw_${workerId}`, ...(capable ? { 'x-hub-preview-listener-identity': '1' } : {}) } });
     this.socket.on('message', (raw) => {
       this.frames.push(JSON.parse(String(raw)) as Frame);
     });
@@ -62,7 +62,7 @@ interface Harness {
   readonly logs: string[];
   readonly events: string[];
   readonly clients: WorkerClient[];
-  connect(workerId?: string): Promise<WorkerClient>;
+  connect(workerId?: string, capable?: boolean): Promise<WorkerClient>;
   close(): Promise<void>;
 }
 
@@ -100,8 +100,8 @@ async function harness(overrides: Partial<PreviewChannelOptions> = {}): Promise<
     logs,
     events,
     clients,
-    async connect(workerId = 'w1'): Promise<WorkerClient> {
-      const client = new WorkerClient(`ws://127.0.0.1:${port}/preview`, workerId);
+    async connect(workerId = 'w1', capable = false): Promise<WorkerClient> {
+      const client = new WorkerClient(`ws://127.0.0.1:${port}/preview`, workerId, capable);
       clients.push(client);
       await client.ready();
       await until(() => channel!.hasWorker(workerId), `机器 ${workerId} 上线`);
@@ -115,6 +115,32 @@ async function harness(overrides: Partial<PreviewChannelOptions> = {}): Promise<
     }
   };
 }
+
+test('listener identity is sent only to the current capable worker connection', async (t) => {
+  const h = await harness();
+  t.after(() => h.close());
+  const open = { port: 3000, method: 'GET', path: '/', headers: [], listenerIdentity: 'listener-a' };
+  const old = await h.connect('w1');
+  assert.equal(h.channel.supportsListenerIdentity?.('w1'), false);
+  await assert.rejects(h.channel.open('w1', open), PreviewStreamError);
+  assert.equal(old.frames.length, 0);
+
+  const capable = await h.connect('w1', true);
+  assert.equal(h.channel.supportsListenerIdentity?.('w1'), true);
+  const stream = await h.channel.open('w1', open);
+  const frame = await capable.take((item) => item.kind === 'preview_open');
+  assert.equal(frame.listenerIdentity, 'listener-a');
+  stream.close();
+
+  const replacement = await h.connect('w1');
+  assert.equal(h.channel.supportsListenerIdentity?.('w1'), false);
+  await assert.rejects(h.channel.open('w1', open), PreviewStreamError);
+  assert.equal(replacement.frames.length, 0);
+  const legacy = await h.channel.open('w1', { port: 3000, method: 'GET', path: '/', headers: [] });
+  const legacyFrame = await replacement.take((item) => item.kind === 'preview_open');
+  assert.equal(legacyFrame.listenerIdentity, undefined);
+  legacy.close();
+});
 
 test('open → head → data → end：顺序、ack 与请求体', async (t) => {
   const h = await harness();
