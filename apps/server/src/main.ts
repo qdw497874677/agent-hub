@@ -1277,6 +1277,7 @@ serverGateway = createServerGateway({
 terminalBridge = createTerminalBridge({
   gateway: serverGateway,
   blocksLegacyOpen: (workerId) => workdirHeldWorkersAtBoot.has(workerId) || serverGateway!.workdirTerminalSupported(workerId),
+  legacyReady: (workerId) => serverGateway!.legacyTerminalReady(workerId),
   authenticate: async (value) => withAccess(store.access, await authenticate(accounts, value), accounts.now()),
   target: (subject, sessionId) => terminalTarget(deps, subject, sessionId),
   access: (subject, sessionId) => terminalAccess(deps, subject, sessionId),
@@ -1420,6 +1421,7 @@ const projectGitProbe = await setupProjectGitProbe({
   secretKey
 });
 const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, optionConfirmations: optionWaiters, guard,
+  terminalBridge,
   ...(hubCredentials && credentialAdmin ? { hubCredentials: {
     broker: hubCredentials.broker,
     async authorize(c, projectId) {

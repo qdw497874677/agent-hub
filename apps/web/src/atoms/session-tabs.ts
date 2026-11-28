@@ -1,15 +1,14 @@
 /**
- * 会话页的标签（PR #156 方案 A + 终端 + 预览）：会话 / 文件 / 改动 / 终端 / 预览。纯函数，不依赖 React。
+ * 会话页工具标签：会话 / 文件 / 改动 / 预览。纯函数，不依赖 React。
  */
-export type SessionTab = 'chat' | 'files' | 'changes' | 'terminal' | 'preview';
+export type SessionTab = 'chat' | 'files' | 'changes' | 'preview';
 
-export const SESSION_TABS: readonly SessionTab[] = ['chat', 'files', 'changes', 'terminal', 'preview'];
+export const SESSION_TABS: readonly SessionTab[] = ['chat', 'files', 'changes', 'preview'];
 
 /** 标签文字；改动数未知（还没读到 / 机器离线）时不显示数字。 */
 export function sessionTabLabel(tab: SessionTab, changeCount?: number): string {
   if (tab === 'chat') return '会话';
   if (tab === 'files') return '文件';
-  if (tab === 'terminal') return '终端';
   if (tab === 'preview') return '预览';
   return changeCount === undefined ? '改动' : `改动 ${changeCount}`;
 }
@@ -44,11 +43,11 @@ function isTab(value: string): value is SessionTab {
   return (SESSION_TABS as readonly string[]).includes(value);
 }
 
-/** 上次停在哪一页：刷新后回到终端，而不是被安静地打回对话。 */
+/** 旧版终端页签不再恢复，避免刷新时隐式打开 shell。 */
 export function readStoredTab(sessionId: string, storage: TabStorage | null = tabStorage()): SessionTab | null {
   try {
     const raw = storage?.getItem(`${TAB_STORE}:${sessionId}`) ?? null;
-    return raw !== null && isTab(raw) ? raw : null;
+    return raw === 'terminal' ? 'chat' : raw !== null && isTab(raw) ? raw : null;
   } catch {
     return null;
   }

@@ -100,7 +100,8 @@ for (const width of [1280, 390]) {
           expect(box.height).toBeGreaterThanOrEqual(44);
         }
         await add.click();
-        await expect(page.getByTestId('session-tab-new-terminal')).toBeDisabled();
+        // 旧 Worker 的终端资格不改变新建会话的机器或目录。
+        await expect(page.getByTestId('session-tab-new-terminal')).toBeEnabled();
         await expect(page.getByTestId('workdir-create-worktree')).toHaveCount(0);
         await page.getByTestId('session-tab-new-session').click();
         const create = page.getByTestId('session-tab-create');

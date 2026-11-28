@@ -7,7 +7,7 @@ import { useDelegations } from '../../shell/delegations.ts';
 import { DelegationOriginBanner, DelegationPanel } from './delegation-panel.tsx';
 import { DelegateDialog } from './delegate-dialog.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
 import { api, sessionGroupId, sessionStartupApi } from '../../shell/api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, questionOf } from '../../atoms/chat-blocks.tsx';
@@ -42,14 +42,7 @@ import { WorkspaceSheet } from './workspace-sheet.tsx';
 import { gitApi } from '../../shell/api.ts';
 import { FileLinksContext, type FileLinks } from '../../atoms/file-links.tsx';
 import { SESSION_TABS, readChangesSplit, readStoredTab, sessionTabLabel, stepTab, storeChangesSplit, storeTab, type SessionTab } from '../../atoms/session-tabs.ts';
-import { TerminalPanel } from '../../atoms/terminal-panel.tsx';
 import { PreviewPanel } from '../../atoms/preview-panel.tsx';
-import {
-  subscribeTerminalSupport,
-  terminalSupportKeys,
-  terminalUnsupported as terminalBlocked
-} from '../../atoms/terminal-core.ts';
-import { resolveWorker, useWorkers } from '../../shell/workers.tsx';
 import { RewindDialog } from '../../atoms/rewind-dialog.tsx';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from '../../atoms/live.ts';
 import { ContextMeter } from '../../atoms/context-meter.tsx';
@@ -401,26 +394,7 @@ export function FocusView({
   const settle = settleGate({ settled, status });
   // 改名、分叉、收起、常驻、删除后的缓存改写：和侧栏行菜单是同一份（atoms/use-session-actions.ts）。
   const actions = useSessionActions(canvas.project.id);
-  // 终端页签：会话跑着、机器在线、且没被探测成「不支持」才出现（docs/design/terminal.md §7）。
-  const workers = useWorkers();
-  const worker = resolveWorker(workers.list, session.workerId);
-  const supportKeys = useMemo(
-    () => terminalSupportKeys(session.workerId),
-    [session.workerId]
-  );
-  // 机器列表还没拿到时先当在线：页签不该在首屏闪一下才出现。
-  const workerOnline = workers.list.length === 0 || worker?.state === 'online';
-  const terminalUnavailable = useSyncExternalStore(subscribeTerminalSupport, () => terminalBlocked(supportKeys));
-  // 跑完的会话也能开：shell 直接开在会话工作目录里（hub 侧算好 cwd），不重启 agent。
-  const terminalAvailable = !independentWorkdir && workerOnline && !terminalUnavailable;
-  // 终端要看机器在线与探测结果；预览只要有会话就能看（机器离线时列表里那几行自己说清楚）。
-  const tabs = useMemo(
-    () => SESSION_TABS.filter((candidate) => candidate !== 'terminal' || terminalAvailable),
-    [terminalAvailable]
-  );  // 终端变得不可用（会话结束 / 机器掉线 / 探测到不支持）时退回对话，别停在空页上。
-  useEffect(() => {
-    if (tab === 'terminal' && !terminalAvailable) setTab('chat');
-  }, [tab, terminalAvailable]);
+  const tabs = SESSION_TABS;
   const agentLabel = agent?.label ?? session.agentId;
   const lastSeq = live?.lastSeq ?? session.lastSeq;
   // 这一轮结束了、后台还在跑（会话保活）：块序列里还在陆续有东西来，就低调说一句。
@@ -1163,9 +1137,7 @@ export function FocusView({
             onKeyDown={(e) => {
               if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
               const delta = e.key === 'ArrowRight' ? 1 : -1;
-              let next = stepTab(tab, delta);
-              // 终端页签可能被藏起来：跳过它，别把焦点送到不存在的 tab 上。
-              if (next === 'terminal' && !terminalAvailable) next = stepTab(next, delta);
+              const next = stepTab(tab, delta);
               setTab(next);
               (e.currentTarget.parentElement?.querySelector(`#session-tab-${next}`) as HTMLElement | null)?.focus();
             }}
@@ -1186,7 +1158,7 @@ export function FocusView({
             requestAnimationFrame(() => splitHeadingRef.current?.focus());
           }
         }}>{splitChanges ? '关闭并排改动' : preferSplit && tab === 'changes' ? '返回并排' : '并排查看改动'}</button> : null}
-        {tab !== 'chat' && tab !== 'terminal' && tab !== 'preview' && refreshing ? (
+        {tab !== 'chat' && tab !== 'preview' && refreshing ? (
           <span
             role="status"
             aria-live="polite"
@@ -1207,17 +1179,6 @@ export function FocusView({
       {visited.has('files') ? (
         <div key={`${session.id}-files`} className={tab === 'files' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
           <FilesBrowser tab="files" sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} status={status} reveal={reveal} onQuote={quoteToChat} switcher={switcher} members={repo.members} />
-        </div>
-      ) : null}
-      {/* 终端和文件页一样：首访后保持挂载（hidden 不卸载），切回来还是同一个 shell 画面 */}
-      {terminalAvailable && visited.has('terminal') ? (
-        <div key={`${session.id}-terminal`} className={tab === 'terminal' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-          <TerminalPanel
-            sessionId={session.id}
-            workerId={session.workerId}
-            active={tab === 'terminal'}
-            notice={status === 'running' ? null : 'agent 现在没在跑：终端只开一个 shell，不会启动 agent。在对话里接着说一句，agent 会重新接上。'}
-          />
         </div>
       ) : null}
       {/* 预览和终端一样：首访后保持挂载（hidden 不卸载），切回来表单里没提交的内容还在 */}

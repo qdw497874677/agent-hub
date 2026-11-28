@@ -374,6 +374,8 @@ export interface ServerGateway {
   workdirTerminalReadiness(): { workers: { id: string; label: string }[]; incompatibleOnline: boolean };
   /** Last-known positive negotiation, retained while the registry entry survives disconnect. Not an authorization check. */
   workdirTerminalSupported(workerId: string): boolean;
+  /** Snapshot of the actual legacy terminal dispatch gate; never opens a terminal. */
+  legacyTerminalReady(workerId: string): boolean;
   /** Current uniquely authenticated connection explicitly supports the complete mutation safety protocol. */
   workspaceMutationSafe(workerId: string): boolean;
   readonly gateway: NodeGateway;
@@ -1817,6 +1819,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       return { workers: ready.map((entry) => ({ id: entry.workerId, label: entry.label })), incompatibleOnline: entries.some((entry) => !mutationSafeEntry(entry)) };
     },
     workdirTerminalSupported(workerId) { return registry.get(workerId)?.workdirTerminal === true; },
+    legacyTerminalReady(workerId) {
+      const entry = online(workerId);
+      return !!entry?.channel && canInvoke(entry.capabilities, 'sessions') && !entry.workdirTerminal;
+    },
     workspaceMutationSafe(workerId) {
       const entry = online(workerId);
       return !!entry && mutationSafeEntry(entry);

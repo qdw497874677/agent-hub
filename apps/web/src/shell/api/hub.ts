@@ -77,6 +77,7 @@ export const api = {
   messageSource: (sessionId: string, messageId: string) =>
     call<import('../../atoms/message-provenance.ts').SourceDetails>(`/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/source`, { cache: 'no-store' }),
   workdirTerminals: (projectId: string, workspaceId: string) => call<WorkdirTerminals>(workdirTerminalPath(projectId, workspaceId)),
+  legacyTerminalAvailability: (sessionId: string) => call<{ available: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/terminal-availability`, { cache: 'no-store' }),
   createWorkdirTerminal: (projectId: string, workspaceId: string, requestId: string) => post<WorkdirTerminal>(workdirTerminalPath(projectId, workspaceId), { requestId }),
   closeWorkdirTerminal: (projectId: string, workspaceId: string, id: string) => call<WorkdirTerminal>(`${workdirTerminalPath(projectId, workspaceId)}/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   sessionMessages: (sessionId: string) =>

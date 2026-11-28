@@ -218,11 +218,13 @@ import { installOpenApi } from './openapi/app.ts';
 import type { OpenApiOptions } from './openapi/app.ts';
 import type { ApiTokenDeps } from '@agent-hub/domain';
 import type { createWorkdirTerminalService } from './workdir-terminal-service.ts';
+import type { TerminalBridge } from './terminal-bridge.ts';
 import { installWorkdirTerminalAdmin, type WorkdirTerminalAdminOptions } from './workdir-terminal-admin.ts';
 import { installDisabledWorktreePlanRoutes, installWorktreePlanRoutes } from './worktree-plan-routes.ts';
 import type { createWorktreePlans } from './worktree-plans.ts';
 
 export interface AppOptions {
+  readonly terminalBridge?: Pick<TerminalBridge, 'available'>;
   readonly workdirTerminals?: ReturnType<typeof createWorkdirTerminalService>;
   readonly workdirTerminalAdmin?: WorkdirTerminalAdminOptions;
   readonly worktreePlans?: ReturnType<typeof createWorktreePlans>;
@@ -352,6 +354,12 @@ export function createApp(options: AppOptions): Hono {
   const { deps, hub } = options;
   const app = new Hono();
 
+  // Include authentication/guard failures in the no-store policy as well.
+  app.use('/api/sessions/:sessionId/terminal-availability', async (c, next) => {
+    c.header('Cache-Control', 'no-store');
+    await next();
+  });
+
   /** 项目级配置的审计（工作空间档位、准备命令重试）：目标是项目 / 工作空间，不是会话。 */
   const auditResource = async (c: Context, subject: Subject | null, action: AuditAction, target: string, detail: string): Promise<void> => {
     const audit = options.activity?.audit;
@@ -399,6 +407,21 @@ export function createApp(options: AppOptions): Hono {
     // Independent terminals enforce their own cookie-only, project-read and
     // worker shell policy; generic project.update is not their permission.
     options.workdirTerminals?.install(app);
+    app.get('/api/sessions/:sessionId/terminal-availability', async (c) => {
+      const origin = c.req.header('origin');
+      const host = c.req.header('host');
+      const site = c.req.header('sec-fetch-site');
+      if (site === 'cross-site' || site === 'same-site') return c.json({ available: false });
+      if (origin) {
+        try {
+          const url = new URL(origin);
+          const protocol = c.req.header('x-forwarded-proto') ?? new URL(c.req.url).protocol.slice(0, -1);
+          if (!host || !['http', 'https'].includes(protocol) || url.protocol !== `${protocol}:` || url.host.toLowerCase() !== host.trim().toLowerCase()) return c.json({ available: false });
+        } catch { return c.json({ available: false }); }
+      }
+      const available = await options.terminalBridge?.available(c.req.header('cookie'), c.req.param('sessionId')) ?? false;
+      return c.json({ available });
+    });
     // 授权中间件要先于下面所有路由注册（Hono 按注册顺序走）。
     installAccess(app, deps, subjectOf);
     installHandoffMutationGate(app, deps, '/api', subjectOf);
@@ -478,6 +501,7 @@ export function createApp(options: AppOptions): Hono {
     return next();
   });
   if (!options.auth) installHandoffMutationGate(app, deps, '/api', subjectOf);
+  if (!options.auth) app.get('/api/sessions/:sessionId/terminal-availability', (c) => c.json({ available: false }));
   if (!options.auth || !options.hubCredentials) installDisabledHubCredentialRoutes(app);
   if (!options.auth || !options.worktreePlans) installDisabledWorktreePlanRoutes(app);
 

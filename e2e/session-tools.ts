@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 
-type Tool = 'files' | 'changes' | 'terminal' | 'preview';
+type Tool = 'files' | 'changes' | 'preview';
 
 /** Choose the currently visible navigation, including after a viewport resize. */
 export async function openSessionTool(page: Page, tool: Tool) {

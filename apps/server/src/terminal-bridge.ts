@@ -3,6 +3,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { DomainError, Result } from '@agent-hub/domain';
 import type { Subject } from '@agent-hub/domain';
+import { principalOfSubject } from '@agent-hub/domain';
 import { sameSecret } from './request-guard.ts';
 
 /**
@@ -65,6 +66,7 @@ export interface TerminalBridgeOptions {
   readonly access: (subject: Subject | null, sessionId: string) => Promise<Result<void, DomainError>>;
   /** Authoritative positive capability evidence, retained across transient disconnects. */
   readonly blocksLegacyOpen: (workerId: string) => boolean;
+  readonly legacyReady: (workerId: string) => boolean;
   /** cookie 里的登录令牌 → 主体；没登录 / 过期返回 null。 */
   readonly authenticate: (token: string) => Promise<Subject | null>;
   /** 和 HTTP 路由同一套 Host 校验（缺 Host 的老客户端由 guard 放行）。 */
@@ -84,6 +86,8 @@ export interface TerminalBridgeOptions {
 }
 
 export interface TerminalBridge {
+  /** Read-only snapshot, with the same cookie, authorization and target as the WS. */
+  available(cookie: string | undefined, sessionId: string): Promise<boolean>;
   attach(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   /** worker 的 terminal_data → 对应浏览器。 */
   onWorkerData(workerId: string, terminalId: string, data: string): void;
@@ -415,6 +419,22 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
   heartbeat.unref();
 
   const bridge: TerminalBridge = {
+    async available(cookie, sessionId) {
+      try {
+        const token = loginTokenOf(cookie);
+        if (!token || !sessionId) return false;
+        const subject = await options.authenticate(token);
+        const principal = principalOfSubject(subject);
+        if (!principal || principal.via) return false;
+        if (!(await options.access(subject, sessionId)).ok) return false;
+        const target = await options.target(subject, sessionId);
+        if (!target.ok) return false;
+        const workerId = target.value.workerId ?? 'local';
+        return !options.blocksLegacyOpen(workerId) && options.legacyReady(workerId);
+      } catch {
+        return false;
+      }
+    },
     attach(request: IncomingMessage, socket: Duplex, head: Buffer): void {
       const path = (request.url ?? '').split('?')[0] ?? '';
       const match = TERMINAL_PATH.exec(path);

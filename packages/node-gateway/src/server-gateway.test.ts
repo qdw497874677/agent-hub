@@ -247,17 +247,22 @@ test('legacy open checks current negotiated capability; resize still works, memo
   try {
     const input = { terminalId: 'legacy', sessionId: 's1', cols: 80, rows: 24 };
     assert.equal(h.gateway.workdirTerminalSupported('same'), false);
+    assert.equal(h.gateway.legacyTerminalReady('same'), true);
+    assert.equal(h.gateway.legacyTerminalReady('missing'), false);
     assert.equal((await h.gateway.openTerminal('same', input)).ok, true);
     modern = await h.connect('same', { capabilities: [WORKER_CAPABILITY_WORKDIR_TERMINAL_V1] });
     assert.equal(h.gateway.workdirTerminalSupported('same'), true);
+    assert.equal(h.gateway.legacyTerminalReady('same'), false);
     assert.equal((await h.gateway.openTerminal('same', input)).ok, false);
     assert.equal(modern.calls.some((call) => call.method === 'terminal.open'), false);
     assert.equal((await h.gateway.resizeTerminal('same', 'legacy', 80, 24)).ok, true);
     modern.ws.close();
     await until(() => h.gateway.workers().find((w) => w.workerId === 'same')?.state === 'offline');
     assert.equal(h.gateway.workdirTerminalSupported('same'), true);
+    assert.equal(h.gateway.legacyTerminalReady('same'), false);
     oldAgain = await h.connect('same');
     assert.equal(h.gateway.workdirTerminalSupported('same'), false);
+    assert.equal(h.gateway.legacyTerminalReady('same'), true);
     assert.equal((await h.gateway.openTerminal('same', input)).ok, true);
   } finally { await h.stop(legacy, ...(modern ? [modern] : []), ...(oldAgain ? [oldAgain] : [])); }
 });
@@ -1623,10 +1628,12 @@ test('终端 RPC：离线、凭据没有 sessions、worker 回 unsupported 都�
     authenticate: async () => ({ ok: true, capabilities: ['files.read'] })
   });
   const offline = await gateway.openTerminal('w1', { terminalId: 's1:1', sessionId: 's1', cols: 80, rows: 24 });
+  assert.equal(gateway.legacyTerminalReady('w1'), false);
   assert.equal(offline.ok, false);
   assert.equal(offline.ok === false && offline.code, 'unavailable');
 
   const wire = await connect('w1', { credential: 'c1' });
+  assert.equal(gateway.legacyTerminalReady('w1'), false);
   const denied = await gateway.openTerminal('w1', { terminalId: 's1:1', sessionId: 's1', cols: 80, rows: 24 });
   assert.equal(denied.ok, false);
   assert.equal(denied.ok === false && denied.code, 'forbidden');

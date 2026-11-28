@@ -87,6 +87,7 @@ async function harness(overrides: Partial<TerminalBridgeOptions> = {}): Promise<
     // 默认放行；授权本身由 terminalAccess 在 main.ts 接上，这里只验证桥接层有没有真的过这一关。
     access: async () => ({ ok: true, value: undefined }),
     blocksLegacyOpen: () => false,
+    legacyReady: () => true,
     authenticate: async (token) => (token === 'good' ? SUBJECT : null),
     hostAllowed: (value) => value === host,
     log: (message) => logs.push(message),
@@ -197,6 +198,39 @@ test('cookie：两种名字都认，两个都在时必须一致', () => {
   assert.equal(loginTokenOf('hub_login=good; __Host-hub_login=good'), 'good');
   assert.equal(loginTokenOf('other=good'), '');
   assert.equal(loginTokenOf(undefined), '');
+});
+
+test('availability is cookie-only, checks access and target, policy and live dispatch without opening a PTY', async () => {
+  let allow = true, ready = true, blocked = false, targetWorker: string | null = 'w1';
+  const checked: string[] = [];
+  const world = await harness({
+    access: async () => allow ? { ok: true, value: undefined } : { ok: false, error: forbidden('private') },
+    target: async (_subject, id) => id === 's1' ? { ok: true, value: { workerId: targetWorker, root: '/secret' } } : { ok: false, error: notFound('private') },
+    blocksLegacyOpen: (worker) => { checked.push(worker); return blocked; },
+    legacyReady: () => ready,
+    authenticate: async (token) => token === 'system' ? { system: true, reason: 'test' } : token === 'via' ? { via: {} } as Subject : token === 'good' ? SUBJECT : null
+  });
+  try {
+    const available = (cookie: string | undefined, id = 's1') => world.bridge.available(cookie, id);
+    assert.equal(await available('hub_login=good'), true);
+    assert.equal(await available(undefined), false);
+    assert.equal(await available('hub_login=good; __Host-hub_login=bad'), false);
+    assert.equal(await available('hub_login=system'), false);
+    assert.equal(await available('hub_login=via'), false);
+    assert.equal(await available('hub_login=good', 'missing'), false);
+    allow = false; assert.equal(await available('hub_login=good'), false); allow = true;
+    blocked = true; assert.equal(await available('hub_login=good'), false); blocked = false;
+    ready = false; assert.equal(await available('hub_login=good'), false); ready = true;
+    targetWorker = null; assert.equal(await available('hub_login=good'), true);
+    assert.equal(checked.at(-1), 'local');
+    assert.deepEqual(world.calls.open, []);
+  } finally { await world.close(); }
+});
+
+test('availability fails closed if policy or target throws', async () => {
+  const world = await harness({ target: async () => { throw new Error('/secret'); } });
+  try { assert.equal(await world.bridge.available('hub_login=good', 's1'), false); }
+  finally { await world.close(); }
 });
 
 test('握手：Host / Origin / cookie / session.read 四步（外加 access 的 session.prompt），按顺序拒绝', async () => {

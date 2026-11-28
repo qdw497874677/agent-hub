@@ -106,6 +106,12 @@ for (const width of [1280, 390]) {
         await add.click();
         await openExisting(first.id);
         await expect(page.getByTestId('focus-header')).toContainText('测试任务标题');
+        const legacy = await page.request.get(`${origin}/api/sessions/${first.id}/terminal-availability`);
+        expect(legacy.status(), await legacy.text()).toBe(200);
+        expect(await legacy.json()).toEqual({ available: false });
+        await add.click();
+        await expect(tabs.getByTestId('session-tab-new-terminal')).toBeDisabled();
+        await add.click();
         if (touch) await trigger.click();
         const activeTab = page.locator(`[data-testid="session-tab-item"][data-session-id="${first.id}"]:visible`);
         await expect(activeTab).toContainText('测试任务标题');
