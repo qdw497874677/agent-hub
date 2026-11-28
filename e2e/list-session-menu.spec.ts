@@ -200,8 +200,8 @@ test('列表行「⋯」：不导航就能删，取消保留，确认只删这�
   await expect(row(keep)).toBeVisible();
   await expect(page.getByRole('region', { name: `任务：甲任务-${suffix}` })).toContainText('1 条会话');
   await expect(page.getByRole('region', { name: `任务：乙任务-${suffix}` })).toContainText('1 条会话');
-  await expect(list.getByTestId('list-group-open').filter({ hasText: `甲任务-${suffix}` })).toBeVisible();
-  await expect(list.getByTestId('list-group-open').filter({ hasText: `乙任务-${suffix}` })).toBeVisible();
+  await expect(list.getByRole('button', { name: `任务详情：甲任务-${suffix}`, exact: true })).toBeVisible();
+  await expect(list.getByRole('button', { name: `任务详情：乙任务-${suffix}`, exact: true })).toBeVisible();
 
   const canvas = (await (await page.request.get(`/api/projects/${project.id}/canvas`, { headers })).json()) as {
     sessions: { id: string }[];

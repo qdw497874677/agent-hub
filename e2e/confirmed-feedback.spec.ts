@@ -255,7 +255,7 @@ test('配置、归档和停止都在回执后立刻反馈，不被旧画布或�
     // —— 归档：旧画布按着，任务详情也要立刻出现「已归档」。
     const heldArchiveCanvas = await holdNextCanvas();
     expect(heldArchiveCanvas.payload.tasks.find((task) => task.id === archiveTaskId)?.archivedAt, '按住的旧画布还没归档').toBeNull();
-    await page.getByRole('button', { name: `打开任务：${archiveTaskTitle}` }).click();
+    await page.getByRole('button', { name: `任务详情：${archiveTaskTitle}` }).click();
     const detail = page.getByTestId('task-detail');
     await expect(detail).toBeVisible();
     await page.getByTestId('task-archive').click();

@@ -441,21 +441,19 @@ export function ListView({
               data-testid="list-task-group"
               data-kind={group.kind}
             >
-              <h3 className="flex items-baseline gap-2 border-b border-hair py-2 text-sub text-primary">
+              <h3 className="flex min-w-0 items-center gap-2 border-b border-hair py-2 text-sub text-primary">
                 {!group.taskless ? (
-                  // 组头就是这条任务的入口（日志 / 归档 / 再开一条）：窄屏 44px，桌面保持紧凑但可聚焦。
-                  <button
-                    type="button"
-                    data-testid="list-group-open"
-                    aria-label={`打开任务：${group.title}`}
-                    className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-sm text-left hover:bg-card focus-visible:bg-card focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring md:min-h-7"
-                    onClick={() => onTaskDetail(group.taskId)}
-                  >
-                    <span className="shrink-0 text-meta text-tertiary max-md:hidden">任务</span>
-                    <span className="min-w-0 flex-1 truncate">{group.title}</span>
+                  <>
+                    <span className="min-w-0 flex-1 break-words">任务：<span>{group.title}</span></span>
                     <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
-                    <Icon name="chevron-right" size={13} className="shrink-0 text-tertiary" />
-                  </button>
+                    <button
+                      type="button"
+                      data-testid="list-group-open"
+                      aria-label={`任务详情：${group.title}`}
+                      className="min-h-[44px] shrink-0 rounded-sm px-2 text-meta text-secondary hover:bg-card hover:text-primary focus-visible:bg-card focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring md:min-h-7"
+                      onClick={() => onTaskDetail(group.taskId)}
+                    >任务详情</button>
+                  </>
                 ) : (
                   <>
                     <span className="min-w-0 truncate">{group.title}</span>

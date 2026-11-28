@@ -9,17 +9,40 @@ import { workdirTerminalPath } from '../../shell/api/hub.ts';
 import { resolveWorker, useWorkers } from '../../shell/workers.tsx';
 import { useWorkspaceViews } from './workspace-chooser.tsx';
 import { eligibleWorkdir, terminalErrorText, terminalPollInterval, workdirLabels, workdirSessionLabel } from './workdir-model.ts';
+import { workspaceWorkerLabel } from './list-workspaces.ts';
+
+function pathTail(path: string): string {
+  const suffix = path.match(/[^/\\]+[/\\][^/\\]+[/\\]*$/)?.[0] ?? path.match(/[^/\\]+[/\\]*$/)?.[0] ?? path;
+  return suffix.length < path.length ? `…/${suffix}` : suffix;
+}
 
 /** Registered directories are a separate source from the session-derived tree. */
-export function WorkdirEntries({ projectId, onOpen }: { projectId: string; onOpen: (id: string) => void }) {
+export function WorkdirEntries({ projectId, onOpen, compact = false }: { projectId: string; onOpen: (id: string) => void; compact?: boolean }) {
   const views = useWorkspaceViews(projectId);
+  const workers = useWorkers();
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
   const eligible = (views.data ?? []).filter(({ workspace, ownerProjectId }) => eligibleWorkdir(workspace, ownerProjectId, projectId));
   if (!eligible.length) return null;
   return <section aria-label="登记的工作目录" className="border-b border-hair px-2 py-2">
     <p className="px-2 text-meta text-tertiary">登记的工作目录</p>
-    {eligible.map(({ workspace }) => <button key={workspace.id} type="button" data-testid="workdir-entry" data-workspace-id={workspace.id} onClick={() => onOpen(workspace.id)} className="flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-md px-2 text-left hover:bg-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
-      <span className="min-w-0 flex-1"><span className="block truncate text-sub text-primary">{workspaceName(workspace)}</span><span className="block truncate text-meta text-tertiary">{workspace.path}</span></span><span aria-hidden>↗</span>
-    </button>)}
+    {eligible.map(({ workspace }) => {
+      const worker = resolveWorker(workers.list, workspace.workerId);
+      const expanded = expandedPaths.has(workspace.id);
+      return <div key={workspace.id} data-testid="workdir-entry-row" data-workspace-id={workspace.id} className="min-w-0">
+        <div className="flex min-w-0 items-center">
+          <button type="button" data-testid="workdir-entry" data-workspace-id={workspace.id} onClick={() => onOpen(workspace.id)} className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
+            <span className="min-w-0 flex-1">
+              <span className="block break-words text-sub text-primary">{workspaceName(workspace)}</span>
+              <span className={`block text-meta text-tertiary ${compact ? 'truncate' : 'whitespace-pre-wrap [overflow-wrap:anywhere]'}`}>{workspaceWorkerLabel(workspace.workerId, worker?.label)}{worker && worker.state !== 'online' ? ' · 离线' : ''}</span>
+              {compact ? <span data-testid="workdir-entry-path-tail" className="flex min-w-0 justify-end overflow-hidden whitespace-nowrap text-meta text-tertiary"><span className="shrink-0">{pathTail(workspace.path)}</span></span> : <span data-testid="workdir-entry-path" className="block whitespace-pre-wrap text-meta text-tertiary [overflow-wrap:anywhere]">{workspace.path}</span>}
+            </span>
+            {!compact ? <span className="shrink-0 text-meta text-secondary">打开目录 ↗</span> : <span className="sr-only">打开目录</span>}
+          </button>
+          {compact ? <button type="button" data-testid="workdir-entry-path-toggle" aria-label={`${expanded ? '收起' : '查看完整'}路径：${workspaceName(workspace)}`} aria-expanded={expanded} onClick={() => setExpandedPaths((current) => { const next = new Set(current); if (next.has(workspace.id)) next.delete(workspace.id); else next.add(workspace.id); return next; })} className="min-h-[44px] min-w-[44px] shrink-0 rounded-md px-2 text-meta text-secondary hover:bg-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">{expanded ? '收起路径' : '查看路径'}</button> : null}
+        </div>
+        {compact && expanded ? <p data-testid="workdir-entry-path" className="px-2 pb-2 whitespace-pre-wrap text-meta text-tertiary [overflow-wrap:anywhere]">{workspace.path}</p> : null}
+      </div>;
+    })}
   </section>;
 }
 

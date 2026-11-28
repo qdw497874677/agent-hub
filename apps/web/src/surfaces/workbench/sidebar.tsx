@@ -429,7 +429,7 @@ export function ProjectSidebar({
       {!drawer ? projectActions : null}
 
       <nav ref={listRef} onKeyDown={onListKey} className={drawer ? 'shrink-0 border-t border-hair px-2 py-0.5' : 'min-h-0 flex-1 overflow-y-auto border-t border-hair px-2 py-2'} aria-label="任务与会话">
-        <WorkdirEntries projectId={project.id} onOpen={onOpenWorkdir} />
+        <WorkdirEntries projectId={project.id} onOpen={onOpenWorkdir} compact />
         <p className="sr-only px-2 pb-1 text-meta text-tertiary lg:not-sr-only">工作空间</p>
         {workspaceGroups.map((workspace) => {
           const expanded = !foldedWorkspaces.has(workspace.key);

@@ -126,12 +126,13 @@ test.describe('桌面 1280', () => {
     await expect(page.getByRole('region', { name: `任务：有会话的任务-桌面` })).toContainText('2 条会话');
     // 已派生但还没发第一句话：列表和侧栏都该说「就绪」，不能一边「工作中」一边「就绪」。
     await expect(page.getByRole('region', { name: `任务：有会话的任务-桌面` }).getByText('就绪').first()).toBeVisible();
-    // 桌面不再在底部重复一遍任务 chip：组头本身就是任务入口，打开能看到日志和「开会话」。
+    // 不在底部重复任务入口；组头的独立「任务详情」按钮打开日志和「开会话」。
     await expect(page.getByText('任务 · 点一下从它再开一条会话')).toHaveCount(0);
     const group = page.getByRole('region', { name: `任务：有会话的任务-桌面` });
     const groupOpen = group.getByTestId('list-group-open');
     await expect(groupOpen).toBeVisible();
-    expect((await groupOpen.boundingBox())!.height, '桌面组头保持紧凑').toBeLessThan(44);
+    await expect(groupOpen).toContainText('任务详情');
+    expect((await groupOpen.boundingBox())!.height, '桌面详情按钮保持紧凑').toBeLessThan(44);
     await groupOpen.click();
     const taskDetail = page.getByTestId('task-detail');
     await expect(taskDetail).toBeVisible();
@@ -182,9 +183,14 @@ test.describe('手机 390', () => {
     await expect(page.getByTestId('list-view')).toBeVisible();
     // 手机抽屉把项目会话/任务放在前面；全局工具跟在列表后，共用滚动区。
     await page.getByRole('button', { name: '打开侧栏' }).click();
+    const drawer = page.getByTestId('nav-sheet');
     const drawerNav = page.getByTestId('drawer-global-nav');
+    const taskNav = page.getByRole('navigation', { name: '任务与会话' });
     await expect(drawerNav).toBeVisible();
-    // 抽屉是滑上来的，等动画停稳再量，否则拿到的是中途的坐标。
+    await expect(taskNav.getByTestId('sidebar-session-row').first()).toBeInViewport();
+    // 底部工具跟目录、任务共用滚动区，不要求全部首屏出现；滚到后必须实际可见并可用。
+    await drawerNav.scrollIntoViewIfNeeded();
+    await expect(drawerNav).toBeInViewport({ ratio: 0.99 });
     await expect
       .poll(async () => {
         const box = await drawerNav.boundingBox();
@@ -193,10 +199,9 @@ test.describe('手机 390', () => {
       .toBeLessThanOrEqual(844);
     const drawerNavBox = await drawerNav.boundingBox();
     expect(drawerNavBox!.y).toBeGreaterThanOrEqual(0);
-    const taskNav = page.getByRole('navigation', { name: '任务与会话' });
     const taskNavBox = (await taskNav.boundingBox())!;
-    const drawerSheetBox = (await page.getByTestId('nav-sheet').boundingBox())!;
-    const drawerAsideBox = (await page.getByTestId('nav-sheet').getByTestId('project-sidebar').boundingBox())!;
+    const drawerSheetBox = (await drawer.boundingBox())!;
+    const drawerAsideBox = (await drawer.getByTestId('project-sidebar').boundingBox())!;
     expect(Math.abs(drawerSheetBox.width - drawerAsideBox.width), '抽屉内容填满 sheet 宽度').toBeLessThanOrEqual(1);
     expect(drawerNavBox!.y, '全局工具在任务列表之后').toBeGreaterThanOrEqual(taskNavBox.y + taskNavBox.height - 1);
     expect(drawerNavBox!.height, '全局工具页脚两行以内').toBeLessThan(120);

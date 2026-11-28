@@ -47,8 +47,8 @@ async function fixture(page: Page, root: string, grant = true) {
     const { user } = await api<{ user: { id: string } }>('/api/auth/state');
     const workerId = await ensureFakeWorker(page, origin, FAKE_AGENT_ID, { env: { TERMINAL_SHELL: '/bin/sh', WORKER_WORKDIR_TERMINAL: '1' } });
     const project = await api<{ id: string }>('/api/projects', { name: '独立终端测试' });
-    const path = join(root, 'workdir');
-    mkdirSync(path);
+    const path = join(root, 'registered-directories-with-the-same-prefix', 'a-long-checkout-parent-for-mobile-path-wrapping', 'workdir');
+    mkdirSync(path, { recursive: true });
     const workdir = await api<{ id: string }>(`/api/projects/${project.id}/workspaces`, { kind: 'long_lived', mode: 'empty', workerId, path });
     const terminals = `/api/projects/${project.id}/workdir-tabs/${workdir.id}/terminals`;
     // Explicitly prove that project ownership and Worker access alone are not a shell grant.
@@ -155,10 +155,31 @@ for (const width of [1280, 390]) {
       try {
         world = await fixture(page, root);
         const { api, origin, projectId, workspaceId, workerId, terminals, path } = world;
+        const otherPath = `${path}-other`;
+        mkdirSync(otherPath);
+        const sibling = await api<{ id: string }>(`/api/projects/${projectId}/workspaces`, { kind: 'long_lived', mode: 'empty', workerId, path: otherPath });
         const canvasPath = `/api/projects/${projectId}/canvas`;
         expect((await api<{ sessions: unknown[] }>(canvasPath)).sessions).toHaveLength(0);
         await page.goto(`${origin}/#/p/${projectId}/list`);
-        await page.getByTestId('list-view').locator(`[data-testid="workdir-entry"][data-workspace-id="${workspaceId}"]`).click();
+        const entries = page.getByTestId('list-view').getByRole('region', { name: '登记的工作目录' });
+        const entry = (id: string) => entries.locator(`[data-testid="workdir-entry"][data-workspace-id="${id}"]`);
+        for (const [id, expected] of [[workspaceId, path], [sibling.id, otherPath]] as const) {
+          const displayed = entry(id).getByTestId('workdir-entry-path');
+          await expect(displayed).toBeVisible();
+          await expect(displayed).toHaveText(expected);
+          // A truncated span still contains the full string in the DOM. Check the rendered text fits.
+          const { fits, lines } = await displayed.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            const rects = [...range.getClientRects()];
+            return { fits: rects.length > 0 && rects.every((line) => line.left >= box.left - 1 && line.right <= box.right + 1 && line.bottom <= box.bottom + 1), lines: rects.length };
+          });
+          expect(fits).toBe(true);
+          if (touch) expect(lines).toBeGreaterThan(1);
+        }
+        if (shots) await page.screenshot({ path: join(shots, `registered-workdir-paths-${width}.png`) });
+        await entry(workspaceId).click();
         const tabs = page.getByTestId('session-document-tabs');
         const plus = tabs.getByTestId('session-tab-add');
         const trigger = tabs.getByTestId('session-tab-trigger');
