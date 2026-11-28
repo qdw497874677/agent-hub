@@ -5,6 +5,8 @@ import { z } from 'zod';
 export const PREVIEW_WS_PATH = '/preview';
 export const PREVIEW_FRAME_BYTES = 64 * 1024;
 export const PREVIEW_MAX_PAYLOAD = 2 * 1024 * 1024;
+/** Capability belongs to the exact authenticated preview socket, not the RPC connection. */
+export const PREVIEW_LISTENER_IDENTITY_HEADER = 'x-hub-preview-listener-identity';
 
 /**
  * 预览链路上「哪些头不该继续往前走」的唯一一份规则（hub 两种模式 + worker 共用）。
@@ -123,6 +125,7 @@ export const previewUpSchema = z.discriminatedUnion('kind', [
     kind: z.literal('preview_open'),
     streamId: streamIdSchema,
     port: z.number().int().min(1).max(65535),
+    listenerIdentity: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     method: z.string().min(1).max(16),
     path: z.string().min(1).max(8192),
     headers: headerSchema,

@@ -8,7 +8,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/node-kit';
-import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, createServiceHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, defaultGroupsDir, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot, createPreviewClient, scanProcesses, isEqualOrDescendantPath, isStrictDescendantPath } from '@agent-hub/node-gateway';
+import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, createServiceHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, resolveDevelopmentRoots, defaultAssetsRoot, defaultGroupsDir, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot, createPreviewClient, scanProcesses, isEqualOrDescendantPath, isStrictDescendantPath } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import { createWorkdirTerminalHost } from '@agent-hub/node-gateway';
 import type { AgentAlias, AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
@@ -480,6 +480,7 @@ const link = connectWorkerLink({
   service: serviceHost,
   /** 只读进程 / 端口清单：只报 cwd 落在 WORKER_ROOTS 里的进程。 */
   processes: () => scanProcesses({ roots }),
+  developmentRoots: (paths) => resolveDevelopmentRoots(roots, paths),
   /**
    * 终端输出里认出的端口 → 预览通道（P2 端口发现）。preview 在下面才建，
    * 这个回调只在会话真的开终端后才被调用，那时 preview 已经就绪。

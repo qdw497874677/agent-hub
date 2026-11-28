@@ -16,6 +16,7 @@ import { installProjectGitProbeRoutes, type ProjectGitProbeRouteOptions } from '
 import { installDisabledHubCredentialRoutes, installHubCredentialRoutes } from './hub-credential-routes.ts';
 import { projectDto } from './project-dto.ts';
 import { installPreviewRoutes, type PreviewApiOptions } from './preview-routes.ts';
+import { installDevelopmentServicesRoutes, type DevelopmentServicesRoutes } from './development-services-routes.ts';
 import { installServiceRoutes, type ServiceApiOptions } from './service-routes.ts';
 import { installContextRoutes } from './context-routes.ts';
 import { installFilesRoutes } from './files-routes.ts';
@@ -224,6 +225,7 @@ import { installDisabledWorktreePlanRoutes, installWorktreePlanRoutes } from './
 import type { createWorktreePlans } from './worktree-plans.ts';
 
 export interface AppOptions {
+  readonly developmentServices?: DevelopmentServicesRoutes;
   readonly terminalBridge?: Pick<TerminalBridge, 'available'>;
   readonly workdirTerminals?: ReturnType<typeof createWorkdirTerminalService>;
   readonly workdirTerminalAdmin?: WorkdirTerminalAdminOptions;
@@ -359,6 +361,10 @@ export function createApp(options: AppOptions): Hono {
     c.header('Cache-Control', 'no-store');
     await next();
   });
+  app.use('/api/development-services/*', async (c, next) => {
+    c.header('Cache-Control', 'no-store');
+    await next();
+  });
 
   /** 项目级配置的审计（工作空间档位、准备命令重试）：目标是项目 / 工作空间，不是会话。 */
   const auditResource = async (c: Context, subject: Subject | null, action: AuditAction, target: string, detail: string): Promise<void> => {
@@ -424,6 +430,7 @@ export function createApp(options: AppOptions): Hono {
     });
     // 授权中间件要先于下面所有路由注册（Hono 按注册顺序走）。
     installAccess(app, deps, subjectOf);
+    installDevelopmentServicesRoutes(app, options.developmentServices, principalOf);
     installHandoffMutationGate(app, deps, '/api', subjectOf);
     if (options.worktreePlans) installWorktreePlanRoutes(app, options.worktreePlans, subjectOf);
     if (options.agentHandoff) installAgentHandoffRoutes(app, options.agentHandoff, principalOf);

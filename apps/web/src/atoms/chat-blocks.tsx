@@ -73,6 +73,7 @@ import type { Block } from './live.ts';
 import type { HandoffDto } from './live-core.ts';
 import { formatRoute, parseRoute } from '../shell/route.ts';
 import { LogMarkdown } from './log-markdown.tsx';
+import { UserPromptWithServices } from './development-service-reference.tsx';
 import { clipLines, parseUnifiedDiff, toolFamily, toolFileTarget, toolSummary, toolView, type DiffLine, type ToolView } from './tool-format.ts';
 import { analyzeDiff, sliceTokens, type DiffTokenSlice, type WordSegment } from './diff-words.ts';
 import { diffStat, runLength, startsRun, toolHeadline, toolRowKind, toolRowLine, toolRowTitle, toolRunChip, type ToolRowKind, type ToolRowProbe } from './tool-rows.ts';
@@ -1051,13 +1052,13 @@ export function ChatBlock({
         {provenance.kind !== 'ordinary' ? (
           <ProvenanceView text={block.text} author={block.author} messageSource={block.messageSource} sessionId={sessionId} />
         ) : block.text !== '' ? (
-          <p
+          <div
             className={`max-w-[85%] whitespace-pre-wrap rounded-[var(--radius-overlay)] rounded-br-sm bg-card-raised px-3 py-2 text-chat text-primary transition-opacity duration-150 ${
               queued ? 'opacity-80' : ''
             }`}
           >
-            {block.text}
-          </p>
+            <UserPromptWithServices text={block.text} sessionId={sessionId} />
+          </div>
         ) : null}
         {actions}
         <DeliveryNote seq={block.seq} />

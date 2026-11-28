@@ -24,6 +24,33 @@ interface Call {
   readonly params: unknown;
 }
 
+test('development roots require authenticated current worker and reject malformed or replaced replies', async () => {
+  let mode: 'valid' | 'short' | 'old' | 'drop' = 'valid';
+  const h = await harness({ gateway: { echoMs: 0 }, authenticate: async ({ workerId }) => workerId === 'auth'
+    ? { ok: true, via: 'credential', enrollment: { workerId, enrolledBy: 'test', createdAt: 1 } }
+    : { ok: true, via: 'shared' },
+    drop: (method) => method === 'development.roots' && mode === 'drop',
+    reply: (method, params) => method === 'development.roots' ? mode === 'old' ? { error: { code: 'unknown_method', message: 'unknown' } } : { paths: mode === 'short' ? [] : (params as { paths: string[] }).paths.map((p) => p === '/x' ? '/canonical' : null) } : { ok: true }
+  });
+  const authenticated = await h.connect('auth');
+  const untrusted = await h.connect('untrusted');
+  let replacement: Wire | undefined;
+  try {
+    assert.deepEqual(await h.gateway.developmentRoots('auth', ['/x', '/missing', '/x']), { ok: true, value: ['/canonical', null, '/canonical'] });
+    assert.equal((await h.gateway.developmentRoots('untrusted', ['/x'])).ok, false);
+    assert.equal(untrusted.calls.some((call) => call.method === 'development.roots'), false);
+    mode = 'short';
+    assert.equal((await h.gateway.developmentRoots('auth', ['/x'])).ok, false);
+    mode = 'old';
+    assert.equal((await h.gateway.developmentRoots('auth', ['/x'])).ok, false);
+    mode = 'drop';
+    const pending = h.gateway.developmentRoots('auth', ['/x']);
+    await until(() => authenticated.calls.filter((call) => call.method === 'development.roots').length === 4);
+    replacement = await h.connect('auth');
+    assert.equal((await pending).ok, false);
+  } finally { await h.stop(authenticated, untrusted, ...(replacement ? [replacement] : [])); }
+});
+
 interface Wire {
   readonly ws: WebSocket;
   readonly calls: Call[];

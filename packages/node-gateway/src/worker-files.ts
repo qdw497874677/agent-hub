@@ -1,10 +1,11 @@
 import { constants } from 'node:fs';
-import { mkdir, open, realpath, stat, type FileHandle } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { access, mkdir, open, realpath, stat, type FileHandle } from 'node:fs/promises';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import type { DirectoryEntry } from '@agent-hub/domain';
 import { createLocalFs } from './local-fs.ts';
 import { makeDirectoryWithin } from './make-directory.ts';
 import { isEqualOrDescendantPath } from './path-boundary.ts';
+import { unaliasedMountPath } from './mount-alias.ts';
 
 /**
  * Worker 这一侧的文件操作，全部过 WORKER_ROOTS 这道边界。
@@ -29,6 +30,27 @@ export interface WorkerFiles {
 }
 
 export class OutsideRootsError extends Error {}
+
+/** Resolve existing, accessible directories only. No nonexistent-ancestor fallback. */
+export async function resolveDevelopmentRoots(roots: readonly string[], paths: readonly string[]): Promise<(string | null)[]> {
+  const actualRoots = (await Promise.all(roots.map(async (root) => {
+    try {
+      const actual = await realpath(root);
+      return (await stat(actual)).isDirectory() ? actual : null;
+    } catch { return null; }
+  }))).filter((root): root is string => root !== null);
+  return Promise.all(paths.map(async (path) => {
+    if (!isAbsolute(path) || path.includes('\0')) return null;
+    try {
+      const actual = await realpath(path);
+      if (actual.length > 8192 || !actualRoots.some((root) => isEqualOrDescendantPath(root, actual))) return null;
+      if (!unaliasedMountPath(actual)) return null;
+      if (!(await stat(actual)).isDirectory()) return null;
+      await access(actual, constants.R_OK | constants.X_OK);
+      return actual;
+    } catch { return null; }
+  }));
+}
 
 export function boundaryHint(path: string, roots: readonly string[]): string {
   return (

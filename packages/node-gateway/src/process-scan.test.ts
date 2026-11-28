@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PROCESS_CMD_MAX, scanProcesses } from './process-scan.ts';
+import { createServer } from 'node:net';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
+import { PROCESS_CMD_MAX, scanProcesses, verifyListenerIdentity } from './process-scan.ts';
 
 /**
  * 进程 / 端口清单：临时目录冒充 /proc。
@@ -124,4 +127,131 @@ test('scanProcesses：命令行先抹 user:token@ 凭据再截断；读不到 cw
 test('scanProcesses：没有 roots / /proc 读不到时返回空数组，不抛错', () => {
   assert.deepEqual(scanProcesses({ roots: [], procRoot: join(tmpdir(), 'ah-missing-proc') }), []);
   assert.deepEqual(scanProcesses({ roots: ['/tmp'], procRoot: join(tmpdir(), 'ah-missing-proc') }), []);
+});
+
+test('real loopback listener identity expires when its socket is replaced on the same port', async () => {
+  const first = createServer();
+  first.listen(0, '127.0.0.1');
+  await once(first, 'listening');
+  const port = (first.address() as AddressInfo).port;
+  const identity = scanProcesses({ roots: [process.cwd()] }).find((p) => p.pid === process.pid)?.listeners?.find((l) => l.port === port)?.identity;
+  assert.ok(identity);
+  assert.equal(verifyListenerIdentity(port, identity), true);
+  await new Promise<void>((resolve) => first.close(() => resolve()));
+  const replacement = createServer();
+  replacement.listen(port, '127.0.0.1');
+  await once(replacement, 'listening');
+  try {
+    assert.equal(verifyListenerIdentity(port, identity), false);
+    const next = scanProcesses({ roots: [process.cwd()] }).find((p) => p.pid === process.pid)?.listeners?.find((l) => l.port === port)?.identity;
+    assert.ok(next);
+    assert.notEqual(identity, next);
+    assert.equal(verifyListenerIdentity(port, next), true);
+  } finally {
+    await new Promise<void>((resolve) => replacement.close(() => resolve()));
+  }
+});
+
+test('ambiguous shared socket, competing listener and non-loopback address are excluded without altering ports', () => {
+  const proc = fakeProc([
+    procLine('0100007F:1388', '0A', 100),
+    procLine('0100007F:1389', '0A', 101),
+    procLine('00000000:1389', '0A', 102),
+    procLine('0101A8C0:138A', '0A', 103)
+  ]);
+  const workspace = join(proc.root, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  mkdirSync(join(proc.root, 'sys/kernel/random'), { recursive: true });
+  writeFileSync(join(proc.root, 'sys/kernel/random/boot_id'), 'boot-id');
+  mkdirSync(join(proc.root, 'self/ns'), { recursive: true });
+  symlinkSync('net:[1]', join(proc.root, 'self/ns/net'));
+  addProcess(proc.root, { pid: 10, ppid: 1, cwd: workspace, sockets: [100, 101, 103] });
+  addProcess(proc.root, { pid: 20, ppid: 1, cwd: workspace, sockets: [100, 102] });
+  for (const pid of [10, 20]) {
+    mkdirSync(join(proc.root, String(pid), 'ns'));
+    symlinkSync('net:[1]', join(proc.root, String(pid), 'ns/net'));
+  }
+  try {
+    const processes = scanProcesses({ roots: [workspace], procRoot: proc.root });
+    assert.deepEqual(processes.map((p) => p.ports), [[5000, 5001, 5002], [5000, 5001]]);
+    assert.deepEqual(processes.map((p) => p.listeners), [[], []]);
+  } finally { proc.close(); }
+});
+
+test('listener authority follows the canonical exact cwd and rejects changed, missing or deleted cwd', () => {
+  const proc = fakeProc([procLine('0100007F:1388', '0A', 100)]);
+  const workspace = join(proc.root, 'workspace');
+  const other = join(workspace, 'other');
+  mkdirSync(other, { recursive: true });
+  mkdirSync(join(proc.root, 'sys/kernel/random'), { recursive: true });
+  writeFileSync(join(proc.root, 'sys/kernel/random/boot_id'), 'boot-id');
+  mkdirSync(join(proc.root, 'self/ns'), { recursive: true });
+  symlinkSync('net:[1]', join(proc.root, 'self/ns/net'));
+  symlinkSync('mnt:[1]', join(proc.root, 'self/ns/mnt'));
+  symlinkSync('/', join(proc.root, 'self/root'));
+  writeFileSync(join(proc.root, 'self/mountinfo'), '1 0 1:1 / / rw - ext4 /dev/root rw\n');
+  addProcess(proc.root, { pid: 10, ppid: 1, cwd: workspace, sockets: [100] });
+  mkdirSync(join(proc.root, '10/ns'));
+  symlinkSync('net:[1]', join(proc.root, '10/ns/net'));
+  symlinkSync('mnt:[1]', join(proc.root, '10/ns/mnt'));
+  symlinkSync('/', join(proc.root, '10/root'));
+  const cwdLink = join(proc.root, '10/cwd');
+  const changeCwd = (target: string): void => { unlinkSync(cwdLink); symlinkSync(target, cwdLink); };
+  try {
+    const original = scanProcesses({ roots: [workspace], procRoot: proc.root })[0]?.listeners?.[0]?.identity;
+    assert.ok(original);
+    assert.equal(scanProcesses({ roots: [workspace], procRoot: proc.root })[0]?.cwdVerified, true);
+    assert.equal(verifyListenerIdentity(5000, original), true);
+    unlinkSync(join(proc.root, '10/ns/mnt'));
+    symlinkSync('mnt:[2]', join(proc.root, '10/ns/mnt'));
+    assert.equal(verifyListenerIdentity(5000, original), false);
+    assert.equal(scanProcesses({ roots: [workspace], procRoot: proc.root })[0]?.cwdVerified, undefined);
+    unlinkSync(join(proc.root, '10/ns/mnt'));
+    symlinkSync('mnt:[1]', join(proc.root, '10/ns/mnt'));
+    unlinkSync(join(proc.root, '10/root'));
+    symlinkSync(workspace, join(proc.root, '10/root'));
+    assert.equal(verifyListenerIdentity(5000, original), false);
+    assert.equal(scanProcesses({ roots: [workspace], procRoot: proc.root })[0]?.cwdVerified, undefined);
+    unlinkSync(join(proc.root, '10/root'));
+    symlinkSync('/', join(proc.root, '10/root'));
+    changeCwd(other);
+    assert.equal(verifyListenerIdentity(5000, original), false);
+    const changed = scanProcesses({ roots: [workspace], procRoot: proc.root })[0]?.listeners?.[0]?.identity;
+    assert.ok(changed);
+    assert.notEqual(changed, original);
+    assert.equal(verifyListenerIdentity(5000, changed), true);
+    changeCwd(`${other} (deleted)`);
+    assert.equal(verifyListenerIdentity(5000, changed), false);
+    assert.deepEqual(scanProcesses({ roots: [workspace], procRoot: proc.root })[0]?.listeners, []);
+    changeCwd(join(workspace, 'missing'));
+    assert.equal(verifyListenerIdentity(5000, changed), false);
+    assert.deepEqual(scanProcesses({ roots: [workspace], procRoot: proc.root })[0]?.listeners, []);
+  } finally { proc.close(); }
+});
+
+test('real process chdir invalidates listener identity while socket and pid stay unchanged', async () => {
+  const originalCwd = process.cwd();
+  const workspace = mkdtempSync(join(tmpdir(), 'ah-listener-cwd-'));
+  const other = join(workspace, 'other');
+  mkdirSync(other);
+  const server = createServer();
+  try {
+    process.chdir(workspace);
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const port = (server.address() as AddressInfo).port;
+    const identity = scanProcesses({ roots: [workspace] }).find((p) => p.pid === process.pid)?.listeners?.find((l) => l.port === port)?.identity;
+    assert.ok(identity);
+    assert.equal(verifyListenerIdentity(port, identity), true);
+    process.chdir(other);
+    assert.equal(verifyListenerIdentity(port, identity), false);
+    const next = scanProcesses({ roots: [workspace] }).find((p) => p.pid === process.pid)?.listeners?.find((l) => l.port === port)?.identity;
+    assert.ok(next);
+    assert.notEqual(next, identity);
+    assert.equal(verifyListenerIdentity(port, next), true);
+  } finally {
+    process.chdir(originalCwd);
+    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, { recursive: true, force: true });
+  }
 });

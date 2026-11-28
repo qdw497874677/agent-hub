@@ -155,6 +155,9 @@ import { createOptionWaiters, ingestOptionReceipt } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createTerminalBridge, type TerminalBridge } from './terminal-bridge.ts';
 import { createWorkdirTerminalService } from './workdir-terminal-service.ts';
+import { createDevelopmentServices } from './development-services.ts';
+import { createDevelopmentPreview, developmentPreviewRange } from './development-preview.ts';
+import { createDevelopmentPreviewStore } from './development-preview-store.ts';
 import { createWorkdirTerminalAdminStore } from './workdir-terminal-admin.ts';
 import { createWorkdirTerminalIngress, workdirTerminalAdminOrigin } from './workdir-terminal-ingress.ts';
 import { workDirShellGranted } from './workdir-terminal-access.ts';
@@ -426,7 +429,9 @@ const deps: Deps = {
     services: (workerId) => (serverGateway ? serverGateway.services(workerId) : missingServices),
     // 只读进程 / 端口清单：同样挂在网关外层；通道没起来时按不可用处理。
     processes: async (workerId) =>
-      serverGateway ? serverGateway.processes(workerId) : err(unavailable('worker 通道尚未就绪'))
+      serverGateway ? serverGateway.processes(workerId) : err(unavailable('worker 通道尚未就绪')),
+    developmentRoots: async (workerId, paths) =>
+      serverGateway ? serverGateway.developmentRoots(workerId, paths) : err(unavailable('worker 通道尚未就绪'))
   },
   agents: catalog,
   fs: createLocalFs(),
@@ -1335,6 +1340,18 @@ const previews = wirePreviews({
   schedules
 });
 const { ports: previewPorts, reconcile: reconcilePreviews, channel: previewChannel } = previews;
+const developmentRange = developmentPreviewRange({ raw: readEnv('HUB_DEVELOPMENT_PREVIEW_PORTS'), bind: host, hubPort: port, publicUrl: readEnv('HUB_PUBLIC_URL'), legacy: previewPorts });
+let developmentPreview: ReturnType<typeof createDevelopmentPreview> | null = null;
+const developmentDirectory = createDevelopmentServices({ deps, canOpen: (workerId) => developmentPreview?.canOpen(workerId) === true });
+if (developmentRange && previewChannel) {
+  developmentPreview = createDevelopmentPreview({
+    range: developmentRange, hubPort: port, store: createDevelopmentPreviewStore(store.db), channel: previewChannel,
+    authenticate: async (login) => withAccess(store.access, await authenticate(accounts, login), accounts.now()),
+    authorize: developmentDirectory.authorizeDestination,
+    legacyPortInUse: async (hubPort) => (await store.previewLinks.byHubPort(hubPort)) !== null,
+    now: () => accounts.now(), onLog: (message) => log(`[development-preview] ${message}`)
+  });
+}
 void loadResourcePolicy({ metrics: workerMetrics, settings: store.settings }).catch((failure: unknown) => log(`同步资源策略失败：${(failure as Error).message}`));
 
 const recovered = await reconcileInterrupted({
@@ -1434,6 +1451,7 @@ const projectGitProbe = await setupProjectGitProbe({
 });
 const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, optionConfirmations: optionWaiters, guard,
   terminalBridge,
+  developmentServices: { directory: developmentDirectory, preview: developmentPreview, hubPort: port },
   ...(hubCredentials && credentialAdmin ? { hubCredentials: {
     broker: hubCredentials.broker,
     async authorize(c, projectId) {
@@ -1774,6 +1792,7 @@ if (spawnWorker === '1') {
     terminalBridge?.close();
     workdirTerminals?.close();
     void previews.proxy?.close();
+    void developmentPreview?.close();
     previews.channel?.close();
     serverGateway?.close();
     store.close();
